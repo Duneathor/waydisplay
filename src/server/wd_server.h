@@ -269,6 +269,8 @@ extern "C" {
 
     void wd_pointer_end_move(struct wd_server *server);
 
+
+
     #ifdef __cplusplus
 }
 #endif

@@ -23,6 +23,60 @@ void wd_scene_init_listeners(struct wd_server *server) {
                 &server->new_xdg_toplevel);
 }
 
+struct wd_view *wd_scene_view_at(struct wd_server *server,
+                                 double lx,
+                                 double ly,
+                                 double *sx,
+                                 double *sy) {
+    if (!server) {
+        return NULL;
+    }
+
+    struct wd_view *view;
+
+    /*
+     * Tail is topmost because wd_scene_raise_view() and new-window insertion
+     * should insert at server->views.prev.
+     */
+    wl_list_for_each_reverse(view, &server->views, link) {
+        if (!view->mapped ||
+            !view->xdg_surface ||
+            !view->xdg_surface->surface) {
+            continue;
+            }
+
+            int surface_w = view->xdg_surface->surface->current.width;
+        int surface_h = view->xdg_surface->surface->current.height;
+
+        if (surface_w <= 0) {
+            surface_w = WD_DISPLAY_WIDTH;
+        }
+
+        if (surface_h <= 0) {
+            surface_h = WD_DISPLAY_HEIGHT;
+        }
+
+        if (lx < view->x ||
+            ly < view->y ||
+            lx >= view->x + surface_w ||
+            ly >= view->y + surface_h) {
+            continue;
+            }
+
+            if (sx) {
+                *sx = lx - view->x;
+            }
+
+            if (sy) {
+                *sy = ly - view->y;
+            }
+
+            return view;
+    }
+
+    return NULL;
+                                 }
+
 void wd_scene_set_view_position(struct wd_view *view) {
   if (!view || !view->scene_tree) {
     return;
