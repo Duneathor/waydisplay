@@ -65,20 +65,24 @@ static int server_frame_timer(void *data) {
     if (!server || !server->display) {
         return 0;
     }
-
-    if (server->output) {
-        wlr_output_schedule_frame(server->output);
-    }
-
-    bool have_frame = wd_render_scene_and_readback_xrgb8888(server);
-
-    if (have_frame) {
-        wd_stream_send_dirty_tiles(server);
-    }
-
+    wd_pointer_drain_and_inject(server);
     wd_keyboard_drain_and_inject(server);
 
     uint64_t t = wd_now_ns();
+
+    bool should_render = wd_stream_policy_should_render_now(server, t);
+
+    if (should_render) {
+        if (server->output) {
+            wlr_output_schedule_frame(server->output);
+        }
+
+        bool have_frame = wd_render_scene_and_readback_xrgb8888(server);
+
+        if (have_frame) {
+            wd_stream_send_dirty_tiles(server);
+        }
+    }
 
     if (t - server->last_summary_ns > 2000000000ull) {
         pthread_mutex_lock(&server->net.lock);
@@ -93,15 +97,24 @@ static int server_frame_timer(void *data) {
         server->last_stats_ns = t;
     }
 
-    wl_event_source_timer_update(server->frame_timer, 33);
+    wl_event_source_timer_update(server->frame_timer, 8);
 
     return 0;
+}
+
+void wd_server_mark_scene_dirty(struct wd_server *server) {
+    if (server) {
+        server->scene_dirty = true;
+    }
 }
 
 bool wd_server_init(struct wd_server *server,
                     uint16_t tcp_port,
                     const char *app_cmd) {
     memset(server, 0, sizeof(*server));
+
+    wl_list_init(&server->views);
+    server->scene_dirty = true;
 
     server->startup_command = app_cmd;
 
@@ -174,6 +187,26 @@ bool wd_server_init(struct wd_server *server,
 
                         wd_net_destroy(server);
                         wd_stream_destroy(server);
+
+                        if (server->new_xdg_surface.link.prev && server->new_xdg_surface.link.next) {
+                            wl_list_remove(&server->new_xdg_surface.link);
+                            wl_list_init(&server->new_xdg_surface.link);
+                        }
+
+                        if (server->new_xdg_toplevel.link.prev && server->new_xdg_toplevel.link.next) {
+                            wl_list_remove(&server->new_xdg_toplevel.link);
+                            wl_list_init(&server->new_xdg_toplevel.link);
+                        }
+
+                        if (server->output && server->output_frame.link.prev && server->output_frame.link.next) {
+                            wl_list_remove(&server->output_frame.link);
+                            wl_list_init(&server->output_frame.link);
+                        }
+
+                        if (server->output && server->output_destroy.link.prev && server->output_destroy.link.next) {
+                            wl_list_remove(&server->output_destroy.link);
+                            wl_list_init(&server->output_destroy.link);
+                        }
 
                         if (server->display) {
                             wl_display_destroy_clients(server->display);

@@ -24,7 +24,10 @@ bool wd_net_init(struct wd_server *server, uint16_t tcp_port) {
     net->tcp_fd = -1;
     net->listen_fd = -1;
     net->udp_fd = -1;
+    net->session_id = 0;
     net->full_frame_needed = true;
+
+    wd_stream_policy_set_defaults(&net->stream_policy);
 
     return true;
 }
@@ -106,145 +109,190 @@ void *wd_net_thread_main(void *arg) {
                      "WayDisplay: network server listening on TCP port %u",
                      net->tcp_port);
 
-             struct sockaddr_in peer_addr;
-             socklen_t peer_len = sizeof(peer_addr);
+             while (net->running) {
+                 struct sockaddr_in peer_addr;
+                 socklen_t peer_len = sizeof(peer_addr);
 
-             int tcp_fd =
-             accept(net->listen_fd,
-                    (struct sockaddr *)&peer_addr,
-                    &peer_len);
+                 int tcp_fd =
+                 accept(net->listen_fd,
+                        (struct sockaddr *)&peer_addr,
+                        &peer_len);
 
-             if (tcp_fd < 0) {
-                 wlr_log(WLR_ERROR,
-                         "WayDisplay: accept failed: %s",
-                         strerror(errno));
-                 return NULL;
-             }
+                 if (tcp_fd < 0) {
+                     if (!net->running) {
+                         break;
+                     }
 
-             uint16_t type = 0;
-             uint8_t *payload = NULL;
-             uint32_t payload_size = 0;
+                     if (errno == EINTR) {
+                         continue;
+                     }
 
-             if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size) ||
-                 type != WD_MSG_CLIENT_HELLO ||
-                 payload_size < sizeof(struct wd_client_hello_payload)) {
-                 wlr_log(WLR_ERROR, "WayDisplay: invalid client hello");
-             free(payload);
-             close(tcp_fd);
-             return NULL;
+                     wlr_log(WLR_ERROR,
+                             "WayDisplay: accept failed: %s",
+                             strerror(errno));
+                     continue;
                  }
 
-                 struct wd_client_hello_payload hello;
-                 memcpy(&hello, payload, sizeof(hello));
+                 uint16_t type = 0;
+                 uint8_t *payload = NULL;
+                 uint32_t payload_size = 0;
+
+                 if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size) ||
+                     type != WD_MSG_CLIENT_HELLO ||
+                     payload_size < sizeof(struct wd_client_hello_payload)) {
+                     wlr_log(WLR_ERROR, "WayDisplay: invalid client hello");
                  free(payload);
-                 payload = NULL;
-
-                 struct wd_server_config_payload cfg;
-                 memset(&cfg, 0, sizeof(cfg));
-
-                 cfg.session_id = (uint32_t)(wd_now_ns() ^ 0x9e3779b9u);
-                 cfg.width = WD_DISPLAY_WIDTH;
-                 cfg.height = WD_DISPLAY_HEIGHT;
-                 cfg.tile_width = WD_TILE_WIDTH;
-                 cfg.tile_height = WD_TILE_HEIGHT;
-                 cfg.tiles_x = WD_TILES_X;
-                 cfg.tiles_y = WD_TILES_Y;
-                 cfg.total_tiles = WD_TOTAL_TILES;
-                 cfg.pixel_format = WD_PIXEL_FORMAT_XRGB8888;
-                 cfg.compression_mode = WD_COMPRESSION_ZSTD;
-                 cfg.zstd_level = WD_ZSTD_LEVEL;
-                 cfg.udp_payload_target = WD_UDP_PAYLOAD_TARGET;
-
-                 if (!wd_send_tcp_message(tcp_fd,
-                     WD_MSG_SERVER_CONFIG,
-                     &cfg,
-                     sizeof(cfg))) {
-                     wlr_log(WLR_ERROR,
-                             "WayDisplay: failed to send server config");
-                     close(tcp_fd);
-                 return NULL;
+                 close(tcp_fd);
+                 continue;
                      }
+
+                     struct wd_client_hello_payload hello;
+                     memcpy(&hello, payload, sizeof(hello));
+                     free(payload);
+                     payload = NULL;
+
+                     struct wd_server_config_payload cfg;
+                     memset(&cfg, 0, sizeof(cfg));
 
                      pthread_mutex_lock(&net->lock);
 
-                     net->tcp_fd = tcp_fd;
-                     net->session_id = cfg.session_id;
-                     net->client_udp_addr.sin_family = AF_INET;
-                     net->client_udp_addr.sin_addr = peer_addr.sin_addr;
-                     net->client_udp_addr.sin_port = htons(hello.client_udp_port);
-                     net->client_connected = true;
-                     net->full_frame_needed = true;
-                     net->stats.tcp_hello_rx++;
-                     net->stats.tcp_config_tx++;
+                     if (net->session_id == 0) {
+                         net->session_id = (uint32_t)(wd_now_ns() ^ 0x9e3779b9u);
+                     }
+
+                     cfg.session_id = net->session_id;
 
                      pthread_mutex_unlock(&net->lock);
 
-                     wlr_log(WLR_INFO,
-                             "WayDisplay: client connected; UDP port=%u",
-                             hello.client_udp_port);
+                     cfg.width = WD_DISPLAY_WIDTH;
+                     cfg.height = WD_DISPLAY_HEIGHT;
+                     cfg.tile_width = WD_TILE_WIDTH;
+                     cfg.tile_height = WD_TILE_HEIGHT;
+                     cfg.tiles_x = WD_TILES_X;
+                     cfg.tiles_y = WD_TILES_Y;
+                     cfg.total_tiles = WD_TOTAL_TILES;
+                     cfg.pixel_format = WD_PIXEL_FORMAT_XRGB8888;
+                     cfg.compression_mode = WD_COMPRESSION_ZSTD;
+                     cfg.zstd_level = WD_ZSTD_LEVEL;
+                     cfg.udp_payload_target = WD_UDP_PAYLOAD_TARGET;
 
-                     while (net->running) {
-                         payload = NULL;
-                         payload_size = 0;
-
-                         if (!wd_recv_tcp_message(tcp_fd,
-                             &type,
-                             &payload,
-                             &payload_size)) {
-                             break;
-                             }
-
-                             if (type == WD_MSG_RETRANSMIT_REQUEST &&
-                                 payload_size >= sizeof(struct wd_retransmit_request_payload_header)) {
-                                 struct wd_retransmit_request_payload_header rh;
-                             memcpy(&rh, payload, sizeof(rh));
-
-                         size_t needed =
-                         sizeof(rh) +
-                         (size_t)rh.request_count * sizeof(struct wd_retransmit_entry);
-
-                         if (rh.session_id == cfg.session_id && payload_size >= needed) {
-                             struct wd_retransmit_entry *entries =
-                             (struct wd_retransmit_entry *)(payload + sizeof(rh));
-
-                             pthread_mutex_lock(&net->lock);
-
-                             net->stats.retx_req_rx++;
-                             net->stats.retx_tiles_req += rh.request_count;
-
-                             for (uint16_t i = 0; i < rh.request_count; ++i) {
-                                 if (entries[i].tile_id < WD_TOTAL_TILES) {
-                                     wd_stream_send_cached_tile_locked(server,
-                                                                       entries[i].tile_id);
-                                 }
-                             }
-
-                             pthread_mutex_unlock(&net->lock);
+                     if (!wd_send_tcp_message(tcp_fd,
+                         WD_MSG_SERVER_CONFIG,
+                         &cfg,
+                         sizeof(cfg))) {
+                         wlr_log(WLR_ERROR,
+                                 "WayDisplay: failed to send server config");
+                         close(tcp_fd);
+                     continue;
                          }
-                                 } else if (type == WD_MSG_KEYBOARD_KEY &&
-                                     payload_size >= sizeof(struct wd_keyboard_event_payload)) {
-                                     struct wd_keyboard_event_payload key;
-                                 memcpy(&key, payload, sizeof(key));
 
-                                 if (key.session_id == cfg.session_id &&
-                                     key.evdev_key_code != 0) {
-                                     pthread_mutex_lock(&net->lock);
-                                 wd_keyboard_queue_event_locked(net, &key);
+                         pthread_mutex_lock(&net->lock);
+
+                         wd_stream_policy_apply_client_hello(&net->stream_policy, &hello);
+
+                         net->tcp_fd = tcp_fd;
+                         net->client_udp_addr.sin_family = AF_INET;
+                         net->client_udp_addr.sin_addr = peer_addr.sin_addr;
+                         net->client_udp_addr.sin_port = htons(hello.client_udp_port);
+                         net->client_connected = true;
+                         net->full_frame_needed = true;
+
+                         net->stats.tcp_hello_rx++;
+                         net->stats.tcp_config_tx++;
+
+                         net->key_queue_count = 0;
+                         net->pointer_queue_count = 0;
+
+                         pthread_mutex_unlock(&net->lock);
+
+                         wlr_log(WLR_INFO,
+                                 "WayDisplay: client connected; UDP port=%u stream_mode=%u fps=%u max_tiles_per_sec=%u",
+                                 hello.client_udp_port,
+                                 hello.stream_mode,
+                                 hello.target_fps,
+                                 hello.max_tiles_per_second);
+
+                         while (net->running) {
+                             payload = NULL;
+                             payload_size = 0;
+
+                             if (!wd_recv_tcp_message(tcp_fd,
+                                 &type,
+                                 &payload,
+                                 &payload_size)) {
+                                 break;
+                                 }
+
+                                 if (type == WD_MSG_RETRANSMIT_REQUEST &&
+                                     payload_size >= sizeof(struct wd_retransmit_request_payload_header)) {
+                                     struct wd_retransmit_request_payload_header rh;
+                                 memcpy(&rh, payload, sizeof(rh));
+
+                             size_t needed =
+                             sizeof(rh) +
+                             (size_t)rh.request_count * sizeof(struct wd_retransmit_entry);
+
+                             if (rh.session_id == cfg.session_id && payload_size >= needed) {
+                                 struct wd_retransmit_entry *entries =
+                                 (struct wd_retransmit_entry *)(payload + sizeof(rh));
+
+                                 pthread_mutex_lock(&net->lock);
+
+                                 net->stats.retx_req_rx++;
+                                 net->stats.retx_tiles_req += rh.request_count;
+
+                                 for (uint16_t i = 0; i < rh.request_count; ++i) {
+                                     if (entries[i].tile_id < WD_TOTAL_TILES) {
+                                         wd_stream_send_cached_tile_locked(server,
+                                                                           entries[i].tile_id);
+                                     }
+                                 }
+
                                  pthread_mutex_unlock(&net->lock);
-                                     }
-                                     }
+                             }
+                                     } else if (type == WD_MSG_KEYBOARD_KEY &&
+                                         payload_size >= sizeof(struct wd_keyboard_event_payload)) {
+                                         struct wd_keyboard_event_payload key;
+                                     memcpy(&key, payload, sizeof(key));
 
-                                     free(payload);
-                     }
+                                     if (key.session_id == cfg.session_id &&
+                                         key.evdev_key_code != 0) {
+                                         pthread_mutex_lock(&net->lock);
+                                     wd_keyboard_queue_event_locked(net, &key);
+                                     pthread_mutex_unlock(&net->lock);
+                                         }
+                                         } else if (type == WD_MSG_POINTER_EVENT &&
+                                             payload_size >= sizeof(struct wd_pointer_event_payload)) {
+                                             struct wd_pointer_event_payload pointer;
+                                         memcpy(&pointer, payload, sizeof(pointer));
 
-                     pthread_mutex_lock(&net->lock);
+                                         if (pointer.session_id == cfg.session_id) {
+                                             pthread_mutex_lock(&net->lock);
+                                             wd_pointer_queue_event_locked(net, &pointer);
+                                             pthread_mutex_unlock(&net->lock);
+                                         }
+                                             }
 
-                     net->client_connected = false;
-                     net->tcp_fd = -1;
+                                             free(payload);
+                         }
 
-                     pthread_mutex_unlock(&net->lock);
+                         pthread_mutex_lock(&net->lock);
 
-                     close(tcp_fd);
+                         if (net->tcp_fd == tcp_fd) {
+                             net->tcp_fd = -1;
+                         }
 
-                     return NULL;
+                         net->client_connected = false;
+                         net->key_queue_count = 0;
+                         net->pointer_queue_count = 0;
+
+                         pthread_mutex_unlock(&net->lock);
+
+                         close(tcp_fd);
+
+                         wlr_log(WLR_INFO,
+                                 "WayDisplay: client disconnected; waiting for reconnect");
+             }
+
+             return NULL;
 }

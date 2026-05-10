@@ -79,6 +79,9 @@ bool open_tcp_socket(ClientState& state) {
 bool receive_server_config(ClientState& state) {
     wd_client_hello_payload hello{};
     hello.client_udp_port = state.client_udp_port;
+    hello.stream_mode = static_cast<uint16_t>(state.stream_config.mode);
+    hello.target_fps = state.stream_config.target_fps;
+    hello.max_tiles_per_second = state.stream_config.max_tiles_per_second;
 
     if (!wd_send_tcp_message(state.tcp_fd,
                              WD_MSG_CLIENT_HELLO,
@@ -229,10 +232,12 @@ void tcp_reader_main(ClientState* state) {
 bool client_connect(ClientState& state,
                     const char* server_host,
                     uint16_t tcp_port,
-                    uint16_t client_udp_port) {
+                    uint16_t client_udp_port,
+                    const ClientStreamConfig& stream_config) {
     state.server_host = server_host ? server_host : "";
     state.tcp_port = tcp_port;
     state.client_udp_port = client_udp_port;
+    state.stream_config = stream_config;
 
     state.framebuffer.assign(WD_FRAMEBUFFER_PIXELS, 0xff202020u);
     state.displayed_generation.assign(WD_TOTAL_TILES, 0);
@@ -317,6 +322,18 @@ bool client_send_keyboard_key(ClientState& state,
 
     return ok;
 }
+
+bool client_send_pointer_event(ClientState& state,
+                               const wd_pointer_event_payload& event) {
+    if (state.tcp_fd < 0) {
+        return false;
+    }
+
+    return wd_send_tcp_message(state.tcp_fd,
+                               WD_MSG_POINTER_EVENT,
+                               &event,
+                               sizeof(event));
+                               }
 
 bool client_flush_retransmit_requests(ClientState& state) {
     std::vector<wd_retransmit_entry> entries;

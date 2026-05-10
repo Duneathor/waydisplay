@@ -37,11 +37,14 @@ extern "C" {
     #endif
 
     #define WD_KEY_QUEUE_CAP 4096
+    #define WD_POINTER_QUEUE_CAP 4096
 
     struct wd_server;
 
     struct wd_view {
         struct wd_server *server;
+
+        struct wl_list link;
 
         struct wlr_xdg_surface *xdg_surface;
         struct wlr_scene_tree *scene_tree;
@@ -50,11 +53,26 @@ extern "C" {
         struct wl_listener unmap;
         struct wl_listener destroy;
         struct wl_listener commit;
+        struct wl_listener request_move;
 
         struct wl_event_source *configure_idle;
 
+        int x;
+        int y;
+
         bool mapped;
         bool configured_once;
+    };
+
+    struct wd_move_grab {
+        bool active;
+        struct wd_view *view;
+
+        double grab_x;
+        double grab_y;
+
+        int view_x;
+        int view_y;
     };
 
     struct wd_cached_tile {
@@ -86,10 +104,25 @@ extern "C" {
         uint64_t key_events_dropped;
     };
 
+    struct wd_stream_policy {
+        uint16_t mode;
+        uint16_t target_fps;
+        uint32_t max_tiles_per_second;
+
+        uint64_t last_frame_send_ns;
+
+        double tile_tokens;
+        uint64_t last_token_refill_ns;
+    };
+
     struct wd_queued_key_event {
         uint16_t evdev_key_code;
         bool pressed;
         uint64_t client_timestamp_ns;
+    };
+
+    struct wd_queued_pointer_event {
+        struct wd_pointer_event_payload event;
     };
 
     struct wd_net_state {
@@ -107,12 +140,16 @@ extern "C" {
         uint32_t session_id;
 
         struct sockaddr_in client_udp_addr;
+        struct wd_stream_policy stream_policy;
 
         struct wd_cached_tile tiles[WD_TOTAL_TILES];
         struct wd_stats stats;
 
         struct wd_queued_key_event key_queue[WD_KEY_QUEUE_CAP];
         size_t key_queue_count;
+
+        struct wd_queued_pointer_event pointer_queue[WD_POINTER_QUEUE_CAP];
+        size_t pointer_queue_count;
     };
 
     struct wd_server {
@@ -126,12 +163,23 @@ extern "C" {
         struct wlr_output *output;
         struct wlr_scene *scene;
         struct wlr_scene_output *scene_output;
+        bool scene_dirty;
 
         struct wlr_xdg_shell *xdg_shell;
 
         struct wlr_seat *seat;
         struct wlr_keyboard_group *keyboard_group;
         struct wlr_keyboard *keyboard;
+
+        struct wl_list views;
+
+        struct wd_view *focused_view;
+        struct wlr_surface *focused_surface;
+
+        double pointer_x;
+        double pointer_y;
+
+        struct wd_move_grab move_grab;
 
         struct wl_listener new_xdg_surface;
         struct wl_listener new_xdg_toplevel;
@@ -181,6 +229,14 @@ extern "C" {
     bool wd_stream_send_cached_tile_locked(struct wd_server *server, uint16_t tile_id);
     void wd_stream_print_and_reset_stats(struct wd_server *server);
 
+    void wd_stream_policy_set_defaults(struct wd_stream_policy *policy);
+    void wd_stream_policy_apply_client_hello(struct wd_stream_policy *policy,
+                                             const struct wd_client_hello_payload *hello);
+    bool wd_stream_policy_should_render_now(struct wd_server *server, uint64_t now_ns);
+    uint32_t wd_stream_policy_tile_budget(struct wd_server *server, uint64_t now_ns);
+    void wd_stream_policy_consume_tiles(struct wd_server *server, uint32_t count);
+    void wd_server_mark_scene_dirty(struct wd_server *server);
+
     /* wd_server_net.c */
     bool wd_net_init(struct wd_server *server, uint16_t tcp_port);
     void wd_net_destroy(struct wd_server *server);
@@ -191,6 +247,26 @@ extern "C" {
     void wd_keyboard_queue_event_locked(struct wd_net_state *net,
                                         const struct wd_keyboard_event_payload *event);
     void wd_keyboard_drain_and_inject(struct wd_server *server);
+
+    void wd_pointer_queue_event_locked(struct wd_net_state *net,
+                                       const struct wd_pointer_event_payload *event);
+
+    void wd_pointer_drain_and_inject(struct wd_server *server);
+
+    struct wd_view *wd_scene_view_at(struct wd_server *server,
+                                     double lx,
+                                     double ly,
+                                     double *sx,
+                                     double *sy);
+
+    void wd_scene_raise_view(struct wd_view *view);
+
+    void wd_pointer_begin_move(struct wd_server *server,
+                               struct wd_view *view);
+
+    void wd_pointer_update_move(struct wd_server *server);
+
+    void wd_pointer_end_move(struct wd_server *server);
 
     #ifdef __cplusplus
 }

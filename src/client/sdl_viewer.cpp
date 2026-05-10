@@ -25,6 +25,12 @@ namespace {
 constexpr uint64_t STATS_INTERVAL_NS = 1000000000ull;
 constexpr int SDL_FRAME_DELAY_MS = 8;
 
+constexpr uint16_t WD_BTN_LEFT = 0x110;
+constexpr uint16_t WD_BTN_RIGHT = 0x111;
+constexpr uint16_t WD_BTN_MIDDLE = 0x112;
+constexpr uint16_t WD_BTN_SIDE = 0x113;
+constexpr uint16_t WD_BTN_EXTRA = 0x114;
+
 uint64_t take_stat(std::atomic<uint64_t>& value) {
     return value.exchange(0, std::memory_order_relaxed);
 }
@@ -118,31 +124,162 @@ bool drain_udp(ClientState& state,
     }
 }
 
+uint16_t sdl_button_to_linux_button(uint8_t button) {
+    switch (button) {
+        case SDL_BUTTON_LEFT:
+            return WD_BTN_LEFT;
+        case SDL_BUTTON_RIGHT:
+            return WD_BTN_RIGHT;
+        case SDL_BUTTON_MIDDLE:
+            return WD_BTN_MIDDLE;
+        case SDL_BUTTON_X1:
+            return WD_BTN_SIDE;
+        case SDL_BUTTON_X2:
+            return WD_BTN_EXTRA;
+        default:
+            return 0;
+    }
+}
+
+uint16_t clamp_mouse_coord_x(int x) {
+    if (x < 0) {
+        return 0;
+    }
+
+    if (x >= static_cast<int>(WD_DISPLAY_WIDTH)) {
+        return static_cast<uint16_t>(WD_DISPLAY_WIDTH - 1);
+    }
+
+    return static_cast<uint16_t>(x);
+}
+
+uint16_t clamp_mouse_coord_y(int y) {
+    if (y < 0) {
+        return 0;
+    }
+
+    if (y >= static_cast<int>(WD_DISPLAY_HEIGHT)) {
+        return static_cast<uint16_t>(WD_DISPLAY_HEIGHT - 1);
+    }
+
+    return static_cast<uint16_t>(y);
+}
+
 void handle_sdl_event(ClientState& state, const SDL_Event& event) {
-    if (event.type != SDL_KEYDOWN && event.type != SDL_KEYUP) {
+    if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
+        if (event.type == SDL_KEYDOWN && event.key.repeat != 0) {
+            return;
+        }
+
+        const SDL_Scancode scancode = event.key.keysym.scancode;
+        const uint16_t evdev_key_code = sdl_scancode_to_evdev(scancode);
+
+        if (evdev_key_code == 0) {
+            return;
+        }
+
+        const bool pressed = event.type == SDL_KEYDOWN;
+
+        if (!client_send_keyboard_key(state, evdev_key_code, pressed)) {
+            std::fprintf(stderr,
+                         "failed to send keyboard event evdev=%u pressed=%u\n",
+                         evdev_key_code,
+                         pressed ? 1 : 0);
+            state.running.store(false, std::memory_order_relaxed);
+        }
+
         return;
     }
 
-    if (event.type == SDL_KEYDOWN && event.key.repeat != 0) {
+    if (event.type == SDL_MOUSEMOTION) {
+        wd_pointer_event_payload pointer{};
+        pointer.session_id = state.config.session_id;
+        pointer.client_timestamp_ns = wd_now_ns();
+        pointer.event_type = WD_POINTER_EVENT_MOTION;
+        pointer.x = clamp_mouse_coord_x(event.motion.x);
+        pointer.y = clamp_mouse_coord_y(event.motion.y);
+
+        if (!client_send_pointer_event(state, pointer)) {
+            std::fprintf(stderr, "failed to send pointer motion\n");
+            state.running.store(false, std::memory_order_relaxed);
+        }
+
         return;
     }
 
-    const SDL_Scancode scancode = event.key.keysym.scancode;
-    const uint16_t evdev_key_code = sdl_scancode_to_evdev(scancode);
+    if (event.type == SDL_MOUSEBUTTONDOWN ||
+        event.type == SDL_MOUSEBUTTONUP) {
+        const uint16_t linux_button =
+        sdl_button_to_linux_button(event.button.button);
 
-    if (evdev_key_code == 0) {
+    if (linux_button == 0) {
         return;
     }
 
-    const bool pressed = event.type == SDL_KEYDOWN;
+    wd_pointer_event_payload pointer{};
+    pointer.session_id = state.config.session_id;
+    pointer.client_timestamp_ns = wd_now_ns();
+    pointer.event_type = WD_POINTER_EVENT_BUTTON;
+    pointer.x = clamp_mouse_coord_x(event.button.x);
+    pointer.y = clamp_mouse_coord_y(event.button.y);
+    pointer.button = linux_button;
+    pointer.button_state =
+    event.type == SDL_MOUSEBUTTONDOWN
+    ? WD_POINTER_BUTTON_PRESSED
+    : WD_POINTER_BUTTON_RELEASED;
 
-    if (!client_send_keyboard_key(state, evdev_key_code, pressed)) {
-        std::fprintf(stderr,
-                     "failed to send keyboard event evdev=%u pressed=%u\n",
-                     evdev_key_code,
-                     pressed ? 1 : 0);
+    if (!client_send_pointer_event(state, pointer)) {
+        std::fprintf(stderr, "failed to send pointer button\n");
         state.running.store(false, std::memory_order_relaxed);
     }
+
+    return;
+        }
+
+        if (event.type == SDL_MOUSEWHEEL) {
+            int mouse_x = 0;
+            int mouse_y = 0;
+            SDL_GetMouseState(&mouse_x, &mouse_y);
+
+            if (event.wheel.y != 0) {
+                wd_pointer_event_payload pointer{};
+                pointer.session_id = state.config.session_id;
+                pointer.client_timestamp_ns = wd_now_ns();
+                pointer.event_type = WD_POINTER_EVENT_AXIS;
+                pointer.x = clamp_mouse_coord_x(mouse_x);
+                pointer.y = clamp_mouse_coord_y(mouse_y);
+                pointer.axis = WD_POINTER_AXIS_VERTICAL;
+
+                /*
+                 * Wayland scroll convention: negative value usually means scroll down.
+                 * SDL wheel y > 0 means wheel up.
+                 */
+                pointer.axis_value = -event.wheel.y * 15;
+
+                if (!client_send_pointer_event(state, pointer)) {
+                    std::fprintf(stderr, "failed to send vertical pointer axis\n");
+                    state.running.store(false, std::memory_order_relaxed);
+                }
+            }
+
+            if (event.wheel.x != 0) {
+                wd_pointer_event_payload pointer{};
+                pointer.session_id = state.config.session_id;
+                pointer.client_timestamp_ns = wd_now_ns();
+                pointer.event_type = WD_POINTER_EVENT_AXIS;
+                pointer.x = clamp_mouse_coord_x(mouse_x);
+                pointer.y = clamp_mouse_coord_y(mouse_y);
+                pointer.axis = WD_POINTER_AXIS_HORIZONTAL;
+                pointer.axis_value = event.wheel.x * 15;
+
+                if (!client_send_pointer_event(state, pointer)) {
+                    std::fprintf(stderr, "failed to send horizontal pointer axis\n");
+                    state.running.store(false, std::memory_order_relaxed);
+                }
+            }
+
+            return;
+        }
 }
 
 } // namespace
@@ -159,7 +296,7 @@ int run_sdl_viewer(ClientState& state) {
         SDL_WINDOWPOS_CENTERED,
         WD_DISPLAY_WIDTH,
         WD_DISPLAY_HEIGHT,
-        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+        SDL_WINDOW_SHOWN);
 
     if (!window) {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -171,6 +308,9 @@ int run_sdl_viewer(ClientState& state) {
         window,
         -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+    SDL_RenderSetLogicalSize(renderer, 0, 0);
 
     if (!renderer) {
         std::fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
@@ -229,7 +369,14 @@ int run_sdl_viewer(ClientState& state) {
                               WD_DISPLAY_WIDTH * WD_BYTES_PER_PIXEL);
 
             SDL_RenderClear(renderer);
-            SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+            SDL_Rect dst{
+                0,
+                0,
+                static_cast<int>(WD_DISPLAY_WIDTH),
+                static_cast<int>(WD_DISPLAY_HEIGHT),
+            };
+
+            SDL_RenderCopy(renderer, texture, nullptr, &dst);
             SDL_RenderPresent(renderer);
 
             frame_dirty = false;

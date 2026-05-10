@@ -68,7 +68,7 @@ void wd_keyboard_queue_event_locked(struct wd_net_state *net,
 
     net->stats.key_events_rx++;
                                     }
-void wd_keyboard_drain_and_inject(struct wd_server *server) {
+                                    void wd_keyboard_drain_and_inject(struct wd_server *server) {
                                         struct wd_queued_key_event local[WD_KEY_QUEUE_CAP];
                                         size_t count = 0;
 
@@ -93,6 +93,14 @@ void wd_keyboard_drain_and_inject(struct wd_server *server) {
 
                                         wlr_seat_set_keyboard(server->seat, server->keyboard);
 
+                                        if (server->focused_surface) {
+                                            wlr_seat_keyboard_notify_enter(server->seat,
+                                                                           server->focused_surface,
+                                                                           server->keyboard->keycodes,
+                                                                           server->keyboard->num_keycodes,
+                                                                           &server->keyboard->modifiers);
+                                        }
+
                                         for (size_t i = 0; i < count; ++i) {
                                             enum wl_keyboard_key_state state =
                                             local[i].pressed
@@ -100,8 +108,8 @@ void wd_keyboard_drain_and_inject(struct wd_server *server) {
                                             : WL_KEYBOARD_KEY_STATE_RELEASED;
 
                                             /*
-                                             * Keep old working behavior:
-                                             * client sends evdev keycode and server passes it directly.
+                                             * Keep old working behavior: SDL client sends Linux evdev keycodes,
+                                             * and the old server passed them directly.
                                              */
                                             wlr_seat_keyboard_notify_key(server->seat,
                                                                          (uint32_t)(wd_now_ns() / 1000000ull),

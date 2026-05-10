@@ -163,6 +163,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/wd_wlroots_backend.c
             src/server/wd_scene.c
             src/server/wd_readback.c
+            src/server/wd_pointer.c
         )
 
         add_dependencies(waydisplay_server_wlroots

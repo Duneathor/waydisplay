@@ -10,6 +10,196 @@
 #include "waydisplay/wd_time.h"
 #include "waydisplay/wd_zstd.h"
 
+#define WD_DEFAULT_PARTIAL_FPS 30u
+#define WD_DEFAULT_LIMITED_TILES_PER_SECOND 120u
+#define WD_MAX_REASONABLE_FPS 120u
+#define WD_MAX_REASONABLE_TILES_PER_SECOND 10000u
+
+void wd_stream_policy_set_defaults(struct wd_stream_policy *policy) {
+    if (!policy) {
+        return;
+    }
+
+    memset(policy, 0, sizeof(*policy));
+
+    policy->mode = WD_STREAM_MODE_PARTIAL;
+    policy->target_fps = WD_DEFAULT_PARTIAL_FPS;
+    policy->max_tiles_per_second = WD_DEFAULT_LIMITED_TILES_PER_SECOND;
+    policy->last_frame_send_ns = 0;
+    policy->tile_tokens = 0.0;
+    policy->last_token_refill_ns = 0;
+}
+
+void wd_stream_policy_apply_client_hello(
+    struct wd_stream_policy *policy,
+    const struct wd_client_hello_payload *hello) {
+    if (!policy || !hello) {
+        return;
+    }
+
+    uint16_t mode = hello->stream_mode;
+
+    if (mode != WD_STREAM_MODE_FULL &&
+        mode != WD_STREAM_MODE_PARTIAL &&
+        mode != WD_STREAM_MODE_LIMITED) {
+        mode = WD_STREAM_MODE_PARTIAL;
+        }
+
+        uint16_t fps = hello->target_fps;
+    if (fps == 0) {
+        fps = WD_DEFAULT_PARTIAL_FPS;
+    }
+
+    if (fps > WD_MAX_REASONABLE_FPS) {
+        fps = WD_MAX_REASONABLE_FPS;
+    }
+
+    uint32_t max_tiles = hello->max_tiles_per_second;
+    if (max_tiles == 0) {
+        max_tiles = WD_DEFAULT_LIMITED_TILES_PER_SECOND;
+    }
+
+    if (max_tiles > WD_MAX_REASONABLE_TILES_PER_SECOND) {
+        max_tiles = WD_MAX_REASONABLE_TILES_PER_SECOND;
+    }
+
+    policy->mode = mode;
+    policy->target_fps = fps;
+    policy->max_tiles_per_second = max_tiles;
+    policy->last_frame_send_ns = 0;
+    policy->tile_tokens = 0.0;
+    policy->last_token_refill_ns = 0;
+    }
+
+    bool wd_stream_policy_should_render_now(struct wd_server *server, uint64_t now_ns) {
+        if (!server) {
+            return false;
+        }
+
+        struct wd_net_state *net = &server->net;
+
+        pthread_mutex_lock(&net->lock);
+
+        bool full_frame_needed = net->full_frame_needed;
+        bool client_connected = net->client_connected;
+        struct wd_stream_policy *policy = &net->stream_policy;
+
+        if (!client_connected) {
+            pthread_mutex_unlock(&net->lock);
+            return false;
+        }
+
+        if (!server->scene_dirty && !full_frame_needed) {
+            pthread_mutex_unlock(&net->lock);
+            return false;
+        }
+
+        bool should = false;
+
+        switch (policy->mode) {
+            case WD_STREAM_MODE_FULL:
+                should = true;
+                break;
+
+            case WD_STREAM_MODE_PARTIAL: {
+                uint16_t fps = policy->target_fps ? policy->target_fps
+                : WD_DEFAULT_PARTIAL_FPS;
+
+                uint64_t interval_ns = 1000000000ull / fps;
+
+                if (policy->last_frame_send_ns == 0 ||
+                    now_ns - policy->last_frame_send_ns >= interval_ns ||
+                    full_frame_needed) {
+                    policy->last_frame_send_ns = now_ns;
+                should = true;
+                    }
+
+                    break;
+            }
+
+            case WD_STREAM_MODE_LIMITED:
+                /*
+                 * Limited mode is tile-budget based, but we still need to render
+                 * periodically so we can discover changed tiles.
+                 *
+                 * Use a 30fps discovery cadence by default.
+                 */
+                default: {
+                    uint64_t interval_ns = 1000000000ull / WD_DEFAULT_PARTIAL_FPS;
+
+                    if (policy->last_frame_send_ns == 0 ||
+                        now_ns - policy->last_frame_send_ns >= interval_ns ||
+                        full_frame_needed) {
+                        policy->last_frame_send_ns = now_ns;
+                    should = true;
+                        }
+
+                        break;
+                }
+        }
+
+        pthread_mutex_unlock(&net->lock);
+
+        return should;
+    }
+
+    uint32_t wd_stream_policy_tile_budget(struct wd_server *server, uint64_t now_ns) {
+        struct wd_net_state *net = &server->net;
+
+        pthread_mutex_lock(&net->lock);
+
+        struct wd_stream_policy *policy = &net->stream_policy;
+
+        if (policy->mode != WD_STREAM_MODE_LIMITED) {
+            pthread_mutex_unlock(&net->lock);
+            return WD_TOTAL_TILES;
+        }
+
+        if (policy->last_token_refill_ns == 0) {
+            policy->last_token_refill_ns = now_ns;
+            policy->tile_tokens = (double)policy->max_tiles_per_second;
+        } else {
+            uint64_t elapsed_ns = now_ns - policy->last_token_refill_ns;
+            double elapsed_seconds = (double)elapsed_ns / 1000000000.0;
+
+            policy->tile_tokens +=
+            elapsed_seconds * (double)policy->max_tiles_per_second;
+
+            /*
+             * Allow one second of burst.
+             */
+            if (policy->tile_tokens > (double)policy->max_tiles_per_second) {
+                policy->tile_tokens = (double)policy->max_tiles_per_second;
+            }
+
+            policy->last_token_refill_ns = now_ns;
+        }
+
+        uint32_t budget = (uint32_t)policy->tile_tokens;
+
+        pthread_mutex_unlock(&net->lock);
+
+        return budget;
+    }
+
+    void wd_stream_policy_consume_tiles(struct wd_server *server, uint32_t count) {
+        struct wd_net_state *net = &server->net;
+
+        pthread_mutex_lock(&net->lock);
+
+        struct wd_stream_policy *policy = &net->stream_policy;
+
+        if (policy->mode == WD_STREAM_MODE_LIMITED) {
+            if (policy->tile_tokens >= (double)count) {
+                policy->tile_tokens -= (double)count;
+            } else {
+                policy->tile_tokens = 0.0;
+            }
+        }
+
+        pthread_mutex_unlock(&net->lock);
+    }
+
 bool wd_stream_init(struct wd_server *server) {
     const size_t compressed_capacity =
     wd_zstd_compress_bound(WD_UNCOMPRESSED_TILE_BYTES);
@@ -114,6 +304,16 @@ bool wd_stream_send_dirty_tiles(struct wd_server *server) {
         return false;
     }
 
+    const uint64_t now = wd_now_ns();
+    uint32_t tile_budget = wd_stream_policy_tile_budget(server, now);
+    uint32_t tiles_sent_this_pass = 0;
+    bool exhausted_budget = false;
+    bool saw_unsent_dirty_tile = false;
+
+    if (tile_budget == 0) {
+        return true;
+    }
+
     uint8_t tile_bytes[WD_UNCOMPRESSED_TILE_BYTES];
 
     pthread_mutex_lock(&net->lock);
@@ -134,11 +334,13 @@ bool wd_stream_send_dirty_tiles(struct wd_server *server) {
             continue;
         }
 
-        struct wd_cached_tile *tile = &net->tiles[tile_id];
+        if (tiles_sent_this_pass >= tile_budget) {
+            exhausted_budget = true;
+            saw_unsent_dirty_tile = true;
+            break;
+        }
 
-        tile->last_hash = hash;
-        tile->generation++;
-        tile->timestamp_ns = wd_now_ns();
+        struct wd_cached_tile *tile = &net->tiles[tile_id];
 
         if (!wd_extract_tile_xrgb8888(server->framebuffer_xrgb8888,
             tile_id,
@@ -160,16 +362,40 @@ bool wd_stream_send_dirty_tiles(struct wd_server *server) {
             continue;
             }
 
+            /*
+             * Only mark this tile clean after we actually send/cache it.
+             */
+            tile->last_hash = hash;
+            tile->generation++;
+            tile->timestamp_ns = now;
             tile->compressed_size = compressed_size;
 
             net->stats.dirty_tiles++;
 
             wd_stream_send_cached_tile_locked(server, tile_id);
+
+            tiles_sent_this_pass++;
     }
 
-    net->full_frame_needed = false;
+    /*
+     * Critical fix:
+     *
+     * The old condition compared tiles_sent_this_pass < tile_budget.
+     * That fails when exactly 208/208 tiles are sent, keeping
+     * full_frame_needed true forever.
+     *
+     * Clear full_frame_needed when we did not stop because of budget.
+     */
+    if (!exhausted_budget && !saw_unsent_dirty_tile) {
+        net->full_frame_needed = false;
+        server->scene_dirty = false;
+    } else {
+        server->scene_dirty = true;
+    }
 
     pthread_mutex_unlock(&net->lock);
+
+    wd_stream_policy_consume_tiles(server, tiles_sent_this_pass);
 
     return true;
 }

@@ -22,7 +22,44 @@ enum wd_message_type {
     WD_MSG_TILE_GENERATION_SUMMARY = 3,
     WD_MSG_RETRANSMIT_REQUEST = 4,
     WD_MSG_KEYBOARD_KEY = 5,
+    WD_MSG_POINTER_EVENT = 6,
     WD_MSG_ERROR = 255,
+};
+
+enum wd_pointer_event_type {
+    WD_POINTER_EVENT_MOTION = 1,
+    WD_POINTER_EVENT_BUTTON = 2,
+    WD_POINTER_EVENT_AXIS = 3,
+};
+
+enum wd_pointer_button_state {
+    WD_POINTER_BUTTON_RELEASED = 0,
+    WD_POINTER_BUTTON_PRESSED = 1,
+};
+
+enum wd_pointer_axis {
+    WD_POINTER_AXIS_VERTICAL = 0,
+    WD_POINTER_AXIS_HORIZONTAL = 1,
+};
+
+enum wd_stream_mode {
+    /*
+     * Send all dirty tiles whenever the compositor reports activity.
+     * Best quality, worst bandwidth.
+     */
+    WD_STREAM_MODE_FULL = 1,
+
+    /*
+     * Send dirty tiles at a capped frame cadence.
+     * Example: target_fps = 30.
+     */
+    WD_STREAM_MODE_PARTIAL = 2,
+
+    /*
+     * Send at most max_tiles_per_second.
+     * Tile budget is the bottleneck, not frame rate.
+     */
+    WD_STREAM_MODE_LIMITED = 3,
 };
 
 enum wd_pixel_format {
@@ -52,7 +89,25 @@ struct wd_tcp_header {
 
 struct wd_client_hello_payload {
     uint16_t client_udp_port;
-    uint16_t reserved;
+
+    /*
+     * enum wd_stream_mode
+     */
+    uint16_t stream_mode;
+
+    /*
+     * Used by WD_STREAM_MODE_PARTIAL.
+     * 0 means server default.
+     */
+    uint16_t target_fps;
+
+    uint16_t reserved0;
+
+    /*
+     * Used by WD_STREAM_MODE_LIMITED.
+     * 0 means server default.
+     */
+    uint32_t max_tiles_per_second;
 };
 
 struct wd_server_config_payload {
@@ -104,6 +159,45 @@ struct wd_keyboard_event_payload {
     uint8_t reserved;
 };
 
+struct wd_pointer_event_payload {
+    uint32_t session_id;
+    uint64_t client_timestamp_ns;
+
+    /*
+     * enum wd_pointer_event_type
+     */
+    uint16_t event_type;
+
+    /*
+     * Current pointer position in WayDisplay framebuffer coordinates.
+     */
+    uint16_t x;
+    uint16_t y;
+
+    /*
+     * Linux input button code.
+     * BTN_LEFT=0x110, BTN_RIGHT=0x111, BTN_MIDDLE=0x112, etc.
+     */
+    uint16_t button;
+
+    /*
+     * enum wd_pointer_button_state
+     */
+    uint8_t button_state;
+
+    /*
+     * enum wd_pointer_axis
+     */
+    uint8_t axis;
+
+    /*
+     * Wheel/scroll value.
+     */
+    int32_t axis_value;
+
+    uint16_t reserved;
+};
+
 struct wd_udp_tile_packet_header {
     uint16_t tile_id;
     uint16_t tile_pkt_count;
@@ -122,10 +216,18 @@ WD_PACKED_END
 static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 static_assert(sizeof(struct wd_udp_tile_packet_header) == 20,
               "unexpected wd_udp_tile_packet_header size");
+static_assert(sizeof(struct wd_client_hello_payload) == 12,
+              "unexpected wd_client_hello_payload size");
+static_assert(sizeof(struct wd_pointer_event_payload) == 28,
+              "unexpected wd_pointer_event_payload size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(sizeof(struct wd_udp_tile_packet_header) == 20,
                "unexpected wd_udp_tile_packet_header size");
+_Static_assert(sizeof(struct wd_client_hello_payload) == 12,
+               "unexpected wd_client_hello_payload size");
+_Static_assert(sizeof(struct wd_pointer_event_payload) == 28,
+               "unexpected wd_pointer_event_payload size");
 #endif
 
 #ifdef __cplusplus
