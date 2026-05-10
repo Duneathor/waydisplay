@@ -31,6 +31,35 @@ constexpr uint16_t WD_BTN_MIDDLE = 0x112;
 constexpr uint16_t WD_BTN_SIDE = 0x113;
 constexpr uint16_t WD_BTN_EXTRA = 0x114;
 
+constexpr uint16_t WD_POINTER_MOD_ALT = 1u << 0;
+constexpr uint16_t WD_POINTER_MOD_SHIFT = 1u << 1;
+constexpr uint16_t WD_POINTER_MOD_CTRL = 1u << 2;
+constexpr uint16_t WD_POINTER_MOD_SUPER = 1u << 3;
+
+uint16_t current_pointer_modifiers() {
+    const SDL_Keymod mods = SDL_GetModState();
+
+    uint16_t result = 0;
+
+    if (mods & KMOD_ALT) {
+        result |= WD_POINTER_MOD_ALT;
+    }
+
+    if (mods & KMOD_SHIFT) {
+        result |= WD_POINTER_MOD_SHIFT;
+    }
+
+    if (mods & KMOD_CTRL) {
+        result |= WD_POINTER_MOD_CTRL;
+    }
+
+    if (mods & KMOD_GUI) {
+        result |= WD_POINTER_MOD_SUPER;
+    }
+
+    return result;
+}
+
 uint64_t take_stat(std::atomic<uint64_t>& value) {
     return value.exchange(0, std::memory_order_relaxed);
 }
@@ -198,6 +227,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
         pointer.event_type = WD_POINTER_EVENT_MOTION;
         pointer.x = clamp_mouse_coord_x(event.motion.x);
         pointer.y = clamp_mouse_coord_y(event.motion.y);
+        pointer.modifiers = current_pointer_modifiers();
 
         if (!client_send_pointer_event(state, pointer)) {
             std::fprintf(stderr, "failed to send pointer motion\n");
@@ -227,6 +257,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
     event.type == SDL_MOUSEBUTTONDOWN
     ? WD_POINTER_BUTTON_PRESSED
     : WD_POINTER_BUTTON_RELEASED;
+    pointer.modifiers = current_pointer_modifiers();
 
     if (!client_send_pointer_event(state, pointer)) {
         std::fprintf(stderr, "failed to send pointer button\n");
@@ -249,6 +280,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
                 pointer.x = clamp_mouse_coord_x(mouse_x);
                 pointer.y = clamp_mouse_coord_y(mouse_y);
                 pointer.axis = WD_POINTER_AXIS_VERTICAL;
+                pointer.modifiers = current_pointer_modifiers();
 
                 /*
                  * Wayland scroll convention: negative value usually means scroll down.
@@ -271,6 +303,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
                 pointer.y = clamp_mouse_coord_y(mouse_y);
                 pointer.axis = WD_POINTER_AXIS_HORIZONTAL;
                 pointer.axis_value = event.wheel.x * 15;
+                pointer.modifiers = current_pointer_modifiers();
 
                 if (!client_send_pointer_event(state, pointer)) {
                     std::fprintf(stderr, "failed to send horizontal pointer axis\n");

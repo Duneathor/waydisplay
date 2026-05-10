@@ -195,7 +195,14 @@ struct wd_pointer_event_payload {
      */
     int32_t axis_value;
 
-    uint16_t reserved;
+    /*
+     * Bitmask from client.
+     * bit 0 = Alt
+     * bit 1 = Shift
+     * bit 2 = Ctrl
+     * bit 3 = Super
+     */
+    uint16_t modifiers;
 };
 
 struct wd_udp_tile_packet_header {

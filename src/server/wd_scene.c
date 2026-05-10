@@ -23,59 +23,63 @@ void wd_scene_init_listeners(struct wd_server *server) {
                 &server->new_xdg_toplevel);
 }
 
-struct wd_view *wd_scene_view_at(struct wd_server *server,
-                                 double lx,
-                                 double ly,
-                                 double *sx,
-                                 double *sy) {
-    if (!server) {
-        return NULL;
-    }
-
-    struct wd_view *view;
-
-    /*
-     * Tail is topmost because wd_scene_raise_view() and new-window insertion
-     * should insert at server->views.prev.
-     */
-    wl_list_for_each_reverse(view, &server->views, link) {
-        if (!view->mapped ||
-            !view->xdg_surface ||
-            !view->xdg_surface->surface) {
-            continue;
-            }
-
-            int surface_w = view->xdg_surface->surface->current.width;
-        int surface_h = view->xdg_surface->surface->current.height;
-
-        if (surface_w <= 0) {
-            surface_w = WD_DISPLAY_WIDTH;
-        }
-
-        if (surface_h <= 0) {
-            surface_h = WD_DISPLAY_HEIGHT;
-        }
-
-        if (lx < view->x ||
-            ly < view->y ||
-            lx >= view->x + surface_w ||
-            ly >= view->y + surface_h) {
-            continue;
-            }
-
-            if (sx) {
-                *sx = lx - view->x;
-            }
-
-            if (sy) {
-                *sy = ly - view->y;
-            }
-
-            return view;
-    }
-
+struct wd_view *wd_scene_view_at(struct wd_server *server, double lx, double ly,
+                                 double *sx, double *sy) {
+  if (!server) {
     return NULL;
-                                 }
+  }
+
+  struct wd_view *view;
+
+  /*
+   * Tail is topmost because wd_scene_raise_view() and new-window insertion
+   * should insert at server->views.prev.
+   */
+  wl_list_for_each_reverse(view, &server->views, link) {
+    if (!view->mapped || !view->xdg_surface || !view->xdg_surface->surface) {
+      continue;
+    }
+
+    int surface_w = view->xdg_surface->surface->current.width;
+    int surface_h = view->xdg_surface->surface->current.height;
+
+    if (surface_w <= 0) {
+      surface_w = WD_DISPLAY_WIDTH;
+    }
+
+    if (surface_h <= 0) {
+      surface_h = WD_DISPLAY_HEIGHT;
+    }
+
+    if (lx < view->x || ly < view->y || lx >= view->x + surface_w ||
+        ly >= view->y + surface_h) {
+      continue;
+    }
+
+    if (sx) {
+      *sx = lx - view->x;
+    }
+
+    if (sy) {
+      *sy = ly - view->y;
+    }
+
+    return view;
+  }
+
+  return NULL;
+}
+
+static void remove_listener_if_linked(struct wl_listener *listener) {
+  if (!listener) {
+    return;
+  }
+
+  if (listener->link.prev && listener->link.next) {
+    wl_list_remove(&listener->link);
+    wl_list_init(&listener->link);
+  }
+}
 
 void wd_scene_set_view_position(struct wd_view *view) {
   if (!view || !view->scene_tree) {
@@ -137,13 +141,11 @@ static void view_configure_idle(void *data) {
   uint32_t height = WD_DISPLAY_HEIGHT;
 
   if (view->x != 0 || view->y != 0) {
-      width = WD_DISPLAY_WIDTH - 160;
-      height = WD_DISPLAY_HEIGHT - 120;
+    width = WD_DISPLAY_WIDTH - 160;
+    height = WD_DISPLAY_HEIGHT - 120;
   }
 
-  wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel,
-                            width,
-                            height);
+  wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, width, height);
 
   wlr_xdg_toplevel_set_activated(view->xdg_surface->toplevel, true);
 
@@ -210,43 +212,51 @@ static void view_handle_unmap(struct wl_listener *listener, void *data) {
 }
 
 static void view_handle_destroy(struct wl_listener *listener, void *data) {
-  (void)data;
+    (void)data;
 
-  struct wd_view *view = wl_container_of(listener, view, destroy);
+    struct wd_view *view =
+    wl_container_of(listener, view, destroy);
 
-  struct wd_server *server = view->server;
+    struct wd_server *server = view->server;
 
-  wl_list_remove(&view->link);
+    if (view->link.prev && view->link.next) {
+        wl_list_remove(&view->link);
+        wl_list_init(&view->link);
+    }
 
-  wl_list_remove(&view->map.link);
-  wl_list_remove(&view->unmap.link);
-  wl_list_remove(&view->destroy.link);
-  wl_list_remove(&view->commit.link);
-  wl_list_remove(&view->request_move.link);
+    remove_listener_if_linked(&view->map);
+    remove_listener_if_linked(&view->unmap);
+    remove_listener_if_linked(&view->commit);
+    remove_listener_if_linked(&view->request_move);
+    remove_listener_if_linked(&view->destroy);
 
-  if (view->configure_idle) {
-    wl_event_source_remove(view->configure_idle);
-    view->configure_idle = NULL;
-  }
+    if (view->configure_idle) {
+        wl_event_source_remove(view->configure_idle);
+        view->configure_idle = NULL;
+    }
 
-  if (server->focused_view == view) {
-    server->focused_view = NULL;
-    server->focused_surface = NULL;
-  }
+    if (server->focused_view == view) {
+        server->focused_view = NULL;
+        server->focused_surface = NULL;
+    }
 
-  if (server->move_grab.view == view) {
-    server->move_grab.active = false;
-    server->move_grab.view = NULL;
-  }
+    if (server->focused_surface == view->xdg_surface->surface) {
+        server->focused_surface = NULL;
+    }
 
-  if (view->scene_tree) {
-    view->scene_tree->node.data = NULL;
-    view->scene_tree = NULL;
-  }
+    if (server->move_grab.view == view) {
+        server->move_grab.active = false;
+        server->move_grab.view = NULL;
+    }
 
-  wd_server_mark_scene_dirty(server);
+    if (view->scene_tree) {
+        view->scene_tree->node.data = NULL;
+        view->scene_tree = NULL;
+    }
 
-  free(view);
+    wd_server_mark_scene_dirty(server);
+
+    free(view);
 }
 
 static void view_handle_request_move(struct wl_listener *listener, void *data) {
@@ -289,6 +299,11 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   }
 
   wl_list_init(&view->link);
+  wl_list_init(&view->map.link);
+  wl_list_init(&view->unmap.link);
+  wl_list_init(&view->destroy.link);
+  wl_list_init(&view->commit.link);
+  wl_list_init(&view->request_move.link);
 
   view->server = server;
   view->xdg_surface = xdg_surface;
