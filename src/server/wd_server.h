@@ -178,6 +178,7 @@ extern "C" {
 
         double pointer_x;
         double pointer_y;
+        uint32_t next_view_offset;
 
         struct wd_move_grab move_grab;
 
