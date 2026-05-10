@@ -57,6 +57,12 @@ bool wd_wlroots_init(struct wd_server *server) {
     wlr_subcompositor_create(server->display);
     wlr_data_device_manager_create(server->display);
 
+    server->viewporter = wlr_viewporter_create(server->display);
+    if (!server->viewporter) {
+        wlr_log(WLR_ERROR, "WayDisplay: failed to create wp_viewporter global");
+        return false;
+    }
+
     server->scene = wlr_scene_create();
     if (!server->scene) {
         return false;

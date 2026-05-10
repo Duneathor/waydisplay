@@ -27,6 +27,7 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_viewporter.h>
 #include <wlr/util/log.h>
 
 #include "waydisplay/wd_config.h"
@@ -168,6 +169,7 @@ extern "C" {
         bool scene_dirty;
 
         struct wlr_xdg_shell *xdg_shell;
+        struct wlr_viewporter *viewporter;
 
         struct wlr_seat *seat;
         struct wlr_keyboard_group *keyboard_group;
