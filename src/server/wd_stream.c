@@ -1,0 +1,253 @@
+#include "wd_server.h"
+
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+
+#include "waydisplay/wd_net.h"
+#include "waydisplay/wd_tile.h"
+#include "waydisplay/wd_time.h"
+#include "waydisplay/wd_zstd.h"
+
+bool wd_stream_init(struct wd_server *server) {
+    const size_t compressed_capacity =
+    wd_zstd_compress_bound(WD_UNCOMPRESSED_TILE_BYTES);
+
+    for (uint16_t i = 0; i < WD_TOTAL_TILES; ++i) {
+        struct wd_cached_tile *tile = &server->net.tiles[i];
+
+        memset(tile, 0, sizeof(*tile));
+
+        tile->compressed_capacity = (uint32_t)compressed_capacity;
+        tile->compressed = malloc(compressed_capacity);
+
+        if (!tile->compressed) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void wd_stream_destroy(struct wd_server *server) {
+    for (uint16_t i = 0; i < WD_TOTAL_TILES; ++i) {
+        free(server->net.tiles[i].compressed);
+        server->net.tiles[i].compressed = NULL;
+        server->net.tiles[i].compressed_size = 0;
+        server->net.tiles[i].compressed_capacity = 0;
+    }
+}
+
+bool wd_stream_send_cached_tile_locked(struct wd_server *server, uint16_t tile_id) {
+    struct wd_net_state *net = &server->net;
+
+    if (tile_id >= WD_TOTAL_TILES) {
+        return false;
+    }
+
+    struct wd_cached_tile *cache = &net->tiles[tile_id];
+
+    if (!net->client_connected ||
+        cache->compressed_size == 0 ||
+        !cache->compressed) {
+        return true;
+        }
+
+        uint16_t packet_count =
+        (uint16_t)((cache->compressed_size + WD_UDP_PAYLOAD_TARGET - 1) /
+        WD_UDP_PAYLOAD_TARGET);
+
+    for (uint16_t packet_id = 0; packet_id < packet_count; ++packet_id) {
+        uint32_t offset = (uint32_t)packet_id * WD_UDP_PAYLOAD_TARGET;
+
+        uint16_t payload_size =
+        (uint16_t)(((cache->compressed_size - offset) > WD_UDP_PAYLOAD_TARGET)
+        ? WD_UDP_PAYLOAD_TARGET
+        : (cache->compressed_size - offset));
+
+        uint8_t packet[sizeof(struct wd_udp_tile_packet_header) +
+        WD_UDP_PAYLOAD_TARGET];
+
+        struct wd_udp_tile_packet_header *h =
+        (struct wd_udp_tile_packet_header *)packet;
+
+        h->tile_id = tile_id;
+        h->tile_pkt_count = packet_count;
+        h->tile_pkt_id = packet_id;
+        h->payload_size = payload_size;
+        h->tile_generation = cache->generation;
+        h->compressed_tile_size = cache->compressed_size;
+
+        memcpy(packet + sizeof(*h),
+               cache->compressed + offset,
+               payload_size);
+
+        ssize_t sent =
+        sendto(net->udp_fd,
+               packet,
+               sizeof(*h) + payload_size,
+               0,
+               (const struct sockaddr *)&net->client_udp_addr,
+               sizeof(net->client_udp_addr));
+
+        if (sent < 0) {
+            wlr_log(WLR_ERROR,
+                    "WayDisplay: sendto failed: %s",
+                    strerror(errno));
+            return false;
+        }
+
+        net->stats.udp_packets_sent++;
+        net->stats.udp_bytes_sent += (uint64_t)sent;
+    }
+
+    net->stats.udp_tiles_sent++;
+
+    return true;
+}
+
+bool wd_stream_send_dirty_tiles(struct wd_server *server) {
+    struct wd_net_state *net = &server->net;
+
+    if (!server->framebuffer_xrgb8888) {
+        return false;
+    }
+
+    uint8_t tile_bytes[WD_UNCOMPRESSED_TILE_BYTES];
+
+    pthread_mutex_lock(&net->lock);
+
+    if (!net->client_connected) {
+        pthread_mutex_unlock(&net->lock);
+        return true;
+    }
+
+    bool force = net->full_frame_needed;
+
+    for (uint16_t tile_id = 0; tile_id < WD_TOTAL_TILES; ++tile_id) {
+        uint32_t hash =
+        wd_fnv1a_tile_hash_xrgb8888(server->framebuffer_xrgb8888,
+                                    tile_id);
+
+        if (!force && hash == net->tiles[tile_id].last_hash) {
+            continue;
+        }
+
+        struct wd_cached_tile *tile = &net->tiles[tile_id];
+
+        tile->last_hash = hash;
+        tile->generation++;
+        tile->timestamp_ns = wd_now_ns();
+
+        if (!wd_extract_tile_xrgb8888(server->framebuffer_xrgb8888,
+            tile_id,
+            tile_bytes)) {
+            continue;
+            }
+
+            uint32_t compressed_size = 0;
+
+        if (!wd_zstd_compress(tile_bytes,
+            WD_UNCOMPRESSED_TILE_BYTES,
+            tile->compressed,
+            tile->compressed_capacity,
+            WD_ZSTD_LEVEL,
+            &compressed_size)) {
+            wlr_log(WLR_ERROR,
+                    "WayDisplay: zstd compression failed for tile %u",
+                    tile_id);
+            continue;
+            }
+
+            tile->compressed_size = compressed_size;
+
+            net->stats.dirty_tiles++;
+
+            wd_stream_send_cached_tile_locked(server, tile_id);
+    }
+
+    net->full_frame_needed = false;
+
+    pthread_mutex_unlock(&net->lock);
+
+    return true;
+}
+
+bool wd_stream_send_generation_summary_locked(struct wd_server *server) {
+    struct wd_net_state *net = &server->net;
+
+    if (!net->client_connected || net->tcp_fd < 0) {
+        return true;
+    }
+
+    struct wd_tile_summary_payload_header header;
+
+    header.session_id = net->session_id;
+    header.server_timestamp_ns = wd_now_ns();
+    header.tile_count = WD_TOTAL_TILES;
+    header.reserved = 0;
+
+    size_t payload_size =
+    sizeof(header) +
+    WD_TOTAL_TILES * sizeof(struct wd_tile_generation_entry);
+
+    uint8_t *payload = malloc(payload_size);
+    if (!payload) {
+        return false;
+    }
+
+    memcpy(payload, &header, sizeof(header));
+
+    struct wd_tile_generation_entry *entries =
+    (struct wd_tile_generation_entry *)(payload + sizeof(header));
+
+    for (uint16_t i = 0; i < WD_TOTAL_TILES; ++i) {
+        entries[i].tile_id = i;
+        entries[i].reserved = 0;
+        entries[i].tile_generation = net->tiles[i].generation;
+        entries[i].tile_timestamp_ns = net->tiles[i].timestamp_ns;
+    }
+
+    bool ok =
+    wd_send_tcp_message(net->tcp_fd,
+                        WD_MSG_TILE_GENERATION_SUMMARY,
+                        payload,
+                        (uint32_t)payload_size);
+
+    free(payload);
+
+    if (ok) {
+        net->stats.tcp_summary_tx++;
+    }
+
+    return ok;
+}
+
+void wd_stream_print_and_reset_stats(struct wd_server *server) {
+    struct wd_net_state *net = &server->net;
+
+    pthread_mutex_lock(&net->lock);
+
+    struct wd_stats s = net->stats;
+    memset(&net->stats, 0, sizeof(net->stats));
+
+    pthread_mutex_unlock(&net->lock);
+
+    wlr_log(WLR_INFO,
+            "WayDisplay stats/s: dirty_tiles=%llu udp_tiles_sent=%llu udp_pkts=%llu udp_kib=%.1f "
+            "tcp_hello_rx=%llu tcp_cfg_tx=%llu tcp_summary_tx=%llu retx_req_rx=%llu retx_tiles_req=%llu "
+            "key_rx=%llu key_injected=%llu key_dropped=%llu",
+            (unsigned long long)s.dirty_tiles,
+            (unsigned long long)s.udp_tiles_sent,
+            (unsigned long long)s.udp_packets_sent,
+            (double)s.udp_bytes_sent / 1024.0,
+            (unsigned long long)s.tcp_hello_rx,
+            (unsigned long long)s.tcp_config_tx,
+            (unsigned long long)s.tcp_summary_tx,
+            (unsigned long long)s.retx_req_rx,
+            (unsigned long long)s.retx_tiles_req,
+            (unsigned long long)s.key_events_rx,
+            (unsigned long long)s.key_events_injected,
+            (unsigned long long)s.key_events_dropped);
+}
