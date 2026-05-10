@@ -307,8 +307,6 @@ bool wd_stream_send_dirty_tiles(struct wd_server *server) {
     const uint64_t now = wd_now_ns();
     uint32_t tile_budget = wd_stream_policy_tile_budget(server, now);
     uint32_t tiles_sent_this_pass = 0;
-    bool exhausted_budget = false;
-    bool saw_unsent_dirty_tile = false;
 
     if (tile_budget == 0) {
         return true;
@@ -323,20 +321,109 @@ bool wd_stream_send_dirty_tiles(struct wd_server *server) {
         return true;
     }
 
-    bool force = net->full_frame_needed;
+    /*
+     * Phase 1:
+     * Progressive full-frame catch-up for new/reconnected clients.
+     *
+     * Important:
+     * Do not restart at tile 0 every pass. Advance full_frame_next_tile.
+     * Also do not count unchanged catch-up tiles as "dirty" if their hash
+     * matches the existing cache; just resend the cached tile when possible.
+     */
+    if (net->full_frame_needed) {
+        while (net->full_frame_next_tile < WD_TOTAL_TILES &&
+            tiles_sent_this_pass < tile_budget) {
+            uint16_t tile_id = net->full_frame_next_tile++;
+        struct wd_cached_tile *tile = &net->tiles[tile_id];
 
-    for (uint16_t tile_id = 0; tile_id < WD_TOTAL_TILES; ++tile_id) {
         uint32_t hash =
         wd_fnv1a_tile_hash_xrgb8888(server->framebuffer_xrgb8888,
                                     tile_id);
 
-        if (!force && hash == net->tiles[tile_id].last_hash) {
+        bool cache_valid = tile->compressed_size > 0 && tile->compressed;
+
+        if (!cache_valid || hash != tile->last_hash) {
+            if (!wd_extract_tile_xrgb8888(server->framebuffer_xrgb8888,
+                tile_id,
+                tile_bytes)) {
+                continue;
+                }
+
+                uint32_t compressed_size = 0;
+
+            if (!wd_zstd_compress(tile_bytes,
+                WD_UNCOMPRESSED_TILE_BYTES,
+                tile->compressed,
+                tile->compressed_capacity,
+                WD_ZSTD_LEVEL,
+                &compressed_size)) {
+                wlr_log(WLR_ERROR,
+                        "WayDisplay: zstd compression failed for full-frame tile %u",
+                        tile_id);
+                continue;
+                }
+
+                tile->last_hash = hash;
+                tile->generation++;
+                tile->timestamp_ns = now;
+                tile->compressed_size = compressed_size;
+
+                net->stats.dirty_tiles++;
+        }
+
+        wd_stream_send_cached_tile_locked(server, tile_id);
+        tiles_sent_this_pass++;
+            }
+
+            if (net->full_frame_next_tile >= WD_TOTAL_TILES) {
+                net->full_frame_needed = false;
+                net->full_frame_next_tile = 0;
+                net->dirty_scan_next_tile = 0;
+                server->scene_dirty = false;
+            } else {
+                server->scene_dirty = true;
+            }
+
+            pthread_mutex_unlock(&net->lock);
+
+            wd_stream_policy_consume_tiles(server, tiles_sent_this_pass);
+
+            return true;
+    }
+
+    /*
+     * Phase 2:
+     * Normal dirty-tile mode.
+     *
+     * Use a round-robin scan cursor so limited mode does not permanently
+     * prioritize top-left tiles.
+     */
+    bool exhausted_budget = false;
+    uint16_t scan_start = net->dirty_scan_next_tile;
+    uint16_t scanned = 0;
+
+    while (scanned < WD_TOTAL_TILES) {
+        uint16_t tile_id =
+        (uint16_t)((scan_start + scanned) % WD_TOTAL_TILES);
+
+        scanned++;
+
+        uint32_t hash =
+        wd_fnv1a_tile_hash_xrgb8888(server->framebuffer_xrgb8888,
+                                    tile_id);
+
+        if (hash == net->tiles[tile_id].last_hash) {
             continue;
         }
 
         if (tiles_sent_this_pass >= tile_budget) {
             exhausted_budget = true;
-            saw_unsent_dirty_tile = true;
+
+            /*
+             * Resume at this still-dirty tile next pass.
+             * Do not advance past it, because we did not send it.
+             */
+            net->dirty_scan_next_tile = tile_id;
             break;
         }
 
@@ -357,14 +444,11 @@ bool wd_stream_send_dirty_tiles(struct wd_server *server) {
             WD_ZSTD_LEVEL,
             &compressed_size)) {
             wlr_log(WLR_ERROR,
-                    "WayDisplay: zstd compression failed for tile %u",
+                    "WayDisplay: zstd compression failed for dirty tile %u",
                     tile_id);
             continue;
             }
 
-            /*
-             * Only mark this tile clean after we actually send/cache it.
-             */
             tile->last_hash = hash;
             tile->generation++;
             tile->timestamp_ns = now;
@@ -373,21 +457,20 @@ bool wd_stream_send_dirty_tiles(struct wd_server *server) {
             net->stats.dirty_tiles++;
 
             wd_stream_send_cached_tile_locked(server, tile_id);
-
             tiles_sent_this_pass++;
+
+            /*
+             * Next scan starts after the tile we just serviced.
+             */
+            net->dirty_scan_next_tile =
+            (uint16_t)((tile_id + 1) % WD_TOTAL_TILES);
     }
 
-    /*
-     * Critical fix:
-     *
-     * The old condition compared tiles_sent_this_pass < tile_budget.
-     * That fails when exactly 208/208 tiles are sent, keeping
-     * full_frame_needed true forever.
-     *
-     * Clear full_frame_needed when we did not stop because of budget.
-     */
-    if (!exhausted_budget && !saw_unsent_dirty_tile) {
-        net->full_frame_needed = false;
+    if (!exhausted_budget) {
+        /*
+         * Completed a full scan without exhausting the budget.
+         * No known dirty tiles remain from this pass.
+         */
         server->scene_dirty = false;
     } else {
         server->scene_dirty = true;

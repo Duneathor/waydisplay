@@ -17,6 +17,7 @@ namespace {
                      "  --mode full                 Send every dirty compositor tick\n"
                      "  --mode partial              Cap send pass to target FPS, default 30\n"
                      "  --mode limited              Cap by tile budget, default 120 tiles/sec\n"
+                     "  --mode live                 Lossy mode for video\n"
                      "  --fps <N>                   Target FPS for partial mode\n"
                      "  --max-tiles-per-sec <N>     Tile budget for limited mode\n\n"
                      "Examples:\n"
@@ -74,6 +75,11 @@ namespace {
 
         if (std::strcmp(text, "limited") == 0) {
             out = waydisplay::ClientStreamMode::Limited;
+            return true;
+        }
+
+        if (std::strcmp(text, "live") == 0) {
+            out = waydisplay::ClientStreamMode::Live;
             return true;
         }
 

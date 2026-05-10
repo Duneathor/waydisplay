@@ -134,6 +134,8 @@ extern "C" {
         bool running;
         bool client_connected;
         bool full_frame_needed;
+        uint16_t full_frame_next_tile;
+        uint16_t dirty_scan_next_tile;
 
         int listen_fd;
         int tcp_fd;

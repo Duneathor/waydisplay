@@ -23,6 +23,8 @@ enum wd_message_type {
     WD_MSG_RETRANSMIT_REQUEST = 4,
     WD_MSG_KEYBOARD_KEY = 5,
     WD_MSG_POINTER_EVENT = 6,
+    WD_MSG_MTU_PROBE_START = 7,
+    WD_MSG_MTU_PROBE_RESULT = 8,
     WD_MSG_ERROR = 255,
 };
 
@@ -60,6 +62,8 @@ enum wd_stream_mode {
      * Tile budget is the bottleneck, not frame rate.
      */
     WD_STREAM_MODE_LIMITED = 3,
+
+    WD_STREAM_MODE_LIVE = 4,
 };
 
 enum wd_pixel_format {

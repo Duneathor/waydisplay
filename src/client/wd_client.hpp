@@ -17,6 +17,7 @@ namespace waydisplay {
         Full = WD_STREAM_MODE_FULL,
         Partial = WD_STREAM_MODE_PARTIAL,
         Limited = WD_STREAM_MODE_LIMITED,
+        Live = WD_STREAM_MODE_LIVE,
     };
 
     struct ClientStreamConfig {

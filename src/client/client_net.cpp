@@ -146,6 +146,10 @@ void queue_retransmits_from_summary(ClientState& state,
         return;
     }
 
+    if (state.stream_config.mode == ClientStreamMode::Live) {
+        return;
+    }
+
     wd_tile_summary_payload_header summary{};
     std::memcpy(&summary, payload, sizeof(summary));
 
