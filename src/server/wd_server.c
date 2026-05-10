@@ -81,6 +81,12 @@ static int server_frame_timer(void *data) {
 
         if (have_frame) {
             wd_stream_send_dirty_tiles(server);
+        } else {
+            /*
+             * Avoid spinning forever on transient readback failures.
+             * Surface commits/map/unmap will mark dirty again.
+             */
+            server->scene_dirty = false;
         }
     }
 

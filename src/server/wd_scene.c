@@ -6,12 +6,16 @@ static void view_configure_idle(void *data);
 static void view_handle_commit(struct wl_listener *listener, void *data);
 static void view_handle_map(struct wl_listener *listener, void *data);
 static void view_handle_unmap(struct wl_listener *listener, void *data);
-static void view_handle_destroy(struct wl_listener *listener, void *data);
+static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
+                                            void *data);
+static void view_handle_xdg_toplevel_destroy(struct wl_listener *listener,
+                                             void *data);
 static void server_handle_new_xdg_surface(struct wl_listener *listener,
                                           void *data);
 static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
                                            void *data);
 static void view_handle_request_move(struct wl_listener *listener, void *data);
+static void view_handle_new_popup(struct wl_listener *listener, void *data);
 
 void wd_scene_init_listeners(struct wd_server *server) {
   server->new_xdg_surface.notify = server_handle_new_xdg_surface;
@@ -211,52 +215,97 @@ static void view_handle_unmap(struct wl_listener *listener, void *data) {
   wd_server_mark_scene_dirty(view->server);
 }
 
-static void view_handle_destroy(struct wl_listener *listener, void *data) {
-    (void)data;
+static void view_handle_xdg_toplevel_destroy(struct wl_listener *listener,
+                                             void *data) {
+  (void)data;
 
+  struct wd_view *view = wl_container_of(listener, view, xdg_toplevel_destroy);
+
+  /*
+   * request_move belongs to wlr_xdg_toplevel and must be gone before
+   * wlroots destroys/checks the toplevel listener lists.
+   *
+   * Do NOT free view here. Surface map/unmap/commit/destroy listeners may
+   * still exist and may still fire.
+   */
+  remove_listener_if_linked(&view->request_move);
+  remove_listener_if_linked(&view->xdg_toplevel_destroy);
+}
+
+static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
+                                            void *data) {
+  (void)data;
+
+  struct wd_view *view = wl_container_of(listener, view, xdg_surface_destroy);
+
+  struct wd_server *server = view->server;
+
+  remove_listener_if_linked(&view->request_move);
+  remove_listener_if_linked(&view->xdg_toplevel_destroy);
+
+  remove_listener_if_linked(&view->new_popup);
+  remove_listener_if_linked(&view->map);
+  remove_listener_if_linked(&view->unmap);
+  remove_listener_if_linked(&view->commit);
+  remove_listener_if_linked(&view->xdg_surface_destroy);
+
+  if (view->link.prev && view->link.next) {
+    wl_list_remove(&view->link);
+    wl_list_init(&view->link);
+  }
+
+  if (view->configure_idle) {
+    wl_event_source_remove(view->configure_idle);
+    view->configure_idle = NULL;
+  }
+
+  if (server->focused_view == view) {
+    server->focused_view = NULL;
+    server->focused_surface = NULL;
+  }
+
+  if (view->xdg_surface &&
+      server->focused_surface == view->xdg_surface->surface) {
+    server->focused_surface = NULL;
+  }
+
+  if (server->move_grab.view == view) {
+    server->move_grab.active = false;
+    server->move_grab.view = NULL;
+  }
+
+  if (view->scene_tree) {
+    view->scene_tree->node.data = NULL;
+    view->scene_tree = NULL;
+  }
+
+  wd_server_mark_scene_dirty(server);
+
+  free(view);
+}
+
+static void view_handle_new_popup(struct wl_listener *listener, void *data) {
     struct wd_view *view =
-    wl_container_of(listener, view, destroy);
+    wl_container_of(listener, view, new_popup);
 
-    struct wd_server *server = view->server;
+    struct wlr_xdg_popup *popup = data;
 
-    if (view->link.prev && view->link.next) {
-        wl_list_remove(&view->link);
-        wl_list_init(&view->link);
+    if (!view || !popup) {
+        return;
     }
 
-    remove_listener_if_linked(&view->map);
-    remove_listener_if_linked(&view->unmap);
-    remove_listener_if_linked(&view->commit);
-    remove_listener_if_linked(&view->request_move);
-    remove_listener_if_linked(&view->destroy);
+    /*
+     * wlr_scene_xdg_surface_create() should already create scene nodes for
+     * the xdg surface tree. We do not create a wd_view for popups.
+     *
+     * The important part is that we acknowledge/configure popup creation and
+     * mark the scene dirty so it gets rendered.
+     */
+    wlr_log(WLR_INFO,
+            "WayDisplay: new xdg popup for view=%p",
+            (void *)view);
 
-    if (view->configure_idle) {
-        wl_event_source_remove(view->configure_idle);
-        view->configure_idle = NULL;
-    }
-
-    if (server->focused_view == view) {
-        server->focused_view = NULL;
-        server->focused_surface = NULL;
-    }
-
-    if (server->focused_surface == view->xdg_surface->surface) {
-        server->focused_surface = NULL;
-    }
-
-    if (server->move_grab.view == view) {
-        server->move_grab.active = false;
-        server->move_grab.view = NULL;
-    }
-
-    if (view->scene_tree) {
-        view->scene_tree->node.data = NULL;
-        view->scene_tree = NULL;
-    }
-
-    wd_server_mark_scene_dirty(server);
-
-    free(view);
+    wd_server_mark_scene_dirty(view->server);
 }
 
 static void view_handle_request_move(struct wl_listener *listener, void *data) {
@@ -301,9 +350,11 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   wl_list_init(&view->link);
   wl_list_init(&view->map.link);
   wl_list_init(&view->unmap.link);
-  wl_list_init(&view->destroy.link);
   wl_list_init(&view->commit.link);
   wl_list_init(&view->request_move.link);
+  wl_list_init(&view->xdg_surface_destroy.link);
+  wl_list_init(&view->xdg_toplevel_destroy.link);
+  wl_list_init(&view->new_popup.link);
 
   view->server = server;
   view->xdg_surface = xdg_surface;
@@ -315,10 +366,10 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   view->scene_tree =
       wlr_scene_xdg_surface_create(&server->scene->tree, xdg_surface);
 
-  if (view->scene_tree) {
-    view->scene_tree->node.data = view;
-    wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
-  }
+      if (view->scene_tree) {
+          view->scene_tree->node.data = view;
+          wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+      }
 
   wl_list_insert(server->views.prev, &view->link);
 
@@ -328,15 +379,30 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   view->map.notify = view_handle_map;
   wl_signal_add(&xdg_surface->surface->events.map, &view->map);
 
+  view->unmap.notify = view_handle_unmap;
+  wl_signal_add(&xdg_surface->surface->events.unmap, &view->unmap);
+
+  /*
+   * Surface destroy owns final view cleanup/free.
+   */
+  view->xdg_surface_destroy.notify = view_handle_xdg_surface_destroy;
+  wl_signal_add(&xdg_surface->events.destroy,
+                &view->xdg_surface_destroy);
+
+  /*
+   * Toplevel destroy only removes toplevel-owned listeners.
+   */
+  view->xdg_toplevel_destroy.notify = view_handle_xdg_toplevel_destroy;
+  wl_signal_add(&toplevel->events.destroy,
+                &view->xdg_toplevel_destroy);
+
   view->request_move.notify = view_handle_request_move;
   wl_signal_add(&xdg_surface->toplevel->events.request_move,
                 &view->request_move);
 
-  view->unmap.notify = view_handle_unmap;
-  wl_signal_add(&xdg_surface->surface->events.unmap, &view->unmap);
-
-  view->destroy.notify = view_handle_destroy;
-  wl_signal_add(&xdg_surface->events.destroy, &view->destroy);
+  view->new_popup.notify = view_handle_new_popup;
+  wl_signal_add(&xdg_surface->events.new_popup,
+                &view->new_popup);
 
   wlr_log(WLR_INFO, "WayDisplay: new xdg toplevel scene_tree=%p",
           (void *)view->scene_tree);

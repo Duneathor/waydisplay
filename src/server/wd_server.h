@@ -51,9 +51,11 @@ extern "C" {
 
         struct wl_listener map;
         struct wl_listener unmap;
-        struct wl_listener destroy;
         struct wl_listener commit;
         struct wl_listener request_move;
+        struct wl_listener xdg_surface_destroy;
+        struct wl_listener xdg_toplevel_destroy;
+        struct wl_listener new_popup;
 
         struct wl_event_source *configure_idle;
 
