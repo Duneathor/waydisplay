@@ -244,20 +244,33 @@ bool wd_stream_send_cached_tile_locked(struct wd_server *server, uint16_t tile_i
         return true;
         }
 
+        uint16_t udp_payload_target = net->udp_payload_target;
+
+    if (udp_payload_target == 0) {
+        udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    }
+
+    if (udp_payload_target > 65487) {
+        udp_payload_target = 65487;
+    }
+
+    if (udp_payload_target < 512) {
+        udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    }
+
         uint16_t packet_count =
-        (uint16_t)((cache->compressed_size + WD_UDP_PAYLOAD_TARGET - 1) /
-        WD_UDP_PAYLOAD_TARGET);
+        (uint16_t)((cache->compressed_size + udp_payload_target - 1) /
+        udp_payload_target);
 
     for (uint16_t packet_id = 0; packet_id < packet_count; ++packet_id) {
-        uint32_t offset = (uint32_t)packet_id * WD_UDP_PAYLOAD_TARGET;
+        uint32_t offset = (uint32_t)packet_id * udp_payload_target;
 
         uint16_t payload_size =
-        (uint16_t)(((cache->compressed_size - offset) > WD_UDP_PAYLOAD_TARGET)
-        ? WD_UDP_PAYLOAD_TARGET
+        (uint16_t)(((cache->compressed_size - offset) > udp_payload_target)
+        ? udp_payload_target
         : (cache->compressed_size - offset));
 
-        uint8_t packet[sizeof(struct wd_udp_tile_packet_header) +
-        WD_UDP_PAYLOAD_TARGET];
+        uint8_t packet[sizeof(struct wd_udp_tile_packet_header) + 65487];
 
         struct wd_udp_tile_packet_header *h =
         (struct wd_udp_tile_packet_header *)packet;

@@ -76,6 +76,71 @@ bool open_tcp_socket(ClientState& state) {
     return true;
 }
 
+bool handle_mtu_probe_start(ClientState& state,
+                            const uint8_t* payload,
+                            uint32_t payload_size) {
+    if (payload_size < sizeof(wd_mtu_probe_start_payload)) {
+        return false;
+    }
+
+    wd_mtu_probe_start_payload start{};
+    std::memcpy(&start, payload, sizeof(start));
+
+    uint16_t max_received = 0;
+    const uint64_t deadline_ns = wd_now_ns() + 500000000ull;
+
+    std::vector<uint8_t> recvbuf(sizeof(wd_udp_tile_packet_header) + 65535);
+
+    while (wd_now_ns() < deadline_ns) {
+        ssize_t n = ::recv(state.udp_fd, recvbuf.data(), recvbuf.size(), 0);
+
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                usleep(1000);
+                continue;
+            }
+
+            if (errno == EINTR) {
+                continue;
+            }
+
+            break;
+        }
+
+        if (static_cast<size_t>(n) < sizeof(wd_udp_tile_packet_header)) {
+            continue;
+        }
+
+        wd_udp_tile_packet_header h{};
+        std::memcpy(&h, recvbuf.data(), sizeof(h));
+
+        if (h.tile_id != WD_UDP_TILE_ID_MTU_PROBE) {
+            continue;
+        }
+
+        if (static_cast<size_t>(n) < sizeof(wd_udp_tile_packet_header) + h.payload_size) {
+            continue;
+        }
+
+        if (h.payload_size > max_received) {
+            max_received = h.payload_size;
+        }
+    }
+
+    if (max_received == 0) {
+        max_received = WD_UDP_PAYLOAD_TARGET;
+    }
+
+    wd_mtu_probe_result_payload result{};
+    result.session_id = start.session_id;
+    result.max_udp_payload_received = max_received;
+
+    return wd_send_tcp_message(state.tcp_fd,
+                               WD_MSG_MTU_PROBE_RESULT,
+                               &result,
+                               sizeof(result));
+}
+
 bool receive_server_config(ClientState& state) {
     wd_client_hello_payload hello{};
     hello.client_udp_port = state.client_udp_port;
@@ -91,27 +156,44 @@ bool receive_server_config(ClientState& state) {
         return false;
     }
 
-    uint16_t message_type = 0;
-    uint8_t* payload = nullptr;
-    uint32_t payload_size = 0;
+    for (;;) {
+        uint16_t message_type = 0;
+        uint8_t* payload = nullptr;
+        uint32_t payload_size = 0;
 
-    if (!wd_recv_tcp_message(state.tcp_fd,
-                             &message_type,
-                             &payload,
-                             &payload_size)) {
-        std::fprintf(stderr, "failed to receive SERVER_CONFIG\n");
-        return false;
-    }
+        if (!wd_recv_tcp_message(state.tcp_fd,
+                                 &message_type,
+                                 &payload,
+                                 &payload_size)) {
+            std::fprintf(stderr, "failed to receive SERVER_CONFIG\n");
+            return false;
+        }
 
-    if (message_type != WD_MSG_SERVER_CONFIG ||
-        payload_size < sizeof(wd_server_config_payload)) {
-        std::fprintf(stderr, "unexpected TCP message while waiting for SERVER_CONFIG\n");
+        if (message_type == WD_MSG_MTU_PROBE_START) {
+            const bool ok = handle_mtu_probe_start(state, payload, payload_size);
+            std::free(payload);
+
+            if (!ok) {
+                std::fprintf(stderr, "failed UDP MTU probe\n");
+                return false;
+            }
+
+            continue;
+        }
+
+        if (message_type == WD_MSG_SERVER_CONFIG &&
+            payload_size >= sizeof(wd_server_config_payload)) {
+            std::memcpy(&state.config, payload, sizeof(state.config));
+            std::free(payload);
+            break;
+        }
+
+        std::fprintf(stderr,
+                     "unexpected TCP message while waiting for SERVER_CONFIG: %u\n",
+                     message_type);
         std::free(payload);
         return false;
     }
-
-    std::memcpy(&state.config, payload, sizeof(state.config));
-    std::free(payload);
 
     if (state.config.width != WD_DISPLAY_WIDTH ||
         state.config.height != WD_DISPLAY_HEIGHT ||
@@ -134,6 +216,12 @@ bool receive_server_config(ClientState& state) {
                      state.config.compression_mode);
         return false;
     }
+
+    if (state.config.udp_payload_target == 0) {
+        state.config.udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    }
+
+    std::printf("UDP payload target: %u\n", state.config.udp_payload_target);
 
     return true;
 }
@@ -337,7 +425,7 @@ bool client_send_pointer_event(ClientState& state,
                                WD_MSG_POINTER_EVENT,
                                &event,
                                sizeof(event));
-                               }
+}
 
 bool client_flush_retransmit_requests(ClientState& state) {
     std::vector<wd_retransmit_entry> entries;

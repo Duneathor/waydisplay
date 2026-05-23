@@ -90,8 +90,13 @@ void print_client_stats(ClientState& state) {
 bool drain_udp(ClientState& state,
                TileReassembler& reassembler,
                bool& out_frame_dirty) {
+    uint16_t udp_payload_target = state.config.udp_payload_target;
+    if (udp_payload_target == 0) {
+        udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    }
+
     std::vector<uint8_t> recvbuf(sizeof(wd_udp_tile_packet_header) +
-                                 WD_UDP_PAYLOAD_TARGET +
+                                 udp_payload_target +
                                  512);
 
     for (;;) {

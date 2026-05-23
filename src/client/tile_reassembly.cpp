@@ -14,7 +14,8 @@ namespace waydisplay {
 namespace {
 
 bool packet_header_valid(const wd_udp_tile_packet_header& header,
-                         size_t packet_size) {
+                         size_t packet_size,
+                         uint16_t udp_payload_target) {
     if (header.tile_id >= WD_TOTAL_TILES) {
         return false;
     }
@@ -47,7 +48,7 @@ bool packet_header_valid(const wd_udp_tile_packet_header& header,
     }
 
     const uint32_t offset =
-        static_cast<uint32_t>(header.tile_pkt_id) * WD_UDP_PAYLOAD_TARGET;
+    static_cast<uint32_t>(header.tile_pkt_id) * udp_payload_target;
 
     if (offset + header.payload_size > header.compressed_tile_size) {
         return false;
@@ -73,7 +74,12 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state,
     wd_udp_tile_packet_header header{};
     std::memcpy(&header, packet, sizeof(header));
 
-    if (!packet_header_valid(header, packet_size)) {
+    uint16_t udp_payload_target = state.config.udp_payload_target;
+    if (udp_payload_target == 0) {
+        udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    }
+
+    if (!packet_header_valid(header, packet_size, udp_payload_target)) {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         return completed;
     }
@@ -112,7 +118,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state,
     }
 
     const uint32_t offset =
-        static_cast<uint32_t>(header.tile_pkt_id) * WD_UDP_PAYLOAD_TARGET;
+        static_cast<uint32_t>(header.tile_pkt_id) * udp_payload_target;
 
     const uint8_t* payload = packet + sizeof(wd_udp_tile_packet_header);
 

@@ -120,6 +120,7 @@ bool wd_server_init(struct wd_server *server,
     memset(server, 0, sizeof(*server));
 
     wl_list_init(&server->views);
+
     server->scene_dirty = true;
 
     server->startup_command = app_cmd;

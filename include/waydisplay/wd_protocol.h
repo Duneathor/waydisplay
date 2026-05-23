@@ -15,6 +15,7 @@ extern "C" {
  * Integer value is compared directly on same-endian Linux peers.
  */
 #define WD_TCP_MAGIC 0x54434457u
+#define WD_UDP_TILE_ID_MTU_PROBE 0xffffu
 
 enum wd_message_type {
     WD_MSG_CLIENT_HELLO = 1,
@@ -218,6 +219,24 @@ struct wd_udp_tile_packet_header {
     uint32_t compressed_tile_size;
 };
 
+struct wd_mtu_probe_start_payload {
+    uint32_t session_id;
+    uint16_t probe_count;
+    uint16_t reserved;
+};
+
+struct wd_mtu_probe_result_payload {
+    uint32_t session_id;
+
+    /*
+     * Largest tile payload size received, excluding
+     * struct wd_udp_tile_packet_header.
+     */
+    uint16_t max_udp_payload_received;
+
+    uint16_t reserved;
+};
+
 WD_PACKED_END
 
 #undef WD_PACKED_BEGIN
@@ -231,6 +250,10 @@ static_assert(sizeof(struct wd_client_hello_payload) == 12,
               "unexpected wd_client_hello_payload size");
 static_assert(sizeof(struct wd_pointer_event_payload) == 28,
               "unexpected wd_pointer_event_payload size");
+static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8,
+              "unexpected wd_mtu_probe_start_payload size");
+static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8,
+              "unexpected wd_mtu_probe_result_payload size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(sizeof(struct wd_udp_tile_packet_header) == 20,
@@ -239,6 +262,10 @@ _Static_assert(sizeof(struct wd_client_hello_payload) == 12,
                "unexpected wd_client_hello_payload size");
 _Static_assert(sizeof(struct wd_pointer_event_payload) == 28,
                "unexpected wd_pointer_event_payload size");
+_Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8,
+               "unexpected wd_mtu_probe_start_payload size");
+_Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8,
+               "unexpected wd_mtu_probe_result_payload size");
 #endif
 
 #ifdef __cplusplus
