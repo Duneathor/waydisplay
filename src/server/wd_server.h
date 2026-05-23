@@ -140,6 +140,12 @@ extern "C" {
         uint16_t full_frame_next_tile;
         uint16_t dirty_scan_next_tile;
 
+        uint16_t dirty_queue[WD_TOTAL_TILES];
+        bool dirty_queued[WD_TOTAL_TILES];
+        uint16_t dirty_queue_read;
+        uint16_t dirty_queue_write;
+        uint16_t dirty_queue_count;
+
         int listen_fd;
         int tcp_fd;
         int udp_fd;

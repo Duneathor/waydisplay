@@ -310,191 +310,252 @@ bool wd_stream_send_cached_tile_locked(struct wd_server *server, uint16_t tile_i
     return true;
 }
 
-bool wd_stream_send_dirty_tiles(struct wd_server *server) {
-    struct wd_net_state *net = &server->net;
-
-    if (!server->framebuffer_xrgb8888) {
+static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
+                                       uint16_t tile_id) {
+    if (!net || tile_id >= WD_TOTAL_TILES) {
         return false;
     }
 
-    const uint64_t now = wd_now_ns();
-    uint32_t tile_budget = wd_stream_policy_tile_budget(server, now);
-    uint32_t tiles_sent_this_pass = 0;
-
-    if (tile_budget == 0) {
+    if (net->dirty_queued[tile_id]) {
         return true;
     }
 
-    uint8_t tile_bytes[WD_UNCOMPRESSED_TILE_BYTES];
-
-    pthread_mutex_lock(&net->lock);
-
-    if (!net->client_connected) {
-        pthread_mutex_unlock(&net->lock);
-        return true;
-    }
-
-    /*
-     * Phase 1:
-     * Progressive full-frame catch-up for new/reconnected clients.
-     *
-     * Important:
-     * Do not restart at tile 0 every pass. Advance full_frame_next_tile.
-     * Also do not count unchanged catch-up tiles as "dirty" if their hash
-     * matches the existing cache; just resend the cached tile when possible.
-     */
-    if (net->full_frame_needed) {
-        while (net->full_frame_next_tile < WD_TOTAL_TILES &&
-            tiles_sent_this_pass < tile_budget) {
-            uint16_t tile_id = net->full_frame_next_tile++;
-        struct wd_cached_tile *tile = &net->tiles[tile_id];
-
-        uint32_t hash =
-        wd_fnv1a_tile_hash_xrgb8888(server->framebuffer_xrgb8888,
-                                    tile_id);
-
-        bool cache_valid = tile->compressed_size > 0 && tile->compressed;
-
-        if (!cache_valid || hash != tile->last_hash) {
-            if (!wd_extract_tile_xrgb8888(server->framebuffer_xrgb8888,
-                tile_id,
-                tile_bytes)) {
-                continue;
-                }
-
-                uint32_t compressed_size = 0;
-
-            if (!wd_zstd_compress(tile_bytes,
-                WD_UNCOMPRESSED_TILE_BYTES,
-                tile->compressed,
-                tile->compressed_capacity,
-                WD_ZSTD_LEVEL,
-                &compressed_size)) {
-                wlr_log(WLR_ERROR,
-                        "WayDisplay: zstd compression failed for full-frame tile %u",
-                        tile_id);
-                continue;
-                }
-
-                tile->last_hash = hash;
-                tile->generation++;
-                tile->timestamp_ns = now;
-                tile->compressed_size = compressed_size;
-
-                net->stats.dirty_tiles++;
-        }
-
-        wd_stream_send_cached_tile_locked(server, tile_id);
-        tiles_sent_this_pass++;
-            }
-
-            if (net->full_frame_next_tile >= WD_TOTAL_TILES) {
-                net->full_frame_needed = false;
-                net->full_frame_next_tile = 0;
-                net->dirty_scan_next_tile = 0;
-                server->scene_dirty = false;
-            } else {
-                server->scene_dirty = true;
-            }
-
-            pthread_mutex_unlock(&net->lock);
-
-            wd_stream_policy_consume_tiles(server, tiles_sent_this_pass);
-
-            return true;
-    }
-
-    /*
-     * Phase 2:
-     * Normal dirty-tile mode.
-     *
-     * Use a round-robin scan cursor so limited mode does not permanently
-     * prioritize top-left tiles.
-     */
-    bool exhausted_budget = false;
-    uint16_t scan_start = net->dirty_scan_next_tile;
-    uint16_t scanned = 0;
-
-    while (scanned < WD_TOTAL_TILES) {
-        uint16_t tile_id =
-        (uint16_t)((scan_start + scanned) % WD_TOTAL_TILES);
-
-        scanned++;
-
-        uint32_t hash =
-        wd_fnv1a_tile_hash_xrgb8888(server->framebuffer_xrgb8888,
-                                    tile_id);
-
-        if (hash == net->tiles[tile_id].last_hash) {
-            continue;
-        }
-
-        if (tiles_sent_this_pass >= tile_budget) {
-            exhausted_budget = true;
-
-            /*
-             * Resume at this still-dirty tile next pass.
-             * Do not advance past it, because we did not send it.
-             */
-            net->dirty_scan_next_tile = tile_id;
-            break;
-        }
-
-        struct wd_cached_tile *tile = &net->tiles[tile_id];
-
-        if (!wd_extract_tile_xrgb8888(server->framebuffer_xrgb8888,
-            tile_id,
-            tile_bytes)) {
-            continue;
-            }
-
-            uint32_t compressed_size = 0;
-
-        if (!wd_zstd_compress(tile_bytes,
-            WD_UNCOMPRESSED_TILE_BYTES,
-            tile->compressed,
-            tile->compressed_capacity,
-            WD_ZSTD_LEVEL,
-            &compressed_size)) {
-            wlr_log(WLR_ERROR,
-                    "WayDisplay: zstd compression failed for dirty tile %u",
-                    tile_id);
-            continue;
-            }
-
-            tile->last_hash = hash;
-            tile->generation++;
-            tile->timestamp_ns = now;
-            tile->compressed_size = compressed_size;
-
-            net->stats.dirty_tiles++;
-
-            wd_stream_send_cached_tile_locked(server, tile_id);
-            tiles_sent_this_pass++;
-
-            /*
-             * Next scan starts after the tile we just serviced.
-             */
-            net->dirty_scan_next_tile =
-            (uint16_t)((tile_id + 1) % WD_TOTAL_TILES);
-    }
-
-    if (!exhausted_budget) {
+    if (net->dirty_queue_count >= WD_TOTAL_TILES) {
         /*
-         * Completed a full scan without exhausting the budget.
-         * No known dirty tiles remain from this pass.
+         * Queue is full. This should not happen because each tile can only
+         * appear once, but keep it safe.
          */
-        server->scene_dirty = false;
-    } else {
-        server->scene_dirty = true;
+        return false;
     }
 
-    pthread_mutex_unlock(&net->lock);
-
-    wd_stream_policy_consume_tiles(server, tiles_sent_this_pass);
+    net->dirty_queue[net->dirty_queue_write] = tile_id;
+    net->dirty_queue_write =
+    (uint16_t)((net->dirty_queue_write + 1) % WD_TOTAL_TILES);
+    net->dirty_queue_count++;
+    net->dirty_queued[tile_id] = true;
 
     return true;
-}
+                                       }
+
+                                       static bool wd_dirty_queue_pop_locked(struct wd_net_state *net,
+                                                                             uint16_t *out_tile_id) {
+                                           if (!net || !out_tile_id || net->dirty_queue_count == 0) {
+                                               return false;
+                                           }
+
+                                           uint16_t tile_id = net->dirty_queue[net->dirty_queue_read];
+
+                                           net->dirty_queue_read =
+                                           (uint16_t)((net->dirty_queue_read + 1) % WD_TOTAL_TILES);
+                                           net->dirty_queue_count--;
+
+                                           if (tile_id < WD_TOTAL_TILES) {
+                                               net->dirty_queued[tile_id] = false;
+                                           }
+
+                                           *out_tile_id = tile_id;
+                                           return true;
+                                                                             }
+
+                                                                             static void wd_detect_dirty_tiles_into_queue_locked(struct wd_server *server) {
+                                                                                 struct wd_net_state *net = &server->net;
+
+                                                                                 /*
+                                                                                  * Hash the current framebuffer and enqueue each changed tile once.
+                                                                                  * A tile that changes repeatedly before being sent remains queued once;
+                                                                                  * when sent, we send the latest pixels.
+                                                                                  */
+                                                                                 for (uint16_t tile_id = 0; tile_id < WD_TOTAL_TILES; ++tile_id) {
+                                                                                     uint32_t hash =
+                                                                                     wd_fnv1a_tile_hash_xrgb8888(server->framebuffer_xrgb8888,
+                                                                                                                 tile_id);
+
+                                                                                     if (hash != net->tiles[tile_id].last_hash) {
+                                                                                         wd_dirty_queue_push_locked(net, tile_id);
+                                                                                     }
+                                                                                 }
+                                                                             }
+
+                                                                             bool wd_stream_send_dirty_tiles(struct wd_server *server) {
+                                                                                 struct wd_net_state *net = &server->net;
+
+                                                                                 if (!server->framebuffer_xrgb8888) {
+                                                                                     return false;
+                                                                                 }
+
+                                                                                 const uint64_t now = wd_now_ns();
+                                                                                 uint32_t tile_budget = wd_stream_policy_tile_budget(server, now);
+                                                                                 uint32_t tiles_sent_this_pass = 0;
+
+                                                                                 if (tile_budget == 0) {
+                                                                                     return true;
+                                                                                 }
+
+                                                                                 uint8_t tile_bytes[WD_UNCOMPRESSED_TILE_BYTES];
+
+                                                                                 pthread_mutex_lock(&net->lock);
+
+                                                                                 if (!net->client_connected) {
+                                                                                     pthread_mutex_unlock(&net->lock);
+                                                                                     return true;
+                                                                                 }
+
+                                                                                 /*
+                                                                                  * Phase 1:
+                                                                                  * Progressive full-frame catch-up for new/reconnected clients.
+                                                                                  *
+                                                                                  * This sends each tile once, advancing full_frame_next_tile across
+                                                                                  * multiple limited-mode passes. It does not restart at tile 0.
+                                                                                  */
+                                                                                 if (net->full_frame_needed) {
+                                                                                     while (net->full_frame_next_tile < WD_TOTAL_TILES &&
+                                                                                         tiles_sent_this_pass < tile_budget) {
+                                                                                         uint16_t tile_id = net->full_frame_next_tile++;
+                                                                                     struct wd_cached_tile *tile = &net->tiles[tile_id];
+
+                                                                                     uint32_t hash =
+                                                                                     wd_fnv1a_tile_hash_xrgb8888(server->framebuffer_xrgb8888,
+                                                                                                                 tile_id);
+
+                                                                                     bool cache_valid = tile->compressed_size > 0 && tile->compressed;
+
+                                                                                     if (!cache_valid || hash != tile->last_hash) {
+                                                                                         if (!wd_extract_tile_xrgb8888(server->framebuffer_xrgb8888,
+                                                                                             tile_id,
+                                                                                             tile_bytes)) {
+                                                                                             continue;
+                                                                                             }
+
+                                                                                             uint32_t compressed_size = 0;
+
+                                                                                         if (!wd_zstd_compress(tile_bytes,
+                                                                                             WD_UNCOMPRESSED_TILE_BYTES,
+                                                                                             tile->compressed,
+                                                                                             tile->compressed_capacity,
+                                                                                             WD_ZSTD_LEVEL,
+                                                                                             &compressed_size)) {
+                                                                                             wlr_log(WLR_ERROR,
+                                                                                                     "WayDisplay: zstd compression failed for full-frame tile %u",
+                                                                                                     tile_id);
+                                                                                             continue;
+                                                                                             }
+
+                                                                                             tile->last_hash = hash;
+                                                                                             tile->generation++;
+                                                                                             tile->timestamp_ns = now;
+                                                                                             tile->compressed_size = compressed_size;
+
+                                                                                             net->stats.dirty_tiles++;
+                                                                                     }
+
+                                                                                     wd_stream_send_cached_tile_locked(server, tile_id);
+                                                                                     tiles_sent_this_pass++;
+                                                                                         }
+
+                                                                                         if (net->full_frame_next_tile >= WD_TOTAL_TILES) {
+                                                                                             net->full_frame_needed = false;
+                                                                                             net->full_frame_next_tile = 0;
+                                                                                             net->dirty_scan_next_tile = 0;
+
+                                                                                             /*
+                                                                                              * After initial catch-up, clear stale queue state and force the
+                                                                                              * next normal pass to detect current dirty tiles from hashes.
+                                                                                              */
+                                                                                             memset(net->dirty_queued, 0, sizeof(net->dirty_queued));
+                                                                                             net->dirty_queue_read = 0;
+                                                                                             net->dirty_queue_write = 0;
+                                                                                             net->dirty_queue_count = 0;
+
+                                                                                             server->scene_dirty = false;
+                                                                                         } else {
+                                                                                             server->scene_dirty = true;
+                                                                                         }
+
+                                                                                         pthread_mutex_unlock(&net->lock);
+
+                                                                                         wd_stream_policy_consume_tiles(server, tiles_sent_this_pass);
+
+                                                                                         return true;
+                                                                                 }
+
+                                                                                 /*
+                                                                                  * Phase 2:
+                                                                                  * Normal dirty-tile mode.
+                                                                                  *
+                                                                                  * First detect changed tiles and enqueue them once. Then drain the queue
+                                                                                  * according to the active budget. This avoids top-left scan bias and
+                                                                                  * avoids repeatedly inserting the same tile while it waits for bandwidth.
+                                                                                  */
+                                                                                 wd_detect_dirty_tiles_into_queue_locked(server);
+
+                                                                                 while (net->dirty_queue_count > 0 &&
+                                                                                     tiles_sent_this_pass < tile_budget) {
+                                                                                     uint16_t tile_id = 0;
+
+                                                                                 if (!wd_dirty_queue_pop_locked(net, &tile_id)) {
+                                                                                     break;
+                                                                                 }
+
+                                                                                 if (tile_id >= WD_TOTAL_TILES) {
+                                                                                     continue;
+                                                                                 }
+
+                                                                                 struct wd_cached_tile *tile = &net->tiles[tile_id];
+
+                                                                                 uint32_t hash =
+                                                                                 wd_fnv1a_tile_hash_xrgb8888(server->framebuffer_xrgb8888,
+                                                                                                             tile_id);
+
+                                                                                 /*
+                                                                                  * It may have been queued earlier but become identical by now.
+                                                                                  */
+                                                                                 if (hash == tile->last_hash) {
+                                                                                     continue;
+                                                                                 }
+
+                                                                                 if (!wd_extract_tile_xrgb8888(server->framebuffer_xrgb8888,
+                                                                                     tile_id,
+                                                                                     tile_bytes)) {
+                                                                                     continue;
+                                                                                     }
+
+                                                                                     uint32_t compressed_size = 0;
+
+                                                                                 if (!wd_zstd_compress(tile_bytes,
+                                                                                     WD_UNCOMPRESSED_TILE_BYTES,
+                                                                                     tile->compressed,
+                                                                                     tile->compressed_capacity,
+                                                                                     WD_ZSTD_LEVEL,
+                                                                                     &compressed_size)) {
+                                                                                     wlr_log(WLR_ERROR,
+                                                                                             "WayDisplay: zstd compression failed for dirty tile %u",
+                                                                                             tile_id);
+                                                                                     continue;
+                                                                                     }
+
+                                                                                     tile->last_hash = hash;
+                                                                                     tile->generation++;
+                                                                                     tile->timestamp_ns = now;
+                                                                                     tile->compressed_size = compressed_size;
+
+                                                                                     net->stats.dirty_tiles++;
+
+                                                                                     wd_stream_send_cached_tile_locked(server, tile_id);
+                                                                                     tiles_sent_this_pass++;
+                                                                                     }
+
+                                                                                     /*
+                                                                                      * Keep scene_dirty true if there are queued tiles we could not send yet.
+                                                                                      * Otherwise, this pass fully drained known dirty work.
+                                                                                      */
+                                                                                     server->scene_dirty = net->dirty_queue_count > 0;
+
+                                                                                     pthread_mutex_unlock(&net->lock);
+
+                                                                                     wd_stream_policy_consume_tiles(server, tiles_sent_this_pass);
+
+                                                                                     return true;
+                                                                             }
 
 bool wd_stream_send_generation_summary_locked(struct wd_server *server) {
     struct wd_net_state *net = &server->net;

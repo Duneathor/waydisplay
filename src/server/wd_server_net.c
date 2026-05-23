@@ -28,6 +28,10 @@ bool wd_net_init(struct wd_server *server, uint16_t tcp_port) {
   net->full_frame_needed = true;
   net->full_frame_next_tile = 0;
   net->dirty_scan_next_tile = 0;
+  memset(net->dirty_queued, 0, sizeof(net->dirty_queued));
+  net->dirty_queue_read = 0;
+  net->dirty_queue_write = 0;
+  net->dirty_queue_count = 0;
   net->udp_payload_target = WD_UDP_PAYLOAD_TARGET;
 
   wd_stream_policy_set_defaults(&net->stream_policy);
@@ -310,6 +314,10 @@ void *wd_net_thread_main(void *arg) {
     net->full_frame_needed = true;
     net->full_frame_next_tile = 0;
     net->dirty_scan_next_tile = 0;
+    memset(net->dirty_queued, 0, sizeof(net->dirty_queued));
+    net->dirty_queue_read = 0;
+    net->dirty_queue_write = 0;
+    net->dirty_queue_count = 0;
 
     net->stats.tcp_hello_rx++;
     net->stats.tcp_config_tx++;
