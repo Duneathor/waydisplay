@@ -112,6 +112,10 @@ extern "C" {
         uint16_t target_fps;
         uint32_t max_tiles_per_second;
 
+        uint32_t max_retransmit_tiles_per_second;
+        double retransmit_tile_tokens;
+        uint64_t last_retransmit_token_refill_ns;
+
         uint64_t last_frame_send_ns;
 
         double tile_tokens;
@@ -251,6 +255,11 @@ extern "C" {
     bool wd_stream_policy_should_render_now(struct wd_server *server, uint64_t now_ns);
     uint32_t wd_stream_policy_tile_budget(struct wd_server *server, uint64_t now_ns);
     void wd_stream_policy_consume_tiles(struct wd_server *server, uint32_t count);
+    uint32_t wd_stream_policy_retransmit_budget(struct wd_server *server,
+                                                uint64_t now_ns);
+
+    void wd_stream_policy_consume_retransmit_tiles(struct wd_server *server,
+                                                   uint32_t count);
     void wd_server_mark_scene_dirty(struct wd_server *server);
 
     /* wd_server_net.c */

@@ -21,7 +21,38 @@
 namespace waydisplay {
 namespace {
 
-constexpr size_t MAX_RETRANSMIT_ENTRIES_PER_MESSAGE = 128;
+constexpr size_t MAX_RETRANSMIT_ENTRIES_PER_MESSAGE = 32;
+constexpr size_t MAX_RETRANSMIT_QUEUE_DEPTH = 256;
+
+bool set_socket_rcvbuf(int fd, int requested_bytes) {
+    if (fd < 0) {
+        return false;
+    }
+
+    if (::setsockopt(fd,
+        SOL_SOCKET,
+        SO_RCVBUF,
+        &requested_bytes,
+        sizeof(requested_bytes)) != 0) {
+        std::perror("setsockopt SO_RCVBUF");
+    return false;
+        }
+
+        int actual_bytes = 0;
+        socklen_t actual_len = sizeof(actual_bytes);
+
+        if (::getsockopt(fd,
+            SOL_SOCKET,
+            SO_RCVBUF,
+            &actual_bytes,
+            &actual_len) == 0) {
+            std::printf("UDP receive buffer: requested=%d actual=%d\n",
+                        requested_bytes,
+                        actual_bytes);
+            }
+
+            return true;
+}
 
 bool open_udp_socket(ClientState& state) {
     state.udp_fd = ::socket(AF_INET, SOCK_DGRAM, 0);
@@ -46,6 +77,8 @@ bool open_udp_socket(ClientState& state) {
         std::perror("set UDP nonblocking");
         return false;
     }
+
+    set_socket_rcvbuf(state.udp_fd, 16 * 1024 * 1024);
 
     return true;
 }
@@ -246,8 +279,8 @@ void queue_retransmits_from_summary(ClientState& state,
     }
 
     const size_t needed =
-        sizeof(wd_tile_summary_payload_header) +
-        static_cast<size_t>(summary.tile_count) * sizeof(wd_tile_generation_entry);
+    sizeof(wd_tile_summary_payload_header) +
+    static_cast<size_t>(summary.tile_count) * sizeof(wd_tile_generation_entry);
 
     if (payload_size < needed) {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
@@ -255,13 +288,15 @@ void queue_retransmits_from_summary(ClientState& state,
     }
 
     const auto* entries =
-        reinterpret_cast<const wd_tile_generation_entry*>(
-            payload + sizeof(wd_tile_summary_payload_header));
+    reinterpret_cast<const wd_tile_generation_entry*>(
+        payload + sizeof(wd_tile_summary_payload_header));
 
     std::vector<wd_retransmit_entry> missing;
+    missing.reserve(32);
 
     {
-        std::lock_guard<std::mutex> lock(state.generation_mutex);
+        std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
+        std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
 
         for (uint16_t i = 0; i < summary.tile_count; ++i) {
             const wd_tile_generation_entry& entry = entries[i];
@@ -270,28 +305,53 @@ void queue_retransmits_from_summary(ClientState& state,
                 continue;
             }
 
-            if (entry.tile_generation >
-                state.displayed_generation[entry.tile_id]) {
-                wd_retransmit_entry retx{};
-                retx.tile_id = entry.tile_id;
-                retx.desired_generation = entry.tile_generation;
-                missing.push_back(retx);
+            if (entry.tile_generation <= state.displayed_generation[entry.tile_id]) {
+                continue;
+            }
+
+            /*
+             * Do not queue duplicate requests for the same tile/generation.
+             */
+            bool already_queued = false;
+
+            for (const wd_retransmit_entry& queued : state.retx_queue) {
+                if (queued.tile_id == entry.tile_id &&
+                    queued.desired_generation >= entry.tile_generation) {
+                    already_queued = true;
+                break;
+                    }
+            }
+
+            if (already_queued) {
+                continue;
+            }
+
+            wd_retransmit_entry retx{};
+            retx.tile_id = entry.tile_id;
+            retx.reserved = 0;
+            retx.desired_generation = entry.tile_generation;
+
+            missing.push_back(retx);
+
+            if (missing.size() >= MAX_RETRANSMIT_ENTRIES_PER_MESSAGE) {
+                break;
             }
         }
-    }
 
-    if (missing.empty()) {
-        return;
-    }
+        /*
+         * Keep the repair queue bounded. If it grows too large, prefer newer
+         * summary-derived requests by dropping oldest queued repair work.
+         */
+        while (state.retx_queue.size() + missing.size() >
+            MAX_RETRANSMIT_QUEUE_DEPTH) {
+            state.retx_queue.pop_front();
+            }
 
-    {
-        std::lock_guard<std::mutex> lock(state.retx_mutex);
-
-        for (const wd_retransmit_entry& retx : missing) {
-            state.retx_queue.push_back(retx);
-        }
+            for (const wd_retransmit_entry& retx : missing) {
+                state.retx_queue.push_back(retx);
+            }
     }
-}
+                                    }
 
 void tcp_reader_main(ClientState* state) {
     while (state->running.load(std::memory_order_relaxed)) {
@@ -431,17 +491,28 @@ bool client_flush_retransmit_requests(ClientState& state) {
     std::vector<wd_retransmit_entry> entries;
 
     {
-        std::lock_guard<std::mutex> lock(state.retx_mutex);
+        std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+        std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
 
-        const size_t count =
-            std::min(state.retx_queue.size(), MAX_RETRANSMIT_ENTRIES_PER_MESSAGE);
+        while (!state.retx_queue.empty() &&
+            entries.size() < MAX_RETRANSMIT_ENTRIES_PER_MESSAGE) {
+            wd_retransmit_entry retx = state.retx_queue.front();
+        state.retx_queue.pop_front();
 
-        entries.reserve(count);
-
-        for (size_t i = 0; i < count; ++i) {
-            entries.push_back(state.retx_queue.front());
-            state.retx_queue.pop_front();
+        if (retx.tile_id >= WD_TOTAL_TILES) {
+            continue;
         }
+
+        /*
+         * Tile already arrived while this request was queued.
+         */
+        if (state.displayed_generation[retx.tile_id] >=
+            retx.desired_generation) {
+            continue;
+            }
+
+            entries.push_back(retx);
+            }
     }
 
     if (entries.empty()) {
@@ -453,7 +524,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
     header.request_count = static_cast<uint16_t>(entries.size());
 
     const size_t payload_size =
-        sizeof(header) + entries.size() * sizeof(wd_retransmit_entry);
+    sizeof(header) + entries.size() * sizeof(wd_retransmit_entry);
 
     std::vector<uint8_t> payload(payload_size);
 

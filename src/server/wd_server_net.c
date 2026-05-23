@@ -220,6 +220,31 @@ void *wd_net_thread_main(void *arg) {
   wlr_log(WLR_INFO, "WayDisplay: network server listening on TCP port %u",
           net->tcp_port);
 
+  int sndbuf = 16 * 1024 * 1024;
+  if (setsockopt(net->udp_fd,
+    SOL_SOCKET,
+    SO_SNDBUF,
+    &sndbuf,
+    sizeof(sndbuf)) < 0) {
+    wlr_log(WLR_ERROR,
+            "WayDisplay: setsockopt SO_SNDBUF failed: %s",
+            strerror(errno));
+    } else {
+      int actual = 0;
+      socklen_t actual_len = sizeof(actual);
+
+      if (getsockopt(net->udp_fd,
+        SOL_SOCKET,
+        SO_SNDBUF,
+        &actual,
+        &actual_len) == 0) {
+        wlr_log(WLR_INFO,
+                "WayDisplay: UDP send buffer requested=%d actual=%d",
+                sndbuf,
+                actual);
+        }
+    }
+
   while (net->running) {
     struct sockaddr_in peer_addr;
     socklen_t peer_len = sizeof(peer_addr);
@@ -328,10 +353,12 @@ void *wd_net_thread_main(void *arg) {
     pthread_mutex_unlock(&net->lock);
 
     wlr_log(WLR_INFO,
-            "WayDisplay: client connected; UDP port=%u stream_mode=%u fps=%u "
-            "max_tiles_per_sec=%u",
-            hello.client_udp_port, hello.stream_mode, hello.target_fps,
-            hello.max_tiles_per_second);
+            "WayDisplay: client connected; UDP port=%u stream_mode=%u fps=%u max_tiles_per_sec=%u retx_tiles_per_sec=%u",
+            hello.client_udp_port,
+            hello.stream_mode,
+            hello.target_fps,
+            hello.max_tiles_per_second,
+            net->stream_policy.max_retransmit_tiles_per_second);
 
     while (net->running) {
       payload = NULL;
@@ -349,33 +376,51 @@ void *wd_net_thread_main(void *arg) {
         size_t needed = sizeof(rh) + (size_t)rh.request_count *
                                          sizeof(struct wd_retransmit_entry);
 
-        if (rh.session_id == cfg.session_id && payload_size >= needed) {
-          struct wd_retransmit_entry *entries =
-              (struct wd_retransmit_entry *)(payload + sizeof(rh));
+                                         if (rh.session_id == cfg.session_id && payload_size >= needed) {
+                                           struct wd_retransmit_entry *entries =
+                                           (struct wd_retransmit_entry *)(payload + sizeof(rh));
 
-          pthread_mutex_lock(&net->lock);
+                                           uint32_t budget =
+                                           wd_stream_policy_retransmit_budget(server, wd_now_ns());
 
-          if (net->full_frame_needed) {
-              /*
-               * During progressive initial frame delivery, the client will naturally
-               * be missing tiles we have not reached yet. Do not spend bandwidth
-               * retransmitting early tiles until the first full sweep completes.
-               */
-              pthread_mutex_unlock(&net->lock);
-              free(payload);
-              continue;
-          }
-          net->stats.retx_req_rx++;
-          net->stats.retx_tiles_req += rh.request_count;
+                                           if (budget == 0) {
+                                             /*
+                                              * Count the request but do not send repair tiles this tick.
+                                              */
+                                             pthread_mutex_lock(&net->lock);
+                                             net->stats.retx_req_rx++;
+                                             net->stats.retx_tiles_req += rh.request_count;
+                                             pthread_mutex_unlock(&net->lock);
+                                           } else {
+                                             uint32_t sent_retx = 0;
 
-          for (uint16_t i = 0; i < rh.request_count; ++i) {
-            if (entries[i].tile_id < WD_TOTAL_TILES) {
-              wd_stream_send_cached_tile_locked(server, entries[i].tile_id);
-            }
-          }
+                                             pthread_mutex_lock(&net->lock);
 
-          pthread_mutex_unlock(&net->lock);
-        }
+                                             net->stats.retx_req_rx++;
+                                             net->stats.retx_tiles_req += rh.request_count;
+
+                                             if (!net->full_frame_needed) {
+                                               for (uint16_t i = 0; i < rh.request_count; ++i) {
+                                                 if (sent_retx >= budget) {
+                                                   break;
+                                                 }
+
+                                                 if (entries[i].tile_id < WD_TOTAL_TILES) {
+                                                   wd_stream_send_cached_tile_locked(server,
+                                                                                     entries[i].tile_id);
+                                                   sent_retx++;
+                                                 }
+                                               }
+                                             }
+
+                                             pthread_mutex_unlock(&net->lock);
+
+                                             if (sent_retx > 0) {
+                                               wd_stream_policy_consume_retransmit_tiles(server,
+                                                                                         sent_retx);
+                                             }
+                                           }
+                                         }
       } else if (type == WD_MSG_KEYBOARD_KEY &&
                  payload_size >= sizeof(struct wd_keyboard_event_payload)) {
         struct wd_keyboard_event_payload key;

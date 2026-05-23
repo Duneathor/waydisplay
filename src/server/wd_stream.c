@@ -14,6 +14,8 @@
 #define WD_DEFAULT_LIMITED_TILES_PER_SECOND 120u
 #define WD_MAX_REASONABLE_FPS 120u
 #define WD_MAX_REASONABLE_TILES_PER_SECOND 10000u
+#define WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND 32u
+#define WD_MAX_REASONABLE_RETRANSMIT_TILES_PER_SECOND 2000u
 
 void wd_stream_policy_set_defaults(struct wd_stream_policy *policy) {
     if (!policy) {
@@ -25,6 +27,10 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy *policy) {
     policy->mode = WD_STREAM_MODE_PARTIAL;
     policy->target_fps = WD_DEFAULT_PARTIAL_FPS;
     policy->max_tiles_per_second = WD_DEFAULT_LIMITED_TILES_PER_SECOND;
+    policy->max_retransmit_tiles_per_second =
+    WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND;
+    policy->retransmit_tile_tokens = 0.0;
+    policy->last_retransmit_token_refill_ns = 0;
     policy->last_frame_send_ns = 0;
     policy->tile_tokens = 0.0;
     policy->last_token_refill_ns = 0;
@@ -63,9 +69,47 @@ void wd_stream_policy_apply_client_hello(
         max_tiles = WD_MAX_REASONABLE_TILES_PER_SECOND;
     }
 
+    uint32_t retx_tiles = WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND;
+
+    switch (mode) {
+        case WD_STREAM_MODE_FULL:
+            /*
+             * Full mode can repair faster, but still cap repair so it does not
+             * dominate fresh updates.
+             */
+            retx_tiles = 128;
+            break;
+
+        case WD_STREAM_MODE_PARTIAL:
+            retx_tiles = 64;
+            break;
+
+        case WD_STREAM_MODE_LIMITED:
+            /*
+             * Limited mode: retransmit gets roughly 20% of the fresh tile budget,
+             * with a small floor.
+             */
+            retx_tiles = max_tiles / 5;
+            if (retx_tiles < 8) {
+                retx_tiles = 8;
+            }
+            break;
+
+        default:
+            retx_tiles = WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND;
+            break;
+    }
+
+    if (retx_tiles > WD_MAX_REASONABLE_RETRANSMIT_TILES_PER_SECOND) {
+        retx_tiles = WD_MAX_REASONABLE_RETRANSMIT_TILES_PER_SECOND;
+    }
+
     policy->mode = mode;
     policy->target_fps = fps;
     policy->max_tiles_per_second = max_tiles;
+    policy->max_retransmit_tiles_per_second = retx_tiles;
+    policy->retransmit_tile_tokens = 0.0;
+    policy->last_retransmit_token_refill_ns = 0;
     policy->last_frame_send_ns = 0;
     policy->tile_tokens = 0.0;
     policy->last_token_refill_ns = 0;
@@ -199,6 +243,67 @@ void wd_stream_policy_apply_client_hello(
 
         pthread_mutex_unlock(&net->lock);
     }
+
+    uint32_t wd_stream_policy_retransmit_budget(struct wd_server *server,
+                                                uint64_t now_ns) {
+        struct wd_net_state *net = &server->net;
+
+        pthread_mutex_lock(&net->lock);
+
+        struct wd_stream_policy *policy = &net->stream_policy;
+
+        uint32_t rate = policy->max_retransmit_tiles_per_second;
+        if (rate == 0) {
+            pthread_mutex_unlock(&net->lock);
+            return 0;
+        }
+
+        if (policy->last_retransmit_token_refill_ns == 0) {
+            policy->last_retransmit_token_refill_ns = now_ns;
+            policy->retransmit_tile_tokens = (double)rate;
+        } else {
+            uint64_t elapsed_ns =
+            now_ns - policy->last_retransmit_token_refill_ns;
+
+            double elapsed_seconds =
+            (double)elapsed_ns / 1000000000.0;
+
+            policy->retransmit_tile_tokens +=
+            elapsed_seconds * (double)rate;
+
+            /*
+             * Allow one second of retransmit burst.
+             */
+            if (policy->retransmit_tile_tokens > (double)rate) {
+                policy->retransmit_tile_tokens = (double)rate;
+            }
+
+            policy->last_retransmit_token_refill_ns = now_ns;
+        }
+
+        uint32_t budget = (uint32_t)policy->retransmit_tile_tokens;
+
+        pthread_mutex_unlock(&net->lock);
+
+        return budget;
+                                                }
+
+                                                void wd_stream_policy_consume_retransmit_tiles(struct wd_server *server,
+                                                                                               uint32_t count) {
+                                                    struct wd_net_state *net = &server->net;
+
+                                                    pthread_mutex_lock(&net->lock);
+
+                                                    struct wd_stream_policy *policy = &net->stream_policy;
+
+                                                    if (policy->retransmit_tile_tokens >= (double)count) {
+                                                        policy->retransmit_tile_tokens -= (double)count;
+                                                    } else {
+                                                        policy->retransmit_tile_tokens = 0.0;
+                                                    }
+
+                                                    pthread_mutex_unlock(&net->lock);
+                                                                                               }
 
 bool wd_stream_init(struct wd_server *server) {
     const size_t compressed_capacity =
