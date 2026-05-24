@@ -1,6 +1,7 @@
 #include "wd_server.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 static void view_configure_idle(void *data);
 static void view_handle_commit(struct wl_listener *listener, void *data);
@@ -16,6 +17,8 @@ static void server_handle_new_xdg_surface(struct wl_listener *listener,
 static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
                                            void *data);
 static void view_handle_set_parent(struct wl_listener *listener, void *data);
+static void view_handle_set_app_id(struct wl_listener *listener, void *data);
+static void view_handle_set_title(struct wl_listener *listener, void *data);
 static void view_handle_request_move(struct wl_listener *listener, void *data);
 static void view_handle_request_resize(struct wl_listener *listener,
                                        void *data);
@@ -26,6 +29,17 @@ static void view_handle_request_fullscreen(struct wl_listener *listener,
 static void view_handle_request_minimize(struct wl_listener *listener,
                                          void *data);
 static void view_handle_new_popup(struct wl_listener *listener, void *data);
+
+struct wd_popup_unconstrain {
+  struct wl_listener destroy;
+  struct wl_event_source *idle;
+  struct wlr_xdg_popup *popup;
+  struct wd_view *view;
+};
+
+static void popup_unconstrain_idle(void *data);
+static void popup_unconstrain_handle_destroy(struct wl_listener *listener,
+                                             void *data);
 
 void wd_scene_init_listeners(struct wd_server *server) {
   server->new_xdg_surface.notify = server_handle_new_xdg_surface;
@@ -103,6 +117,98 @@ void wd_scene_set_view_position(struct wd_view *view) {
   wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
 }
 
+static char *dup_or_empty(const char *text) {
+  if (!text) {
+    text = "";
+  }
+
+  char *copy = strdup(text);
+  return copy ? copy : strdup("");
+}
+
+static void view_update_app_id(struct wd_view *view) {
+  if (!view || !view->xdg_surface || !view->xdg_surface->toplevel) {
+    return;
+  }
+
+  char *copy = dup_or_empty(view->xdg_surface->toplevel->app_id);
+  if (!copy) {
+    return;
+  }
+
+  free(view->app_id);
+  view->app_id = copy;
+}
+
+static void view_update_title(struct wd_view *view) {
+  if (!view || !view->xdg_surface || !view->xdg_surface->toplevel) {
+    return;
+  }
+
+  char *copy = dup_or_empty(view->xdg_surface->toplevel->title);
+  if (!copy) {
+    return;
+  }
+
+  free(view->title);
+  view->title = copy;
+}
+
+static void view_update_metadata(struct wd_view *view) {
+  view_update_app_id(view);
+  view_update_title(view);
+}
+
+static const char *view_app_id(struct wd_view *view) {
+  return view && view->app_id && view->app_id[0] ? view->app_id : "(no app-id)";
+}
+
+static const char *view_title(struct wd_view *view) {
+  return view && view->title && view->title[0] ? view->title : "(no title)";
+}
+
+static void view_set_activated(struct wd_view *view, bool activated) {
+  if (!view || !view->xdg_surface ||
+      view->xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL ||
+      !view->xdg_surface->toplevel) {
+    return;
+  }
+
+  if (view->activated == activated) {
+    return;
+  }
+
+  view->activated = activated;
+  wlr_xdg_toplevel_set_activated(view->xdg_surface->toplevel, activated);
+}
+
+void wd_scene_deactivate_view(struct wd_view *view) {
+  if (!view) {
+    return;
+  }
+
+  view_set_activated(view, false);
+
+  if (view->server && view->server->focused_view == view) {
+    view->server->focused_view = NULL;
+    view->server->focused_surface = NULL;
+  }
+}
+
+static void view_set_bounds(struct wd_view *view,
+                            uint32_t width,
+                            uint32_t height) {
+  if (!view || !view->xdg_surface ||
+      view->xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL ||
+      !view->xdg_surface->toplevel) {
+    return;
+  }
+
+  view->bounds_width = width;
+  view->bounds_height = height;
+
+  wlr_xdg_toplevel_set_bounds(view->xdg_surface->toplevel, width, height);
+}
 
 static int clamp_i(int value, int min_value, int max_value) {
   if (value < min_value) {
@@ -325,10 +431,15 @@ void wd_scene_focus_view(struct wd_view *view) {
 
   struct wd_server *server = view->server;
 
+  if (server->focused_view && server->focused_view != view) {
+    view_set_activated(server->focused_view, false);
+  }
+
+  view->minimized = false;
   server->focused_view = view;
   server->focused_surface = view->xdg_surface->surface;
 
-  wlr_xdg_toplevel_set_activated(view->xdg_surface->toplevel, true);
+  view_set_activated(view, true);
 
   wd_scene_raise_view(view);
 
@@ -413,10 +524,10 @@ static void view_configure_idle(void *data) {
   uint32_t height = 0;
   view_pick_initial_size(view, &width, &height);
 
-  wlr_xdg_toplevel_set_bounds(view->xdg_surface->toplevel, width, height);
+  view_set_bounds(view, width, height);
   wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, width, height);
 
-  wlr_xdg_toplevel_set_activated(view->xdg_surface->toplevel, true);
+  view_set_activated(view, true);
 
   wlr_xdg_toplevel_set_wm_capabilities(
       view->xdg_surface->toplevel,
@@ -484,8 +595,10 @@ static void view_handle_map(struct wl_listener *listener, void *data) {
   struct wd_view *view = wl_container_of(listener, view, map);
 
   view_update_parent_and_position(view, false);
+  view_update_metadata(view);
 
   view->mapped = true;
+  view->minimized = false;
 
   wd_scene_set_view_position(view);
   view_apply_fractional_scale(view);
@@ -504,6 +617,7 @@ static void view_handle_unmap(struct wl_listener *listener, void *data) {
   struct wd_server *server = view->server;
 
   view->mapped = false;
+  view_set_activated(view, false);
 
   if (server->focused_view == view) {
     server->focused_view = NULL;
@@ -543,6 +657,8 @@ static void view_handle_xdg_toplevel_destroy(struct wl_listener *listener,
    */
   remove_listener_if_linked(&view->request_move);
   remove_listener_if_linked(&view->set_parent);
+  remove_listener_if_linked(&view->set_app_id);
+  remove_listener_if_linked(&view->set_title);
   remove_listener_if_linked(&view->request_resize);
   remove_listener_if_linked(&view->request_maximize);
   remove_listener_if_linked(&view->request_fullscreen);
@@ -560,6 +676,8 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
 
   remove_listener_if_linked(&view->request_move);
   remove_listener_if_linked(&view->set_parent);
+  remove_listener_if_linked(&view->set_app_id);
+  remove_listener_if_linked(&view->set_title);
   remove_listener_if_linked(&view->request_resize);
   remove_listener_if_linked(&view->request_maximize);
   remove_listener_if_linked(&view->request_fullscreen);
@@ -627,6 +745,9 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
     view->toplevel_icon = NULL;
   }
 
+  free(view->app_id);
+  free(view->title);
+
   if (view->scene_tree) {
     view->scene_tree->node.data = NULL;
     view->scene_tree = NULL;
@@ -635,6 +756,109 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
   wd_server_mark_scene_dirty(server);
 
   free(view);
+}
+
+static void popup_unconstrain_destroy(struct wd_popup_unconstrain *state) {
+  if (!state) {
+    return;
+  }
+
+  remove_listener_if_linked(&state->destroy);
+
+  if (state->idle) {
+    wl_event_source_remove(state->idle);
+    state->idle = NULL;
+  }
+
+  free(state);
+}
+
+static void popup_unconstrain_handle_destroy(struct wl_listener *listener,
+                                             void *data) {
+  (void)data;
+
+  struct wd_popup_unconstrain *state =
+      wl_container_of(listener, state, destroy);
+
+  popup_unconstrain_destroy(state);
+}
+
+static void popup_unconstrain_idle(void *data) {
+  struct wd_popup_unconstrain *state = data;
+
+  if (!state) {
+    return;
+  }
+
+  state->idle = NULL;
+
+  if (!state->popup || !state->view || !state->view->server ||
+      !state->view->xdg_surface || !state->view->xdg_surface->surface) {
+    popup_unconstrain_destroy(state);
+    return;
+  }
+
+  /*
+   * This callback runs after the immediate xdg_popup/new_popup signal returns.
+   * That avoids calling wlr_xdg_popup_unconstrain_from_box() while wlroots is
+   * still in the middle of xdg_surface initialization, which can assert in
+   * wlr_xdg_surface_schedule_configure().
+   *
+   * The constraint box is in root/toplevel-surface coordinates, not global
+   * layout coordinates.
+   */
+  int root_width = state->view->xdg_surface->surface->current.width;
+  int root_height = state->view->xdg_surface->surface->current.height;
+
+  if (root_width <= 0) {
+    root_width = WD_DISPLAY_WIDTH;
+  }
+
+  if (root_height <= 0) {
+    root_height = WD_DISPLAY_HEIGHT;
+  }
+
+  struct wlr_box root_box = {
+      .x = 0,
+      .y = 0,
+      .width = root_width,
+      .height = root_height,
+  };
+
+  wlr_xdg_popup_unconstrain_from_box(state->popup, &root_box);
+  wd_server_mark_scene_dirty(state->view->server);
+
+  popup_unconstrain_destroy(state);
+}
+
+static void view_schedule_popup_unconstrain(struct wd_view *view,
+                                           struct wlr_xdg_popup *popup) {
+  if (!view || !view->server || !view->server->event_loop || !popup ||
+      !popup->base) {
+    return;
+  }
+
+  struct wd_popup_unconstrain *state = calloc(1, sizeof(*state));
+  if (!state) {
+    wlr_log(WLR_ERROR,
+            "WayDisplay: failed to allocate popup unconstrain state");
+    return;
+  }
+
+  state->popup = popup;
+  state->view = view;
+  wl_list_init(&state->destroy.link);
+
+  state->destroy.notify = popup_unconstrain_handle_destroy;
+  wl_signal_add(&popup->base->events.destroy, &state->destroy);
+
+  state->idle = wl_event_loop_add_idle(view->server->event_loop,
+                                       popup_unconstrain_idle,
+                                       state);
+  if (!state->idle) {
+    popup_unconstrain_destroy(state);
+    return;
+  }
 }
 
 static void view_handle_new_popup(struct wl_listener *listener, void *data) {
@@ -648,18 +872,11 @@ static void view_handle_new_popup(struct wl_listener *listener, void *data) {
     }
 
     /*
-     * Keep menus, combo boxes, context menus, and tooltips constrained to the
-     * visible WayDisplay output. wlr_scene_xdg_surface_create() owns the popup
-     * scene nodes; xdg_popup_unconstrain_from_box() adjusts the xdg positioner
-     * result so popup geometry stays on-screen.
+     * Defer unconstraining. Calling wlr_xdg_popup_unconstrain_from_box()
+     * directly from new_popup can schedule a configure before the popup
+     * xdg_surface is fully initialized.
      */
-    struct wlr_box output_box = {
-        .x = 0,
-        .y = 0,
-        .width = WD_DISPLAY_WIDTH,
-        .height = WD_DISPLAY_HEIGHT,
-    };
-    wlr_xdg_popup_unconstrain_from_box(popup, &output_box);
+    view_schedule_popup_unconstrain(view, popup);
 
     /*
      * wlr_scene_xdg_surface_create() should already create scene nodes for
@@ -674,6 +891,30 @@ static void view_handle_new_popup(struct wl_listener *listener, void *data) {
 
     view_apply_fractional_scale(view);
     wd_server_mark_scene_dirty(view->server);
+}
+
+static void view_handle_set_app_id(struct wl_listener *listener, void *data) {
+  (void)data;
+
+  struct wd_view *view = wl_container_of(listener, view, set_app_id);
+  view_update_app_id(view);
+
+  wlr_log(WLR_INFO,
+          "WayDisplay: toplevel metadata app_id=%s title=%s",
+          view_app_id(view),
+          view_title(view));
+}
+
+static void view_handle_set_title(struct wl_listener *listener, void *data) {
+  (void)data;
+
+  struct wd_view *view = wl_container_of(listener, view, set_title);
+  view_update_title(view);
+
+  wlr_log(WLR_INFO,
+          "WayDisplay: toplevel metadata app_id=%s title=%s",
+          view_app_id(view),
+          view_title(view));
 }
 
 static void view_handle_request_move(struct wl_listener *listener, void *data) {
@@ -772,6 +1013,8 @@ static void view_handle_request_maximize(struct wl_listener *listener,
   }
 
   view->maximized = maximize;
+  view->minimized = false;
+  view->tiled_edges = 0;
   wlr_xdg_toplevel_set_maximized(view->xdg_surface->toplevel, maximize);
   wd_scene_focus_view(view);
   wd_server_mark_scene_dirty(view->server);
@@ -808,6 +1051,8 @@ static void view_handle_request_fullscreen(struct wl_listener *listener,
   }
 
   view->fullscreen = fullscreen;
+  view->minimized = false;
+  view->tiled_edges = 0;
   wlr_xdg_toplevel_set_fullscreen(view->xdg_surface->toplevel, fullscreen);
   wd_scene_focus_view(view);
   wd_server_mark_scene_dirty(view->server);
@@ -825,10 +1070,17 @@ static void view_handle_request_minimize(struct wl_listener *listener,
 
   /*
    * WayDisplay does not have a taskbar/window-list yet, so there is nowhere
-   * useful to park a minimized window. Acknowledge the request by scheduling a
-   * configure and deactivating it, but keep it mapped.
+   * useful to park a minimized window. Track the state and deactivate it, but
+   * keep it mapped. Future UI can use view->minimized to actually hide/list it.
    */
-  wlr_xdg_toplevel_set_activated(view->xdg_surface->toplevel, false);
+  view->minimized = true;
+  view_set_activated(view, false);
+
+  if (view->server->focused_view == view) {
+    view->server->focused_view = NULL;
+    view->server->focused_surface = NULL;
+  }
+
   wlr_xdg_surface_schedule_configure(view->xdg_surface);
   wd_server_mark_scene_dirty(view->server);
 }
@@ -865,6 +1117,8 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   wl_list_init(&view->commit.link);
   wl_list_init(&view->request_move.link);
   wl_list_init(&view->set_parent.link);
+  wl_list_init(&view->set_app_id.link);
+  wl_list_init(&view->set_title.link);
   wl_list_init(&view->request_resize.link);
   wl_list_init(&view->request_maximize.link);
   wl_list_init(&view->request_fullscreen.link);
@@ -875,6 +1129,7 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
 
   view->server = server;
   view->xdg_surface = xdg_surface;
+  view_update_metadata(view);
   view_update_parent_and_position(view, false);
 
   view->scene_tree =
@@ -917,6 +1172,14 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   view->set_parent.notify = view_handle_set_parent;
   wl_signal_add(&xdg_surface->toplevel->events.set_parent,
                 &view->set_parent);
+
+  view->set_app_id.notify = view_handle_set_app_id;
+  wl_signal_add(&xdg_surface->toplevel->events.set_app_id,
+                &view->set_app_id);
+
+  view->set_title.notify = view_handle_set_title;
+  wl_signal_add(&xdg_surface->toplevel->events.set_title,
+                &view->set_title);
 
   view->request_resize.notify = view_handle_request_resize;
   wl_signal_add(&xdg_surface->toplevel->events.request_resize,

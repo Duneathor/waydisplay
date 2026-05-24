@@ -74,6 +74,9 @@ extern "C" {
         struct wlr_xdg_surface *xdg_surface;
         struct wlr_scene_tree *scene_tree;
         struct wlr_xdg_toplevel_icon_v1 *toplevel_icon;
+
+        char *app_id;
+        char *title;
         struct wd_view *parent;
         bool positioned;
 
@@ -83,6 +86,8 @@ extern "C" {
         struct wl_listener request_move;
         struct wl_listener request_resize;
         struct wl_listener set_parent;
+        struct wl_listener set_app_id;
+        struct wl_listener set_title;
         struct wl_listener request_maximize;
         struct wl_listener request_fullscreen;
         struct wl_listener request_minimize;
@@ -98,8 +103,14 @@ extern "C" {
         bool mapped;
         bool configured_once;
 
+        bool activated;
+        bool minimized;
         bool maximized;
         bool fullscreen;
+        uint32_t tiled_edges;
+
+        uint32_t bounds_width;
+        uint32_t bounds_height;
 
         int saved_x;
         int saved_y;
@@ -341,6 +352,7 @@ extern "C" {
     /* wd_scene.c */
     void wd_scene_init_listeners(struct wd_server *server);
     void wd_scene_focus_view(struct wd_view *view);
+    void wd_scene_deactivate_view(struct wd_view *view);
     void wd_scene_set_view_position(struct wd_view *view);
 
     /* wd_readback.c */
