@@ -147,6 +147,10 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             ${WAYLAND_PROTOCOLS_DATADIR}/staging/cursor-shape/cursor-shape-v1.xml
         )
 
+        set(XDG_DIALOG_XML
+            ${WAYLAND_PROTOCOLS_DATADIR}/staging/xdg-dialog/xdg-dialog-v1.xml
+        )
+
         set(GENERATED_PROTOCOL_DIR
             ${CMAKE_CURRENT_BINARY_DIR}/generated-protocols
         )
@@ -154,10 +158,15 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
         file(MAKE_DIRECTORY ${GENERATED_PROTOCOL_DIR})
 
         add_custom_command(
-            OUTPUT ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.h
+            OUTPUT
+                ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.h
+                ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.c
             COMMAND ${WAYLAND_SCANNER} server-header
                     ${XDG_SHELL_XML}
                     ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.h
+            COMMAND ${WAYLAND_SCANNER} private-code
+                    ${XDG_SHELL_XML}
+                    ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.c
             DEPENDS ${XDG_SHELL_XML}
             VERBATIM
         )
@@ -189,15 +198,34 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             VERBATIM
         )
 
+        add_custom_command(
+            OUTPUT
+                ${GENERATED_PROTOCOL_DIR}/xdg-dialog-v1-protocol.h
+                ${GENERATED_PROTOCOL_DIR}/xdg-dialog-v1-protocol.c
+            COMMAND ${WAYLAND_SCANNER} server-header
+                    ${XDG_DIALOG_XML}
+                    ${GENERATED_PROTOCOL_DIR}/xdg-dialog-v1-protocol.h
+            COMMAND ${WAYLAND_SCANNER} private-code
+                    ${XDG_DIALOG_XML}
+                    ${GENERATED_PROTOCOL_DIR}/xdg-dialog-v1-protocol.c
+            DEPENDS ${XDG_DIALOG_XML}
+            VERBATIM
+        )
+
         add_custom_target(waydisplay_wayland_protocols
             DEPENDS
                 ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.h
+                ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.c
                 ${GENERATED_PROTOCOL_DIR}/xdg-decoration-unstable-v1-protocol.h
                 ${GENERATED_PROTOCOL_DIR}/xdg-toplevel-icon-v1-protocol.h
                 ${GENERATED_PROTOCOL_DIR}/cursor-shape-v1-protocol.h
+                ${GENERATED_PROTOCOL_DIR}/xdg-dialog-v1-protocol.h
+                ${GENERATED_PROTOCOL_DIR}/xdg-dialog-v1-protocol.c
         )
 
         add_executable(waydisplay_server_wlroots
+            ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.c
+            ${GENERATED_PROTOCOL_DIR}/xdg-dialog-v1-protocol.c
             src/server/main_wlroots.c
             src/server/wd_server.c
             src/server/wd_server_net.c
@@ -206,6 +234,8 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/wd_clipboard.c
             src/server/wd_cursor.c
             src/server/wd_xdg_activation.c
+            src/server/wd_xdg_foreign.c
+            src/server/wd_xdg_dialog.c
             src/server/wd_xdg_toplevel_icon.c
             src/server/wd_xdg_decoration.c
             src/server/wd_wlroots_backend.c

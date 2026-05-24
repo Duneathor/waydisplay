@@ -34,6 +34,7 @@
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
+#include <wlr/types/wlr_xdg_foreign_v2.h>
 #include <wlr/types/wlr_xdg_toplevel_icon_v1.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/util/log.h>
@@ -77,6 +78,7 @@ extern "C" {
 
         char *app_id;
         char *title;
+        struct wl_resource *xdg_dialog_resource;
         struct wd_view *parent;
         bool positioned;
 
@@ -105,6 +107,8 @@ extern "C" {
 
         bool activated;
         bool minimized;
+        bool is_dialog;
+        bool dialog_modal;
         bool maximized;
         bool fullscreen;
         uint32_t tiled_edges;
@@ -261,6 +265,8 @@ extern "C" {
         struct wlr_xdg_shell *xdg_shell;
         struct wlr_xdg_decoration_manager_v1 *xdg_decoration_manager;
         struct wlr_xdg_activation_v1 *xdg_activation;
+        struct wlr_xdg_foreign_registry *xdg_foreign_registry;
+        struct wl_global *xdg_dialog_manager_global;
         struct wlr_xdg_toplevel_icon_manager_v1 *xdg_toplevel_icon_manager;
         struct wlr_cursor_shape_manager_v1 *cursor_shape_manager;
         struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
@@ -336,6 +342,14 @@ extern "C" {
     bool wd_xdg_activation_init(struct wd_server *server);
     void wd_xdg_activation_destroy(struct wd_server *server);
 
+    /* wd_xdg_foreign.c */
+    bool wd_xdg_foreign_init(struct wd_server *server);
+    void wd_xdg_foreign_destroy(struct wd_server *server);
+
+    /* wd_xdg_dialog.c */
+    bool wd_xdg_dialog_init(struct wd_server *server);
+    void wd_xdg_dialog_destroy(struct wd_server *server);
+
     /* wd_xdg_toplevel_icon.c */
     bool wd_xdg_toplevel_icon_init(struct wd_server *server);
     void wd_xdg_toplevel_icon_destroy(struct wd_server *server);
@@ -354,6 +368,10 @@ extern "C" {
     void wd_scene_focus_view(struct wd_view *view);
     void wd_scene_deactivate_view(struct wd_view *view);
     void wd_scene_set_view_position(struct wd_view *view);
+    void wd_scene_note_dialog_state(struct wd_view *view);
+    struct wd_view *wd_scene_view_from_xdg_toplevel_resource(
+        struct wd_server *server,
+        struct wl_resource *toplevel_resource);
 
     /* wd_readback.c */
     bool wd_render_scene_and_readback_xrgb8888(struct wd_server *server);

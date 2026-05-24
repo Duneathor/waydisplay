@@ -289,6 +289,30 @@ static struct wd_view *view_from_xdg_toplevel(struct wd_server *server,
   return NULL;
 }
 
+struct wd_view *wd_scene_view_from_xdg_toplevel_resource(
+    struct wd_server *server,
+    struct wl_resource *toplevel_resource) {
+  if (!server || !toplevel_resource) {
+    return NULL;
+  }
+
+  struct wd_view *candidate = NULL;
+
+  wl_list_for_each(candidate, &server->views, link) {
+    if (!candidate->xdg_surface ||
+        candidate->xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL ||
+        !candidate->xdg_surface->toplevel) {
+      continue;
+    }
+
+    if (candidate->xdg_surface->toplevel->resource == toplevel_resource) {
+      return candidate;
+    }
+  }
+
+  return NULL;
+}
+
 static struct wd_view *view_current_parent(struct wd_view *view) {
   if (!view || !view->server || !view->xdg_surface ||
       view->xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL ||
@@ -313,7 +337,7 @@ static void view_pick_initial_size(struct wd_view *view,
   uint32_t width = output_w;
   uint32_t height = output_h;
 
-  if (view_is_transient(view)) {
+  if (view_is_transient(view) || (view && view->is_dialog)) {
     struct wd_view *parent = view_current_parent(view);
     uint32_t parent_w = view_surface_width_or(parent, output_w);
     uint32_t parent_h = view_surface_height_or(parent, output_h);
@@ -420,6 +444,29 @@ static void view_update_parent_and_position(struct wd_view *view,
     view_place_cascaded(view);
     wd_scene_set_view_position(view);
   }
+}
+
+void wd_scene_note_dialog_state(struct wd_view *view) {
+  if (!view || !view->server) {
+    return;
+  }
+
+  /*
+   * xdg-dialog is only meaningful for toplevels with a parent. If the parent
+   * has already been set, refresh parent-relative placement. If the parent is
+   * set later, the existing set_parent listener will do the same.
+   */
+  view_update_parent_and_position(view, true);
+
+  wlr_log(WLR_INFO,
+          "WayDisplay: xdg-dialog view=%p app_id=%s title=%s modal=%d parent=%p",
+          (void *)view,
+          view_app_id(view),
+          view_title(view),
+          view->dialog_modal ? 1 : 0,
+          (void *)view->parent);
+
+  wd_server_mark_scene_dirty(view->server);
 }
 
 void wd_scene_focus_view(struct wd_view *view) {
@@ -747,6 +794,11 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
 
   free(view->app_id);
   free(view->title);
+
+  if (view->xdg_dialog_resource) {
+    wl_resource_set_user_data(view->xdg_dialog_resource, NULL);
+    view->xdg_dialog_resource = NULL;
+  }
 
   if (view->scene_tree) {
     view->scene_tree->node.data = NULL;
