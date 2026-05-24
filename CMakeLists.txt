@@ -139,6 +139,10 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             ${WAYLAND_PROTOCOLS_DATADIR}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
         )
 
+        set(XDG_TOPLEVEL_ICON_XML
+            ${WAYLAND_PROTOCOLS_DATADIR}/staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml
+        )
+
         set(GENERATED_PROTOCOL_DIR
             ${CMAKE_CURRENT_BINARY_DIR}/generated-protocols
         )
@@ -163,10 +167,20 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             VERBATIM
         )
 
+        add_custom_command(
+            OUTPUT ${GENERATED_PROTOCOL_DIR}/xdg-toplevel-icon-v1-protocol.h
+            COMMAND ${WAYLAND_SCANNER} server-header
+                    ${XDG_TOPLEVEL_ICON_XML}
+                    ${GENERATED_PROTOCOL_DIR}/xdg-toplevel-icon-v1-protocol.h
+            DEPENDS ${XDG_TOPLEVEL_ICON_XML}
+            VERBATIM
+        )
+
         add_custom_target(waydisplay_wayland_protocols
             DEPENDS
                 ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.h
                 ${GENERATED_PROTOCOL_DIR}/xdg-decoration-unstable-v1-protocol.h
+                ${GENERATED_PROTOCOL_DIR}/xdg-toplevel-icon-v1-protocol.h
         )
 
         add_executable(waydisplay_server_wlroots
@@ -177,6 +191,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/wd_keyboard.c
             src/server/wd_clipboard.c
             src/server/wd_xdg_activation.c
+            src/server/wd_xdg_toplevel_icon.c
             src/server/wd_xdg_decoration.c
             src/server/wd_wlroots_backend.c
             src/server/wd_scene.c

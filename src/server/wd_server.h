@@ -31,6 +31,7 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
+#include <wlr/types/wlr_xdg_toplevel_icon_v1.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/util/log.h>
 
@@ -53,6 +54,7 @@ extern "C" {
 
         struct wlr_xdg_surface *xdg_surface;
         struct wlr_scene_tree *scene_tree;
+        struct wlr_xdg_toplevel_icon_v1 *toplevel_icon;
 
         struct wl_listener map;
         struct wl_listener unmap;
@@ -209,6 +211,7 @@ extern "C" {
         struct wlr_xdg_shell *xdg_shell;
         struct wlr_xdg_decoration_manager_v1 *xdg_decoration_manager;
         struct wlr_xdg_activation_v1 *xdg_activation;
+        struct wlr_xdg_toplevel_icon_manager_v1 *xdg_toplevel_icon_manager;
         struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
         struct wlr_viewporter *viewporter;
         double output_scale;
@@ -235,6 +238,7 @@ extern "C" {
         struct wl_listener new_xdg_toplevel;
         struct wl_listener new_xdg_toplevel_decoration;
         struct wl_listener request_activate;
+        struct wl_listener set_xdg_toplevel_icon;
         struct wl_listener output_frame;
         struct wl_listener output_destroy;
         struct wl_listener request_set_selection;
@@ -276,6 +280,10 @@ extern "C" {
     /* wd_xdg_activation.c */
     bool wd_xdg_activation_init(struct wd_server *server);
     void wd_xdg_activation_destroy(struct wd_server *server);
+
+    /* wd_xdg_toplevel_icon.c */
+    bool wd_xdg_toplevel_icon_init(struct wd_server *server);
+    void wd_xdg_toplevel_icon_destroy(struct wd_server *server);
 
     /* wd_scene.c */
     void wd_scene_init_listeners(struct wd_server *server);

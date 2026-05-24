@@ -351,6 +351,11 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
     server->move_grab.view = NULL;
   }
 
+  if (view->toplevel_icon) {
+    wlr_xdg_toplevel_icon_v1_unref(view->toplevel_icon);
+    view->toplevel_icon = NULL;
+  }
+
   if (view->scene_tree) {
     view->scene_tree->node.data = NULL;
     view->scene_tree = NULL;
