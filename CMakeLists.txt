@@ -176,6 +176,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/wd_stream.c
             src/server/wd_keyboard.c
             src/server/wd_clipboard.c
+            src/server/wd_xdg_activation.c
             src/server/wd_xdg_decoration.c
             src/server/wd_wlroots_backend.c
             src/server/wd_scene.c
