@@ -88,6 +88,10 @@ bool wd_wlroots_init(struct wd_server *server) {
         return false;
     }
 
+    if (!wd_cursor_init(server)) {
+        return false;
+    }
+
     if (!wd_xdg_decoration_init(server)) {
         return false;
     }

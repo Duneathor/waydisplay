@@ -65,6 +65,9 @@ namespace waydisplay {
         std::string pending_primary_text;
         bool pending_primary_text_valid = false;
 
+        std::atomic<uint16_t> pending_cursor_shape{WD_CURSOR_SHAPE_DEFAULT};
+        std::atomic<bool> pending_cursor_shape_dirty{true};
+
         ClientStats stats;
         std::thread tcp_thread;
     };

@@ -164,6 +164,18 @@ static uint32_t resize_edges_at_view_point(struct wd_view *view,
   return edges;
 }
 
+static void wd_pointer_update_hover_cursor(struct wd_server *server,
+                                           struct wd_view *view,
+                                           double sx,
+                                           double sy) {
+  if (!server || !view) {
+    return;
+  }
+
+  uint32_t edges = resize_edges_at_view_point(view, sx, sy);
+  wd_cursor_set_shape(server, wd_cursor_shape_for_resize_edges(edges));
+}
+
 static bool pointer_event_is_left_press(
     const struct wd_pointer_event_payload *event) {
   return event &&
@@ -198,6 +210,7 @@ void wd_pointer_begin_move(struct wd_server *server, struct wd_view *view) {
   server->move_grab.grab_y = server->pointer_y;
   server->move_grab.view_x = view->x;
   server->move_grab.view_y = view->y;
+  wd_cursor_set_shape(server, WD_CURSOR_SHAPE_MOVE);
 
   wlr_log(WLR_INFO,
           "WayDisplay: begin move view=%p at pointer %.1f %.1f view=%d %d",
@@ -251,6 +264,7 @@ void wd_pointer_begin_resize(struct wd_server *server,
   server->resize_grab.view_y = view->y;
   server->resize_grab.view_width = view_width(view);
   server->resize_grab.view_height = view_height(view);
+  wd_cursor_set_shape(server, wd_cursor_shape_for_resize_edges(edges));
 
   wlr_xdg_toplevel_set_resizing(view->xdg_surface->toplevel, true);
 
@@ -467,11 +481,13 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
       &target_surface,
       &sx,
       &sy)) {
+      wd_cursor_set_shape(server, WD_CURSOR_SHAPE_DEFAULT);
       continue;
       }
 
     switch (event->event_type) {
       case WD_POINTER_EVENT_MOTION:
+        wd_pointer_update_hover_cursor(server, target_view, sx, sy);
         wlr_seat_pointer_notify_enter(server->seat,
                                       target_surface,
                                       sx,
@@ -511,6 +527,8 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
               wd_pointer_begin_resize(server, target_view, edges);
               break;
             }
+          } else {
+            wd_pointer_update_hover_cursor(server, target_view, sx, sy);
           }
 
           /*

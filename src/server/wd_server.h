@@ -30,6 +30,7 @@
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_toplevel_icon_v1.h>
 #include <wlr/types/wlr_viewporter.h>
@@ -243,6 +244,7 @@ extern "C" {
         struct wlr_xdg_decoration_manager_v1 *xdg_decoration_manager;
         struct wlr_xdg_activation_v1 *xdg_activation;
         struct wlr_xdg_toplevel_icon_manager_v1 *xdg_toplevel_icon_manager;
+        struct wlr_cursor_shape_manager_v1 *cursor_shape_manager;
         struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
         struct wlr_viewporter *viewporter;
         double output_scale;
@@ -266,11 +268,14 @@ extern "C" {
         struct wd_move_grab move_grab;
         struct wd_resize_grab resize_grab;
 
+        uint16_t cursor_shape;
+
         struct wl_listener new_xdg_surface;
         struct wl_listener new_xdg_toplevel;
         struct wl_listener new_xdg_toplevel_decoration;
         struct wl_listener request_activate;
         struct wl_listener set_xdg_toplevel_icon;
+        struct wl_listener request_cursor_shape;
         struct wl_listener output_frame;
         struct wl_listener output_destroy;
         struct wl_listener request_set_selection;
@@ -316,6 +321,15 @@ extern "C" {
     /* wd_xdg_toplevel_icon.c */
     bool wd_xdg_toplevel_icon_init(struct wd_server *server);
     void wd_xdg_toplevel_icon_destroy(struct wd_server *server);
+
+    /* wd_cursor.c */
+    bool wd_cursor_init(struct wd_server *server);
+    void wd_cursor_destroy(struct wd_server *server);
+    void wd_cursor_set_shape(struct wd_server *server, uint16_t shape);
+    uint16_t wd_cursor_shape_for_resize_edges(uint32_t edges);
+
+    /* net lock must already be held. */
+    bool wd_cursor_send_current_locked(struct wd_server *server);
 
     /* wd_scene.c */
     void wd_scene_init_listeners(struct wd_server *server);

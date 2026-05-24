@@ -369,6 +369,7 @@ void *wd_net_thread_main(void *arg) {
     net->primary_text = NULL;
     net->primary_text_size = 0;
     net->primary_text_pending = false;
+    wd_cursor_send_current_locked(server);
 
     pthread_mutex_unlock(&net->lock);
 

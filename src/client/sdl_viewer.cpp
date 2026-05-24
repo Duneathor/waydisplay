@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -109,6 +110,82 @@ void drain_remote_selection_updates(ClientState& state) {
         std::printf("remote primary selection updated: %zu bytes\n",
                     primary.size());
     }
+}
+
+SDL_SystemCursor sdl_cursor_for_wd_shape(uint16_t shape) {
+    switch (shape) {
+        case WD_CURSOR_SHAPE_POINTER:
+            return SDL_SYSTEM_CURSOR_HAND;
+
+        case WD_CURSOR_SHAPE_TEXT:
+            return SDL_SYSTEM_CURSOR_IBEAM;
+
+        case WD_CURSOR_SHAPE_MOVE:
+            return SDL_SYSTEM_CURSOR_SIZEALL;
+
+        case WD_CURSOR_SHAPE_EW_RESIZE:
+            return SDL_SYSTEM_CURSOR_SIZEWE;
+
+        case WD_CURSOR_SHAPE_NS_RESIZE:
+            return SDL_SYSTEM_CURSOR_SIZENS;
+
+        case WD_CURSOR_SHAPE_NWSE_RESIZE:
+            return SDL_SYSTEM_CURSOR_SIZENWSE;
+
+        case WD_CURSOR_SHAPE_NESW_RESIZE:
+            return SDL_SYSTEM_CURSOR_SIZENESW;
+
+        case WD_CURSOR_SHAPE_WAIT:
+            return SDL_SYSTEM_CURSOR_WAIT;
+
+        case WD_CURSOR_SHAPE_NOT_ALLOWED:
+            return SDL_SYSTEM_CURSOR_NO;
+
+        case WD_CURSOR_SHAPE_DEFAULT:
+        default:
+            return SDL_SYSTEM_CURSOR_ARROW;
+    }
+}
+
+void apply_pending_cursor_shape(ClientState& state) {
+    static std::array<SDL_Cursor*, WD_CURSOR_SHAPE_COUNT> cursors{};
+    static uint16_t current_shape = 0xffffu;
+
+    if (!state.pending_cursor_shape_dirty.exchange(false,
+                                                   std::memory_order_acq_rel)) {
+        return;
+    }
+
+    uint16_t shape =
+        state.pending_cursor_shape.load(std::memory_order_relaxed);
+
+    if (shape >= WD_CURSOR_SHAPE_COUNT) {
+        shape = WD_CURSOR_SHAPE_DEFAULT;
+    }
+
+    if (shape == current_shape) {
+        return;
+    }
+
+    if (!cursors[shape]) {
+        cursors[shape] =
+            SDL_CreateSystemCursor(sdl_cursor_for_wd_shape(shape));
+    }
+
+    if (cursors[shape]) {
+        SDL_SetCursor(cursors[shape]);
+        SDL_ShowCursor(SDL_ENABLE);
+        current_shape = shape;
+    }
+}
+
+void free_cached_cursors() {
+    static_assert(WD_CURSOR_SHAPE_COUNT > 0, "cursor shape count must be nonzero");
+
+    /*
+     * Cursors are intentionally process-lifetime cached. SDL_Quit() will clean
+     * them up; avoiding manual free also avoids ordering hazards with backends.
+     */
 }
 
 uint64_t take_stat(std::atomic<uint64_t>& value) {
@@ -479,6 +556,7 @@ int run_sdl_viewer(ClientState& state) {
     bool frame_dirty = true;
 
     while (state.running.load(std::memory_order_relaxed)) {
+        apply_pending_cursor_shape(state);
         drain_remote_selection_updates(state);
 
         SDL_Event event;
@@ -535,6 +613,7 @@ int run_sdl_viewer(ClientState& state) {
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+    free_cached_cursors();
     SDL_Quit();
 
     return 0;

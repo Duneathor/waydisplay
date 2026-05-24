@@ -30,6 +30,7 @@ enum wd_message_type {
     WD_MSG_CLIPBOARD_REQUEST = 10,
     WD_MSG_PRIMARY_SET = 11,
     WD_MSG_PRIMARY_REQUEST = 12,
+    WD_MSG_CURSOR_SHAPE = 13,
     WD_MSG_ERROR = 255,
 };
 
@@ -77,6 +78,21 @@ enum wd_pixel_format {
 
 enum wd_compression_mode {
     WD_COMPRESSION_ZSTD = 1,
+};
+
+enum wd_cursor_shape {
+    WD_CURSOR_SHAPE_DEFAULT = 0,
+    WD_CURSOR_SHAPE_POINTER = 1,
+    WD_CURSOR_SHAPE_TEXT = 2,
+    WD_CURSOR_SHAPE_MOVE = 3,
+    WD_CURSOR_SHAPE_EW_RESIZE = 4,
+    WD_CURSOR_SHAPE_NS_RESIZE = 5,
+    WD_CURSOR_SHAPE_NWSE_RESIZE = 6,
+    WD_CURSOR_SHAPE_NESW_RESIZE = 7,
+    WD_CURSOR_SHAPE_WAIT = 8,
+    WD_CURSOR_SHAPE_NOT_ALLOWED = 9,
+
+    WD_CURSOR_SHAPE_COUNT,
 };
 
 #if defined(_MSC_VER)
@@ -252,6 +268,12 @@ struct wd_selection_payload_header {
     uint32_t data_size;
 };
 
+struct wd_cursor_shape_payload {
+    uint32_t session_id;
+    uint16_t shape;
+    uint16_t reserved;
+};
+
 WD_PACKED_END
 
 #undef WD_PACKED_BEGIN
@@ -271,6 +293,8 @@ static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8,
               "unexpected wd_mtu_probe_result_payload size");
 static_assert(sizeof(struct wd_selection_payload_header) == 12,
               "unexpected wd_selection_payload_header size");
+static_assert(sizeof(struct wd_cursor_shape_payload) == 8,
+              "unexpected wd_cursor_shape_payload size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(sizeof(struct wd_udp_tile_packet_header) == 20,
@@ -285,6 +309,8 @@ _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8,
                "unexpected wd_mtu_probe_result_payload size");
 _Static_assert(sizeof(struct wd_selection_payload_header) == 12,
                "unexpected wd_selection_payload_header size");
+_Static_assert(sizeof(struct wd_cursor_shape_payload) == 8,
+               "unexpected wd_cursor_shape_payload size");
 #endif
 
 #ifdef __cplusplus

@@ -403,6 +403,23 @@ void store_selection_text(ClientState& state,
     }
 }
 
+void store_cursor_shape(ClientState& state,
+                        const uint8_t* payload,
+                        uint32_t payload_size) {
+    if (!payload || payload_size < sizeof(wd_cursor_shape_payload)) {
+        return;
+    }
+
+    wd_cursor_shape_payload cursor{};
+    std::memcpy(&cursor, payload, sizeof(cursor));
+
+    if (cursor.session_id == state.config.session_id &&
+        cursor.shape < WD_CURSOR_SHAPE_COUNT) {
+        state.pending_cursor_shape.store(cursor.shape, std::memory_order_relaxed);
+        state.pending_cursor_shape_dirty.store(true, std::memory_order_release);
+    }
+}
+
 void tcp_reader_main(ClientState* state) {
     while (state->running.load(std::memory_order_relaxed)) {
         uint16_t message_type = 0;
@@ -425,6 +442,8 @@ void tcp_reader_main(ClientState* state) {
                                  payload,
                                  payload_size,
                                  message_type == WD_MSG_PRIMARY_SET);
+        } else if (message_type == WD_MSG_CURSOR_SHAPE) {
+            store_cursor_shape(*state, payload, payload_size);
         } else if (message_type == WD_MSG_ERROR) {
             std::fprintf(stderr, "server sent MSG_ERROR\n");
         }
@@ -449,6 +468,8 @@ bool client_connect(ClientState& state,
 
     state.framebuffer.assign(WD_FRAMEBUFFER_PIXELS, 0xff202020u);
     state.displayed_generation.assign(WD_TOTAL_TILES, 0);
+    state.pending_cursor_shape.store(WD_CURSOR_SHAPE_DEFAULT, std::memory_order_relaxed);
+    state.pending_cursor_shape_dirty.store(true, std::memory_order_release);
 
     if (!open_udp_socket(state)) {
         return false;

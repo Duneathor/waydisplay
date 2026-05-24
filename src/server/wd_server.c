@@ -206,6 +206,7 @@ bool wd_server_init(struct wd_server *server,
                         }
 
                         wd_clipboard_destroy(server);
+                        wd_cursor_destroy(server);
                         wd_xdg_activation_destroy(server);
                         wd_xdg_toplevel_icon_destroy(server);
                         wd_xdg_decoration_destroy(server);

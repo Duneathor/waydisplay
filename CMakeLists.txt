@@ -143,6 +143,10 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             ${WAYLAND_PROTOCOLS_DATADIR}/staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml
         )
 
+        set(CURSOR_SHAPE_XML
+            ${WAYLAND_PROTOCOLS_DATADIR}/staging/cursor-shape/cursor-shape-v1.xml
+        )
+
         set(GENERATED_PROTOCOL_DIR
             ${CMAKE_CURRENT_BINARY_DIR}/generated-protocols
         )
@@ -176,11 +180,21 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             VERBATIM
         )
 
+        add_custom_command(
+            OUTPUT ${GENERATED_PROTOCOL_DIR}/cursor-shape-v1-protocol.h
+            COMMAND ${WAYLAND_SCANNER} server-header
+                    ${CURSOR_SHAPE_XML}
+                    ${GENERATED_PROTOCOL_DIR}/cursor-shape-v1-protocol.h
+            DEPENDS ${CURSOR_SHAPE_XML}
+            VERBATIM
+        )
+
         add_custom_target(waydisplay_wayland_protocols
             DEPENDS
                 ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.h
                 ${GENERATED_PROTOCOL_DIR}/xdg-decoration-unstable-v1-protocol.h
                 ${GENERATED_PROTOCOL_DIR}/xdg-toplevel-icon-v1-protocol.h
+                ${GENERATED_PROTOCOL_DIR}/cursor-shape-v1-protocol.h
         )
 
         add_executable(waydisplay_server_wlroots
@@ -190,6 +204,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/wd_stream.c
             src/server/wd_keyboard.c
             src/server/wd_clipboard.c
+            src/server/wd_cursor.c
             src/server/wd_xdg_activation.c
             src/server/wd_xdg_toplevel_icon.c
             src/server/wd_xdg_decoration.c
