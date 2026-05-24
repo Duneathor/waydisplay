@@ -199,6 +199,20 @@ static bool view_point_is_titlebar_move_zone(double sx, double sy) {
   return sx >= WD_RESIZE_EDGE_ZONE && sy <= WD_FALLBACK_MOVE_ZONE_HEIGHT;
 }
 
+static bool target_is_view_root_surface(struct wd_view *view,
+                                        struct wlr_surface *surface) {
+  return view &&
+         surface &&
+         view->xdg_surface &&
+         view->xdg_surface->surface == surface;
+}
+
+static bool target_allows_compositor_fallback_gestures(
+    struct wd_view *view,
+    struct wlr_surface *surface) {
+  return target_is_view_root_surface(view, surface);
+}
+
 void wd_pointer_begin_move(struct wd_server *server, struct wd_view *view) {
   if (!server || !view) {
     return;
@@ -487,7 +501,10 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
 
     switch (event->event_type) {
       case WD_POINTER_EVENT_MOTION:
-        wd_pointer_update_hover_cursor(server, target_view, sx, sy);
+        if (target_allows_compositor_fallback_gestures(target_view,
+                                                       target_surface)) {
+          wd_pointer_update_hover_cursor(server, target_view, sx, sy);
+        }
         wlr_seat_pointer_notify_enter(server->seat,
                                       target_surface,
                                       sx,
@@ -499,41 +516,50 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
                                        sy);
         break;
 
-      case WD_POINTER_EVENT_BUTTON:
+      case WD_POINTER_EVENT_BUTTON: {
+        /*
+         * Always deliver child-surface/subsurface/popup clicks to the actual
+         * surface. Fallback compositor gestures are only valid on the root
+         * xdg-toplevel surface. Toolkits such as Qt/KDE often create helper
+         * wl_subsurface objects for complex widgets; stealing those clicks can
+         * put the client into a bad state.
+         */
+        bool allow_fallback_gestures =
+            target_allows_compositor_fallback_gestures(target_view,
+                                                       target_surface);
+
         if (event->button_state == WD_POINTER_BUTTON_PRESSED) {
           wd_scene_focus_view(target_view);
 
-          /*
-           * Highest priority compositor gesture:
-           * Alt + left mouse drag always moves the whole window, even if the
-           * pointer is near an edge.
-           */
-          if (pointer_event_is_alt_left_press(event)) {
+          if (allow_fallback_gestures &&
+              pointer_event_is_alt_left_press(event)) {
             wd_pointer_begin_move(server, target_view);
             break;
           }
 
           /*
            * Compositor fallback resize:
-           * Drag edges/corners of the client surface, but do not steal the
-           * top titlebar/move zone from CSD clients. If the client wants a
-           * move from there, it will emit xdg_toplevel.request_move and
-           * wd_scene.c will call wd_pointer_begin_move().
+           * Only on the root toplevel surface. Do not run this against
+           * subsurfaces or helper surfaces, because their local sx/sy are not
+           * root-window coordinates and their clicks belong to the toolkit.
            */
-          if (pointer_event_is_left_press(event) &&
+          if (allow_fallback_gestures &&
+              pointer_event_is_left_press(event) &&
               !view_point_is_titlebar_move_zone(sx, sy)) {
             uint32_t edges = resize_edges_at_view_point(target_view, sx, sy);
             if (edges != WLR_EDGE_NONE) {
               wd_pointer_begin_resize(server, target_view, edges);
               break;
             }
-          } else {
+          } else if (allow_fallback_gestures) {
             wd_pointer_update_hover_cursor(server, target_view, sx, sy);
           }
 
           /*
            * Plain titlebar presses are forwarded. This preserves toolkit CSD
            * behavior for dragging, minimize/maximize buttons, menus, tabs, etc.
+           *
+           * Child-surface presses are also forwarded unchanged.
            */
         }
 
@@ -555,6 +581,7 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
           ? WL_POINTER_BUTTON_STATE_PRESSED
           : WL_POINTER_BUTTON_STATE_RELEASED);
         break;
+      }
 
     case WD_POINTER_EVENT_AXIS: {
       enum wl_pointer_axis orientation =

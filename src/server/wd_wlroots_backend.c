@@ -63,6 +63,24 @@ bool wd_wlroots_init(struct wd_server *server) {
         return false;
     }
 
+    server->output_layout = wlr_output_layout_create(server->display);
+    if (!server->output_layout) {
+        wlr_log(WLR_ERROR, "WayDisplay: failed to create output layout");
+        return false;
+    }
+
+    /*
+     * xdg-output reports logical output name, description, position, and size.
+     * Qt/Electron/toolkits often query this in addition to wl_output.
+     */
+    server->xdg_output_manager =
+        wlr_xdg_output_manager_v1_create(server->display,
+                                         server->output_layout);
+    if (!server->xdg_output_manager) {
+        wlr_log(WLR_ERROR, "WayDisplay: failed to create xdg-output manager");
+        return false;
+    }
+
     server->fractional_scale_manager =
         wlr_fractional_scale_manager_v1_create(server->display, 1);
     if (!server->fractional_scale_manager) {
@@ -170,6 +188,17 @@ bool wd_wlroots_create_headless_output(struct wd_server *server) {
      * Without this, Qt and other clients may create placeholder screens.
      */
     wlr_output_create_global(server->output, server->display);
+
+    /*
+     * xdg-output is driven by wlr_output_layout. WayDisplay has one logical
+     * output at compositor-space origin 0,0.
+     */
+    if (server->output_layout) {
+        wlr_output_layout_add(server->output_layout,
+                              server->output,
+                              0,
+                              0);
+    }
 
     server->scene_output =
     wlr_scene_output_create(server->scene, server->output);

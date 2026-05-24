@@ -25,6 +25,8 @@
 #include <wlr/types/wlr_keyboard_group.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_subcompositor.h>
@@ -239,6 +241,8 @@ extern "C" {
         struct wlr_allocator *allocator;
 
         struct wlr_output *output;
+        struct wlr_output_layout *output_layout;
+        struct wlr_xdg_output_manager_v1 *xdg_output_manager;
         struct wlr_scene *scene;
         struct wlr_scene_output *scene_output;
         bool scene_dirty;

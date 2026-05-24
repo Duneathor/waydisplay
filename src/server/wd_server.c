@@ -244,6 +244,11 @@ bool wd_server_init(struct wd_server *server,
                             server->display = NULL;
                         }
 
+                        if (server->output_layout) {
+                            wlr_output_layout_destroy(server->output_layout);
+                            server->output_layout = NULL;
+                        }
+
                         free(server->framebuffer_xrgb8888);
                         server->framebuffer_xrgb8888 = NULL;
                     }
