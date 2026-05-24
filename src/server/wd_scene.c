@@ -308,11 +308,6 @@ static void view_handle_unmap(struct wl_listener *listener, void *data) {
     server->resize_grab.view = NULL;
   }
 
-  if (server->close_grab.view == view) {
-    server->close_grab.active = false;
-    server->close_grab.view = NULL;
-  }
-
   wd_server_mark_scene_dirty(server);
 }
 
@@ -396,11 +391,6 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
   if (server->resize_grab.view == view) {
     server->resize_grab.active = false;
     server->resize_grab.view = NULL;
-  }
-
-  if (server->close_grab.view == view) {
-    server->close_grab.active = false;
-    server->close_grab.view = NULL;
   }
 
   if (view->toplevel_icon) {

@@ -10,8 +10,6 @@
 
 #define WD_FALLBACK_MOVE_ZONE_HEIGHT 32.0
 #define WD_RESIZE_EDGE_ZONE 8.0
-#define WD_FALLBACK_CLOSE_ZONE_WIDTH 46.0
-#define WD_FALLBACK_CLOSE_ZONE_HEIGHT 32.0
 #define WD_MIN_WINDOW_WIDTH 120u
 #define WD_MIN_WINDOW_HEIGHT 80u
 #define WD_POINTER_MOD_ALT (1u << 0)
@@ -187,21 +185,6 @@ static bool view_point_is_titlebar_move_zone(double sx, double sy) {
    * historically treated this region as the fallback move zone.
    */
   return sx >= WD_RESIZE_EDGE_ZONE && sy <= WD_FALLBACK_MOVE_ZONE_HEIGHT;
-}
-
-static bool view_point_is_close_zone(struct wd_view *view,
-                                     double sx,
-                                     double sy) {
-  if (!view || !view->xdg_surface || !view->xdg_surface->toplevel) {
-    return false;
-  }
-
-  const double width = (double)view_width(view);
-
-  return sy >= 0.0 &&
-         sy <= WD_FALLBACK_CLOSE_ZONE_HEIGHT &&
-         sx >= width - WD_FALLBACK_CLOSE_ZONE_WIDTH &&
-         sx <= width;
 }
 
 void wd_pointer_begin_move(struct wd_server *server, struct wd_view *view) {
@@ -431,53 +414,6 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
     server->pointer_y = ly;
 
     /*
-     * The compositor fallback close button consumes the full click pair so the
-     * client does not receive a dangling release. Send close on release rather
-     * than press so the surface is not destroyed while the pointer button is
-     * still logically down.
-     */
-    if (server->close_grab.active) {
-      if (event->event_type == WD_POINTER_EVENT_BUTTON &&
-          event->button == WD_BTN_LEFT &&
-          event->button_state == WD_POINTER_BUTTON_RELEASED) {
-        struct wd_view *close_view = server->close_grab.view;
-        bool should_close = false;
-
-        if (close_view &&
-            close_view->mapped &&
-            close_view->xdg_surface &&
-            close_view->xdg_surface->toplevel) {
-          const double close_sx = server->pointer_x - close_view->x;
-          const double close_sy = server->pointer_y - close_view->y;
-
-          should_close = view_point_is_close_zone(close_view,
-                                                  close_sx,
-                                                  close_sy);
-        }
-
-        server->close_grab.active = false;
-        server->close_grab.view = NULL;
-
-        if (should_close) {
-          wlr_log(WLR_INFO,
-                  "WayDisplay: close requested for view=%p",
-                  (void *)close_view);
-
-          wlr_xdg_toplevel_send_close(close_view->xdg_surface->toplevel);
-          wd_server_mark_scene_dirty(server);
-        }
-      }
-
-      if (event->event_type == WD_POINTER_EVENT_BUTTON &&
-          event->button == WD_BTN_LEFT &&
-          event->button_state == WD_POINTER_BUTTON_RELEASED) {
-        continue;
-      }
-
-      continue;
-    }
-
-    /*
      * If the compositor is currently moving a window, pointer motion updates
      * the scene position and is not forwarded to the client surface.
      */
@@ -558,19 +494,6 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
            */
           if (pointer_event_is_alt_left_press(event)) {
             wd_pointer_begin_move(server, target_view);
-            break;
-          }
-
-          /*
-           * Compositor fallback close:
-           * Arm on press, close on release. Destroying a toplevel while the
-           * pointer button is still down can leave stale focus/grab state in
-           * the compositor or in strict clients.
-           */
-          if (pointer_event_is_left_press(event) &&
-              view_point_is_close_zone(target_view, sx, sy)) {
-            server->close_grab.active = true;
-            server->close_grab.view = target_view;
             break;
           }
 
