@@ -59,6 +59,12 @@ namespace waydisplay {
         std::mutex retx_mutex;
         std::deque<wd_retransmit_entry> retx_queue;
 
+        std::mutex selection_mutex;
+        std::string pending_clipboard_text;
+        bool pending_clipboard_text_valid = false;
+        std::string pending_primary_text;
+        bool pending_primary_text_valid = false;
+
         ClientStats stats;
         std::thread tcp_thread;
     };

@@ -68,6 +68,13 @@ static int server_frame_timer(void *data) {
     wd_pointer_drain_and_inject(server);
     wd_keyboard_drain_and_inject(server);
 
+    /*
+     * Remote clipboard/primary messages are paste-text commands. Drain them
+     * after normal keyboard events so a Ctrl key press already forwarded by
+     * SDL can be released before the pasted characters are injected.
+     */
+    wd_clipboard_drain_and_apply(server);
+
     uint64_t t = wd_now_ns();
 
     bool should_render = wd_stream_policy_should_render_now(server, t);
@@ -192,6 +199,7 @@ bool wd_server_init(struct wd_server *server,
                             server->frame_timer = NULL;
                         }
 
+                        wd_clipboard_destroy(server);
                         wd_net_destroy(server);
                         wd_stream_destroy(server);
 

@@ -59,6 +59,16 @@ void wd_net_destroy(struct wd_server *server) {
     net->udp_fd = -1;
   }
 
+  free(net->clipboard_text);
+  net->clipboard_text = NULL;
+  net->clipboard_text_size = 0;
+  net->clipboard_text_pending = false;
+
+  free(net->primary_text);
+  net->primary_text = NULL;
+  net->primary_text_size = 0;
+  net->primary_text_pending = false;
+
   pthread_mutex_destroy(&net->lock);
 }
 
@@ -350,6 +360,16 @@ void *wd_net_thread_main(void *arg) {
     net->key_queue_count = 0;
     net->pointer_queue_count = 0;
 
+    free(net->clipboard_text);
+    net->clipboard_text = NULL;
+    net->clipboard_text_size = 0;
+    net->clipboard_text_pending = false;
+
+    free(net->primary_text);
+    net->primary_text = NULL;
+    net->primary_text_size = 0;
+    net->primary_text_pending = false;
+
     pthread_mutex_unlock(&net->lock);
 
     wlr_log(WLR_INFO,
@@ -421,6 +441,16 @@ void *wd_net_thread_main(void *arg) {
                                              }
                                            }
                                          }
+      } else if ((type == WD_MSG_CLIPBOARD_SET ||
+                  type == WD_MSG_PRIMARY_SET) &&
+                 payload_size >= sizeof(struct wd_selection_payload_header)) {
+        pthread_mutex_lock(&net->lock);
+        wd_clipboard_queue_client_set_locked(net,
+                                             cfg.session_id,
+                                             payload,
+                                             payload_size,
+                                             type == WD_MSG_PRIMARY_SET);
+        pthread_mutex_unlock(&net->lock);
       } else if (type == WD_MSG_KEYBOARD_KEY &&
                  payload_size >= sizeof(struct wd_keyboard_event_payload)) {
         struct wd_keyboard_event_payload key;
@@ -455,6 +485,16 @@ void *wd_net_thread_main(void *arg) {
     net->client_connected = false;
     net->key_queue_count = 0;
     net->pointer_queue_count = 0;
+
+    free(net->clipboard_text);
+    net->clipboard_text = NULL;
+    net->clipboard_text_size = 0;
+    net->clipboard_text_pending = false;
+
+    free(net->primary_text);
+    net->primary_text = NULL;
+    net->primary_text_size = 0;
+    net->primary_text_pending = false;
 
     pthread_mutex_unlock(&net->lock);
 

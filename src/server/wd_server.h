@@ -20,6 +20,7 @@
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_keyboard_group.h>
 #include <wlr/types/wlr_output.h>
@@ -168,6 +169,14 @@ extern "C" {
 
         struct wd_queued_pointer_event pointer_queue[WD_POINTER_QUEUE_CAP];
         size_t pointer_queue_count;
+
+        uint8_t *clipboard_text;
+        uint32_t clipboard_text_size;
+        bool clipboard_text_pending;
+
+        uint8_t *primary_text;
+        uint32_t primary_text_size;
+        bool primary_text_pending;
     };
 
     struct wd_server {
@@ -185,6 +194,9 @@ extern "C" {
 
         struct wlr_xdg_shell *xdg_shell;
         struct wlr_viewporter *viewporter;
+
+        struct wlr_data_device_manager *data_device_manager;
+        struct wlr_primary_selection_v1_device_manager *primary_selection_manager;
 
         struct wlr_seat *seat;
         struct wlr_keyboard_group *keyboard_group;
@@ -205,6 +217,8 @@ extern "C" {
         struct wl_listener new_xdg_toplevel;
         struct wl_listener output_frame;
         struct wl_listener output_destroy;
+        struct wl_listener request_set_selection;
+        struct wl_listener request_set_primary_selection;
 
         struct wl_event_source *frame_timer;
 
@@ -218,6 +232,7 @@ extern "C" {
 
         struct wd_net_state net;
     };
+
 
     /* wd_server.c */
     bool wd_server_init(struct wd_server *server,
@@ -261,6 +276,17 @@ extern "C" {
     void wd_stream_policy_consume_retransmit_tiles(struct wd_server *server,
                                                    uint32_t count);
     void wd_server_mark_scene_dirty(struct wd_server *server);
+
+
+    /* wd_clipboard.c */
+    bool wd_clipboard_init(struct wd_server *server);
+    void wd_clipboard_destroy(struct wd_server *server);
+    void wd_clipboard_queue_client_set_locked(struct wd_net_state *net,
+                                              uint32_t expected_session_id,
+                                              const uint8_t *payload,
+                                              uint32_t payload_size,
+                                              bool primary);
+    void wd_clipboard_drain_and_apply(struct wd_server *server);
 
     /* wd_server_net.c */
     bool wd_net_init(struct wd_server *server, uint16_t tcp_port);

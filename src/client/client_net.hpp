@@ -21,6 +21,11 @@ namespace waydisplay {
                                   bool pressed);
     bool client_send_pointer_event(ClientState& state,
                                    const wd_pointer_event_payload& event);
+    bool client_send_clipboard_text(ClientState& state, const char* text);
+    bool client_send_primary_text(ClientState& state, const char* text);
+
     bool client_flush_retransmit_requests(ClientState& state);
+
+
 
 } // namespace waydisplay

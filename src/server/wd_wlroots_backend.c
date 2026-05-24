@@ -86,6 +86,10 @@ bool wd_wlroots_init(struct wd_server *server) {
         return false;
     }
 
+    if (!wd_clipboard_init(server)) {
+        return false;
+    }
+
     wd_scene_init_listeners(server);
 
     return true;

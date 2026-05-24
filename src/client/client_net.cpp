@@ -353,6 +353,56 @@ void queue_retransmits_from_summary(ClientState& state,
     }
                                     }
 
+bool selection_payload_to_string(const uint8_t* payload,
+                                 uint32_t payload_size,
+                                 uint32_t expected_session_id,
+                                 std::string& out) {
+    if (!payload || payload_size < sizeof(wd_selection_payload_header)) {
+        return false;
+    }
+
+    wd_selection_payload_header header{};
+    std::memcpy(&header, payload, sizeof(header));
+
+    if (header.session_id != expected_session_id ||
+        (header.mime_type != WD_SELECTION_MIME_TEXT_UTF8 &&
+         header.mime_type != WD_SELECTION_MIME_TEXT_PLAIN) ||
+        header.data_size > WD_SELECTION_MAX_TEXT_BYTES) {
+        return false;
+    }
+
+    const size_t needed = sizeof(header) + static_cast<size_t>(header.data_size);
+    if (payload_size < needed) {
+        return false;
+    }
+
+    out.assign(reinterpret_cast<const char*>(payload + sizeof(header)),
+               header.data_size);
+    return true;
+}
+
+void store_selection_text(ClientState& state,
+                          const uint8_t* payload,
+                          uint32_t payload_size,
+                          bool primary) {
+    std::string text;
+    if (!selection_payload_to_string(payload,
+                                     payload_size,
+                                     state.config.session_id,
+                                     text)) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(state.selection_mutex);
+    if (primary) {
+        state.pending_primary_text = std::move(text);
+        state.pending_primary_text_valid = true;
+    } else {
+        state.pending_clipboard_text = std::move(text);
+        state.pending_clipboard_text_valid = true;
+    }
+}
+
 void tcp_reader_main(ClientState* state) {
     while (state->running.load(std::memory_order_relaxed)) {
         uint16_t message_type = 0;
@@ -369,6 +419,12 @@ void tcp_reader_main(ClientState* state) {
         if (message_type == WD_MSG_TILE_GENERATION_SUMMARY) {
             queue_retransmits_from_summary(*state, payload, payload_size);
             state->stats.tcp_summaries_rx.fetch_add(1, std::memory_order_relaxed);
+        } else if (message_type == WD_MSG_CLIPBOARD_SET ||
+                   message_type == WD_MSG_PRIMARY_SET) {
+            store_selection_text(*state,
+                                 payload,
+                                 payload_size,
+                                 message_type == WD_MSG_PRIMARY_SET);
         } else if (message_type == WD_MSG_ERROR) {
             std::fprintf(stderr, "server sent MSG_ERROR\n");
         }
@@ -485,6 +541,47 @@ bool client_send_pointer_event(ClientState& state,
                                WD_MSG_POINTER_EVENT,
                                &event,
                                sizeof(event));
+}
+
+bool client_send_selection_text(ClientState& state,
+                                uint16_t message_type,
+                                const char* text) {
+    if (state.tcp_fd < 0 || !text) {
+        return false;
+    }
+
+    const size_t text_len = std::strlen(text);
+    if (text_len > WD_SELECTION_MAX_TEXT_BYTES) {
+        std::fprintf(stderr,
+                     "selection text too large: %zu bytes, max %u\n",
+                     text_len,
+                     WD_SELECTION_MAX_TEXT_BYTES);
+        return false;
+    }
+
+    wd_selection_payload_header header{};
+    header.session_id = state.config.session_id;
+    header.mime_type = WD_SELECTION_MIME_TEXT_UTF8;
+    header.data_size = static_cast<uint32_t>(text_len);
+
+    std::vector<uint8_t> payload(sizeof(header) + text_len);
+    std::memcpy(payload.data(), &header, sizeof(header));
+    if (text_len > 0) {
+        std::memcpy(payload.data() + sizeof(header), text, text_len);
+    }
+
+    return wd_send_tcp_message(state.tcp_fd,
+                               message_type,
+                               payload.data(),
+                               static_cast<uint32_t>(payload.size()));
+}
+
+bool client_send_clipboard_text(ClientState& state, const char* text) {
+    return client_send_selection_text(state, WD_MSG_CLIPBOARD_SET, text);
+}
+
+bool client_send_primary_text(ClientState& state, const char* text) {
+    return client_send_selection_text(state, WD_MSG_PRIMARY_SET, text);
 }
 
 bool client_flush_retransmit_requests(ClientState& state) {

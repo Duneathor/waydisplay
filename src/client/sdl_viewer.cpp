@@ -60,6 +60,57 @@ uint16_t current_pointer_modifiers() {
     return result;
 }
 
+bool send_host_clipboard_to_server(ClientState& state, bool primary) {
+    char* text = SDL_GetClipboardText();
+    if (!text) {
+        return false;
+    }
+
+    const bool ok = primary
+        ? client_send_primary_text(state, text)
+        : client_send_clipboard_text(state, text);
+
+    SDL_free(text);
+    return ok;
+}
+
+void drain_remote_selection_updates(ClientState& state) {
+    std::string clipboard;
+    std::string primary;
+    bool have_clipboard = false;
+    bool have_primary = false;
+
+    {
+        std::lock_guard<std::mutex> lock(state.selection_mutex);
+
+        if (state.pending_clipboard_text_valid) {
+            clipboard = std::move(state.pending_clipboard_text);
+            state.pending_clipboard_text.clear();
+            state.pending_clipboard_text_valid = false;
+            have_clipboard = true;
+        }
+
+        if (state.pending_primary_text_valid) {
+            primary = std::move(state.pending_primary_text);
+            state.pending_primary_text.clear();
+            state.pending_primary_text_valid = false;
+            have_primary = true;
+        }
+    }
+
+    if (have_clipboard) {
+        SDL_SetClipboardText(clipboard.c_str());
+    }
+
+    if (have_primary) {
+        /* SDL2 does not expose a primary-selection API. Keep this for future
+         * backends or an SDL3 migration, but don't discard the remote update
+         * silently in the networking layer. */
+        std::printf("remote primary selection updated: %zu bytes\n",
+                    primary.size());
+    }
+}
+
 uint64_t take_stat(std::atomic<uint64_t>& value) {
     return value.exchange(0, std::memory_order_relaxed);
 }
@@ -200,6 +251,10 @@ uint16_t clamp_mouse_coord_y(int y) {
 }
 
 void handle_sdl_event(ClientState& state, const SDL_Event& event) {
+    static bool suppress_paste_v_keyup = false;
+    static bool suppress_middle_button_up = false;
+    static bool pending_clipboard_paste = false;
+
     if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
         if (event.type == SDL_KEYDOWN && event.key.repeat != 0) {
             return;
@@ -214,12 +269,45 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
 
         const bool pressed = event.type == SDL_KEYDOWN;
 
+        if (scancode == SDL_SCANCODE_V) {
+            if (pressed && (SDL_GetModState() & KMOD_CTRL)) {
+                /*
+                 * Treat Ctrl+V as a paste-text command, but do not send the
+                 * clipboard payload while Ctrl is still held remotely. The
+                 * remote app should first see the real Ctrl release, then the
+                 * server can inject text without it being interpreted as
+                 * Ctrl+<key> shortcuts.
+                 */
+                pending_clipboard_paste = true;
+                suppress_paste_v_keyup = true;
+                return;
+            }
+
+            if (!pressed && suppress_paste_v_keyup) {
+                suppress_paste_v_keyup = false;
+
+                if (pending_clipboard_paste && !(SDL_GetModState() & KMOD_CTRL)) {
+                    send_host_clipboard_to_server(state, false);
+                    pending_clipboard_paste = false;
+                }
+
+                return;
+            }
+        }
+
         if (!client_send_keyboard_key(state, evdev_key_code, pressed)) {
             std::fprintf(stderr,
                          "failed to send keyboard event evdev=%u pressed=%u\n",
                          evdev_key_code,
                          pressed ? 1 : 0);
             state.running.store(false, std::memory_order_relaxed);
+        }
+
+        if (!pressed && pending_clipboard_paste &&
+            (scancode == SDL_SCANCODE_LCTRL || scancode == SDL_SCANCODE_RCTRL) &&
+            !(SDL_GetModState() & KMOD_CTRL)) {
+            send_host_clipboard_to_server(state, false);
+            pending_clipboard_paste = false;
         }
 
         return;
@@ -263,6 +351,19 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
     ? WD_POINTER_BUTTON_PRESSED
     : WD_POINTER_BUTTON_RELEASED;
     pointer.modifiers = current_pointer_modifiers();
+
+    if (linux_button == WD_BTN_MIDDLE) {
+        if (event.type == SDL_MOUSEBUTTONDOWN) {
+            send_host_clipboard_to_server(state, true);
+            suppress_middle_button_up = true;
+            return;
+        }
+
+        if (event.type == SDL_MOUSEBUTTONUP && suppress_middle_button_up) {
+            suppress_middle_button_up = false;
+            return;
+        }
+    }
 
     if (!client_send_pointer_event(state, pointer)) {
         std::fprintf(stderr, "failed to send pointer button\n");
@@ -378,6 +479,8 @@ int run_sdl_viewer(ClientState& state) {
     bool frame_dirty = true;
 
     while (state.running.load(std::memory_order_relaxed)) {
+        drain_remote_selection_updates(state);
+
         SDL_Event event;
 
         while (SDL_PollEvent(&event)) {

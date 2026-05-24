@@ -26,6 +26,10 @@ enum wd_message_type {
     WD_MSG_POINTER_EVENT = 6,
     WD_MSG_MTU_PROBE_START = 7,
     WD_MSG_MTU_PROBE_RESULT = 8,
+    WD_MSG_CLIPBOARD_SET = 9,
+    WD_MSG_CLIPBOARD_REQUEST = 10,
+    WD_MSG_PRIMARY_SET = 11,
+    WD_MSG_PRIMARY_REQUEST = 12,
     WD_MSG_ERROR = 255,
 };
 
@@ -237,6 +241,17 @@ struct wd_mtu_probe_result_payload {
     uint16_t reserved;
 };
 
+#define WD_SELECTION_MIME_TEXT_UTF8 1u
+#define WD_SELECTION_MIME_TEXT_PLAIN 2u
+#define WD_SELECTION_MAX_TEXT_BYTES (1024u * 1024u)
+
+struct wd_selection_payload_header {
+    uint32_t session_id;
+    uint16_t mime_type;
+    uint16_t reserved;
+    uint32_t data_size;
+};
+
 WD_PACKED_END
 
 #undef WD_PACKED_BEGIN
@@ -254,6 +269,8 @@ static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8,
               "unexpected wd_mtu_probe_start_payload size");
 static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8,
               "unexpected wd_mtu_probe_result_payload size");
+static_assert(sizeof(struct wd_selection_payload_header) == 12,
+              "unexpected wd_selection_payload_header size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(sizeof(struct wd_udp_tile_packet_header) == 20,
@@ -266,6 +283,8 @@ _Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8,
                "unexpected wd_mtu_probe_start_payload size");
 _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8,
                "unexpected wd_mtu_probe_result_payload size");
+_Static_assert(sizeof(struct wd_selection_payload_header) == 12,
+               "unexpected wd_selection_payload_header size");
 #endif
 
 #ifdef __cplusplus
