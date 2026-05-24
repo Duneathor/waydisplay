@@ -126,6 +126,11 @@ extern "C" {
         uint32_t view_height;
     };
 
+    struct wd_close_grab {
+        bool active;
+        struct wd_view *view;
+    };
+
     struct wd_cached_tile {
         uint8_t *compressed;
         uint32_t compressed_size;
@@ -265,6 +270,7 @@ extern "C" {
 
         struct wd_move_grab move_grab;
         struct wd_resize_grab resize_grab;
+        struct wd_close_grab close_grab;
 
         struct wl_listener new_xdg_surface;
         struct wl_listener new_xdg_toplevel;

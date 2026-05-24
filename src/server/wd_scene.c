@@ -284,8 +284,36 @@ static void view_handle_unmap(struct wl_listener *listener, void *data) {
 
   struct wd_view *view = wl_container_of(listener, view, unmap);
 
+  struct wd_server *server = view->server;
+
   view->mapped = false;
-  wd_server_mark_scene_dirty(view->server);
+
+  if (server->focused_view == view) {
+    server->focused_view = NULL;
+    server->focused_surface = NULL;
+
+    if (server->seat) {
+      wlr_seat_pointer_notify_clear_focus(server->seat);
+      wlr_seat_keyboard_notify_clear_focus(server->seat);
+    }
+  }
+
+  if (server->move_grab.view == view) {
+    server->move_grab.active = false;
+    server->move_grab.view = NULL;
+  }
+
+  if (server->resize_grab.view == view) {
+    server->resize_grab.active = false;
+    server->resize_grab.view = NULL;
+  }
+
+  if (server->close_grab.view == view) {
+    server->close_grab.active = false;
+    server->close_grab.view = NULL;
+  }
+
+  wd_server_mark_scene_dirty(server);
 }
 
 static void view_handle_xdg_toplevel_destroy(struct wl_listener *listener,
@@ -343,11 +371,21 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
   if (server->focused_view == view) {
     server->focused_view = NULL;
     server->focused_surface = NULL;
+
+    if (server->seat) {
+      wlr_seat_pointer_notify_clear_focus(server->seat);
+      wlr_seat_keyboard_notify_clear_focus(server->seat);
+    }
   }
 
   if (view->xdg_surface &&
       server->focused_surface == view->xdg_surface->surface) {
     server->focused_surface = NULL;
+
+    if (server->seat) {
+      wlr_seat_pointer_notify_clear_focus(server->seat);
+      wlr_seat_keyboard_notify_clear_focus(server->seat);
+    }
   }
 
   if (server->move_grab.view == view) {
@@ -358,6 +396,11 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
   if (server->resize_grab.view == view) {
     server->resize_grab.active = false;
     server->resize_grab.view = NULL;
+  }
+
+  if (server->close_grab.view == view) {
+    server->close_grab.active = false;
+    server->close_grab.view = NULL;
   }
 
   if (view->toplevel_icon) {
