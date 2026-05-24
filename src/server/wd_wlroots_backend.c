@@ -63,6 +63,13 @@ bool wd_wlroots_init(struct wd_server *server) {
         return false;
     }
 
+    server->fractional_scale_manager =
+        wlr_fractional_scale_manager_v1_create(server->display, 1);
+    if (!server->fractional_scale_manager) {
+        wlr_log(WLR_ERROR, "WayDisplay: failed to create fractional scale manager");
+        return false;
+    }
+
     server->scene = wlr_scene_create();
     if (!server->scene) {
         return false;
@@ -70,6 +77,10 @@ bool wd_wlroots_init(struct wd_server *server) {
 
     server->xdg_shell = wlr_xdg_shell_create(server->display, 6);
     if (!server->xdg_shell) {
+        return false;
+    }
+
+    if (!wd_xdg_decoration_init(server)) {
         return false;
     }
 
@@ -131,6 +142,7 @@ bool wd_wlroots_create_headless_output(struct wd_server *server) {
                                      WD_DISPLAY_WIDTH,
                                      WD_DISPLAY_HEIGHT,
                                      60000);
+    wlr_output_state_set_scale(&state, server->output_scale);
     wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
 
     bool ok = wlr_output_commit_state(server->output, &state);

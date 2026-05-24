@@ -7,11 +7,13 @@
 static void usage(const char *argv0) {
     fprintf(stderr,
             "Usage:\n"
-            "  %s [--port 5000] [--app <command>]\n\n"
+            "  %s [--port 5000] [--scale 1.0] [--app <command>]\n\n"
             "Examples:\n"
             "  %s --port 5000 --app foot\n"
+            "  %s --port 5000 --scale 1.25 --app foot\n"
             "  %s --port 5000 --app konsole\n"
             "  %s --port 5000 --app 'mpv /path/to/video.mp4'\n",
+            argv0,
             argv0,
             argv0,
             argv0,
@@ -21,6 +23,7 @@ static void usage(const char *argv0) {
 int main(int argc, char **argv) {
     const char *app_cmd = "foot";
     uint16_t tcp_port = 5000;
+    double output_scale = 1.0;
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--app") == 0) {
@@ -37,6 +40,18 @@ int main(int argc, char **argv) {
             }
 
             tcp_port = (uint16_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--scale") == 0) {
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+
+            output_scale = atof(argv[++i]);
+            if (output_scale < 0.25 || output_scale > 8.0) {
+                fprintf(stderr, "Invalid --scale value: %.3f\n", output_scale);
+                usage(argv[0]);
+                return 1;
+            }
         } else if (strcmp(argv[i], "--help") == 0 ||
             strcmp(argv[i], "-h") == 0) {
             usage(argv[0]);
@@ -50,7 +65,7 @@ int main(int argc, char **argv) {
 
     struct wd_server server;
 
-    if (!wd_server_init(&server, tcp_port, app_cmd)) {
+    if (!wd_server_init(&server, tcp_port, app_cmd, output_scale)) {
         wd_server_destroy(&server);
         return 1;
     }

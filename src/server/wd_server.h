@@ -23,11 +23,13 @@
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_keyboard_group.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/util/log.h>
 
@@ -55,6 +57,9 @@ extern "C" {
         struct wl_listener unmap;
         struct wl_listener commit;
         struct wl_listener request_move;
+        struct wl_listener request_maximize;
+        struct wl_listener request_fullscreen;
+        struct wl_listener request_minimize;
         struct wl_listener xdg_surface_destroy;
         struct wl_listener xdg_toplevel_destroy;
         struct wl_listener new_popup;
@@ -66,6 +71,14 @@ extern "C" {
 
         bool mapped;
         bool configured_once;
+
+        bool maximized;
+        bool fullscreen;
+
+        int saved_x;
+        int saved_y;
+        uint32_t saved_width;
+        uint32_t saved_height;
     };
 
     struct wd_move_grab {
@@ -193,7 +206,10 @@ extern "C" {
         bool scene_dirty;
 
         struct wlr_xdg_shell *xdg_shell;
+        struct wlr_xdg_decoration_manager_v1 *xdg_decoration_manager;
+        struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
         struct wlr_viewporter *viewporter;
+        double output_scale;
 
         struct wlr_data_device_manager *data_device_manager;
         struct wlr_primary_selection_v1_device_manager *primary_selection_manager;
@@ -215,6 +231,7 @@ extern "C" {
 
         struct wl_listener new_xdg_surface;
         struct wl_listener new_xdg_toplevel;
+        struct wl_listener new_xdg_toplevel_decoration;
         struct wl_listener output_frame;
         struct wl_listener output_destroy;
         struct wl_listener request_set_selection;
@@ -237,7 +254,8 @@ extern "C" {
     /* wd_server.c */
     bool wd_server_init(struct wd_server *server,
                         uint16_t tcp_port,
-                        const char *app_cmd);
+                        const char *app_cmd,
+                        double output_scale);
 
     void wd_server_destroy(struct wd_server *server);
 
@@ -247,6 +265,10 @@ extern "C" {
     bool wd_wlroots_init(struct wd_server *server);
     bool wd_wlroots_start(struct wd_server *server);
     bool wd_wlroots_create_headless_output(struct wd_server *server);
+
+    /* wd_xdg_decoration.c */
+    bool wd_xdg_decoration_init(struct wd_server *server);
+    void wd_xdg_decoration_destroy(struct wd_server *server);
 
     /* wd_scene.c */
     void wd_scene_init_listeners(struct wd_server *server);

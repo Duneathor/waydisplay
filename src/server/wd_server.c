@@ -123,7 +123,8 @@ void wd_server_mark_scene_dirty(struct wd_server *server) {
 
 bool wd_server_init(struct wd_server *server,
                     uint16_t tcp_port,
-                    const char *app_cmd) {
+                    const char *app_cmd,
+                    double output_scale) {
     memset(server, 0, sizeof(*server));
 
     wl_list_init(&server->views);
@@ -131,6 +132,11 @@ bool wd_server_init(struct wd_server *server,
     server->scene_dirty = true;
 
     server->startup_command = app_cmd;
+    server->output_scale = output_scale;
+
+    if (server->output_scale <= 0.0) {
+        server->output_scale = 1.0;
+    }
 
     server->framebuffer_xrgb8888 =
     calloc(WD_FRAMEBUFFER_PIXELS, sizeof(uint32_t));
@@ -200,6 +206,7 @@ bool wd_server_init(struct wd_server *server,
                         }
 
                         wd_clipboard_destroy(server);
+                        wd_xdg_decoration_destroy(server);
                         wd_net_destroy(server);
                         wd_stream_destroy(server);
 
@@ -211,6 +218,11 @@ bool wd_server_init(struct wd_server *server,
                         if (server->new_xdg_toplevel.link.prev && server->new_xdg_toplevel.link.next) {
                             wl_list_remove(&server->new_xdg_toplevel.link);
                             wl_list_init(&server->new_xdg_toplevel.link);
+                        }
+
+                        if (server->new_xdg_toplevel_decoration.link.prev && server->new_xdg_toplevel_decoration.link.next) {
+                            wl_list_remove(&server->new_xdg_toplevel_decoration.link);
+                            wl_list_init(&server->new_xdg_toplevel_decoration.link);
                         }
 
                         if (server->output && server->output_frame.link.prev && server->output_frame.link.next) {

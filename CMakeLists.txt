@@ -135,6 +135,10 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             ${WAYLAND_PROTOCOLS_DATADIR}/stable/xdg-shell/xdg-shell.xml
         )
 
+        set(XDG_DECORATION_XML
+            ${WAYLAND_PROTOCOLS_DATADIR}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
+        )
+
         set(GENERATED_PROTOCOL_DIR
             ${CMAKE_CURRENT_BINARY_DIR}/generated-protocols
         )
@@ -150,8 +154,19 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             VERBATIM
         )
 
-        add_custom_target(waydisplay_xdg_shell_protocol
-            DEPENDS ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.h
+        add_custom_command(
+            OUTPUT ${GENERATED_PROTOCOL_DIR}/xdg-decoration-unstable-v1-protocol.h
+            COMMAND ${WAYLAND_SCANNER} server-header
+                    ${XDG_DECORATION_XML}
+                    ${GENERATED_PROTOCOL_DIR}/xdg-decoration-unstable-v1-protocol.h
+            DEPENDS ${XDG_DECORATION_XML}
+            VERBATIM
+        )
+
+        add_custom_target(waydisplay_wayland_protocols
+            DEPENDS
+                ${GENERATED_PROTOCOL_DIR}/xdg-shell-protocol.h
+                ${GENERATED_PROTOCOL_DIR}/xdg-decoration-unstable-v1-protocol.h
         )
 
         add_executable(waydisplay_server_wlroots
@@ -161,6 +176,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/wd_stream.c
             src/server/wd_keyboard.c
             src/server/wd_clipboard.c
+            src/server/wd_xdg_decoration.c
             src/server/wd_wlroots_backend.c
             src/server/wd_scene.c
             src/server/wd_readback.c
@@ -168,7 +184,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
         )
 
         add_dependencies(waydisplay_server_wlroots
-            waydisplay_xdg_shell_protocol
+            waydisplay_wayland_protocols
         )
 
         waydisplay_apply_common_warnings(waydisplay_server_wlroots)

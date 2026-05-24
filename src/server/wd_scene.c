@@ -6,6 +6,7 @@ static void view_configure_idle(void *data);
 static void view_handle_commit(struct wl_listener *listener, void *data);
 static void view_handle_map(struct wl_listener *listener, void *data);
 static void view_handle_unmap(struct wl_listener *listener, void *data);
+static void view_apply_fractional_scale(struct wd_view *view);
 static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
                                             void *data);
 static void view_handle_xdg_toplevel_destroy(struct wl_listener *listener,
@@ -15,6 +16,12 @@ static void server_handle_new_xdg_surface(struct wl_listener *listener,
 static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
                                            void *data);
 static void view_handle_request_move(struct wl_listener *listener, void *data);
+static void view_handle_request_maximize(struct wl_listener *listener,
+                                         void *data);
+static void view_handle_request_fullscreen(struct wl_listener *listener,
+                                           void *data);
+static void view_handle_request_minimize(struct wl_listener *listener,
+                                         void *data);
 static void view_handle_new_popup(struct wl_listener *listener, void *data);
 
 void wd_scene_init_listeners(struct wd_server *server) {
@@ -123,6 +130,51 @@ void wd_scene_focus_view(struct wd_view *view) {
   wd_server_mark_scene_dirty(server);
 }
 
+static int32_t preferred_buffer_scale_for(double scale) {
+  if (scale <= 1.0) {
+    return 1;
+  }
+
+  return (int32_t)(scale + 0.999999);
+}
+
+static void surface_apply_fractional_scale(struct wlr_surface *surface,
+                                           int sx,
+                                           int sy,
+                                           void *data) {
+  (void)sx;
+  (void)sy;
+
+  struct wd_server *server = data;
+  if (!surface || !server) {
+    return;
+  }
+
+  double scale = server->output_scale;
+  if (scale <= 0.0) {
+    scale = 1.0;
+  }
+
+  /*
+   * wp_fractional_scale_v1 tells clients the preferred fractional scale.
+   * wl_surface preferred buffer scale remains integer, so use ceil(scale)
+   * there to keep clients from allocating too-small buffers.
+   */
+  wlr_fractional_scale_v1_notify_scale(surface, scale);
+  wlr_surface_set_preferred_buffer_scale(surface,
+                                         preferred_buffer_scale_for(scale));
+}
+
+static void view_apply_fractional_scale(struct wd_view *view) {
+  if (!view || !view->server || !view->xdg_surface) {
+    return;
+  }
+
+  wlr_xdg_surface_for_each_surface(view->xdg_surface,
+                                   surface_apply_fractional_scale,
+                                   view->server);
+}
+
 static void view_configure_idle(void *data) {
   struct wd_view *view = data;
 
@@ -144,14 +196,31 @@ static void view_configure_idle(void *data) {
   uint32_t width = WD_DISPLAY_WIDTH;
   uint32_t height = WD_DISPLAY_HEIGHT;
 
-  if (view->x != 0 || view->y != 0) {
-    width = WD_DISPLAY_WIDTH - 160;
-    height = WD_DISPLAY_HEIGHT - 120;
+  double scale = view->server->output_scale;
+  if (scale <= 0.0) {
+    scale = 1.0;
   }
 
+  width = (uint32_t)((double)width / scale);
+  height = (uint32_t)((double)height / scale);
+
+  if (view->x != 0 || view->y != 0) {
+    width = width > 160 ? width - 160 : width;
+    height = height > 120 ? height - 120 : height;
+  }
+
+  wlr_xdg_toplevel_set_bounds(view->xdg_surface->toplevel, width, height);
   wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, width, height);
 
   wlr_xdg_toplevel_set_activated(view->xdg_surface->toplevel, true);
+
+  wlr_xdg_toplevel_set_wm_capabilities(
+      view->xdg_surface->toplevel,
+      WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE |
+          WLR_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN |
+          WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE);
+
+  view_apply_fractional_scale(view);
 
   view->configured_once = true;
 
@@ -184,6 +253,7 @@ static void view_handle_commit(struct wl_listener *listener, void *data) {
   struct wd_view *view = wl_container_of(listener, view, commit);
 
   wd_server_mark_scene_dirty(view->server);
+  view_apply_fractional_scale(view);
 
   if (!view->configured_once && !view->configure_idle) {
     view->configure_idle = wl_event_loop_add_idle(view->server->event_loop,
@@ -199,6 +269,7 @@ static void view_handle_map(struct wl_listener *listener, void *data) {
   view->mapped = true;
 
   wd_scene_set_view_position(view);
+  view_apply_fractional_scale(view);
   wd_scene_focus_view(view);
   wd_server_mark_scene_dirty(view->server);
 
@@ -229,6 +300,9 @@ static void view_handle_xdg_toplevel_destroy(struct wl_listener *listener,
    * still exist and may still fire.
    */
   remove_listener_if_linked(&view->request_move);
+  remove_listener_if_linked(&view->request_maximize);
+  remove_listener_if_linked(&view->request_fullscreen);
+  remove_listener_if_linked(&view->request_minimize);
   remove_listener_if_linked(&view->xdg_toplevel_destroy);
 }
 
@@ -241,6 +315,9 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
   struct wd_server *server = view->server;
 
   remove_listener_if_linked(&view->request_move);
+  remove_listener_if_linked(&view->request_maximize);
+  remove_listener_if_linked(&view->request_fullscreen);
+  remove_listener_if_linked(&view->request_minimize);
   remove_listener_if_linked(&view->xdg_toplevel_destroy);
 
   remove_listener_if_linked(&view->new_popup);
@@ -305,6 +382,7 @@ static void view_handle_new_popup(struct wl_listener *listener, void *data) {
             "WayDisplay: new xdg popup for view=%p",
             (void *)view);
 
+    view_apply_fractional_scale(view);
     wd_server_mark_scene_dirty(view->server);
 }
 
@@ -319,6 +397,136 @@ static void view_handle_request_move(struct wl_listener *listener, void *data) {
 
   wd_scene_focus_view(view);
   wd_pointer_begin_move(view->server, view);
+}
+
+static void view_restore_saved_geometry(struct wd_view *view) {
+  if (!view || !view->xdg_surface || !view->xdg_surface->toplevel) {
+    return;
+  }
+
+  view->x = view->saved_x;
+  view->y = view->saved_y;
+
+  wd_scene_set_view_position(view);
+  wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel,
+                            view->saved_width,
+                            view->saved_height);
+}
+
+static void view_save_geometry(struct wd_view *view) {
+  if (!view || !view->xdg_surface || !view->xdg_surface->surface) {
+    return;
+  }
+
+  view->saved_x = view->x;
+  view->saved_y = view->y;
+
+  int width = view->xdg_surface->surface->current.width;
+  int height = view->xdg_surface->surface->current.height;
+
+  if (width <= 0) {
+    width = WD_DISPLAY_WIDTH;
+  }
+
+  if (height <= 0) {
+    height = WD_DISPLAY_HEIGHT;
+  }
+
+  view->saved_width = (uint32_t)width;
+  view->saved_height = (uint32_t)height;
+}
+
+static void view_handle_request_maximize(struct wl_listener *listener,
+                                         void *data) {
+  (void)data;
+
+  struct wd_view *view = wl_container_of(listener, view, request_maximize);
+
+  if (!view || !view->xdg_surface || !view->xdg_surface->toplevel) {
+    return;
+  }
+
+  bool maximize = view->xdg_surface->toplevel->requested.maximized;
+
+  if (maximize && !view->maximized) {
+    view_save_geometry(view);
+
+    view->x = 0;
+    view->y = 0;
+    wd_scene_set_view_position(view);
+
+    double scale = view->server->output_scale;
+    if (scale <= 0.0) {
+      scale = 1.0;
+    }
+
+    wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel,
+                              (uint32_t)((double)WD_DISPLAY_WIDTH / scale),
+                              (uint32_t)((double)WD_DISPLAY_HEIGHT / scale));
+  } else if (!maximize && view->maximized) {
+    view_restore_saved_geometry(view);
+  }
+
+  view->maximized = maximize;
+  wlr_xdg_toplevel_set_maximized(view->xdg_surface->toplevel, maximize);
+  wd_scene_focus_view(view);
+  wd_server_mark_scene_dirty(view->server);
+}
+
+static void view_handle_request_fullscreen(struct wl_listener *listener,
+                                           void *data) {
+  (void)data;
+
+  struct wd_view *view = wl_container_of(listener, view, request_fullscreen);
+
+  if (!view || !view->xdg_surface || !view->xdg_surface->toplevel) {
+    return;
+  }
+
+  bool fullscreen = view->xdg_surface->toplevel->requested.fullscreen;
+
+  if (fullscreen && !view->fullscreen) {
+    view_save_geometry(view);
+    view->x = 0;
+    view->y = 0;
+    wd_scene_set_view_position(view);
+
+    double scale = view->server->output_scale;
+    if (scale <= 0.0) {
+      scale = 1.0;
+    }
+
+    wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel,
+                              (uint32_t)((double)WD_DISPLAY_WIDTH / scale),
+                              (uint32_t)((double)WD_DISPLAY_HEIGHT / scale));
+  } else if (!fullscreen && view->fullscreen) {
+    view_restore_saved_geometry(view);
+  }
+
+  view->fullscreen = fullscreen;
+  wlr_xdg_toplevel_set_fullscreen(view->xdg_surface->toplevel, fullscreen);
+  wd_scene_focus_view(view);
+  wd_server_mark_scene_dirty(view->server);
+}
+
+static void view_handle_request_minimize(struct wl_listener *listener,
+                                         void *data) {
+  (void)data;
+
+  struct wd_view *view = wl_container_of(listener, view, request_minimize);
+
+  if (!view || !view->xdg_surface || !view->xdg_surface->toplevel) {
+    return;
+  }
+
+  /*
+   * WayDisplay does not have a taskbar/window-list yet, so there is nowhere
+   * useful to park a minimized window. Acknowledge the request by scheduling a
+   * configure and deactivating it, but keep it mapped.
+   */
+  wlr_xdg_toplevel_set_activated(view->xdg_surface->toplevel, false);
+  wlr_xdg_surface_schedule_configure(view->xdg_surface);
+  wd_server_mark_scene_dirty(view->server);
 }
 
 static void server_handle_new_xdg_surface(struct wl_listener *listener,
@@ -352,6 +560,9 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   wl_list_init(&view->unmap.link);
   wl_list_init(&view->commit.link);
   wl_list_init(&view->request_move.link);
+  wl_list_init(&view->request_maximize.link);
+  wl_list_init(&view->request_fullscreen.link);
+  wl_list_init(&view->request_minimize.link);
   wl_list_init(&view->xdg_surface_destroy.link);
   wl_list_init(&view->xdg_toplevel_destroy.link);
   wl_list_init(&view->new_popup.link);
@@ -399,6 +610,18 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   view->request_move.notify = view_handle_request_move;
   wl_signal_add(&xdg_surface->toplevel->events.request_move,
                 &view->request_move);
+
+  view->request_maximize.notify = view_handle_request_maximize;
+  wl_signal_add(&xdg_surface->toplevel->events.request_maximize,
+                &view->request_maximize);
+
+  view->request_fullscreen.notify = view_handle_request_fullscreen;
+  wl_signal_add(&xdg_surface->toplevel->events.request_fullscreen,
+                &view->request_fullscreen);
+
+  view->request_minimize.notify = view_handle_request_minimize;
+  wl_signal_add(&xdg_surface->toplevel->events.request_minimize,
+                &view->request_minimize);
 
   view->new_popup.notify = view_handle_new_popup;
   wl_signal_add(&xdg_surface->events.new_popup,
