@@ -9,6 +9,9 @@
 #include <wlr/types/wlr_scene.h>
 
 #define WD_FALLBACK_MOVE_ZONE_HEIGHT 32.0
+#define WD_RESIZE_EDGE_ZONE 8.0
+#define WD_MIN_WINDOW_WIDTH 120u
+#define WD_MIN_WINDOW_HEIGHT 80u
 #define WD_POINTER_MOD_ALT (1u << 0)
 #define WD_BTN_LEFT 0x110
 
@@ -120,6 +123,70 @@ void wd_pointer_queue_event_locked(
   net->pointer_queue[net->pointer_queue_count++].event = *event;
 }
 
+static uint32_t view_width(struct wd_view *view) {
+  if (!view || !view->xdg_surface || !view->xdg_surface->surface) {
+    return WD_DISPLAY_WIDTH;
+  }
+
+  int width = view->xdg_surface->surface->current.width;
+  if (width <= 0) {
+    return WD_DISPLAY_WIDTH;
+  }
+
+  return (uint32_t)width;
+}
+
+static uint32_t view_height(struct wd_view *view) {
+  if (!view || !view->xdg_surface || !view->xdg_surface->surface) {
+    return WD_DISPLAY_HEIGHT;
+  }
+
+  int height = view->xdg_surface->surface->current.height;
+  if (height <= 0) {
+    return WD_DISPLAY_HEIGHT;
+  }
+
+  return (uint32_t)height;
+}
+
+static uint32_t resize_edges_at_view_point(struct wd_view *view,
+                                           double sx,
+                                           double sy) {
+  const double width = (double)view_width(view);
+  const double height = (double)view_height(view);
+  uint32_t edges = WLR_EDGE_NONE;
+
+  if (sx <= WD_RESIZE_EDGE_ZONE) edges |= WLR_EDGE_LEFT;
+  if (sy <= WD_RESIZE_EDGE_ZONE) edges |= WLR_EDGE_TOP;
+  if (sx >= width - WD_RESIZE_EDGE_ZONE) edges |= WLR_EDGE_RIGHT;
+  if (sy >= height - WD_RESIZE_EDGE_ZONE) edges |= WLR_EDGE_BOTTOM;
+
+  return edges;
+}
+
+static bool pointer_event_is_left_press(
+    const struct wd_pointer_event_payload *event) {
+  return event &&
+         event->event_type == WD_POINTER_EVENT_BUTTON &&
+         event->button_state == WD_POINTER_BUTTON_PRESSED &&
+         event->button == WD_BTN_LEFT;
+}
+
+static bool pointer_event_is_alt_left_press(
+    const struct wd_pointer_event_payload *event) {
+  return pointer_event_is_left_press(event) &&
+         (event->modifiers & WD_POINTER_MOD_ALT);
+}
+
+static bool view_point_is_titlebar_move_zone(double sx, double sy) {
+  /*
+   * Do not compositor-resize from the fallback titlebar strip. CSD clients need
+   * the press so they can emit xdg_toplevel.request_move, and WayDisplay also
+   * historically treated this region as the fallback move zone.
+   */
+  return sx >= WD_RESIZE_EDGE_ZONE && sy <= WD_FALLBACK_MOVE_ZONE_HEIGHT;
+}
+
 void wd_pointer_begin_move(struct wd_server *server, struct wd_view *view) {
   if (!server || !view) {
     return;
@@ -163,6 +230,127 @@ void wd_pointer_end_move(struct wd_server *server) {
 
   server->move_grab.active = false;
   server->move_grab.view = NULL;
+
+  wd_server_mark_scene_dirty(server);
+}
+
+void wd_pointer_begin_resize(struct wd_server *server,
+                             struct wd_view *view,
+                             uint32_t edges) {
+  if (!server || !view || !view->xdg_surface ||
+      !view->xdg_surface->toplevel || edges == WLR_EDGE_NONE) {
+    return;
+  }
+
+  server->resize_grab.active = true;
+  server->resize_grab.view = view;
+  server->resize_grab.edges = edges;
+  server->resize_grab.grab_x = server->pointer_x;
+  server->resize_grab.grab_y = server->pointer_y;
+  server->resize_grab.view_x = view->x;
+  server->resize_grab.view_y = view->y;
+  server->resize_grab.view_width = view_width(view);
+  server->resize_grab.view_height = view_height(view);
+
+  wlr_xdg_toplevel_set_resizing(view->xdg_surface->toplevel, true);
+
+  wlr_log(WLR_INFO,
+          "WayDisplay: begin resize view=%p edges=0x%x pointer %.1f %.1f "
+          "view=%d %d size=%ux%u",
+          (void *)view,
+          edges,
+          server->pointer_x,
+          server->pointer_y,
+          view->x,
+          view->y,
+          server->resize_grab.view_width,
+          server->resize_grab.view_height);
+}
+
+void wd_pointer_update_resize(struct wd_server *server) {
+  if (!server || !server->resize_grab.active || !server->resize_grab.view) {
+    return;
+  }
+
+  struct wd_view *view = server->resize_grab.view;
+
+  if (!view->xdg_surface || !view->xdg_surface->toplevel) {
+    return;
+  }
+
+  const double dx = server->pointer_x - server->resize_grab.grab_x;
+  const double dy = server->pointer_y - server->resize_grab.grab_y;
+  const uint32_t edges = server->resize_grab.edges;
+
+  int new_x = server->resize_grab.view_x;
+  int new_y = server->resize_grab.view_y;
+  int new_width = (int)server->resize_grab.view_width;
+  int new_height = (int)server->resize_grab.view_height;
+
+  if (edges & WLR_EDGE_LEFT) {
+    new_width = (int)server->resize_grab.view_width - (int)dx;
+    new_x = server->resize_grab.view_x + (int)dx;
+
+    if (new_width < (int)WD_MIN_WINDOW_WIDTH) {
+      new_x -= (int)WD_MIN_WINDOW_WIDTH - new_width;
+      new_width = (int)WD_MIN_WINDOW_WIDTH;
+    }
+  }
+
+  if (edges & WLR_EDGE_RIGHT) {
+    new_width = (int)server->resize_grab.view_width + (int)dx;
+
+    if (new_width < (int)WD_MIN_WINDOW_WIDTH) {
+      new_width = (int)WD_MIN_WINDOW_WIDTH;
+    }
+  }
+
+  if (edges & WLR_EDGE_TOP) {
+    new_height = (int)server->resize_grab.view_height - (int)dy;
+    new_y = server->resize_grab.view_y + (int)dy;
+
+    if (new_height < (int)WD_MIN_WINDOW_HEIGHT) {
+      new_y -= (int)WD_MIN_WINDOW_HEIGHT - new_height;
+      new_height = (int)WD_MIN_WINDOW_HEIGHT;
+    }
+  }
+
+  if (edges & WLR_EDGE_BOTTOM) {
+    new_height = (int)server->resize_grab.view_height + (int)dy;
+
+    if (new_height < (int)WD_MIN_WINDOW_HEIGHT) {
+      new_height = (int)WD_MIN_WINDOW_HEIGHT;
+    }
+  }
+
+  view->x = new_x;
+  view->y = new_y;
+
+  wd_scene_set_view_position(view);
+  wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel,
+                            (uint32_t)new_width,
+                            (uint32_t)new_height);
+
+  wd_server_mark_scene_dirty(server);
+}
+
+void wd_pointer_end_resize(struct wd_server *server) {
+  if (!server || !server->resize_grab.active) {
+    return;
+  }
+
+  if (server->resize_grab.view &&
+      server->resize_grab.view->xdg_surface &&
+      server->resize_grab.view->xdg_surface->toplevel) {
+    wlr_xdg_toplevel_set_resizing(
+        server->resize_grab.view->xdg_surface->toplevel, false);
+  }
+
+  wlr_log(WLR_INFO, "WayDisplay: end resize");
+
+  server->resize_grab.active = false;
+  server->resize_grab.view = NULL;
+  server->resize_grab.edges = WLR_EDGE_NONE;
 
   wd_server_mark_scene_dirty(server);
 }
@@ -245,6 +433,27 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
       continue;
     }
 
+    /*
+     * If the compositor is resizing a window, pointer motion updates the
+     * requested toplevel size and is not forwarded to the client surface.
+     */
+    if (server->resize_grab.active) {
+      if (event->event_type == WD_POINTER_EVENT_MOTION) {
+        wd_pointer_update_resize(server);
+        continue;
+      }
+
+      if (event->event_type == WD_POINTER_EVENT_BUTTON &&
+          event->button_state == WD_POINTER_BUTTON_RELEASED &&
+          event->button == WD_BTN_LEFT) {
+        wd_pointer_update_resize(server);
+        wd_pointer_end_resize(server);
+        continue;
+      }
+
+      continue;
+    }
+
     double sx = 0.0;
     double sy = 0.0;
 
@@ -279,15 +488,35 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
           wd_scene_focus_view(target_view);
 
           /*
-           * Compositor fallback move:
-           * Alt + left mouse drag moves the whole window.
-           * Normal clicks must go through to the application.
+           * Highest priority compositor gesture:
+           * Alt + left mouse drag always moves the whole window, even if the
+           * pointer is near an edge.
            */
-          if (event->button == WD_BTN_LEFT &&
-            (event->modifiers & WD_POINTER_MOD_ALT)) {
+          if (pointer_event_is_alt_left_press(event)) {
             wd_pointer_begin_move(server, target_view);
-          break;
+            break;
+          }
+
+          /*
+           * Compositor fallback resize:
+           * Drag edges/corners of the client surface, but do not steal the
+           * top titlebar/move zone from CSD clients. If the client wants a
+           * move from there, it will emit xdg_toplevel.request_move and
+           * wd_scene.c will call wd_pointer_begin_move().
+           */
+          if (pointer_event_is_left_press(event) &&
+              !view_point_is_titlebar_move_zone(sx, sy)) {
+            uint32_t edges = resize_edges_at_view_point(target_view, sx, sy);
+            if (edges != WLR_EDGE_NONE) {
+              wd_pointer_begin_resize(server, target_view, edges);
+              break;
             }
+          }
+
+          /*
+           * Plain titlebar presses are forwarded. This preserves toolkit CSD
+           * behavior for dragging, minimize/maximize buttons, menus, tabs, etc.
+           */
         }
 
         wlr_seat_pointer_notify_enter(server->seat,

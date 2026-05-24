@@ -38,6 +38,22 @@
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_protocol.h"
 
+/*
+ * wlroots exposes these as WLR_EDGE_* in some versions, but the resize edge
+ * values are the xdg_toplevel_resize_edge bit layout:
+ *
+ *   none=0, top=1, bottom=2, left=4, right=8
+ *
+ * Define local compatibility macros when wlroots does not provide them.
+ */
+#ifndef WLR_EDGE_NONE
+#define WLR_EDGE_NONE 0u
+#define WLR_EDGE_TOP 1u
+#define WLR_EDGE_BOTTOM 2u
+#define WLR_EDGE_LEFT 4u
+#define WLR_EDGE_RIGHT 8u
+#endif
+
 #ifdef __cplusplus
 extern "C" {
     #endif
@@ -60,6 +76,7 @@ extern "C" {
         struct wl_listener unmap;
         struct wl_listener commit;
         struct wl_listener request_move;
+        struct wl_listener request_resize;
         struct wl_listener request_maximize;
         struct wl_listener request_fullscreen;
         struct wl_listener request_minimize;
@@ -93,6 +110,20 @@ extern "C" {
 
         int view_x;
         int view_y;
+    };
+
+    struct wd_resize_grab {
+        bool active;
+        struct wd_view *view;
+        uint32_t edges;
+
+        double grab_x;
+        double grab_y;
+
+        int view_x;
+        int view_y;
+        uint32_t view_width;
+        uint32_t view_height;
     };
 
     struct wd_cached_tile {
@@ -233,6 +264,7 @@ extern "C" {
         uint32_t next_view_offset;
 
         struct wd_move_grab move_grab;
+        struct wd_resize_grab resize_grab;
 
         struct wl_listener new_xdg_surface;
         struct wl_listener new_xdg_toplevel;
@@ -355,6 +387,14 @@ extern "C" {
     void wd_pointer_update_move(struct wd_server *server);
 
     void wd_pointer_end_move(struct wd_server *server);
+
+    void wd_pointer_begin_resize(struct wd_server *server,
+                                 struct wd_view *view,
+                                 uint32_t edges);
+
+    void wd_pointer_update_resize(struct wd_server *server);
+
+    void wd_pointer_end_resize(struct wd_server *server);
 
 
 

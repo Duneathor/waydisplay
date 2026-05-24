@@ -16,6 +16,8 @@ static void server_handle_new_xdg_surface(struct wl_listener *listener,
 static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
                                            void *data);
 static void view_handle_request_move(struct wl_listener *listener, void *data);
+static void view_handle_request_resize(struct wl_listener *listener,
+                                       void *data);
 static void view_handle_request_maximize(struct wl_listener *listener,
                                          void *data);
 static void view_handle_request_fullscreen(struct wl_listener *listener,
@@ -300,6 +302,7 @@ static void view_handle_xdg_toplevel_destroy(struct wl_listener *listener,
    * still exist and may still fire.
    */
   remove_listener_if_linked(&view->request_move);
+  remove_listener_if_linked(&view->request_resize);
   remove_listener_if_linked(&view->request_maximize);
   remove_listener_if_linked(&view->request_fullscreen);
   remove_listener_if_linked(&view->request_minimize);
@@ -315,6 +318,7 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
   struct wd_server *server = view->server;
 
   remove_listener_if_linked(&view->request_move);
+  remove_listener_if_linked(&view->request_resize);
   remove_listener_if_linked(&view->request_maximize);
   remove_listener_if_linked(&view->request_fullscreen);
   remove_listener_if_linked(&view->request_minimize);
@@ -349,6 +353,11 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
   if (server->move_grab.view == view) {
     server->move_grab.active = false;
     server->move_grab.view = NULL;
+  }
+
+  if (server->resize_grab.view == view) {
+    server->resize_grab.active = false;
+    server->resize_grab.view = NULL;
   }
 
   if (view->toplevel_icon) {
@@ -402,6 +411,20 @@ static void view_handle_request_move(struct wl_listener *listener, void *data) {
 
   wd_scene_focus_view(view);
   wd_pointer_begin_move(view->server, view);
+}
+
+static void view_handle_request_resize(struct wl_listener *listener,
+                                       void *data) {
+  struct wd_view *view = wl_container_of(listener, view, request_resize);
+  struct wlr_xdg_toplevel_resize_event *event = data;
+
+  if (!view || !view->mapped || !event ||
+      event->edges == WLR_EDGE_NONE) {
+    return;
+  }
+
+  wd_scene_focus_view(view);
+  wd_pointer_begin_resize(view->server, view, event->edges);
 }
 
 static void view_restore_saved_geometry(struct wd_view *view) {
@@ -565,6 +588,7 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   wl_list_init(&view->unmap.link);
   wl_list_init(&view->commit.link);
   wl_list_init(&view->request_move.link);
+  wl_list_init(&view->request_resize.link);
   wl_list_init(&view->request_maximize.link);
   wl_list_init(&view->request_fullscreen.link);
   wl_list_init(&view->request_minimize.link);
@@ -615,6 +639,10 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   view->request_move.notify = view_handle_request_move;
   wl_signal_add(&xdg_surface->toplevel->events.request_move,
                 &view->request_move);
+
+  view->request_resize.notify = view_handle_request_resize;
+  wl_signal_add(&xdg_surface->toplevel->events.request_resize,
+                &view->request_resize);
 
   view->request_maximize.notify = view_handle_request_maximize;
   wl_signal_add(&xdg_surface->toplevel->events.request_maximize,
