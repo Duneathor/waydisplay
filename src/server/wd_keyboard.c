@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <xkbcommon/xkbcommon.h>
+
 #include "waydisplay/wd_time.h"
 
 bool wd_keyboard_init(struct wd_server *server) {
@@ -67,57 +69,103 @@ void wd_keyboard_queue_event_locked(struct wd_net_state *net,
     dst->client_timestamp_ns = event->client_timestamp_ns;
 
     net->stats.key_events_rx++;
-                                    }
-                                    void wd_keyboard_drain_and_inject(struct wd_server *server) {
-                                        struct wd_queued_key_event local[WD_KEY_QUEUE_CAP];
-                                        size_t count = 0;
+}
 
-                                        pthread_mutex_lock(&server->net.lock);
+static uint32_t key_time_msec(const struct wd_queued_key_event *event) {
+    if (event && event->client_timestamp_ns != 0) {
+        return (uint32_t)(event->client_timestamp_ns / 1000000ull);
+    }
 
-                                        count = server->net.key_queue_count;
+    return (uint32_t)(wd_now_ns() / 1000000ull);
+}
 
-                                        if (count > WD_KEY_QUEUE_CAP) {
-                                            count = WD_KEY_QUEUE_CAP;
-                                        }
+static void notify_key_and_modifiers(struct wd_server *server,
+                                     const struct wd_queued_key_event *event) {
+    if (!server || !server->seat || !server->keyboard || !event) {
+        return;
+    }
 
-                                        if (count > 0) {
-                                            memcpy(local, server->net.key_queue, count * sizeof(local[0]));
-                                            server->net.key_queue_count = 0;
-                                        }
+    enum wl_keyboard_key_state state =
+        event->pressed ? WL_KEYBOARD_KEY_STATE_PRESSED
+                       : WL_KEYBOARD_KEY_STATE_RELEASED;
 
-                                        pthread_mutex_unlock(&server->net.lock);
+    const uint32_t time_msec = key_time_msec(event);
 
-                                        if (count == 0 || !server->seat || !server->keyboard) {
-                                            return;
-                                        }
+    /*
+     * The SDL client sends Linux evdev keycodes. wlroots 0.19 does not expose
+     * wlr_keyboard_notify_key(), so update the keyboard's xkb state directly
+     * before forwarding the key through the seat. xkb keycodes are evdev + 8.
+     */
+    if (server->keyboard->xkb_state) {
+        enum xkb_key_direction direction =
+            event->pressed ? XKB_KEY_DOWN : XKB_KEY_UP;
 
-                                        wlr_seat_set_keyboard(server->seat, server->keyboard);
+        xkb_state_update_key(server->keyboard->xkb_state,
+                             event->evdev_key_code + 8,
+                             direction);
 
-                                        if (server->focused_surface) {
-                                            wlr_seat_keyboard_notify_enter(server->seat,
-                                                                           server->focused_surface,
-                                                                           server->keyboard->keycodes,
-                                                                           server->keyboard->num_keycodes,
-                                                                           &server->keyboard->modifiers);
-                                        }
+        server->keyboard->modifiers.depressed =
+            xkb_state_serialize_mods(server->keyboard->xkb_state,
+                                     XKB_STATE_MODS_DEPRESSED);
+        server->keyboard->modifiers.latched =
+            xkb_state_serialize_mods(server->keyboard->xkb_state,
+                                     XKB_STATE_MODS_LATCHED);
+        server->keyboard->modifiers.locked =
+            xkb_state_serialize_mods(server->keyboard->xkb_state,
+                                     XKB_STATE_MODS_LOCKED);
+        server->keyboard->modifiers.group =
+            xkb_state_serialize_layout(server->keyboard->xkb_state,
+                                       XKB_STATE_LAYOUT_EFFECTIVE);
 
-                                        for (size_t i = 0; i < count; ++i) {
-                                            enum wl_keyboard_key_state state =
-                                            local[i].pressed
-                                            ? WL_KEYBOARD_KEY_STATE_PRESSED
-                                            : WL_KEYBOARD_KEY_STATE_RELEASED;
+        if (server->focused_surface) {
+            wlr_seat_keyboard_notify_modifiers(server->seat,
+                                               &server->keyboard->modifiers);
+        }
+    }
 
-                                            /*
-                                             * Keep old working behavior: SDL client sends Linux evdev keycodes,
-                                             * and the old server passed them directly.
-                                             */
-                                            wlr_seat_keyboard_notify_key(server->seat,
-                                                                         (uint32_t)(wd_now_ns() / 1000000ull),
-                                                                         local[i].evdev_key_code,
-                                                                         state);
+    wlr_seat_keyboard_notify_key(server->seat,
+                                 time_msec,
+                                 event->evdev_key_code,
+                                 state);
+}
 
-                                            pthread_mutex_lock(&server->net.lock);
-                                            server->net.stats.key_events_injected++;
-                                            pthread_mutex_unlock(&server->net.lock);
-                                        }
-                                    }
+void wd_keyboard_drain_and_inject(struct wd_server *server) {
+    struct wd_queued_key_event local[WD_KEY_QUEUE_CAP];
+    size_t count = 0;
+
+    pthread_mutex_lock(&server->net.lock);
+
+    count = server->net.key_queue_count;
+    if (count > WD_KEY_QUEUE_CAP) {
+        count = WD_KEY_QUEUE_CAP;
+    }
+
+    if (count > 0) {
+        memcpy(local, server->net.key_queue, count * sizeof(local[0]));
+        server->net.key_queue_count = 0;
+    }
+
+    pthread_mutex_unlock(&server->net.lock);
+
+    if (count == 0 || !server->seat || !server->keyboard) {
+        return;
+    }
+
+    wlr_seat_set_keyboard(server->seat, server->keyboard);
+
+    if (server->focused_surface) {
+        wlr_seat_keyboard_notify_enter(server->seat,
+                                       server->focused_surface,
+                                       server->keyboard->keycodes,
+                                       server->keyboard->num_keycodes,
+                                       &server->keyboard->modifiers);
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        notify_key_and_modifiers(server, &local[i]);
+
+        pthread_mutex_lock(&server->net.lock);
+        server->net.stats.key_events_injected++;
+        pthread_mutex_unlock(&server->net.lock);
+    }
+}

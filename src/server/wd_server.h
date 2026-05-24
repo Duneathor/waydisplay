@@ -72,12 +72,15 @@ extern "C" {
         struct wlr_xdg_surface *xdg_surface;
         struct wlr_scene_tree *scene_tree;
         struct wlr_xdg_toplevel_icon_v1 *toplevel_icon;
+        struct wd_view *parent;
+        bool positioned;
 
         struct wl_listener map;
         struct wl_listener unmap;
         struct wl_listener commit;
         struct wl_listener request_move;
         struct wl_listener request_resize;
+        struct wl_listener set_parent;
         struct wl_listener request_maximize;
         struct wl_listener request_fullscreen;
         struct wl_listener request_minimize;

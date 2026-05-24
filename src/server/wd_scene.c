@@ -15,6 +15,7 @@ static void server_handle_new_xdg_surface(struct wl_listener *listener,
                                           void *data);
 static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
                                            void *data);
+static void view_handle_set_parent(struct wl_listener *listener, void *data);
 static void view_handle_request_move(struct wl_listener *listener, void *data);
 static void view_handle_request_resize(struct wl_listener *listener,
                                        void *data);
@@ -100,6 +101,219 @@ void wd_scene_set_view_position(struct wd_view *view) {
   }
 
   wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+}
+
+
+static int clamp_i(int value, int min_value, int max_value) {
+  if (value < min_value) {
+    return min_value;
+  }
+
+  if (value > max_value) {
+    return max_value;
+  }
+
+  return value;
+}
+
+static uint32_t output_logical_width(struct wd_server *server) {
+  double scale = server ? server->output_scale : 1.0;
+  if (scale <= 0.0) {
+    scale = 1.0;
+  }
+
+  uint32_t width = (uint32_t)((double)WD_DISPLAY_WIDTH / scale);
+  return width > 0 ? width : 1;
+}
+
+static uint32_t output_logical_height(struct wd_server *server) {
+  double scale = server ? server->output_scale : 1.0;
+  if (scale <= 0.0) {
+    scale = 1.0;
+  }
+
+  uint32_t height = (uint32_t)((double)WD_DISPLAY_HEIGHT / scale);
+  return height > 0 ? height : 1;
+}
+
+static uint32_t view_surface_width_or(struct wd_view *view,
+                                      uint32_t fallback) {
+  if (!view || !view->xdg_surface || !view->xdg_surface->surface) {
+    return fallback;
+  }
+
+  int width = view->xdg_surface->surface->current.width;
+  if (width <= 0) {
+    return fallback;
+  }
+
+  return (uint32_t)width;
+}
+
+static uint32_t view_surface_height_or(struct wd_view *view,
+                                       uint32_t fallback) {
+  if (!view || !view->xdg_surface || !view->xdg_surface->surface) {
+    return fallback;
+  }
+
+  int height = view->xdg_surface->surface->current.height;
+  if (height <= 0) {
+    return fallback;
+  }
+
+  return (uint32_t)height;
+}
+
+static struct wd_view *view_from_xdg_toplevel(struct wd_server *server,
+                                              struct wlr_xdg_toplevel *toplevel) {
+  if (!server || !toplevel) {
+    return NULL;
+  }
+
+  struct wd_view *candidate = NULL;
+
+  wl_list_for_each(candidate, &server->views, link) {
+    if (candidate->xdg_surface &&
+        candidate->xdg_surface->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL &&
+        candidate->xdg_surface->toplevel == toplevel) {
+      return candidate;
+    }
+  }
+
+  return NULL;
+}
+
+static struct wd_view *view_current_parent(struct wd_view *view) {
+  if (!view || !view->server || !view->xdg_surface ||
+      view->xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL ||
+      !view->xdg_surface->toplevel ||
+      !view->xdg_surface->toplevel->parent) {
+    return NULL;
+  }
+
+  return view_from_xdg_toplevel(view->server,
+                                view->xdg_surface->toplevel->parent);
+}
+
+static bool view_is_transient(struct wd_view *view) {
+  return view_current_parent(view) != NULL;
+}
+
+static void view_pick_initial_size(struct wd_view *view,
+                                   uint32_t *out_width,
+                                   uint32_t *out_height) {
+  uint32_t output_w = output_logical_width(view ? view->server : NULL);
+  uint32_t output_h = output_logical_height(view ? view->server : NULL);
+  uint32_t width = output_w;
+  uint32_t height = output_h;
+
+  if (view_is_transient(view)) {
+    struct wd_view *parent = view_current_parent(view);
+    uint32_t parent_w = view_surface_width_or(parent, output_w);
+    uint32_t parent_h = view_surface_height_or(parent, output_h);
+
+    /*
+     * Dialogs should not be configured as full-screen-sized toplevels.
+     * Give them a generous parent-relative maximum while still letting clients
+     * commit smaller natural sizes.
+     */
+    width = parent_w > 160 ? parent_w - 80 : parent_w;
+    height = parent_h > 160 ? parent_h - 80 : parent_h;
+
+    if (output_w > 160 && width > output_w - 160) {
+      width = output_w - 160;
+    }
+
+    if (output_h > 120 && height > output_h - 120) {
+      height = output_h - 120;
+    }
+
+    if (width < 320) {
+      width = 320;
+    }
+
+    if (height < 200) {
+      height = 200;
+    }
+  } else if (view && (view->x != 0 || view->y != 0)) {
+    width = output_w > 160 ? output_w - 160 : output_w;
+    height = output_h > 120 ? output_h - 120 : output_h;
+  }
+
+  if (out_width) {
+    *out_width = width;
+  }
+
+  if (out_height) {
+    *out_height = height;
+  }
+}
+
+static void view_place_cascaded(struct wd_view *view) {
+  if (!view || !view->server) {
+    return;
+  }
+
+  int offset = (int)((view->server->next_view_offset++ % 8) * 40);
+  view->x = offset;
+  view->y = offset;
+  view->positioned = true;
+}
+
+static void view_place_relative_to_parent(struct wd_view *view,
+                                          struct wd_view *parent) {
+  if (!view || !parent) {
+    return;
+  }
+
+  uint32_t output_w = output_logical_width(view->server);
+  uint32_t output_h = output_logical_height(view->server);
+  uint32_t parent_w = view_surface_width_or(parent, output_w);
+  uint32_t parent_h = view_surface_height_or(parent, output_h);
+  uint32_t child_w = view_surface_width_or(view, 480);
+  uint32_t child_h = view_surface_height_or(view, 320);
+
+  int x = parent->x + ((int)parent_w - (int)child_w) / 2;
+  int y = parent->y + ((int)parent_h - (int)child_h) / 3;
+
+  view->x = clamp_i(x, 0, (int)WD_DISPLAY_WIDTH - 1);
+  view->y = clamp_i(y, 0, (int)WD_DISPLAY_HEIGHT - 1);
+
+  if (view->x + (int)child_w > (int)WD_DISPLAY_WIDTH) {
+    view->x = clamp_i((int)WD_DISPLAY_WIDTH - (int)child_w, 0,
+                      (int)WD_DISPLAY_WIDTH - 1);
+  }
+
+  if (view->y + (int)child_h > (int)WD_DISPLAY_HEIGHT) {
+    view->y = clamp_i((int)WD_DISPLAY_HEIGHT - (int)child_h, 0,
+                      (int)WD_DISPLAY_HEIGHT - 1);
+  }
+
+  view->parent = parent;
+  view->positioned = true;
+}
+
+static void view_update_parent_and_position(struct wd_view *view,
+                                            bool force_reposition) {
+  if (!view || !view->server) {
+    return;
+  }
+
+  struct wd_view *parent = view_current_parent(view);
+  view->parent = parent;
+
+  if (parent) {
+    if (force_reposition || !view->positioned) {
+      view_place_relative_to_parent(view, parent);
+      wd_scene_set_view_position(view);
+    }
+    return;
+  }
+
+  if (!view->positioned) {
+    view_place_cascaded(view);
+    wd_scene_set_view_position(view);
+  }
 }
 
 void wd_scene_focus_view(struct wd_view *view) {
@@ -195,21 +409,9 @@ static void view_configure_idle(void *data) {
   /*
    * wlroots 0.19: defer initial configure until idle.
    */
-  uint32_t width = WD_DISPLAY_WIDTH;
-  uint32_t height = WD_DISPLAY_HEIGHT;
-
-  double scale = view->server->output_scale;
-  if (scale <= 0.0) {
-    scale = 1.0;
-  }
-
-  width = (uint32_t)((double)width / scale);
-  height = (uint32_t)((double)height / scale);
-
-  if (view->x != 0 || view->y != 0) {
-    width = width > 160 ? width - 160 : width;
-    height = height > 120 ? height - 120 : height;
-  }
+  uint32_t width = 0;
+  uint32_t height = 0;
+  view_pick_initial_size(view, &width, &height);
 
   wlr_xdg_toplevel_set_bounds(view->xdg_surface->toplevel, width, height);
   wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, width, height);
@@ -263,10 +465,25 @@ static void view_handle_commit(struct wl_listener *listener, void *data) {
   }
 }
 
+static void view_handle_set_parent(struct wl_listener *listener, void *data) {
+  (void)data;
+
+  struct wd_view *view = wl_container_of(listener, view, set_parent);
+
+  if (!view) {
+    return;
+  }
+
+  view_update_parent_and_position(view, true);
+  wd_server_mark_scene_dirty(view->server);
+}
+
 static void view_handle_map(struct wl_listener *listener, void *data) {
   (void)data;
 
   struct wd_view *view = wl_container_of(listener, view, map);
+
+  view_update_parent_and_position(view, false);
 
   view->mapped = true;
 
@@ -325,6 +542,7 @@ static void view_handle_xdg_toplevel_destroy(struct wl_listener *listener,
    * still exist and may still fire.
    */
   remove_listener_if_linked(&view->request_move);
+  remove_listener_if_linked(&view->set_parent);
   remove_listener_if_linked(&view->request_resize);
   remove_listener_if_linked(&view->request_maximize);
   remove_listener_if_linked(&view->request_fullscreen);
@@ -341,6 +559,7 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
   struct wd_server *server = view->server;
 
   remove_listener_if_linked(&view->request_move);
+  remove_listener_if_linked(&view->set_parent);
   remove_listener_if_linked(&view->request_resize);
   remove_listener_if_linked(&view->request_maximize);
   remove_listener_if_linked(&view->request_fullscreen);
@@ -356,6 +575,16 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
   if (view->link.prev && view->link.next) {
     wl_list_remove(&view->link);
     wl_list_init(&view->link);
+  }
+
+  struct wd_view *child = NULL;
+  wl_list_for_each(child, &server->views, link) {
+    if (child->parent == view) {
+      child->parent = NULL;
+      if (!child->positioned) {
+        view_update_parent_and_position(child, false);
+      }
+    }
   }
 
   if (view->configure_idle) {
@@ -417,6 +646,20 @@ static void view_handle_new_popup(struct wl_listener *listener, void *data) {
     if (!view || !popup) {
         return;
     }
+
+    /*
+     * Keep menus, combo boxes, context menus, and tooltips constrained to the
+     * visible WayDisplay output. wlr_scene_xdg_surface_create() owns the popup
+     * scene nodes; xdg_popup_unconstrain_from_box() adjusts the xdg positioner
+     * result so popup geometry stays on-screen.
+     */
+    struct wlr_box output_box = {
+        .x = 0,
+        .y = 0,
+        .width = WD_DISPLAY_WIDTH,
+        .height = WD_DISPLAY_HEIGHT,
+    };
+    wlr_xdg_popup_unconstrain_from_box(popup, &output_box);
 
     /*
      * wlr_scene_xdg_surface_create() should already create scene nodes for
@@ -621,6 +864,7 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   wl_list_init(&view->unmap.link);
   wl_list_init(&view->commit.link);
   wl_list_init(&view->request_move.link);
+  wl_list_init(&view->set_parent.link);
   wl_list_init(&view->request_resize.link);
   wl_list_init(&view->request_maximize.link);
   wl_list_init(&view->request_fullscreen.link);
@@ -631,10 +875,7 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
 
   view->server = server;
   view->xdg_surface = xdg_surface;
-  int offset = (int)((server->next_view_offset++ % 8) * 40);
-
-  view->x = offset;
-  view->y = offset;
+  view_update_parent_and_position(view, false);
 
   view->scene_tree =
       wlr_scene_xdg_surface_create(&server->scene->tree, xdg_surface);
@@ -672,6 +913,10 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
   view->request_move.notify = view_handle_request_move;
   wl_signal_add(&xdg_surface->toplevel->events.request_move,
                 &view->request_move);
+
+  view->set_parent.notify = view_handle_set_parent;
+  wl_signal_add(&xdg_surface->toplevel->events.set_parent,
+                &view->set_parent);
 
   view->request_resize.notify = view_handle_request_resize;
   wl_signal_add(&xdg_surface->toplevel->events.request_resize,
