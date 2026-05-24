@@ -1,6 +1,7 @@
 #include "wd_server.h"
 
 #include <drm_fourcc.h>
+#include <stdlib.h>
 
 static void output_handle_frame(struct wl_listener *listener, void *data) {
     (void)data;
@@ -87,6 +88,17 @@ bool wd_wlroots_init(struct wd_server *server) {
         wlr_log(WLR_ERROR, "WayDisplay: failed to create fractional scale manager");
         return false;
     }
+
+    /*
+     * WayDisplay is not a normal hardware-output compositor: every frame needs
+     * to become a readable framebuffer for tile hashing/compression/streaming.
+     *
+     * If wlroots scene direct scan-out is enabled, a single fullscreen client
+     * can bypass compositing and state.buffer may be the client's own buffer.
+     * Some of those buffers cannot be converted with wlr_texture_from_buffer(),
+     * which causes repeated readback failures with fullscreen clients.
+     */
+    setenv("WLR_SCENE_DISABLE_DIRECT_SCANOUT", "1", 1);
 
     server->scene = wlr_scene_create();
     if (!server->scene) {

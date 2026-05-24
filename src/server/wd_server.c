@@ -10,13 +10,17 @@
 #include "waydisplay/wd_time.h"
 
 static struct wd_server *g_server_for_signal = NULL;
+static volatile sig_atomic_t g_terminate_requested = 0;
 
 static void handle_signal(int signo) {
     (void)signo;
 
-    if (g_server_for_signal && g_server_for_signal->display) {
-        wl_display_terminate(g_server_for_signal->display);
-    }
+    /*
+     * Do not call wl_display_terminate() from a POSIX signal handler. It is not
+     * async-signal-safe. The frame timer runs on the Wayland event loop and
+     * will perform the actual termination.
+     */
+    g_terminate_requested = 1;
 }
 
 static bool launch_startup_command(struct wd_server *server) {
@@ -65,6 +69,12 @@ static int server_frame_timer(void *data) {
     if (!server || !server->display) {
         return 0;
     }
+
+    if (g_terminate_requested) {
+        wl_display_terminate(server->display);
+        return 0;
+    }
+
     wd_pointer_drain_and_inject(server);
     wd_keyboard_drain_and_inject(server);
 
@@ -257,6 +267,7 @@ bool wd_server_init(struct wd_server *server,
                         wlr_log_init(WLR_DEBUG, NULL);
 
                         g_server_for_signal = server;
+                        g_terminate_requested = 0;
 
                         signal(SIGINT, handle_signal);
                         signal(SIGTERM, handle_signal);
