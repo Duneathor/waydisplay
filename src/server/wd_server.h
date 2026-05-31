@@ -241,6 +241,7 @@ extern "C" {
         uint8_t *clipboard_text;
         uint32_t clipboard_text_size;
         bool clipboard_text_pending;
+        bool clipboard_paste_pending;
 
         uint8_t *primary_text;
         uint32_t primary_text_size;
@@ -306,6 +307,14 @@ extern "C" {
         struct wl_listener request_set_primary_selection;
 
         struct wl_event_source *frame_timer;
+
+        uint8_t *remote_clipboard_text;
+        uint32_t remote_clipboard_text_size;
+        struct wlr_data_source *remote_clipboard_source;
+
+        uint8_t *remote_primary_text;
+        uint32_t remote_primary_text_size;
+        struct wlr_primary_selection_source *remote_primary_source;
 
         uint64_t last_summary_ns;
         uint64_t last_stats_ns;

@@ -75,15 +75,14 @@ static int server_frame_timer(void *data) {
         return 0;
     }
 
-    wd_pointer_drain_and_inject(server);
-    wd_keyboard_drain_and_inject(server);
-
     /*
-     * Remote clipboard/primary messages are paste-text commands. Drain them
-     * after normal keyboard events so a Ctrl key press already forwarded by
-     * SDL can be released before the pasted characters are injected.
+     * Drain keyboard first so a held Ctrl modifier is active before a clipboard
+     * paste request synthesizes the V key. Drain pointer after clipboard so
+     * middle-click primary paste sees the freshly published primary selection.
      */
+    wd_keyboard_drain_and_inject(server);
     wd_clipboard_drain_and_apply(server);
+    wd_pointer_drain_and_inject(server);
 
     uint64_t t = wd_now_ns();
 

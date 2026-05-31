@@ -329,8 +329,6 @@ uint16_t clamp_mouse_coord_y(int y) {
 
 void handle_sdl_event(ClientState& state, const SDL_Event& event) {
     static bool suppress_paste_v_keyup = false;
-    static bool suppress_middle_button_up = false;
-    static bool pending_clipboard_paste = false;
 
     if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
         if (event.type == SDL_KEYDOWN && event.key.repeat != 0) {
@@ -349,25 +347,18 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
         if (scancode == SDL_SCANCODE_V) {
             if (pressed && (SDL_GetModState() & KMOD_CTRL)) {
                 /*
-                 * Treat Ctrl+V as a paste-text command, but do not send the
-                 * clipboard payload while Ctrl is still held remotely. The
-                 * remote app should first see the real Ctrl release, then the
-                 * server can inject text without it being interpreted as
-                 * Ctrl+<key> shortcuts.
+                 * Ctrl+V is a host-clipboard paste command. Send the clipboard
+                 * payload, but do not forward the V key itself: the server will
+                 * publish the selection, then synthesize V while Ctrl is already
+                 * held remotely. Forwarding V here races ahead of publication.
                  */
-                pending_clipboard_paste = true;
+                send_host_clipboard_to_server(state, false);
                 suppress_paste_v_keyup = true;
                 return;
             }
 
             if (!pressed && suppress_paste_v_keyup) {
                 suppress_paste_v_keyup = false;
-
-                if (pending_clipboard_paste && !(SDL_GetModState() & KMOD_CTRL)) {
-                    send_host_clipboard_to_server(state, false);
-                    pending_clipboard_paste = false;
-                }
-
                 return;
             }
         }
@@ -378,13 +369,6 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
                          evdev_key_code,
                          pressed ? 1 : 0);
             state.running.store(false, std::memory_order_relaxed);
-        }
-
-        if (!pressed && pending_clipboard_paste &&
-            (scancode == SDL_SCANCODE_LCTRL || scancode == SDL_SCANCODE_RCTRL) &&
-            !(SDL_GetModState() & KMOD_CTRL)) {
-            send_host_clipboard_to_server(state, false);
-            pending_clipboard_paste = false;
         }
 
         return;
@@ -429,17 +413,13 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
     : WD_POINTER_BUTTON_RELEASED;
     pointer.modifiers = current_pointer_modifiers();
 
-    if (linux_button == WD_BTN_MIDDLE) {
-        if (event.type == SDL_MOUSEBUTTONDOWN) {
-            send_host_clipboard_to_server(state, true);
-            suppress_middle_button_up = true;
-            return;
-        }
-
-        if (event.type == SDL_MOUSEBUTTONUP && suppress_middle_button_up) {
-            suppress_middle_button_up = false;
-            return;
-        }
+    if (linux_button == WD_BTN_MIDDLE && event.type == SDL_MOUSEBUTTONDOWN) {
+        /*
+         * Publish the host clipboard as primary selection first, then forward
+         * the middle click so the Wayland client performs its normal primary
+         * paste request.
+         */
+        send_host_clipboard_to_server(state, true);
     }
 
     if (!client_send_pointer_event(state, pointer)) {
