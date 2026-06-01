@@ -413,6 +413,13 @@ bool wd_stream_send_cached_tile_locked(struct wd_server *server, uint16_t tile_i
                sizeof(net->client_udp_addr));
 
         if (sent < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS) {
+                WD_LOG_DEBUG(
+                        "WayDisplay: dropping UDP tile packet under send pressure: %s",
+                        strerror(errno));
+                continue;
+            }
+
             WD_LOG_ERROR(
                     "WayDisplay: sendto failed: %s",
                     strerror(errno));

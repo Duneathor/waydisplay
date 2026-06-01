@@ -9,6 +9,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#define WD_TCP_MAX_PAYLOAD_SIZE (2u * 1024u * 1024u)
+
 bool wd_send_all(int fd, const void *data, size_t size) {
     const uint8_t *p = (const uint8_t *)data;
 
@@ -117,6 +119,10 @@ bool wd_recv_tcp_message(int fd,
 
     if (header.magic != WD_TCP_MAGIC ||
         header.protocol_version != WD_PROTOCOL_VERSION) {
+        return false;
+    }
+
+    if (header.payload_size > WD_TCP_MAX_PAYLOAD_SIZE) {
         return false;
     }
 

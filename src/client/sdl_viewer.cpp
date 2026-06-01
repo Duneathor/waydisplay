@@ -17,6 +17,7 @@
 #include "tile_reassembly.hpp"
 
 #include "waydisplay/wd_config.h"
+#include "waydisplay/wd_log.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
@@ -441,7 +442,7 @@ void drain_remote_selection_updates(ClientState& state) {
         /* SDL2 does not expose a primary-selection API. Keep this for future
          * backends or an SDL3 migration, but don't discard the remote update
          * silently in the networking layer. */
-        std::printf("remote primary selection updated: %zu bytes\n",
+        WD_LOG_DEBUG("remote primary selection updated: %zu bytes",
                     primary.size());
     }
 }
@@ -536,9 +537,9 @@ void print_client_stats(ClientState& state) {
     const uint64_t retx = take_stat(state.stats.tcp_retx_requests_tx);
     const uint64_t keys = take_stat(state.stats.tcp_keyboard_tx);
 
-    std::printf(
+    WD_LOG_DEBUG(
         "[client stats/s] udp_pkts=%llu udp_kib=%.1f completed_tiles=%llu "
-        "invalid=%llu old_gen=%llu summaries=%llu retx_req=%llu keys=%llu\n",
+        "invalid=%llu old_gen=%llu summaries=%llu retx_req=%llu keys=%llu",
         static_cast<unsigned long long>(udp_packets),
         static_cast<double>(udp_bytes) / 1024.0,
         static_cast<unsigned long long>(completed),
@@ -811,7 +812,7 @@ bool apply_pending_server_config(ClientState& state,
         return false;
     }
 
-    std::printf("server display resized: %ux%u tiles=%ux%u total=%u\n",
+    WD_LOG_INFO("server display resized: %ux%u tiles=%ux%u total=%u",
                 config.width,
                 config.height,
                 config.tiles_x,

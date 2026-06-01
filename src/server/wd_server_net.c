@@ -2,13 +2,57 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <netinet/tcp.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_time.h"
+
+#define WD_TCP_HANDSHAKE_TIMEOUT_MS 3000L
+#define WD_TCP_CONNECTED_SEND_TIMEOUT_MS 3000L
+
+static void wd_close_fd(int *fd) {
+  if (fd && *fd >= 0) {
+    close(*fd);
+    *fd = -1;
+  }
+}
+
+static void wd_set_socket_timeout_ms(int fd, int optname, long timeout_ms) {
+  struct timeval tv;
+
+  memset(&tv, 0, sizeof(tv));
+
+  if (timeout_ms > 0) {
+    tv.tv_sec = timeout_ms / 1000L;
+    tv.tv_usec = (timeout_ms % 1000L) * 1000L;
+  }
+
+  (void)setsockopt(fd, SOL_SOCKET, optname, &tv, sizeof(tv));
+}
+
+static void wd_configure_accepted_tcp_socket(int tcp_fd) {
+  int yes = 1;
+
+  (void)setsockopt(tcp_fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+  (void)setsockopt(tcp_fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+
+  wd_set_socket_timeout_ms(tcp_fd,
+                           SO_RCVTIMEO,
+                           WD_TCP_HANDSHAKE_TIMEOUT_MS);
+  wd_set_socket_timeout_ms(tcp_fd,
+                           SO_SNDTIMEO,
+                           WD_TCP_CONNECTED_SEND_TIMEOUT_MS);
+}
+
+static void wd_clear_tcp_receive_timeout(int tcp_fd) {
+  wd_set_socket_timeout_ms(tcp_fd, SO_RCVTIMEO, 0);
+}
 
 bool wd_net_init(struct wd_server *server, uint16_t tcp_port) {
   struct wd_net_state *net = &server->net;
@@ -248,18 +292,26 @@ void *wd_net_thread_main(void *arg) {
   if (bind(net->listen_fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) <
       0) {
     WD_LOG_ERROR( "WayDisplay: bind TCP failed: %s", strerror(errno));
+    wd_close_fd(&net->listen_fd);
     return NULL;
   }
 
   if (listen(net->listen_fd, 1) < 0) {
     WD_LOG_ERROR( "WayDisplay: listen failed: %s", strerror(errno));
+    wd_close_fd(&net->listen_fd);
     return NULL;
   }
 
   net->udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
   if (net->udp_fd < 0) {
     WD_LOG_ERROR( "WayDisplay: UDP socket failed: %s", strerror(errno));
+    wd_close_fd(&net->listen_fd);
     return NULL;
+  }
+
+  if (wd_set_nonblocking(net->udp_fd) < 0) {
+    WD_LOG_ERROR( "WayDisplay: failed to make UDP socket nonblocking: %s",
+                  strerror(errno));
   }
 
   WD_LOG_INFO( "WayDisplay: network server listening on TCP port %u",
@@ -310,6 +362,8 @@ void *wd_net_thread_main(void *arg) {
       continue;
     }
 
+    wd_configure_accepted_tcp_socket(tcp_fd);
+
     uint16_t type = 0;
     uint8_t *payload = NULL;
     uint32_t payload_size = 0;
@@ -328,6 +382,12 @@ void *wd_net_thread_main(void *arg) {
     memcpy(&hello, payload, sizeof(hello));
     free(payload);
     payload = NULL;
+
+    if (hello.client_udp_port == 0) {
+      WD_LOG_ERROR( "WayDisplay: rejected client hello with UDP port 0");
+      close(tcp_fd);
+      continue;
+    }
 
     if (hello.desired_width != 0 || hello.desired_height != 0) {
       if (hello.desired_width == 0 || hello.desired_height == 0 ||
@@ -377,6 +437,8 @@ void *wd_net_thread_main(void *arg) {
       close(tcp_fd);
       continue;
     }
+
+    wd_clear_tcp_receive_timeout(tcp_fd);
 
     pthread_mutex_lock(&net->lock);
 
@@ -590,6 +652,10 @@ void *wd_net_thread_main(void *arg) {
 
     WD_LOG_INFO( "WayDisplay: client disconnected; waiting for reconnect");
   }
+
+  wd_close_fd(&net->tcp_fd);
+  wd_close_fd(&net->udp_fd);
+  wd_close_fd(&net->listen_fd);
 
   return NULL;
 }

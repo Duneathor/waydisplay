@@ -2,6 +2,12 @@
 
 #include <stdarg.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define WD_PRINTF_FORMAT(fmt_index, first_arg) __attribute__((format(printf, fmt_index, first_arg)))
+#else
+#define WD_PRINTF_FORMAT(fmt_index, first_arg)
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -12,9 +18,8 @@ enum wd_log_level {
     WD_LOG_LEVEL_DEBUG = 2,
 };
 
-void wd_log_message(enum wd_log_level level, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
-void wd_log_message_va(enum wd_log_level level, const char *fmt, va_list args);
+void wd_log_message(enum wd_log_level level, const char *fmt, ...) WD_PRINTF_FORMAT(2, 3);
+void wd_log_message_va(enum wd_log_level level, const char *fmt, va_list args) WD_PRINTF_FORMAT(2, 0);
 
 #ifndef WAYDISPLAY_ENABLE_LOGGING
 #define WAYDISPLAY_ENABLE_LOGGING 1
@@ -41,3 +46,5 @@ void wd_log_message_va(enum wd_log_level level, const char *fmt, va_list args);
 #ifdef __cplusplus
 }
 #endif
+
+#undef WD_PRINTF_FORMAT
