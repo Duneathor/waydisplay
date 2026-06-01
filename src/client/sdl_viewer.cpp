@@ -29,6 +29,7 @@ int g_window_height = 1;
 SDL_Rect g_content_rect{0, 0, 1, 1};
 
 constexpr uint64_t STATS_INTERVAL_NS = 1000000000ull;
+constexpr uint64_t RESIZE_DEBOUNCE_NS = 150000000ull;
 constexpr int SDL_FRAME_DELAY_MS = 8;
 
 constexpr uint16_t WD_BTN_LEFT = 0x110;
@@ -455,6 +456,81 @@ void update_window_size(SDL_Window* window) {
     };
 }
 
+bool apply_pending_server_config(ClientState& state,
+                                 SDL_Window* window,
+                                 SDL_Renderer* renderer,
+                                 SDL_Texture*& texture,
+                                 TileReassembler& reassembler) {
+    wd_server_config_payload config{};
+
+    {
+        std::lock_guard<std::mutex> lock(state.config_mutex);
+
+        if (!state.pending_config_valid) {
+            return false;
+        }
+
+        config = state.pending_config;
+        state.pending_config_valid = false;
+    }
+
+    if (config.width == state.config.width &&
+        config.height == state.config.height &&
+        config.tiles_x == state.config.tiles_x &&
+        config.tiles_y == state.config.tiles_y &&
+        config.total_tiles == state.config.total_tiles) {
+        state.config = config;
+        return false;
+    }
+
+    std::printf("server display resized: %ux%u tiles=%ux%u total=%u\n",
+                config.width,
+                config.height,
+                config.tiles_x,
+                config.tiles_y,
+                config.total_tiles);
+
+    state.config = config;
+
+    state.framebuffer.assign(state.framebuffer_pixels(), 0);
+
+    {
+        std::lock_guard<std::mutex> lock(state.generation_mutex);
+        state.displayed_generation.assign(state.tile_count(), 0);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state.retx_mutex);
+        state.retx_queue.clear();
+    }
+
+    reassembler.reset();
+
+    SDL_Texture* new_texture = SDL_CreateTexture(
+        renderer,
+        SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING,
+        state.config.width,
+        state.config.height);
+
+    if (!new_texture) {
+        std::fprintf(stderr,
+                     "SDL_CreateTexture after resize failed: %s\n",
+                     SDL_GetError());
+        state.running.store(false, std::memory_order_relaxed);
+        return false;
+    }
+
+    SDL_DestroyTexture(texture);
+    texture = new_texture;
+
+    g_client_config = &state.config;
+    SDL_SetWindowMinimumSize(window, 64, 64);
+    update_window_size(window);
+
+    return true;
+}
+
 void handle_sdl_event(ClientState& state, const SDL_Event& event) {
     static bool suppress_paste_v_keyup = false;
 
@@ -622,7 +698,7 @@ int run_sdl_viewer(ClientState& state) {
         SDL_WINDOWPOS_CENTERED,
         state.config.width,
         state.config.height,
-        SDL_WINDOW_SHOWN);
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
 
     if (!window) {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -630,8 +706,7 @@ int run_sdl_viewer(ClientState& state) {
         return 1;
     }
 
-    SDL_SetWindowMinimumSize(window, state.config.width, state.config.height);
-    SDL_SetWindowMaximumSize(window, state.config.width, state.config.height);
+    SDL_SetWindowMinimumSize(window, 64, 64);
     update_window_size(window);
 
     SDL_Renderer* renderer = SDL_CreateRenderer(
@@ -668,10 +743,24 @@ int run_sdl_viewer(ClientState& state) {
 
     uint64_t last_stats_ns = wd_now_ns();
     bool frame_dirty = true;
+    uint16_t last_requested_width = state.config.width;
+    uint16_t last_requested_height = state.config.height;
+    uint16_t pending_resize_width = 0;
+    uint16_t pending_resize_height = 0;
+    uint64_t pending_resize_since_ns = 0;
 
     while (state.running.load(std::memory_order_relaxed)) {
         apply_pending_cursor_shape(state);
         drain_remote_selection_updates(state);
+
+        if (apply_pending_server_config(state, window, renderer, texture, reassembler)) {
+            last_requested_width = state.config.width;
+            last_requested_height = state.config.height;
+            pending_resize_width = 0;
+            pending_resize_height = 0;
+            pending_resize_since_ns = 0;
+            frame_dirty = true;
+        }
 
         SDL_Event event;
 
@@ -686,10 +775,45 @@ int run_sdl_viewer(ClientState& state) {
                  event.window.event == SDL_WINDOWEVENT_RESIZED)) {
                 update_window_size(window);
                 frame_dirty = true;
+
+                if (g_window_width > 0 &&
+                    g_window_height > 0 &&
+                    g_window_width <= 65535 &&
+                    g_window_height <= 65535) {
+                    const auto width = static_cast<uint16_t>(g_window_width);
+                    const auto height = static_cast<uint16_t>(g_window_height);
+
+                    if (width != last_requested_width ||
+                        height != last_requested_height) {
+                        pending_resize_width = width;
+                        pending_resize_height = height;
+                        pending_resize_since_ns = wd_now_ns();
+                    }
+                }
+
                 continue;
             }
 
             handle_sdl_event(state, event);
+        }
+
+        if (pending_resize_width != 0 && pending_resize_height != 0) {
+            const uint64_t now = wd_now_ns();
+
+            if (now - pending_resize_since_ns >= RESIZE_DEBOUNCE_NS) {
+                last_requested_width = pending_resize_width;
+                last_requested_height = pending_resize_height;
+                pending_resize_width = 0;
+                pending_resize_height = 0;
+                pending_resize_since_ns = 0;
+
+                if (!client_send_display_resize(state,
+                                                last_requested_width,
+                                                last_requested_height)) {
+                    std::fprintf(stderr,
+                                 "failed to send display resize request\n");
+                }
+            }
         }
 
         if (!drain_udp(state, reassembler, frame_dirty)) {

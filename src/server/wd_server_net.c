@@ -205,6 +205,26 @@ static uint16_t run_udp_mtu_probe(struct wd_server *server,
                                   }
 
 
+static void wd_server_fill_config(struct wd_server *server,
+                                  uint32_t session_id,
+                                  uint16_t udp_payload_target,
+                                  struct wd_server_config_payload *cfg) {
+  memset(cfg, 0, sizeof(*cfg));
+
+  cfg->session_id = session_id;
+  cfg->width = (uint16_t)server->display_width;
+  cfg->height = (uint16_t)server->display_height;
+  cfg->tile_width = WD_TILE_WIDTH;
+  cfg->tile_height = WD_TILE_HEIGHT;
+  cfg->tiles_x = server->tiles_x;
+  cfg->tiles_y = server->tiles_y;
+  cfg->total_tiles = server->total_tiles;
+  cfg->pixel_format = WD_PIXEL_FORMAT_XRGB8888;
+  cfg->compression_mode = WD_COMPRESSION_ZSTD;
+  cfg->zstd_level = WD_ZSTD_LEVEL;
+  cfg->udp_payload_target = udp_payload_target;
+}
+
 void *wd_net_thread_main(void *arg) {
   struct wd_server *server = arg;
   struct wd_net_state *net = &server->net;
@@ -324,7 +344,7 @@ void *wd_net_thread_main(void *arg) {
     }
 
     struct wd_server_config_payload cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    uint32_t session_id = 0;
 
     pthread_mutex_lock(&net->lock);
 
@@ -332,20 +352,9 @@ void *wd_net_thread_main(void *arg) {
       net->session_id = (uint32_t)(wd_now_ns() ^ 0x9e3779b9u);
     }
 
-    cfg.session_id = net->session_id;
+    session_id = net->session_id;
 
     pthread_mutex_unlock(&net->lock);
-
-    cfg.width = (uint16_t)server->display_width;
-    cfg.height = (uint16_t)server->display_height;
-    cfg.tile_width = WD_TILE_WIDTH;
-    cfg.tile_height = WD_TILE_HEIGHT;
-    cfg.tiles_x = server->tiles_x;
-    cfg.tiles_y = server->tiles_y;
-    cfg.total_tiles = server->total_tiles;
-    cfg.pixel_format = WD_PIXEL_FORMAT_XRGB8888;
-    cfg.compression_mode = WD_COMPRESSION_ZSTD;
-    cfg.zstd_level = WD_ZSTD_LEVEL;
 
     struct sockaddr_in client_udp_addr;
     memset(&client_udp_addr, 0, sizeof(client_udp_addr));
@@ -361,7 +370,7 @@ void *wd_net_thread_main(void *arg) {
     net->udp_payload_target = selected_udp_payload;
     pthread_mutex_unlock(&net->lock);
 
-    cfg.udp_payload_target = selected_udp_payload;
+    wd_server_fill_config(server, session_id, selected_udp_payload, &cfg);
 
     if (!wd_send_tcp_message(tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg))) {
       wlr_log(WLR_ERROR, "WayDisplay: failed to send server config");
@@ -486,6 +495,37 @@ void *wd_net_thread_main(void *arg) {
                                              payload_size,
                                              type == WD_MSG_PRIMARY_SET);
         pthread_mutex_unlock(&net->lock);
+      } else if (type == WD_MSG_DISPLAY_RESIZE &&
+                 payload_size >= sizeof(struct wd_display_resize_payload)) {
+        struct wd_display_resize_payload resize;
+        memcpy(&resize, payload, sizeof(resize));
+
+        if (resize.session_id == cfg.session_id &&
+            resize.width != 0 && resize.height != 0) {
+          if (wd_server_apply_display_size(server, resize.width, resize.height)) {
+            wd_server_fill_config(server,
+                                  cfg.session_id,
+                                  selected_udp_payload,
+                                  &cfg);
+
+            if (!wd_send_tcp_message(tcp_fd,
+                                     WD_MSG_SERVER_CONFIG,
+                                     &cfg,
+                                     sizeof(cfg))) {
+              break;
+            }
+
+            wlr_log(WLR_INFO,
+                    "WayDisplay: client resized display to %ux%u",
+                    server->display_width,
+                    server->display_height);
+          } else {
+            wlr_log(WLR_ERROR,
+                    "WayDisplay: rejected live display resize to %ux%u",
+                    resize.width,
+                    resize.height);
+          }
+        }
       } else if (type == WD_MSG_KEYBOARD_KEY &&
                  payload_size >= sizeof(struct wd_keyboard_event_payload)) {
         struct wd_keyboard_event_payload key;

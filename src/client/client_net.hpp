@@ -25,6 +25,7 @@ namespace waydisplay {
                                    const wd_pointer_event_payload& event);
     bool client_send_clipboard_text(ClientState& state, const char* text);
     bool client_send_primary_text(ClientState& state, const char* text);
+    bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t height);
 
     bool client_flush_retransmit_requests(ClientState& state);
 

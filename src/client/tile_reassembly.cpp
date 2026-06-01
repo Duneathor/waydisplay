@@ -64,6 +64,10 @@ bool packet_header_valid(const wd_udp_tile_packet_header& header,
 
 TileReassembler::TileReassembler() = default;
 
+void TileReassembler::reset() {
+    entries_.clear();
+}
+
 CompletedTile TileReassembler::process_udp_packet(ClientState& state,
                                                   const uint8_t* packet,
                                                   size_t packet_size) {

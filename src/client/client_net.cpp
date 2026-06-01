@@ -427,6 +427,44 @@ void store_cursor_shape(ClientState& state,
     }
 }
 
+
+void store_server_config_update(ClientState& state,
+                                const uint8_t* payload,
+                                uint32_t payload_size) {
+    if (!payload || payload_size < sizeof(wd_server_config_payload)) {
+        return;
+    }
+
+    wd_server_config_payload config{};
+    std::memcpy(&config, payload, sizeof(config));
+
+    const uint32_t expected_tiles =
+        static_cast<uint32_t>(config.tiles_x) *
+        static_cast<uint32_t>(config.tiles_y);
+
+    if (config.session_id != state.config.session_id ||
+        config.width == 0 ||
+        config.height == 0 ||
+        config.tile_width == 0 ||
+        config.tile_height == 0 ||
+        config.tiles_x == 0 ||
+        config.tiles_y == 0 ||
+        config.total_tiles == 0 ||
+        expected_tiles != config.total_tiles ||
+        config.pixel_format != WD_PIXEL_FORMAT_XRGB8888 ||
+        config.compression_mode != WD_COMPRESSION_ZSTD) {
+        return;
+    }
+
+    if (config.udp_payload_target == 0) {
+        config.udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    }
+
+    std::lock_guard<std::mutex> lock(state.config_mutex);
+    state.pending_config = config;
+    state.pending_config_valid = true;
+}
+
 void tcp_reader_main(ClientState* state) {
     while (state->running.load(std::memory_order_relaxed)) {
         uint16_t message_type = 0;
@@ -443,6 +481,8 @@ void tcp_reader_main(ClientState* state) {
         if (message_type == WD_MSG_TILE_GENERATION_SUMMARY) {
             queue_retransmits_from_summary(*state, payload, payload_size);
             state->stats.tcp_summaries_rx.fetch_add(1, std::memory_order_relaxed);
+        } else if (message_type == WD_MSG_SERVER_CONFIG) {
+            store_server_config_update(*state, payload, payload_size);
         } else if (message_type == WD_MSG_CLIPBOARD_SET ||
                    message_type == WD_MSG_PRIMARY_SET) {
             store_selection_text(*state,
@@ -615,6 +655,22 @@ bool client_send_clipboard_text(ClientState& state, const char* text) {
 
 bool client_send_primary_text(ClientState& state, const char* text) {
     return client_send_selection_text(state, WD_MSG_PRIMARY_SET, text);
+}
+
+bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t height) {
+    if (state.tcp_fd < 0 || width == 0 || height == 0) {
+        return false;
+    }
+
+    wd_display_resize_payload resize{};
+    resize.session_id = state.config.session_id;
+    resize.width = width;
+    resize.height = height;
+
+    return wd_send_tcp_message(state.tcp_fd,
+                               WD_MSG_DISPLAY_RESIZE,
+                               &resize,
+                               sizeof(resize));
 }
 
 bool client_flush_retransmit_requests(ClientState& state) {

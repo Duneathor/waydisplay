@@ -56,6 +56,10 @@ namespace waydisplay {
         std::vector<uint32_t> framebuffer;
         std::vector<uint64_t> displayed_generation;
 
+        std::mutex config_mutex;
+        wd_server_config_payload pending_config{};
+        bool pending_config_valid = false;
+
         uint32_t framebuffer_pixels() const {
             return static_cast<uint32_t>(config.width) * static_cast<uint32_t>(config.height);
         }

@@ -18,6 +18,8 @@ class TileReassembler {
 public:
     TileReassembler();
 
+    void reset();
+
     CompletedTile process_udp_packet(ClientState& state,
                                      const uint8_t* packet,
                                      size_t packet_size);

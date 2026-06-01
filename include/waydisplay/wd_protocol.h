@@ -31,6 +31,7 @@ enum wd_message_type {
     WD_MSG_PRIMARY_SET = 11,
     WD_MSG_PRIMARY_REQUEST = 12,
     WD_MSG_CURSOR_SHAPE = 13,
+    WD_MSG_DISPLAY_RESIZE = 14,
     WD_MSG_ERROR = 255,
 };
 
@@ -284,6 +285,12 @@ struct wd_cursor_shape_payload {
     uint16_t reserved;
 };
 
+struct wd_display_resize_payload {
+    uint32_t session_id;
+    uint16_t width;
+    uint16_t height;
+};
+
 WD_PACKED_END
 
 #undef WD_PACKED_BEGIN
@@ -305,6 +312,8 @@ static_assert(sizeof(struct wd_selection_payload_header) == 12,
               "unexpected wd_selection_payload_header size");
 static_assert(sizeof(struct wd_cursor_shape_payload) == 8,
               "unexpected wd_cursor_shape_payload size");
+static_assert(sizeof(struct wd_display_resize_payload) == 8,
+              "unexpected wd_display_resize_payload size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(sizeof(struct wd_udp_tile_packet_header) == 20,
@@ -321,6 +330,8 @@ _Static_assert(sizeof(struct wd_selection_payload_header) == 12,
                "unexpected wd_selection_payload_header size");
 _Static_assert(sizeof(struct wd_cursor_shape_payload) == 8,
                "unexpected wd_cursor_shape_payload size");
+_Static_assert(sizeof(struct wd_display_resize_payload) == 8,
+               "unexpected wd_display_resize_payload size");
 #endif
 
 #ifdef __cplusplus
