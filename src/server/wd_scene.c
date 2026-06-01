@@ -233,6 +233,7 @@ void wd_scene_deactivate_view(struct wd_view *view) {
   if (view->server && view->server->focused_view == view) {
     view->server->focused_view = NULL;
     view->server->focused_surface = NULL;
+    wd_keyboard_shortcuts_inhibit_refresh(view->server);
   }
 }
 
@@ -528,6 +529,7 @@ void wd_scene_focus_view(struct wd_view *view) {
   server->focused_surface = view->xdg_surface->surface;
 
   view_set_activated(view, true);
+  wd_keyboard_shortcuts_inhibit_refresh(server);
 
   wd_scene_raise_view(view);
 
@@ -711,6 +713,8 @@ static void view_handle_unmap(struct wl_listener *listener, void *data) {
     server->focused_view = NULL;
     server->focused_surface = NULL;
 
+    wd_keyboard_shortcuts_inhibit_refresh(server);
+
     if (server->seat) {
       wlr_seat_pointer_notify_clear_focus(server->seat);
       wlr_seat_keyboard_notify_clear_focus(server->seat);
@@ -802,6 +806,8 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
     server->focused_view = NULL;
     server->focused_surface = NULL;
 
+    wd_keyboard_shortcuts_inhibit_refresh(server);
+
     if (server->seat) {
       wlr_seat_pointer_notify_clear_focus(server->seat);
       wlr_seat_keyboard_notify_clear_focus(server->seat);
@@ -811,6 +817,8 @@ static void view_handle_xdg_surface_destroy(struct wl_listener *listener,
   if (view->xdg_surface &&
       server->focused_surface == view->xdg_surface->surface) {
     server->focused_surface = NULL;
+
+    wd_keyboard_shortcuts_inhibit_refresh(server);
 
     if (server->seat) {
       wlr_seat_pointer_notify_clear_focus(server->seat);
@@ -1551,6 +1559,7 @@ static void view_handle_request_minimize(struct wl_listener *listener,
   if (view->server->focused_view == view) {
     view->server->focused_view = NULL;
     view->server->focused_surface = NULL;
+    wd_keyboard_shortcuts_inhibit_refresh(view->server);
   }
 
   wlr_xdg_surface_schedule_configure(view->xdg_surface);

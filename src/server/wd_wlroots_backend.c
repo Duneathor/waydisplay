@@ -142,6 +142,10 @@ bool wd_wlroots_init(struct wd_server *server) {
                               WL_SEAT_CAPABILITY_POINTER |
                               WL_SEAT_CAPABILITY_KEYBOARD);
 
+    if (!wd_keyboard_shortcuts_inhibit_init(server)) {
+        return false;
+    }
+
     if (!wd_keyboard_init(server)) {
         return false;
     }

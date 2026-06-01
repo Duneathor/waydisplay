@@ -239,6 +239,9 @@ bool wd_server_init(struct wd_server *server,
 
     wl_list_init(&server->views);
     wl_list_init(&server->popup_commit_trackers);
+    wl_list_init(&server->keyboard_shortcuts_inhibitors);
+    wl_list_init(&server->new_keyboard_shortcuts_inhibitor.link);
+    wl_list_init(&server->keyboard_shortcuts_inhibit_manager_destroy.link);
 
     if (!wd_server_set_geometry(server, display_width, display_height)) {
         return false;
@@ -321,6 +324,7 @@ bool wd_server_init(struct wd_server *server,
                         }
 
                         wd_clipboard_destroy(server);
+                        wd_keyboard_shortcuts_inhibit_destroy(server);
                         wd_cursor_destroy(server);
                         wd_xdg_activation_destroy(server);
                         wd_xdg_foreign_destroy(server);

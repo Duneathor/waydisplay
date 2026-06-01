@@ -239,6 +239,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/wd_server_net.c
             src/server/wd_stream.c
             src/server/wd_keyboard.c
+            src/server/wd_keyboard_shortcuts_inhibit.c
             src/server/wd_clipboard.c
             src/server/wd_cursor.c
             src/server/wd_xdg_activation.c

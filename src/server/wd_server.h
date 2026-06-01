@@ -23,6 +23,7 @@
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_keyboard_group.h>
+#include <wlr/types/wlr_keyboard_shortcuts_inhibit_v1.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
@@ -287,6 +288,8 @@ extern "C" {
         struct wlr_primary_selection_v1_device_manager *primary_selection_manager;
 
         struct wlr_seat *seat;
+        struct wlr_keyboard_shortcuts_inhibit_manager_v1 *keyboard_shortcuts_inhibit_manager;
+        struct wl_list keyboard_shortcuts_inhibitors;
         struct wlr_keyboard_group *keyboard_group;
         struct wlr_keyboard *keyboard;
 
@@ -319,6 +322,8 @@ extern "C" {
         struct wl_listener request_activate;
         struct wl_listener set_xdg_toplevel_icon;
         struct wl_listener request_cursor_shape;
+        struct wl_listener new_keyboard_shortcuts_inhibitor;
+        struct wl_listener keyboard_shortcuts_inhibit_manager_destroy;
         struct wl_listener output_frame;
         struct wl_listener output_destroy;
         struct wl_listener request_set_selection;
@@ -383,6 +388,12 @@ extern "C" {
     /* wd_xdg_toplevel_icon.c */
     bool wd_xdg_toplevel_icon_init(struct wd_server *server);
     void wd_xdg_toplevel_icon_destroy(struct wd_server *server);
+
+    /* wd_keyboard_shortcuts_inhibit.c */
+    bool wd_keyboard_shortcuts_inhibit_init(struct wd_server *server);
+    void wd_keyboard_shortcuts_inhibit_destroy(struct wd_server *server);
+    void wd_keyboard_shortcuts_inhibit_refresh(struct wd_server *server);
+    bool wd_keyboard_shortcuts_inhibit_active(struct wd_server *server);
 
     /* wd_cursor.c */
     bool wd_cursor_init(struct wd_server *server);
