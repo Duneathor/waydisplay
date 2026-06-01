@@ -47,6 +47,7 @@ struct wd_popup_commit_tracker {
   struct wl_listener map;
   struct wl_listener unmap;
   struct wl_listener destroy;
+  struct wl_listener view_destroy;
   struct wlr_xdg_popup *popup;
   struct wd_view *view;
   struct wlr_scene_tree *scene_tree;
@@ -74,6 +75,8 @@ static void popup_commit_tracker_handle_unmap(struct wl_listener *listener,
                                               void *data);
 static void popup_commit_tracker_handle_destroy(struct wl_listener *listener,
                                                 void *data);
+static void popup_commit_tracker_handle_view_destroy(struct wl_listener *listener,
+                                                     void *data);
 
 void wd_scene_init_listeners(struct wd_server *server) {
   server->new_xdg_surface.notify = server_handle_new_xdg_surface;
@@ -1001,6 +1004,7 @@ static void popup_commit_tracker_destroy(struct wd_popup_commit_tracker *state) 
   remove_listener_if_linked(&state->map);
   remove_listener_if_linked(&state->unmap);
   remove_listener_if_linked(&state->destroy);
+  remove_listener_if_linked(&state->view_destroy);
 
   /*
    * Do not destroy state->scene_tree here.  The tree returned by
@@ -1009,7 +1013,10 @@ static void popup_commit_tracker_destroy(struct wd_popup_commit_tracker *state) 
    * xdg_surface destroy listener can double-destroy the scene node and crash
    * inside wlroots scene traversal.
    */
-  state->scene_tree = NULL;
+  if (state->scene_tree) {
+    state->scene_tree->node.data = NULL;
+    state->scene_tree = NULL;
+  }
 
   free(state);
 }
@@ -1180,6 +1187,16 @@ static void popup_commit_tracker_handle_destroy(struct wl_listener *listener,
   popup_commit_tracker_destroy(state);
 }
 
+static void popup_commit_tracker_handle_view_destroy(struct wl_listener *listener,
+                                                     void *data) {
+  (void)data;
+
+  struct wd_popup_commit_tracker *state =
+      wl_container_of(listener, state, view_destroy);
+
+  popup_commit_tracker_destroy(state);
+}
+
 static void view_track_popup_commits(struct wd_view *view,
                                      struct wlr_xdg_popup *popup) {
   if (view && popup_commit_tracker_for_popup(view->server, popup)) {
@@ -1285,6 +1302,7 @@ static void view_track_popup_commits(struct wd_view *view,
   wl_list_init(&state->map.link);
   wl_list_init(&state->unmap.link);
   wl_list_init(&state->destroy.link);
+  wl_list_init(&state->view_destroy.link);
 
   state->commit.notify = popup_commit_tracker_handle_commit;
   wl_signal_add(&popup->base->surface->events.commit, &state->commit);
@@ -1297,6 +1315,11 @@ static void view_track_popup_commits(struct wd_view *view,
 
   state->destroy.notify = popup_commit_tracker_handle_destroy;
   wl_signal_add(&popup->base->events.destroy, &state->destroy);
+
+  if (view->xdg_surface) {
+    state->view_destroy.notify = popup_commit_tracker_handle_view_destroy;
+    wl_signal_add(&view->xdg_surface->events.destroy, &state->view_destroy);
+  }
 }
 
 static void view_handle_new_popup(struct wl_listener *listener, void *data) {
@@ -1625,6 +1648,10 @@ static void server_handle_new_xdg_toplevel(struct wl_listener *listener,
       wl_container_of(listener, server, new_xdg_toplevel);
 
   struct wlr_xdg_toplevel *toplevel = data;
+  if (!server || !toplevel || !toplevel->base || !toplevel->base->surface) {
+    return;
+  }
+
   struct wlr_xdg_surface *xdg_surface = toplevel->base;
 
   struct wd_view *view = calloc(1, sizeof(*view));

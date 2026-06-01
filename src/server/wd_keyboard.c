@@ -8,6 +8,10 @@
 #include "waydisplay/wd_time.h"
 
 bool wd_keyboard_init(struct wd_server *server) {
+    if (!server || !server->seat) {
+        return false;
+    }
+
     server->keyboard_group = wlr_keyboard_group_create();
     if (!server->keyboard_group) {
         WD_LOG_ERROR( "WayDisplay: failed to create keyboard group");
@@ -19,6 +23,9 @@ bool wd_keyboard_init(struct wd_server *server) {
     struct xkb_context *xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     if (!xkb_context) {
         WD_LOG_ERROR( "WayDisplay: failed to create xkb context");
+        wlr_keyboard_group_destroy(server->keyboard_group);
+        server->keyboard_group = NULL;
+        server->keyboard = NULL;
         return false;
     }
 
@@ -42,6 +49,9 @@ bool wd_keyboard_init(struct wd_server *server) {
     if (!keymap) {
         WD_LOG_ERROR( "WayDisplay: failed to create xkb keymap");
         xkb_context_unref(xkb_context);
+        wlr_keyboard_group_destroy(server->keyboard_group);
+        server->keyboard_group = NULL;
+        server->keyboard = NULL;
         return false;
     }
 
