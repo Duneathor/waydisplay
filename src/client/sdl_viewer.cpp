@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include <SDL2/SDL.h>
@@ -42,6 +43,333 @@ constexpr uint16_t WD_POINTER_MOD_ALT = 1u << 0;
 constexpr uint16_t WD_POINTER_MOD_SHIFT = 1u << 1;
 constexpr uint16_t WD_POINTER_MOD_CTRL = 1u << 2;
 constexpr uint16_t WD_POINTER_MOD_SUPER = 1u << 3;
+
+void update_window_size(SDL_Window* window);
+
+enum class ContextMenuAction {
+    Disabled,
+    ToggleFullscreen,
+    ActualSize,
+    Quit,
+};
+
+struct ContextMenuItem {
+    const char* label;
+    ContextMenuAction action;
+    bool enabled;
+};
+
+struct ContextMenu {
+    bool open = false;
+    int x = 0;
+    int y = 0;
+    int hover = -1;
+};
+
+constexpr int MENU_PADDING_X = 8;
+constexpr int MENU_PADDING_Y = 7;
+constexpr int MENU_ITEM_HEIGHT = 20;
+constexpr int MENU_WIDTH = 184;
+constexpr int MENU_TEXT_SCALE = 1;
+constexpr int MENU_TEXT_X = 8;
+constexpr int MENU_TEXT_Y = 6;
+
+const std::array<ContextMenuItem, 5> CONTEXT_MENU_ITEMS{{
+    {"COPY FROM REMOTE", ContextMenuAction::Disabled, false},
+    {"PASTE TO REMOTE", ContextMenuAction::Disabled, false},
+    {"TOGGLE FULLSCREEN", ContextMenuAction::ToggleFullscreen, true},
+    {"ACTUAL SIZE", ContextMenuAction::ActualSize, true},
+    {"DISCONNECT", ContextMenuAction::Quit, true},
+}};
+
+int context_menu_height() {
+    return MENU_PADDING_Y * 2 +
+           static_cast<int>(CONTEXT_MENU_ITEMS.size()) * MENU_ITEM_HEIGHT;
+}
+
+void close_context_menu(ContextMenu& menu) {
+    menu.open = false;
+    menu.hover = -1;
+}
+
+void open_context_menu(ContextMenu& menu, int x, int y) {
+    menu.open = true;
+    menu.x = x;
+    menu.y = y;
+    menu.hover = -1;
+
+    if (menu.x + MENU_WIDTH > g_window_width) {
+        menu.x = g_window_width - MENU_WIDTH;
+    }
+
+    if (menu.y + context_menu_height() > g_window_height) {
+        menu.y = g_window_height - context_menu_height();
+    }
+
+    if (menu.x < 0) {
+        menu.x = 0;
+    }
+
+    if (menu.y < 0) {
+        menu.y = 0;
+    }
+}
+
+int context_menu_hit_test(const ContextMenu& menu, int x, int y) {
+    if (!menu.open) {
+        return -1;
+    }
+
+    if (x < menu.x || x >= menu.x + MENU_WIDTH) {
+        return -1;
+    }
+
+    const int content_y = y - menu.y - MENU_PADDING_Y;
+    if (content_y < 0) {
+        return -1;
+    }
+
+    const int index = content_y / MENU_ITEM_HEIGHT;
+    if (index < 0 || index >= static_cast<int>(CONTEXT_MENU_ITEMS.size())) {
+        return -1;
+    }
+
+    return index;
+}
+
+const char* glyph_5x7(char c) {
+    switch (c) {
+        case 'A': return "01110" "10001" "10001" "11111" "10001" "10001" "10001";
+        case 'B': return "11110" "10001" "10001" "11110" "10001" "10001" "11110";
+        case 'C': return "01111" "10000" "10000" "10000" "10000" "10000" "01111";
+        case 'D': return "11110" "10001" "10001" "10001" "10001" "10001" "11110";
+        case 'E': return "11111" "10000" "10000" "11110" "10000" "10000" "11111";
+        case 'F': return "11111" "10000" "10000" "11110" "10000" "10000" "10000";
+        case 'G': return "01111" "10000" "10000" "10011" "10001" "10001" "01110";
+        case 'H': return "10001" "10001" "10001" "11111" "10001" "10001" "10001";
+        case 'I': return "11111" "00100" "00100" "00100" "00100" "00100" "11111";
+        case 'J': return "00111" "00010" "00010" "00010" "00010" "10010" "01100";
+        case 'K': return "10001" "10010" "10100" "11000" "10100" "10010" "10001";
+        case 'L': return "10000" "10000" "10000" "10000" "10000" "10000" "11111";
+        case 'M': return "10001" "11011" "10101" "10101" "10001" "10001" "10001";
+        case 'N': return "10001" "11001" "10101" "10011" "10001" "10001" "10001";
+        case 'O': return "01110" "10001" "10001" "10001" "10001" "10001" "01110";
+        case 'P': return "11110" "10001" "10001" "11110" "10000" "10000" "10000";
+        case 'Q': return "01110" "10001" "10001" "10001" "10101" "10010" "01101";
+        case 'R': return "11110" "10001" "10001" "11110" "10100" "10010" "10001";
+        case 'S': return "01111" "10000" "10000" "01110" "00001" "00001" "11110";
+        case 'T': return "11111" "00100" "00100" "00100" "00100" "00100" "00100";
+        case 'U': return "10001" "10001" "10001" "10001" "10001" "10001" "01110";
+        case 'V': return "10001" "10001" "10001" "10001" "10001" "01010" "00100";
+        case 'W': return "10001" "10001" "10001" "10101" "10101" "10101" "01010";
+        case 'X': return "10001" "10001" "01010" "00100" "01010" "10001" "10001";
+        case 'Y': return "10001" "10001" "01010" "00100" "00100" "00100" "00100";
+        case 'Z': return "11111" "00001" "00010" "00100" "01000" "10000" "11111";
+        default: return nullptr;
+    }
+}
+
+void draw_text(SDL_Renderer* renderer,
+               const char* text,
+               int x,
+               int y,
+               int scale,
+               bool enabled) {
+    if (enabled) {
+        SDL_SetRenderDrawColor(renderer, 242, 242, 242, 255);
+    } else {
+        SDL_SetRenderDrawColor(renderer, 135, 135, 135, 255);
+    }
+
+    int cursor_x = x;
+    for (const char* p = text; *p; ++p) {
+        if (*p == ' ') {
+            cursor_x += 4 * scale;
+            continue;
+        }
+
+        const char* bits = glyph_5x7(*p);
+        if (!bits) {
+            cursor_x += 6 * scale;
+            continue;
+        }
+
+        for (int row = 0; row < 7; ++row) {
+            for (int col = 0; col < 5; ++col) {
+                if (bits[row * 5 + col] != '1') {
+                    continue;
+                }
+
+                SDL_Rect px{cursor_x + col * scale,
+                            y + row * scale,
+                            scale,
+                            scale};
+                SDL_RenderFillRect(renderer, &px);
+            }
+        }
+
+        cursor_x += 6 * scale;
+    }
+}
+
+void render_context_menu(SDL_Renderer* renderer, const ContextMenu& menu) {
+    if (!menu.open) {
+        return;
+    }
+
+    const int height = context_menu_height();
+
+    SDL_Rect shadow{menu.x + 5, menu.y + 5, MENU_WIDTH, height};
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 150);
+    SDL_RenderFillRect(renderer, &shadow);
+
+    SDL_Rect bg{menu.x, menu.y, MENU_WIDTH, height};
+    SDL_SetRenderDrawColor(renderer, 26, 29, 33, 248);
+    SDL_RenderFillRect(renderer, &bg);
+
+    SDL_SetRenderDrawColor(renderer, 72, 78, 86, 255);
+    SDL_RenderDrawRect(renderer, &bg);
+
+    SDL_Rect inner{menu.x + 1, menu.y + 1, MENU_WIDTH - 2, height - 2};
+    SDL_SetRenderDrawColor(renderer, 43, 47, 53, 255);
+    SDL_RenderDrawRect(renderer, &inner);
+
+    for (int i = 0; i < static_cast<int>(CONTEXT_MENU_ITEMS.size()); ++i) {
+        const SDL_Rect item_rect{
+            menu.x + MENU_PADDING_X,
+            menu.y + MENU_PADDING_Y + i * MENU_ITEM_HEIGHT,
+            MENU_WIDTH - MENU_PADDING_X * 2,
+            MENU_ITEM_HEIGHT,
+        };
+
+        if (i == menu.hover && CONTEXT_MENU_ITEMS[i].enabled) {
+            SDL_SetRenderDrawColor(renderer, 56, 116, 186, 255);
+            SDL_RenderFillRect(renderer, &item_rect);
+        }
+
+        if (i == 2) {
+            SDL_SetRenderDrawColor(renderer, 66, 70, 76, 255);
+            SDL_RenderDrawLine(renderer,
+                               menu.x + MENU_PADDING_X,
+                               item_rect.y - 1,
+                               menu.x + MENU_WIDTH - MENU_PADDING_X,
+                               item_rect.y - 1);
+        }
+
+        draw_text(renderer,
+                  CONTEXT_MENU_ITEMS[i].label,
+                  item_rect.x + MENU_TEXT_X,
+                  item_rect.y + MENU_TEXT_Y,
+                  MENU_TEXT_SCALE,
+                  CONTEXT_MENU_ITEMS[i].enabled);
+    }
+}
+
+void execute_context_menu_action(ClientState& state,
+                                 SDL_Window* window,
+                                 ContextMenuAction action) {
+    switch (action) {
+        case ContextMenuAction::ToggleFullscreen: {
+            const uint32_t flags = SDL_GetWindowFlags(window);
+            const bool fullscreen = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+            SDL_SetWindowFullscreen(window,
+                                    fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+            update_window_size(window);
+            break;
+        }
+
+        case ContextMenuAction::ActualSize:
+            SDL_SetWindowFullscreen(window, 0);
+            SDL_SetWindowSize(window, state.config.width, state.config.height);
+            SDL_SetWindowPosition(window,
+                                  SDL_WINDOWPOS_CENTERED,
+                                  SDL_WINDOWPOS_CENTERED);
+            update_window_size(window);
+            break;
+
+        case ContextMenuAction::Quit:
+            state.running.store(false, std::memory_order_relaxed);
+            break;
+
+        case ContextMenuAction::Disabled:
+        default:
+            break;
+    }
+}
+
+bool context_menu_open_gesture(const SDL_Event& event) {
+    if (event.type != SDL_MOUSEBUTTONDOWN ||
+        event.button.button != SDL_BUTTON_RIGHT) {
+        return false;
+    }
+
+    const SDL_Keymod mods = SDL_GetModState();
+    return (mods & KMOD_CTRL) && (mods & KMOD_ALT);
+}
+
+bool handle_context_menu_event(ClientState& state,
+                               SDL_Window* window,
+                               ContextMenu& menu,
+                               const SDL_Event& event,
+                               bool& out_frame_dirty) {
+    if (context_menu_open_gesture(event)) {
+        open_context_menu(menu, event.button.x, event.button.y);
+        out_frame_dirty = true;
+        return true;
+    }
+
+    if (!menu.open) {
+        return false;
+    }
+
+    if (event.type == SDL_MOUSEMOTION) {
+        const int hover = context_menu_hit_test(menu,
+                                                event.motion.x,
+                                                event.motion.y);
+        if (hover != menu.hover) {
+            menu.hover = hover;
+            out_frame_dirty = true;
+        }
+        return true;
+    }
+
+    if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
+        close_context_menu(menu);
+        out_frame_dirty = true;
+        return true;
+    }
+
+    if (event.type == SDL_MOUSEBUTTONDOWN) {
+        const int index = context_menu_hit_test(menu,
+                                                event.button.x,
+                                                event.button.y);
+        if (index < 0) {
+            close_context_menu(menu);
+            out_frame_dirty = true;
+            return true;
+        }
+
+        if (event.button.button == SDL_BUTTON_LEFT) {
+            const ContextMenuItem& item = CONTEXT_MENU_ITEMS[index];
+            close_context_menu(menu);
+            out_frame_dirty = true;
+
+            if (item.enabled) {
+                execute_context_menu_action(state, window, item.action);
+            }
+            return true;
+        }
+
+        return true;
+    }
+
+    if (event.type == SDL_MOUSEBUTTONUP || event.type == SDL_MOUSEWHEEL) {
+        return true;
+    }
+
+    return false;
+}
+
 
 uint16_t current_pointer_modifiers() {
     const SDL_Keymod mods = SDL_GetModState();
@@ -748,6 +1076,7 @@ int run_sdl_viewer(ClientState& state) {
     uint16_t pending_resize_width = 0;
     uint16_t pending_resize_height = 0;
     uint64_t pending_resize_since_ns = 0;
+    ContextMenu context_menu;
 
     while (state.running.load(std::memory_order_relaxed)) {
         apply_pending_cursor_shape(state);
@@ -794,6 +1123,10 @@ int run_sdl_viewer(ClientState& state) {
                 continue;
             }
 
+            if (handle_context_menu_event(state, window, context_menu, event, frame_dirty)) {
+                continue;
+            }
+
             handle_sdl_event(state, event);
         }
 
@@ -835,6 +1168,7 @@ int run_sdl_viewer(ClientState& state) {
 
             SDL_RenderClear(renderer);
             SDL_RenderCopy(renderer, texture, nullptr, &g_content_rect);
+            render_context_menu(renderer, context_menu);
             SDL_RenderPresent(renderer);
 
             frame_dirty = false;
