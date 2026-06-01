@@ -125,12 +125,12 @@ void wd_pointer_queue_event_locked(
 
 static uint32_t view_width(struct wd_view *view) {
   if (!view || !view->xdg_surface || !view->xdg_surface->surface) {
-    return WD_DISPLAY_WIDTH;
+    return view && view->server ? view->server->display_width : WD_DISPLAY_WIDTH;
   }
 
   int width = view->xdg_surface->surface->current.width;
   if (width <= 0) {
-    return WD_DISPLAY_WIDTH;
+    return view && view->server ? view->server->display_width : WD_DISPLAY_WIDTH;
   }
 
   return (uint32_t)width;
@@ -138,12 +138,12 @@ static uint32_t view_width(struct wd_view *view) {
 
 static uint32_t view_height(struct wd_view *view) {
   if (!view || !view->xdg_surface || !view->xdg_surface->surface) {
-    return WD_DISPLAY_HEIGHT;
+    return view && view->server ? view->server->display_height : WD_DISPLAY_HEIGHT;
   }
 
   int height = view->xdg_surface->surface->current.height;
   if (height <= 0) {
-    return WD_DISPLAY_HEIGHT;
+    return view && view->server ? view->server->display_height : WD_DISPLAY_HEIGHT;
   }
 
   return (uint32_t)height;
@@ -383,17 +383,21 @@ void wd_pointer_end_resize(struct wd_server *server) {
   wd_server_mark_scene_dirty(server);
 }
 
-static double clamp_layout_x(uint16_t x) {
-  if (x >= WD_DISPLAY_WIDTH) {
-    return (double)(WD_DISPLAY_WIDTH - 1);
+static double clamp_layout_x(struct wd_server *server, uint16_t x) {
+  const uint32_t width = server ? server->display_width : WD_DISPLAY_WIDTH;
+
+  if (x >= width) {
+    return (double)(width - 1);
   }
 
   return (double)x;
 }
 
-static double clamp_layout_y(uint16_t y) {
-  if (y >= WD_DISPLAY_HEIGHT) {
-    return (double)(WD_DISPLAY_HEIGHT - 1);
+static double clamp_layout_y(struct wd_server *server, uint16_t y) {
+  const uint32_t height = server ? server->display_height : WD_DISPLAY_HEIGHT;
+
+  if (y >= height) {
+    return (double)(height - 1);
   }
 
   return (double)y;
@@ -435,8 +439,8 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
             ? (uint32_t)(event->client_timestamp_ns / 1000000ull)
             : (uint32_t)(wd_now_ns() / 1000000ull);
 
-    const double lx = clamp_layout_x(event->x);
-    const double ly = clamp_layout_y(event->y);
+    const double lx = clamp_layout_x(server, event->x);
+    const double ly = clamp_layout_y(server, event->y);
 
     server->pointer_x = lx;
     server->pointer_y = ly;

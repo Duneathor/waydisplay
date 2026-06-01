@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "waydisplay/wd_time.h"
+#include "waydisplay/wd_tile.h"
 
 static struct wd_server *g_server_for_signal = NULL;
 static volatile sig_atomic_t g_terminate_requested = 0;
@@ -130,13 +131,117 @@ void wd_server_mark_scene_dirty(struct wd_server *server) {
     }
 }
 
+bool wd_server_set_geometry(struct wd_server *server,
+                            uint32_t width,
+                            uint32_t height) {
+    if (!server || width == 0 || height == 0 ||
+        width > UINT16_MAX || height > UINT16_MAX) {
+        return false;
+    }
+
+    const uint16_t tiles_x = wd_tiles_for_width(width);
+    const uint16_t tiles_y = wd_tiles_for_height(height);
+    const uint32_t total_tiles = (uint32_t)tiles_x * (uint32_t)tiles_y;
+
+    if (tiles_x == 0 || tiles_y == 0 ||
+        total_tiles == 0 || total_tiles > UINT16_MAX) {
+        return false;
+    }
+
+    server->display_width = width;
+    server->display_height = height;
+    server->tiles_x = tiles_x;
+    server->tiles_y = tiles_y;
+    server->total_tiles = (uint16_t)total_tiles;
+    server->framebuffer_pixels =
+        server->display_width * server->display_height;
+    server->framebuffer_bytes =
+        server->framebuffer_pixels * WD_BYTES_PER_PIXEL;
+
+    return true;
+}
+
+void wd_server_set_default_geometry(struct wd_server *server) {
+    (void)wd_server_set_geometry(server, WD_DISPLAY_WIDTH, WD_DISPLAY_HEIGHT);
+}
+
+bool wd_server_apply_display_size(struct wd_server *server,
+                                  uint32_t width,
+                                  uint32_t height) {
+    if (!server || width == 0 || height == 0 ||
+        width > UINT16_MAX || height > UINT16_MAX) {
+        return false;
+    }
+
+    if (server->display_width == width && server->display_height == height) {
+        return true;
+    }
+
+    pthread_mutex_lock(&server->net.lock);
+
+    wd_stream_destroy(server);
+
+    free(server->net.dirty_queue);
+    server->net.dirty_queue = NULL;
+
+    free(server->net.dirty_queued);
+    server->net.dirty_queued = NULL;
+
+    free(server->framebuffer_xrgb8888);
+    server->framebuffer_xrgb8888 = NULL;
+
+    bool ok = wd_server_set_geometry(server, width, height);
+
+    if (ok) {
+        server->framebuffer_xrgb8888 =
+            calloc(server->framebuffer_pixels, sizeof(uint32_t));
+        ok = server->framebuffer_xrgb8888 != NULL;
+    }
+
+    if (ok) {
+        server->net.dirty_queue =
+            calloc(server->total_tiles, sizeof(*server->net.dirty_queue));
+        server->net.dirty_queued =
+            calloc(server->total_tiles, sizeof(*server->net.dirty_queued));
+        ok = server->net.dirty_queue && server->net.dirty_queued;
+    }
+
+    if (ok) {
+        ok = wd_stream_init(server);
+    }
+
+    if (ok) {
+        ok = wd_wlroots_resize_headless_output(server);
+    }
+
+    if (ok) {
+        server->net.full_frame_needed = true;
+        server->net.full_frame_next_tile = 0;
+        server->net.dirty_scan_next_tile = 0;
+        server->net.dirty_queue_read = 0;
+        server->net.dirty_queue_write = 0;
+        server->net.dirty_queue_count = 0;
+        server->scene_dirty = true;
+    }
+
+    pthread_mutex_unlock(&server->net.lock);
+
+    return ok;
+}
+
 bool wd_server_init(struct wd_server *server,
                     uint16_t tcp_port,
                     const char *app_cmd,
-                    double output_scale) {
+                    double output_scale,
+                    uint32_t display_width,
+                    uint32_t display_height) {
     memset(server, 0, sizeof(*server));
 
     wl_list_init(&server->views);
+
+    if (!wd_server_set_geometry(server, display_width, display_height)) {
+        return false;
+    }
 
     server->scene_dirty = true;
 
@@ -148,7 +253,7 @@ bool wd_server_init(struct wd_server *server,
     }
 
     server->framebuffer_xrgb8888 =
-    calloc(WD_FRAMEBUFFER_PIXELS, sizeof(uint32_t));
+    calloc(server->framebuffer_pixels, sizeof(uint32_t));
 
     if (!server->framebuffer_xrgb8888) {
         return false;

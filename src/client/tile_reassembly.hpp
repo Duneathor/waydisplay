@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -36,7 +35,7 @@ private:
         uint16_t received_count = 0;
     };
 
-    std::array<Entry, WD_TOTAL_TILES> entries_;
+    std::vector<Entry> entries_;
 };
 
 } // namespace waydisplay

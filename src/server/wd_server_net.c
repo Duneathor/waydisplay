@@ -28,7 +28,16 @@ bool wd_net_init(struct wd_server *server, uint16_t tcp_port) {
   net->full_frame_needed = true;
   net->full_frame_next_tile = 0;
   net->dirty_scan_next_tile = 0;
-  memset(net->dirty_queued, 0, sizeof(net->dirty_queued));
+  net->dirty_queue = calloc(server->total_tiles, sizeof(*net->dirty_queue));
+  net->dirty_queued = calloc(server->total_tiles, sizeof(*net->dirty_queued));
+  if (!net->dirty_queue || !net->dirty_queued) {
+    free(net->dirty_queue);
+    free(net->dirty_queued);
+    net->dirty_queue = NULL;
+    net->dirty_queued = NULL;
+    pthread_mutex_destroy(&net->lock);
+    return false;
+  }
   net->dirty_queue_read = 0;
   net->dirty_queue_write = 0;
   net->dirty_queue_count = 0;
@@ -58,6 +67,12 @@ void wd_net_destroy(struct wd_server *server) {
     close(net->udp_fd);
     net->udp_fd = -1;
   }
+
+  free(net->dirty_queue);
+  net->dirty_queue = NULL;
+
+  free(net->dirty_queued);
+  net->dirty_queued = NULL;
 
   free(net->clipboard_text);
   net->clipboard_text = NULL;
@@ -289,9 +304,24 @@ void *wd_net_thread_main(void *arg) {
     }
 
     struct wd_client_hello_payload hello;
+    memset(&hello, 0, sizeof(hello));
     memcpy(&hello, payload, sizeof(hello));
     free(payload);
     payload = NULL;
+
+    if (hello.desired_width != 0 || hello.desired_height != 0) {
+      if (hello.desired_width == 0 || hello.desired_height == 0 ||
+          !wd_server_apply_display_size(server,
+                                        hello.desired_width,
+                                        hello.desired_height)) {
+        wlr_log(WLR_ERROR,
+                "WayDisplay: rejected requested client display size %ux%u",
+                hello.desired_width,
+                hello.desired_height);
+        close(tcp_fd);
+        continue;
+      }
+    }
 
     struct wd_server_config_payload cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -306,13 +336,13 @@ void *wd_net_thread_main(void *arg) {
 
     pthread_mutex_unlock(&net->lock);
 
-    cfg.width = WD_DISPLAY_WIDTH;
-    cfg.height = WD_DISPLAY_HEIGHT;
+    cfg.width = (uint16_t)server->display_width;
+    cfg.height = (uint16_t)server->display_height;
     cfg.tile_width = WD_TILE_WIDTH;
     cfg.tile_height = WD_TILE_HEIGHT;
-    cfg.tiles_x = WD_TILES_X;
-    cfg.tiles_y = WD_TILES_Y;
-    cfg.total_tiles = WD_TOTAL_TILES;
+    cfg.tiles_x = server->tiles_x;
+    cfg.tiles_y = server->tiles_y;
+    cfg.total_tiles = server->total_tiles;
     cfg.pixel_format = WD_PIXEL_FORMAT_XRGB8888;
     cfg.compression_mode = WD_COMPRESSION_ZSTD;
     cfg.zstd_level = WD_ZSTD_LEVEL;
@@ -349,7 +379,9 @@ void *wd_net_thread_main(void *arg) {
     net->full_frame_needed = true;
     net->full_frame_next_tile = 0;
     net->dirty_scan_next_tile = 0;
-    memset(net->dirty_queued, 0, sizeof(net->dirty_queued));
+    if (net->dirty_queued) {
+      memset(net->dirty_queued, 0, server->total_tiles * sizeof(*net->dirty_queued));
+    }
     net->dirty_queue_read = 0;
     net->dirty_queue_write = 0;
     net->dirty_queue_count = 0;
@@ -374,8 +406,10 @@ void *wd_net_thread_main(void *arg) {
     pthread_mutex_unlock(&net->lock);
 
     wlr_log(WLR_INFO,
-            "WayDisplay: client connected; UDP port=%u stream_mode=%u fps=%u max_tiles_per_sec=%u retx_tiles_per_sec=%u",
+            "WayDisplay: client connected; UDP port=%u display=%ux%u stream_mode=%u fps=%u max_tiles_per_sec=%u retx_tiles_per_sec=%u",
             hello.client_udp_port,
+            server->display_width,
+            server->display_height,
             hello.stream_mode,
             hello.target_fps,
             hello.max_tiles_per_second,
@@ -426,7 +460,7 @@ void *wd_net_thread_main(void *arg) {
                                                    break;
                                                  }
 
-                                                 if (entries[i].tile_id < WD_TOTAL_TILES) {
+                                                 if (entries[i].tile_id < server->total_tiles) {
                                                    wd_stream_send_cached_tile_locked(server,
                                                                                      entries[i].tile_id);
                                                    sent_retx++;

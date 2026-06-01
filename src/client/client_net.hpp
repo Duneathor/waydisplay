@@ -10,7 +10,9 @@ namespace waydisplay {
                         const char* server_host,
                         uint16_t tcp_port,
                         uint16_t client_udp_port,
-                        const ClientStreamConfig& stream_config);
+                        const ClientStreamConfig& stream_config,
+                        uint16_t desired_width,
+                        uint16_t desired_height);
 
     void client_disconnect(ClientState& state);
 

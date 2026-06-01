@@ -19,7 +19,8 @@ namespace {
                      "  --mode limited              Cap by tile budget, default 120 tiles/sec\n"
                      "  --mode live                 Lossy mode for video\n"
                      "  --fps <N>                   Target FPS for partial mode\n"
-                     "  --max-tiles-per-sec <N>     Tile budget for limited mode\n\n"
+                     "  --max-tiles-per-sec <N>     Tile budget for limited mode\n"
+                     "  --size <WxH>                 Request remote display size\n\n"
                      "Examples:\n"
                      "  %s 127.0.0.1 5000 6000 --mode full\n"
                      "  %s 127.0.0.1 5000 6000 --mode partial --fps 30\n"
@@ -59,6 +60,25 @@ namespace {
         }
 
         out = static_cast<uint32_t>(value);
+        return true;
+    }
+
+    bool parse_size(const char* text, uint16_t& width, uint16_t& height) {
+        if (!text || !*text) {
+            return false;
+        }
+
+        unsigned int parsed_width = 0;
+        unsigned int parsed_height = 0;
+
+        if (std::sscanf(text, "%ux%u", &parsed_width, &parsed_height) != 2 ||
+            parsed_width == 0 || parsed_height == 0 ||
+            parsed_width > 65535u || parsed_height > 65535u) {
+            return false;
+        }
+
+        width = static_cast<uint16_t>(parsed_width);
+        height = static_cast<uint16_t>(parsed_height);
         return true;
     }
 
@@ -106,6 +126,8 @@ int main(int argc, char** argv) {
         }
 
         waydisplay::ClientStreamConfig stream_config;
+        uint16_t desired_width = 0;
+        uint16_t desired_height = 0;
 
         for (int i = 4; i < argc; ++i) {
             if (std::strcmp(argv[i], "--mode") == 0) {
@@ -134,6 +156,14 @@ int main(int argc, char** argv) {
                     }
 
                     ++i;
+            } else if (std::strcmp(argv[i], "--size") == 0) {
+                if (i + 1 >= argc ||
+                    !parse_size(argv[i + 1], desired_width, desired_height)) {
+                    usage(argv[0]);
+                    return 1;
+                }
+
+                ++i;
             } else {
                 usage(argv[0]);
                 return 1;
@@ -146,7 +176,9 @@ int main(int argc, char** argv) {
             server_host,
             tcp_port,
             client_udp_port,
-            stream_config)) {
+            stream_config,
+            desired_width,
+            desired_height)) {
             waydisplay::client_disconnect(state);
         return 1;
             }

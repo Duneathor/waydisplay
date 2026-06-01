@@ -196,7 +196,7 @@ void wd_stream_policy_apply_client_hello(
 
         if (policy->mode != WD_STREAM_MODE_LIMITED) {
             pthread_mutex_unlock(&net->lock);
-            return WD_TOTAL_TILES;
+            return server->total_tiles;
         }
 
         if (policy->last_token_refill_ns == 0) {
@@ -309,7 +309,12 @@ bool wd_stream_init(struct wd_server *server) {
     const size_t compressed_capacity =
     wd_zstd_compress_bound(WD_UNCOMPRESSED_TILE_BYTES);
 
-    for (uint16_t i = 0; i < WD_TOTAL_TILES; ++i) {
+    server->net.tiles = calloc(server->total_tiles, sizeof(*server->net.tiles));
+    if (!server->net.tiles) {
+        return false;
+    }
+
+    for (uint16_t i = 0; i < server->total_tiles; ++i) {
         struct wd_cached_tile *tile = &server->net.tiles[i];
 
         memset(tile, 0, sizeof(*tile));
@@ -318,6 +323,7 @@ bool wd_stream_init(struct wd_server *server) {
         tile->compressed = malloc(compressed_capacity);
 
         if (!tile->compressed) {
+            wd_stream_destroy(server);
             return false;
         }
     }
@@ -326,18 +332,25 @@ bool wd_stream_init(struct wd_server *server) {
 }
 
 void wd_stream_destroy(struct wd_server *server) {
-    for (uint16_t i = 0; i < WD_TOTAL_TILES; ++i) {
+    if (!server || !server->net.tiles) {
+        return;
+    }
+
+    for (uint16_t i = 0; i < server->total_tiles; ++i) {
         free(server->net.tiles[i].compressed);
         server->net.tiles[i].compressed = NULL;
         server->net.tiles[i].compressed_size = 0;
         server->net.tiles[i].compressed_capacity = 0;
     }
+
+    free(server->net.tiles);
+    server->net.tiles = NULL;
 }
 
 bool wd_stream_send_cached_tile_locked(struct wd_server *server, uint16_t tile_id) {
     struct wd_net_state *net = &server->net;
 
-    if (tile_id >= WD_TOTAL_TILES) {
+    if (tile_id >= server->total_tiles) {
         return false;
     }
 
@@ -416,8 +429,9 @@ bool wd_stream_send_cached_tile_locked(struct wd_server *server, uint16_t tile_i
 }
 
 static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
-                                       uint16_t tile_id) {
-    if (!net || tile_id >= WD_TOTAL_TILES) {
+                                       uint16_t tile_id,
+                                       uint16_t total_tiles) {
+    if (!net || tile_id >= total_tiles) {
         return false;
     }
 
@@ -425,7 +439,7 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
         return true;
     }
 
-    if (net->dirty_queue_count >= WD_TOTAL_TILES) {
+    if (net->dirty_queue_count >= total_tiles) {
         /*
          * Queue is full. This should not happen because each tile can only
          * appear once, but keep it safe.
@@ -435,7 +449,7 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
 
     net->dirty_queue[net->dirty_queue_write] = tile_id;
     net->dirty_queue_write =
-    (uint16_t)((net->dirty_queue_write + 1) % WD_TOTAL_TILES);
+    (uint16_t)((net->dirty_queue_write + 1) % total_tiles);
     net->dirty_queue_count++;
     net->dirty_queued[tile_id] = true;
 
@@ -443,7 +457,8 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
                                        }
 
                                        static bool wd_dirty_queue_pop_locked(struct wd_net_state *net,
-                                                                             uint16_t *out_tile_id) {
+                                                                             uint16_t *out_tile_id,
+                                                                             uint16_t total_tiles) {
                                            if (!net || !out_tile_id || net->dirty_queue_count == 0) {
                                                return false;
                                            }
@@ -451,10 +466,10 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
                                            uint16_t tile_id = net->dirty_queue[net->dirty_queue_read];
 
                                            net->dirty_queue_read =
-                                           (uint16_t)((net->dirty_queue_read + 1) % WD_TOTAL_TILES);
+                                           (uint16_t)((net->dirty_queue_read + 1) % total_tiles);
                                            net->dirty_queue_count--;
 
-                                           if (tile_id < WD_TOTAL_TILES) {
+                                           if (tile_id < total_tiles) {
                                                net->dirty_queued[tile_id] = false;
                                            }
 
@@ -470,13 +485,17 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
                                                                                   * A tile that changes repeatedly before being sent remains queued once;
                                                                                   * when sent, we send the latest pixels.
                                                                                   */
-                                                                                 for (uint16_t tile_id = 0; tile_id < WD_TOTAL_TILES; ++tile_id) {
+                                                                                 for (uint16_t tile_id = 0; tile_id < server->total_tiles; ++tile_id) {
                                                                                      uint32_t hash =
-                                                                                     wd_fnv1a_tile_hash_xrgb8888(server->framebuffer_xrgb8888,
-                                                                                                                 tile_id);
+                                                                                     wd_fnv1a_tile_hash_xrgb8888_for(server->framebuffer_xrgb8888,
+                                                                                                                     server->display_width,
+                                                                                                                     server->display_height,
+                                                                                                                     server->tiles_x,
+                                                                                                                     server->total_tiles,
+                                                                                                                     tile_id);
 
                                                                                      if (hash != net->tiles[tile_id].last_hash) {
-                                                                                         wd_dirty_queue_push_locked(net, tile_id);
+                                                                                         wd_dirty_queue_push_locked(net, tile_id, server->total_tiles);
                                                                                      }
                                                                                  }
                                                                              }
@@ -513,21 +532,29 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
                                                                                   * multiple limited-mode passes. It does not restart at tile 0.
                                                                                   */
                                                                                  if (net->full_frame_needed) {
-                                                                                     while (net->full_frame_next_tile < WD_TOTAL_TILES &&
+                                                                                     while (net->full_frame_next_tile < server->total_tiles &&
                                                                                          tiles_sent_this_pass < tile_budget) {
                                                                                          uint16_t tile_id = net->full_frame_next_tile++;
                                                                                      struct wd_cached_tile *tile = &net->tiles[tile_id];
 
                                                                                      uint32_t hash =
-                                                                                     wd_fnv1a_tile_hash_xrgb8888(server->framebuffer_xrgb8888,
-                                                                                                                 tile_id);
+                                                                                     wd_fnv1a_tile_hash_xrgb8888_for(server->framebuffer_xrgb8888,
+                                                                                                                     server->display_width,
+                                                                                                                     server->display_height,
+                                                                                                                     server->tiles_x,
+                                                                                                                     server->total_tiles,
+                                                                                                                     tile_id);
 
                                                                                      bool cache_valid = tile->compressed_size > 0 && tile->compressed;
 
                                                                                      if (!cache_valid || hash != tile->last_hash) {
-                                                                                         if (!wd_extract_tile_xrgb8888(server->framebuffer_xrgb8888,
-                                                                                             tile_id,
-                                                                                             tile_bytes)) {
+                                                                                         if (!wd_extract_tile_xrgb8888_for(server->framebuffer_xrgb8888,
+                                                                                            server->display_width,
+                                                                                            server->display_height,
+                                                                                            server->tiles_x,
+                                                                                            server->total_tiles,
+                                                                                            tile_id,
+                                                                                            tile_bytes)) {
                                                                                              continue;
                                                                                              }
 
@@ -557,7 +584,7 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
                                                                                      tiles_sent_this_pass++;
                                                                                          }
 
-                                                                                         if (net->full_frame_next_tile >= WD_TOTAL_TILES) {
+                                                                                         if (net->full_frame_next_tile >= server->total_tiles) {
                                                                                              net->full_frame_needed = false;
                                                                                              net->full_frame_next_tile = 0;
                                                                                              net->dirty_scan_next_tile = 0;
@@ -566,7 +593,9 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
                                                                                               * After initial catch-up, clear stale queue state and force the
                                                                                               * next normal pass to detect current dirty tiles from hashes.
                                                                                               */
-                                                                                             memset(net->dirty_queued, 0, sizeof(net->dirty_queued));
+                                                                                             if (net->dirty_queued) {
+                                                                                                 memset(net->dirty_queued, 0, server->total_tiles * sizeof(*net->dirty_queued));
+                                                                                             }
                                                                                              net->dirty_queue_read = 0;
                                                                                              net->dirty_queue_write = 0;
                                                                                              net->dirty_queue_count = 0;
@@ -597,19 +626,23 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
                                                                                      tiles_sent_this_pass < tile_budget) {
                                                                                      uint16_t tile_id = 0;
 
-                                                                                 if (!wd_dirty_queue_pop_locked(net, &tile_id)) {
+                                                                                 if (!wd_dirty_queue_pop_locked(net, &tile_id, server->total_tiles)) {
                                                                                      break;
                                                                                  }
 
-                                                                                 if (tile_id >= WD_TOTAL_TILES) {
+                                                                                 if (tile_id >= server->total_tiles) {
                                                                                      continue;
                                                                                  }
 
                                                                                  struct wd_cached_tile *tile = &net->tiles[tile_id];
 
                                                                                  uint32_t hash =
-                                                                                 wd_fnv1a_tile_hash_xrgb8888(server->framebuffer_xrgb8888,
-                                                                                                             tile_id);
+                                                                                 wd_fnv1a_tile_hash_xrgb8888_for(server->framebuffer_xrgb8888,
+                                                                                                                 server->display_width,
+                                                                                                                 server->display_height,
+                                                                                                                 server->tiles_x,
+                                                                                                                 server->total_tiles,
+                                                                                                                 tile_id);
 
                                                                                  /*
                                                                                   * It may have been queued earlier but become identical by now.
@@ -618,9 +651,13 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
                                                                                      continue;
                                                                                  }
 
-                                                                                 if (!wd_extract_tile_xrgb8888(server->framebuffer_xrgb8888,
-                                                                                     tile_id,
-                                                                                     tile_bytes)) {
+                                                                                 if (!wd_extract_tile_xrgb8888_for(server->framebuffer_xrgb8888,
+                                                                                    server->display_width,
+                                                                                    server->display_height,
+                                                                                    server->tiles_x,
+                                                                                    server->total_tiles,
+                                                                                    tile_id,
+                                                                                    tile_bytes)) {
                                                                                      continue;
                                                                                      }
 
@@ -673,12 +710,12 @@ bool wd_stream_send_generation_summary_locked(struct wd_server *server) {
 
     header.session_id = net->session_id;
     header.server_timestamp_ns = wd_now_ns();
-    header.tile_count = WD_TOTAL_TILES;
+    header.tile_count = server->total_tiles;
     header.reserved = 0;
 
     size_t payload_size =
     sizeof(header) +
-    WD_TOTAL_TILES * sizeof(struct wd_tile_generation_entry);
+    server->total_tiles * sizeof(struct wd_tile_generation_entry);
 
     uint8_t *payload = malloc(payload_size);
     if (!payload) {
@@ -690,7 +727,7 @@ bool wd_stream_send_generation_summary_locked(struct wd_server *server) {
     struct wd_tile_generation_entry *entries =
     (struct wd_tile_generation_entry *)(payload + sizeof(header));
 
-    for (uint16_t i = 0; i < WD_TOTAL_TILES; ++i) {
+    for (uint16_t i = 0; i < server->total_tiles; ++i) {
         entries[i].tile_id = i;
         entries[i].reserved = 0;
         entries[i].tile_generation = net->tiles[i].generation;

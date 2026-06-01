@@ -166,8 +166,8 @@ bool wd_wlroots_start(struct wd_server *server) {
 bool wd_wlroots_create_headless_output(struct wd_server *server) {
     server->output =
     wlr_headless_add_output(server->backend,
-                            WD_DISPLAY_WIDTH,
-                            WD_DISPLAY_HEIGHT);
+                            (int)server->display_width,
+                            (int)server->display_height);
 
     if (!server->output) {
         return false;
@@ -188,8 +188,8 @@ bool wd_wlroots_create_headless_output(struct wd_server *server) {
 
     wlr_output_state_set_enabled(&state, true);
     wlr_output_state_set_custom_mode(&state,
-                                     WD_DISPLAY_WIDTH,
-                                     WD_DISPLAY_HEIGHT,
+                                     (int)server->display_width,
+                                     (int)server->display_height,
                                      60000);
     wlr_output_state_set_scale(&state, server->output_scale);
     wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
@@ -236,8 +236,51 @@ bool wd_wlroots_create_headless_output(struct wd_server *server) {
 
     wlr_log(WLR_INFO,
             "WayDisplay: created headless output %ux%u",
-            WD_DISPLAY_WIDTH,
-            WD_DISPLAY_HEIGHT);
+            server->display_width,
+            server->display_height);
+
+    return true;
+}
+
+bool wd_wlroots_resize_headless_output(struct wd_server *server) {
+    if (!server || !server->output) {
+        return true;
+    }
+
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
+
+    wlr_output_state_set_enabled(&state, true);
+    wlr_output_state_set_custom_mode(&state,
+                                     (int)server->display_width,
+                                     (int)server->display_height,
+                                     60000);
+    wlr_output_state_set_scale(&state, server->output_scale);
+    wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
+
+    bool ok = wlr_output_commit_state(server->output, &state);
+
+    wlr_output_state_finish(&state);
+
+    if (!ok) {
+        return false;
+    }
+
+    if (server->output_layout) {
+        wlr_output_layout_add(server->output_layout,
+                              server->output,
+                              0,
+                              0);
+    }
+
+    if (server->scene_output) {
+        wlr_scene_output_set_position(server->scene_output, 0, 0);
+    }
+
+    wlr_log(WLR_INFO,
+            "WayDisplay: resized headless output to %ux%u",
+            server->display_width,
+            server->display_height);
 
     return true;
 }

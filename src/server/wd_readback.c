@@ -81,7 +81,7 @@ static bool readback_buffer_data_ptr_xrgb8888(struct wd_server *server,
     }
 
     if (ok) {
-        memset(server->framebuffer_xrgb8888, 0, WD_FRAMEBUFFER_BYTES);
+        memset(server->framebuffer_xrgb8888, 0, server->framebuffer_bytes);
 
         int copy_width = read_width;
         int copy_height = read_height;
@@ -98,7 +98,7 @@ static bool readback_buffer_data_ptr_xrgb8888(struct wd_server *server,
             const uint32_t *src =
                 (const uint32_t *)((const uint8_t *)data + (size_t)y * stride);
             uint32_t *dst =
-                server->framebuffer_xrgb8888 + (size_t)y * WD_DISPLAY_WIDTH;
+                server->framebuffer_xrgb8888 + (size_t)y * server->display_width;
 
             for (int x = 0; x < copy_width; ++x) {
                 dst[x] = xrgb_from_pixel(src[x], format);
@@ -148,14 +148,14 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server *server) {
     }
 
     int read_width =
-    state.buffer->width < (int)WD_DISPLAY_WIDTH
+    state.buffer->width < (int)server->display_width
     ? state.buffer->width
-    : (int)WD_DISPLAY_WIDTH;
+    : (int)server->display_width;
 
     int read_height =
-    state.buffer->height < (int)WD_DISPLAY_HEIGHT
+    state.buffer->height < (int)server->display_height
     ? state.buffer->height
-    : (int)WD_DISPLAY_HEIGHT;
+    : (int)server->display_height;
 
     if (read_width <= 0 || read_height <= 0) {
         static uint64_t last_log_ns = 0;
@@ -172,7 +172,7 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server *server) {
         goto commit_only;
     }
 
-    memset(server->framebuffer_xrgb8888, 0, WD_FRAMEBUFFER_BYTES);
+    memset(server->framebuffer_xrgb8888, 0, server->framebuffer_bytes);
 
     struct wlr_texture *texture =
     wlr_texture_from_buffer(server->renderer, state.buffer);
@@ -204,7 +204,7 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server *server) {
     struct wlr_texture_read_pixels_options read_options = {
         .data = server->framebuffer_xrgb8888,
         .format = DRM_FORMAT_XRGB8888,
-        .stride = WD_DISPLAY_WIDTH * WD_BYTES_PER_PIXEL,
+        .stride = server->display_width * WD_BYTES_PER_PIXEL,
         .dst_x = 0,
         .dst_y = 0,
         .src_box = {

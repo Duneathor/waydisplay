@@ -46,6 +46,8 @@ namespace waydisplay {
         std::string server_host;
         uint16_t tcp_port = 0;
         uint16_t client_udp_port = 0;
+        uint16_t desired_width = 0;
+        uint16_t desired_height = 0;
 
         ClientStreamConfig stream_config;
 
@@ -53,6 +55,24 @@ namespace waydisplay {
 
         std::vector<uint32_t> framebuffer;
         std::vector<uint64_t> displayed_generation;
+
+        uint32_t framebuffer_pixels() const {
+            return static_cast<uint32_t>(config.width) * static_cast<uint32_t>(config.height);
+        }
+
+        uint32_t framebuffer_bytes() const {
+            return framebuffer_pixels() * WD_BYTES_PER_PIXEL;
+        }
+
+        uint32_t tile_count() const {
+            return static_cast<uint32_t>(config.total_tiles);
+        }
+
+        uint32_t tile_uncompressed_bytes() const {
+            return static_cast<uint32_t>(config.tile_width) *
+                   static_cast<uint32_t>(config.tile_height) *
+                   WD_BYTES_PER_PIXEL;
+        }
 
         std::mutex generation_mutex;
 

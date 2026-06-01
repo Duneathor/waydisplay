@@ -126,6 +126,16 @@ struct wd_client_hello_payload {
      */
     uint16_t target_fps;
 
+    /*
+     * Requested remote display size.
+     * 0x0 means server default/current size.
+     */
+    uint16_t desired_width;
+    uint16_t desired_height;
+
+    /*
+     * Keep the packed hello payload 32-bit aligned and reserved for future use.
+     */
     uint16_t reserved0;
 
     /*
@@ -283,7 +293,7 @@ WD_PACKED_END
 static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 static_assert(sizeof(struct wd_udp_tile_packet_header) == 20,
               "unexpected wd_udp_tile_packet_header size");
-static_assert(sizeof(struct wd_client_hello_payload) == 12,
+static_assert(sizeof(struct wd_client_hello_payload) == 16,
               "unexpected wd_client_hello_payload size");
 static_assert(sizeof(struct wd_pointer_event_payload) == 28,
               "unexpected wd_pointer_event_payload size");
@@ -299,7 +309,7 @@ static_assert(sizeof(struct wd_cursor_shape_payload) == 8,
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(sizeof(struct wd_udp_tile_packet_header) == 20,
                "unexpected wd_udp_tile_packet_header size");
-_Static_assert(sizeof(struct wd_client_hello_payload) == 12,
+_Static_assert(sizeof(struct wd_client_hello_payload) == 16,
                "unexpected wd_client_hello_payload size");
 _Static_assert(sizeof(struct wd_pointer_event_payload) == 28,
                "unexpected wd_pointer_event_payload size");

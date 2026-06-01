@@ -15,8 +15,9 @@ namespace {
 
 bool packet_header_valid(const wd_udp_tile_packet_header& header,
                          size_t packet_size,
-                         uint16_t udp_payload_target) {
-    if (header.tile_id >= WD_TOTAL_TILES) {
+                         uint16_t udp_payload_target,
+                         const wd_server_config_payload& config) {
+    if (header.tile_id >= config.total_tiles) {
         return false;
     }
 
@@ -41,7 +42,9 @@ bool packet_header_valid(const wd_udp_tile_packet_header& header,
     }
 
     const size_t max_compressed_size =
-        wd_zstd_compress_bound(WD_UNCOMPRESSED_TILE_BYTES);
+        wd_zstd_compress_bound(static_cast<size_t>(config.tile_width) *
+                               static_cast<size_t>(config.tile_height) *
+                               WD_BYTES_PER_PIXEL);
 
     if (header.compressed_tile_size > max_compressed_size) {
         return false;
@@ -79,7 +82,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state,
         udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
 
-    if (!packet_header_valid(header, packet_size, udp_payload_target)) {
+    if (!packet_header_valid(header, packet_size, udp_payload_target, state.config)) {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         return completed;
     }
@@ -94,6 +97,10 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state,
                 std::memory_order_relaxed);
             return completed;
         }
+    }
+
+    if (entries_.size() != state.config.total_tiles) {
+        entries_.assign(state.config.total_tiles, Entry{});
     }
 
     Entry& entry = entries_[header.tile_id];
@@ -135,13 +142,18 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state,
         return completed;
     }
 
-    completed.tile_bytes.assign(WD_UNCOMPRESSED_TILE_BYTES, 0);
+    const size_t uncompressed_tile_bytes =
+        static_cast<size_t>(state.config.tile_width) *
+        static_cast<size_t>(state.config.tile_height) *
+        WD_BYTES_PER_PIXEL;
+
+    completed.tile_bytes.assign(uncompressed_tile_bytes, 0);
 
     const bool ok = wd_zstd_decompress(entry.compressed.data(),
                                        entry.compressed.size(),
                                        completed.tile_bytes.data(),
                                        completed.tile_bytes.size(),
-                                       WD_UNCOMPRESSED_TILE_BYTES);
+                                       uncompressed_tile_bytes);
 
     if (!ok) {
         std::fprintf(stderr,

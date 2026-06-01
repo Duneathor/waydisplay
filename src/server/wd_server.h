@@ -213,8 +213,8 @@ extern "C" {
         uint16_t full_frame_next_tile;
         uint16_t dirty_scan_next_tile;
 
-        uint16_t dirty_queue[WD_TOTAL_TILES];
-        bool dirty_queued[WD_TOTAL_TILES];
+        uint16_t *dirty_queue;
+        bool *dirty_queued;
         uint16_t dirty_queue_read;
         uint16_t dirty_queue_write;
         uint16_t dirty_queue_count;
@@ -229,7 +229,7 @@ extern "C" {
         struct sockaddr_in client_udp_addr;
         struct wd_stream_policy stream_policy;
 
-        struct wd_cached_tile tiles[WD_TOTAL_TILES];
+        struct wd_cached_tile *tiles;
         struct wd_stats stats;
 
         struct wd_queued_key_event key_queue[WD_KEY_QUEUE_CAP];
@@ -273,6 +273,14 @@ extern "C" {
         struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
         struct wlr_viewporter *viewporter;
         double output_scale;
+
+        uint32_t display_width;
+        uint32_t display_height;
+        uint16_t tiles_x;
+        uint16_t tiles_y;
+        uint16_t total_tiles;
+        uint32_t framebuffer_pixels;
+        uint32_t framebuffer_bytes;
 
         struct wlr_data_device_manager *data_device_manager;
         struct wlr_primary_selection_v1_device_manager *primary_selection_manager;
@@ -332,7 +340,9 @@ extern "C" {
     bool wd_server_init(struct wd_server *server,
                         uint16_t tcp_port,
                         const char *app_cmd,
-                        double output_scale);
+                        double output_scale,
+                        uint32_t display_width,
+                        uint32_t display_height);
 
     void wd_server_destroy(struct wd_server *server);
 
@@ -342,6 +352,7 @@ extern "C" {
     bool wd_wlroots_init(struct wd_server *server);
     bool wd_wlroots_start(struct wd_server *server);
     bool wd_wlroots_create_headless_output(struct wd_server *server);
+    bool wd_wlroots_resize_headless_output(struct wd_server *server);
 
     /* wd_xdg_decoration.c */
     bool wd_xdg_decoration_init(struct wd_server *server);
@@ -405,6 +416,13 @@ extern "C" {
     void wd_stream_policy_consume_retransmit_tiles(struct wd_server *server,
                                                    uint32_t count);
     void wd_server_mark_scene_dirty(struct wd_server *server);
+    bool wd_server_set_geometry(struct wd_server *server,
+                                uint32_t width,
+                                uint32_t height);
+    bool wd_server_apply_display_size(struct wd_server *server,
+                                      uint32_t width,
+                                      uint32_t height);
+    void wd_server_set_default_geometry(struct wd_server *server);
 
 
     /* wd_clipboard.c */

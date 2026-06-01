@@ -72,11 +72,11 @@ struct wd_view *wd_scene_view_at(struct wd_server *server, double lx, double ly,
     int surface_h = view->xdg_surface->surface->current.height;
 
     if (surface_w <= 0) {
-      surface_w = WD_DISPLAY_WIDTH;
+      surface_w = (int)server->display_width;
     }
 
     if (surface_h <= 0) {
-      surface_h = WD_DISPLAY_HEIGHT;
+      surface_h = (int)server->display_height;
     }
 
     if (lx < view->x || ly < view->y || lx >= view->x + surface_w ||
@@ -228,7 +228,7 @@ static uint32_t output_logical_width(struct wd_server *server) {
     scale = 1.0;
   }
 
-  uint32_t width = (uint32_t)((double)WD_DISPLAY_WIDTH / scale);
+  uint32_t width = (uint32_t)((double)(server ? server->display_width : WD_DISPLAY_WIDTH) / scale);
   return width > 0 ? width : 1;
 }
 
@@ -238,7 +238,7 @@ static uint32_t output_logical_height(struct wd_server *server) {
     scale = 1.0;
   }
 
-  uint32_t height = (uint32_t)((double)WD_DISPLAY_HEIGHT / scale);
+  uint32_t height = (uint32_t)((double)(server ? server->display_height : WD_DISPLAY_HEIGHT) / scale);
   return height > 0 ? height : 1;
 }
 
@@ -406,17 +406,17 @@ static void view_place_relative_to_parent(struct wd_view *view,
   int x = parent->x + ((int)parent_w - (int)child_w) / 2;
   int y = parent->y + ((int)parent_h - (int)child_h) / 3;
 
-  view->x = clamp_i(x, 0, (int)WD_DISPLAY_WIDTH - 1);
-  view->y = clamp_i(y, 0, (int)WD_DISPLAY_HEIGHT - 1);
+  view->x = clamp_i(x, 0, (int)output_w - 1);
+  view->y = clamp_i(y, 0, (int)output_h - 1);
 
-  if (view->x + (int)child_w > (int)WD_DISPLAY_WIDTH) {
-    view->x = clamp_i((int)WD_DISPLAY_WIDTH - (int)child_w, 0,
-                      (int)WD_DISPLAY_WIDTH - 1);
+  if (view->x + (int)child_w > (int)output_w) {
+    view->x = clamp_i((int)output_w - (int)child_w, 0,
+                      (int)output_w - 1);
   }
 
-  if (view->y + (int)child_h > (int)WD_DISPLAY_HEIGHT) {
-    view->y = clamp_i((int)WD_DISPLAY_HEIGHT - (int)child_h, 0,
-                      (int)WD_DISPLAY_HEIGHT - 1);
+  if (view->y + (int)child_h > (int)output_h) {
+    view->y = clamp_i((int)output_h - (int)child_h, 0,
+                      (int)output_h - 1);
   }
 
   view->parent = parent;
@@ -863,11 +863,11 @@ static void popup_unconstrain_idle(void *data) {
   int root_height = state->view->xdg_surface->surface->current.height;
 
   if (root_width <= 0) {
-    root_width = WD_DISPLAY_WIDTH;
+    root_width = (int)state->view->server->display_width;
   }
 
   if (root_height <= 0) {
-    root_height = WD_DISPLAY_HEIGHT;
+    root_height = (int)state->view->server->display_height;
   }
 
   struct wlr_box root_box = {
@@ -1022,11 +1022,11 @@ static void view_save_geometry(struct wd_view *view) {
   int height = view->xdg_surface->surface->current.height;
 
   if (width <= 0) {
-    width = WD_DISPLAY_WIDTH;
+    width = (int)view->server->display_width;
   }
 
   if (height <= 0) {
-    height = WD_DISPLAY_HEIGHT;
+    height = (int)view->server->display_height;
   }
 
   view->saved_width = (uint32_t)width;
@@ -1058,8 +1058,8 @@ static void view_handle_request_maximize(struct wl_listener *listener,
     }
 
     wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel,
-                              (uint32_t)((double)WD_DISPLAY_WIDTH / scale),
-                              (uint32_t)((double)WD_DISPLAY_HEIGHT / scale));
+                              (uint32_t)((double)view->server->display_width / scale),
+                              (uint32_t)((double)view->server->display_height / scale));
   } else if (!maximize && view->maximized) {
     view_restore_saved_geometry(view);
   }
@@ -1096,8 +1096,8 @@ static void view_handle_request_fullscreen(struct wl_listener *listener,
     }
 
     wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel,
-                              (uint32_t)((double)WD_DISPLAY_WIDTH / scale),
-                              (uint32_t)((double)WD_DISPLAY_HEIGHT / scale));
+                              (uint32_t)((double)view->server->display_width / scale),
+                              (uint32_t)((double)view->server->display_height / scale));
   } else if (!fullscreen && view->fullscreen) {
     view_restore_saved_geometry(view);
   }

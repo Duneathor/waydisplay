@@ -179,6 +179,8 @@ bool receive_server_config(ClientState& state) {
     hello.client_udp_port = state.client_udp_port;
     hello.stream_mode = static_cast<uint16_t>(state.stream_config.mode);
     hello.target_fps = state.stream_config.target_fps;
+    hello.desired_width = state.desired_width;
+    hello.desired_height = state.desired_height;
     hello.max_tiles_per_second = state.stream_config.max_tiles_per_second;
 
     if (!wd_send_tcp_message(state.tcp_fd,
@@ -228,17 +230,22 @@ bool receive_server_config(ClientState& state) {
         return false;
     }
 
-    if (state.config.width != WD_DISPLAY_WIDTH ||
-        state.config.height != WD_DISPLAY_HEIGHT ||
-        state.config.tile_width != WD_TILE_WIDTH ||
-        state.config.tile_height != WD_TILE_HEIGHT ||
-        state.config.tiles_x != WD_TILES_X ||
-        state.config.tiles_y != WD_TILES_Y ||
-        state.config.total_tiles != WD_TOTAL_TILES ||
+    const uint32_t expected_tiles =
+        static_cast<uint32_t>(state.config.tiles_x) *
+        static_cast<uint32_t>(state.config.tiles_y);
+
+    if (state.config.width == 0 ||
+        state.config.height == 0 ||
+        state.config.tile_width == 0 ||
+        state.config.tile_height == 0 ||
+        state.config.tiles_x == 0 ||
+        state.config.tiles_y == 0 ||
+        state.config.total_tiles == 0 ||
+        expected_tiles != state.config.total_tiles ||
         state.config.pixel_format != WD_PIXEL_FORMAT_XRGB8888 ||
         state.config.compression_mode != WD_COMPRESSION_ZSTD) {
         std::fprintf(stderr,
-                     "server config does not match this client build\n"
+                     "invalid or unsupported server config\n"
                      "server: %ux%u tiles=%ux%u total=%u pixel=%u compression=%u\n",
                      state.config.width,
                      state.config.height,
@@ -301,7 +308,7 @@ void queue_retransmits_from_summary(ClientState& state,
         for (uint16_t i = 0; i < summary.tile_count; ++i) {
             const wd_tile_generation_entry& entry = entries[i];
 
-            if (entry.tile_id >= WD_TOTAL_TILES) {
+            if (entry.tile_id >= state.config.total_tiles) {
                 continue;
             }
 
@@ -460,14 +467,16 @@ bool client_connect(ClientState& state,
                     const char* server_host,
                     uint16_t tcp_port,
                     uint16_t client_udp_port,
-                    const ClientStreamConfig& stream_config) {
+                    const ClientStreamConfig& stream_config,
+                    uint16_t desired_width,
+                    uint16_t desired_height) {
     state.server_host = server_host ? server_host : "";
     state.tcp_port = tcp_port;
     state.client_udp_port = client_udp_port;
     state.stream_config = stream_config;
+    state.desired_width = desired_width;
+    state.desired_height = desired_height;
 
-    state.framebuffer.assign(WD_FRAMEBUFFER_PIXELS, 0xff202020u);
-    state.displayed_generation.assign(WD_TOTAL_TILES, 0);
     state.pending_cursor_shape.store(WD_CURSOR_SHAPE_DEFAULT, std::memory_order_relaxed);
     state.pending_cursor_shape_dirty.store(true, std::memory_order_release);
 
@@ -482,6 +491,9 @@ bool client_connect(ClientState& state,
     if (!receive_server_config(state)) {
         return false;
     }
+
+    state.framebuffer.assign(state.framebuffer_pixels(), 0xff202020u);
+    state.displayed_generation.assign(state.tile_count(), 0);
 
     state.running.store(true, std::memory_order_relaxed);
 
@@ -617,7 +629,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
             wd_retransmit_entry retx = state.retx_queue.front();
         state.retx_queue.pop_front();
 
-        if (retx.tile_id >= WD_TOTAL_TILES) {
+        if (retx.tile_id >= state.config.total_tiles) {
             continue;
         }
 

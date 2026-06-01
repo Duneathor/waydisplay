@@ -23,6 +23,11 @@
 namespace waydisplay {
 namespace {
 
+const wd_server_config_payload* g_client_config = nullptr;
+int g_window_width = 1;
+int g_window_height = 1;
+SDL_Rect g_content_rect{0, 0, 1, 1};
+
 constexpr uint64_t STATS_INTERVAL_NS = 1000000000ull;
 constexpr int SDL_FRAME_DELAY_MS = 8;
 
@@ -215,6 +220,48 @@ void print_client_stats(ClientState& state) {
         static_cast<unsigned long long>(keys));
 }
 
+bool blit_tile_xrgb8888(ClientState& state,
+                        uint16_t tile_id,
+                        const std::vector<uint8_t>& tile_bytes) {
+    if (tile_id >= state.config.total_tiles) {
+        return false;
+    }
+
+    const uint32_t tile_x = tile_id % state.config.tiles_x;
+    const uint32_t tile_y = tile_id / state.config.tiles_x;
+    const uint32_t dst_x = tile_x * state.config.tile_width;
+    const uint32_t dst_y = tile_y * state.config.tile_height;
+    const size_t expected_size =
+        static_cast<size_t>(state.config.tile_width) *
+        static_cast<size_t>(state.config.tile_height) *
+        WD_BYTES_PER_PIXEL;
+
+    if (tile_bytes.size() < expected_size ||
+        dst_x >= state.config.width ||
+        dst_y >= state.config.height) {
+        return false;
+    }
+
+    const uint32_t visible_width =
+        std::min<uint32_t>(state.config.tile_width, state.config.width - dst_x);
+    const uint32_t visible_height =
+        std::min<uint32_t>(state.config.tile_height, state.config.height - dst_y);
+
+    for (uint32_t y = 0; y < visible_height; ++y) {
+        const uint8_t* src =
+            tile_bytes.data() +
+            static_cast<size_t>(y) * state.config.tile_width * WD_BYTES_PER_PIXEL;
+        uint32_t* dst =
+            state.framebuffer.data() +
+            static_cast<size_t>(dst_y + y) * state.config.width + dst_x;
+
+        std::memcpy(dst, src,
+                    static_cast<size_t>(visible_width) * WD_BYTES_PER_PIXEL);
+    }
+
+    return true;
+}
+
 bool drain_udp(ClientState& state,
                TileReassembler& reassembler,
                bool& out_frame_dirty) {
@@ -263,9 +310,7 @@ bool drain_udp(ClientState& state,
             continue;
         }
 
-        if (!wd_blit_tile_xrgb8888(state.framebuffer.data(),
-                                   completed.tile_id,
-                                   completed.tile_bytes.data())) {
+        if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_bytes)) {
             state.stats.udp_ignored_invalid.fetch_add(1,
                                                       std::memory_order_relaxed);
             continue;
@@ -303,28 +348,111 @@ uint16_t sdl_button_to_linux_button(uint8_t button) {
     }
 }
 
-uint16_t clamp_mouse_coord_x(int x) {
-    if (x < 0) {
+uint16_t map_mouse_coord_x(int x) {
+    if (!g_client_config || g_client_config->width == 0) {
         return 0;
     }
 
-    if (x >= static_cast<int>(WD_DISPLAY_WIDTH)) {
-        return static_cast<uint16_t>(WD_DISPLAY_WIDTH - 1);
+    if (x <= g_content_rect.x || g_content_rect.w <= 0) {
+        return 0;
     }
 
-    return static_cast<uint16_t>(x);
+    if (x >= g_content_rect.x + g_content_rect.w) {
+        return static_cast<uint16_t>(g_client_config->width - 1);
+    }
+
+    const int local_x = x - g_content_rect.x;
+    const uint32_t mapped =
+        static_cast<uint32_t>((static_cast<uint64_t>(local_x) *
+                               g_client_config->width) /
+                              static_cast<uint32_t>(g_content_rect.w));
+
+    if (mapped >= g_client_config->width) {
+        return static_cast<uint16_t>(g_client_config->width - 1);
+    }
+
+    return static_cast<uint16_t>(mapped);
 }
 
-uint16_t clamp_mouse_coord_y(int y) {
-    if (y < 0) {
+uint16_t map_mouse_coord_y(int y) {
+    if (!g_client_config || g_client_config->height == 0) {
         return 0;
     }
 
-    if (y >= static_cast<int>(WD_DISPLAY_HEIGHT)) {
-        return static_cast<uint16_t>(WD_DISPLAY_HEIGHT - 1);
+    if (y <= g_content_rect.y || g_content_rect.h <= 0) {
+        return 0;
     }
 
-    return static_cast<uint16_t>(y);
+    if (y >= g_content_rect.y + g_content_rect.h) {
+        return static_cast<uint16_t>(g_client_config->height - 1);
+    }
+
+    const int local_y = y - g_content_rect.y;
+    const uint32_t mapped =
+        static_cast<uint32_t>((static_cast<uint64_t>(local_y) *
+                               g_client_config->height) /
+                              static_cast<uint32_t>(g_content_rect.h));
+
+    if (mapped >= g_client_config->height) {
+        return static_cast<uint16_t>(g_client_config->height - 1);
+    }
+
+    return static_cast<uint16_t>(mapped);
+}
+
+void update_window_size(SDL_Window* window) {
+    int width = 1;
+    int height = 1;
+
+    SDL_GetWindowSize(window, &width, &height);
+
+    if (width < 1) {
+        width = 1;
+    }
+
+    if (height < 1) {
+        height = 1;
+    }
+
+    g_window_width = width;
+    g_window_height = height;
+
+    if (!g_client_config ||
+        g_client_config->width == 0 ||
+        g_client_config->height == 0) {
+        g_content_rect = SDL_Rect{0, 0, width, height};
+        return;
+    }
+
+    const uint64_t width_limited_height =
+        (static_cast<uint64_t>(width) * g_client_config->height) /
+        g_client_config->width;
+
+    int content_width = width;
+    int content_height = height;
+
+    if (width_limited_height <= static_cast<uint64_t>(height)) {
+        content_height = static_cast<int>(width_limited_height);
+    } else {
+        content_width = static_cast<int>(
+            (static_cast<uint64_t>(height) * g_client_config->width) /
+            g_client_config->height);
+    }
+
+    if (content_width < 1) {
+        content_width = 1;
+    }
+
+    if (content_height < 1) {
+        content_height = 1;
+    }
+
+    g_content_rect = SDL_Rect{
+        (width - content_width) / 2,
+        (height - content_height) / 2,
+        content_width,
+        content_height,
+    };
 }
 
 void handle_sdl_event(ClientState& state, const SDL_Event& event) {
@@ -379,8 +507,8 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
         pointer.session_id = state.config.session_id;
         pointer.client_timestamp_ns = wd_now_ns();
         pointer.event_type = WD_POINTER_EVENT_MOTION;
-        pointer.x = clamp_mouse_coord_x(event.motion.x);
-        pointer.y = clamp_mouse_coord_y(event.motion.y);
+        pointer.x = map_mouse_coord_x(event.motion.x);
+        pointer.y = map_mouse_coord_y(event.motion.y);
         pointer.modifiers = current_pointer_modifiers();
 
         if (!client_send_pointer_event(state, pointer)) {
@@ -404,8 +532,8 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
     pointer.session_id = state.config.session_id;
     pointer.client_timestamp_ns = wd_now_ns();
     pointer.event_type = WD_POINTER_EVENT_BUTTON;
-    pointer.x = clamp_mouse_coord_x(event.button.x);
-    pointer.y = clamp_mouse_coord_y(event.button.y);
+    pointer.x = map_mouse_coord_x(event.button.x);
+    pointer.y = map_mouse_coord_y(event.button.y);
     pointer.button = linux_button;
     pointer.button_state =
     event.type == SDL_MOUSEBUTTONDOWN
@@ -440,8 +568,8 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
                 pointer.session_id = state.config.session_id;
                 pointer.client_timestamp_ns = wd_now_ns();
                 pointer.event_type = WD_POINTER_EVENT_AXIS;
-                pointer.x = clamp_mouse_coord_x(mouse_x);
-                pointer.y = clamp_mouse_coord_y(mouse_y);
+                pointer.x = map_mouse_coord_x(mouse_x);
+                pointer.y = map_mouse_coord_y(mouse_y);
                 pointer.axis = WD_POINTER_AXIS_VERTICAL;
                 pointer.modifiers = current_pointer_modifiers();
 
@@ -462,8 +590,8 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
                 pointer.session_id = state.config.session_id;
                 pointer.client_timestamp_ns = wd_now_ns();
                 pointer.event_type = WD_POINTER_EVENT_AXIS;
-                pointer.x = clamp_mouse_coord_x(mouse_x);
-                pointer.y = clamp_mouse_coord_y(mouse_y);
+                pointer.x = map_mouse_coord_x(mouse_x);
+                pointer.y = map_mouse_coord_y(mouse_y);
                 pointer.axis = WD_POINTER_AXIS_HORIZONTAL;
                 pointer.axis_value = event.wheel.x * 15;
                 pointer.modifiers = current_pointer_modifiers();
@@ -481,6 +609,8 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
 } // namespace
 
 int run_sdl_viewer(ClientState& state) {
+    g_client_config = &state.config;
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -490,8 +620,8 @@ int run_sdl_viewer(ClientState& state) {
         "WayDisplay Client",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
-        WD_DISPLAY_WIDTH,
-        WD_DISPLAY_HEIGHT,
+        state.config.width,
+        state.config.height,
         SDL_WINDOW_SHOWN);
 
     if (!window) {
@@ -499,6 +629,10 @@ int run_sdl_viewer(ClientState& state) {
         SDL_Quit();
         return 1;
     }
+
+    SDL_SetWindowMinimumSize(window, state.config.width, state.config.height);
+    SDL_SetWindowMaximumSize(window, state.config.width, state.config.height);
+    update_window_size(window);
 
     SDL_Renderer* renderer = SDL_CreateRenderer(
         window,
@@ -519,8 +653,8 @@ int run_sdl_viewer(ClientState& state) {
         renderer,
         SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_STREAMING,
-        WD_DISPLAY_WIDTH,
-        WD_DISPLAY_HEIGHT);
+        state.config.width,
+        state.config.height);
 
     if (!texture) {
         std::fprintf(stderr, "SDL_CreateTexture failed: %s\n", SDL_GetError());
@@ -547,6 +681,14 @@ int run_sdl_viewer(ClientState& state) {
                 break;
             }
 
+            if (event.type == SDL_WINDOWEVENT &&
+                (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                 event.window.event == SDL_WINDOWEVENT_RESIZED)) {
+                update_window_size(window);
+                frame_dirty = true;
+                continue;
+            }
+
             handle_sdl_event(state, event);
         }
 
@@ -565,17 +707,10 @@ int run_sdl_viewer(ClientState& state) {
             SDL_UpdateTexture(texture,
                               nullptr,
                               state.framebuffer.data(),
-                              WD_DISPLAY_WIDTH * WD_BYTES_PER_PIXEL);
+                              state.config.width * WD_BYTES_PER_PIXEL);
 
             SDL_RenderClear(renderer);
-            SDL_Rect dst{
-                0,
-                0,
-                static_cast<int>(WD_DISPLAY_WIDTH),
-                static_cast<int>(WD_DISPLAY_HEIGHT),
-            };
-
-            SDL_RenderCopy(renderer, texture, nullptr, &dst);
+            SDL_RenderCopy(renderer, texture, nullptr, &g_content_rect);
             SDL_RenderPresent(renderer);
 
             frame_dirty = false;
