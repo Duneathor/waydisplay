@@ -71,7 +71,7 @@ static bool readback_buffer_data_ptr_xrgb8888(struct wd_server *server,
             uint64_t now = wd_now_ns();
 
             if (now - last_log_ns > 1000000000ull) {
-                wlr_log(WLR_ERROR,
+                WD_LOG_ERROR(
                         "WayDisplay: data-ptr readback unsupported DRM format 0x%08x",
                         format);
                 last_log_ns = now;
@@ -130,7 +130,7 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server *server) {
         uint64_t now = wd_now_ns();
 
         if (now - last_log_ns > 1000000000ull) {
-            wlr_log(WLR_ERROR,
+            WD_LOG_ERROR(
                     "WayDisplay: wlr_scene_output_build_state failed");
             last_log_ns = now;
         }
@@ -162,7 +162,7 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server *server) {
         uint64_t now = wd_now_ns();
 
         if (now - last_log_ns > 1000000000ull) {
-            wlr_log(WLR_ERROR,
+            WD_LOG_ERROR(
                     "WayDisplay: invalid readback buffer size %dx%d",
                     state.buffer->width,
                     state.buffer->height);
@@ -191,7 +191,7 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server *server) {
         uint64_t now = wd_now_ns();
 
         if (now - last_log_ns > 1000000000ull) {
-            wlr_log(WLR_ERROR,
+            WD_LOG_ERROR(
                     "WayDisplay: wlr_texture_from_buffer failed for buffer %dx%d",
                     state.buffer->width,
                     state.buffer->height);
@@ -222,7 +222,7 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server *server) {
         uint64_t now = wd_now_ns();
 
         if (now - last_log_ns > 1000000000ull) {
-            wlr_log(WLR_ERROR,
+            WD_LOG_ERROR(
                     "WayDisplay: wlr_texture_read_pixels(XRGB8888) failed; preferred DRM format is 0x%08x",
                     preferred);
             last_log_ns = now;
@@ -242,7 +242,7 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server *server) {
             uint64_t now = wd_now_ns();
 
             if (now - last_log_ns > 1000000000ull) {
-                wlr_log(WLR_ERROR,
+                WD_LOG_ERROR(
                         "WayDisplay: wlr_output_commit_state failed");
                 last_log_ns = now;
             }

@@ -14,6 +14,7 @@
 #define WD_MIN_WINDOW_HEIGHT 80u
 #define WD_POINTER_MOD_ALT (1u << 0)
 #define WD_BTN_LEFT 0x110
+#define WD_BTN_RIGHT 0x111
 
 static struct wd_view *view_from_scene_node(struct wlr_scene_node *node) {
   while (node) {
@@ -213,6 +214,40 @@ static bool target_allows_compositor_fallback_gestures(
   return target_is_view_root_surface(view, surface);
 }
 
+static void notify_pointer_enter_if_needed(struct wd_server *server,
+                                           struct wlr_surface *surface,
+                                           double sx,
+                                           double sy) {
+  if (!server || !server->seat || !surface) {
+    return;
+  }
+
+  struct wlr_surface *old_surface = server->seat->pointer_state.focused_surface;
+  if (old_surface == surface) {
+    return;
+  }
+
+  WD_LOG_INFO(
+          "WayDisplay: pointer enter old_surface=%p new_surface=%p sx=%.1f sy=%.1f",
+          old_surface ? (void *)old_surface : NULL,
+          surface ? (void *)surface : NULL,
+          sx,
+          sy);
+  wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
+}
+
+void wd_pointer_clear_focus(struct wd_server *server) {
+  if (!server || !server->seat) {
+    return;
+  }
+
+  if (!server->seat->pointer_state.focused_surface) {
+    return;
+  }
+
+  wlr_seat_pointer_clear_focus(server->seat);
+}
+
 void wd_pointer_begin_move(struct wd_server *server, struct wd_view *view) {
   if (!server || !view) {
     return;
@@ -226,7 +261,7 @@ void wd_pointer_begin_move(struct wd_server *server, struct wd_view *view) {
   server->move_grab.view_y = view->y;
   wd_cursor_set_shape(server, WD_CURSOR_SHAPE_MOVE);
 
-  wlr_log(WLR_INFO,
+  WD_LOG_INFO(
           "WayDisplay: begin move view=%p at pointer %.1f %.1f view=%d %d",
           (void *)view, server->pointer_x, server->pointer_y, view->x, view->y);
 }
@@ -253,7 +288,7 @@ void wd_pointer_end_move(struct wd_server *server) {
     return;
   }
 
-  wlr_log(WLR_INFO, "WayDisplay: end move");
+  WD_LOG_INFO( "WayDisplay: end move");
 
   server->move_grab.active = false;
   server->move_grab.view = NULL;
@@ -282,7 +317,7 @@ void wd_pointer_begin_resize(struct wd_server *server,
 
   wlr_xdg_toplevel_set_resizing(view->xdg_surface->toplevel, true);
 
-  wlr_log(WLR_INFO,
+  WD_LOG_INFO(
           "WayDisplay: begin resize view=%p edges=0x%x pointer %.1f %.1f "
           "view=%d %d size=%ux%u",
           (void *)view,
@@ -374,7 +409,7 @@ void wd_pointer_end_resize(struct wd_server *server) {
         server->resize_grab.view->xdg_surface->toplevel, false);
   }
 
-  wlr_log(WLR_INFO, "WayDisplay: end resize");
+  WD_LOG_INFO( "WayDisplay: end resize");
 
   server->resize_grab.active = false;
   server->resize_grab.view = NULL;
@@ -445,6 +480,19 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
     server->pointer_x = lx;
     server->pointer_y = ly;
 
+    static struct wlr_surface *last_logged_motion_surface = NULL;
+    static struct wd_view *last_logged_motion_view = NULL;
+    static int last_logged_motion_x = -1;
+    static int last_logged_motion_y = -1;
+    static uint64_t last_motion_log_ns = 0;
+    static struct wlr_surface *button_grab_surface = NULL;
+    static struct wd_view *button_grab_view = NULL;
+    static uint32_t button_grab_count = 0;
+    static double button_grab_lx = 0.0;
+    static double button_grab_ly = 0.0;
+    static double button_grab_sx = 0.0;
+    static double button_grab_sy = 0.0;
+
     /*
      * If the compositor is currently moving a window, pointer motion updates
      * the scene position and is not forwarded to the client surface.
@@ -492,16 +540,122 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
     struct wd_view *target_view = NULL;
     struct wlr_surface *target_surface = NULL;
 
-    if (!scene_surface_at(server,
-      lx,
-      ly,
-      &target_view,
-      &target_surface,
-      &sx,
-      &sy)) {
+    bool hit_surface = scene_surface_at(server,
+                                        lx,
+                                        ly,
+                                        &target_view,
+                                        &target_surface,
+                                        &sx,
+                                        &sy);
+
+    if (button_grab_count > 0 && button_grab_surface) {
+      target_view = button_grab_view;
+      target_surface = button_grab_surface;
+      sx = button_grab_sx + (lx - button_grab_lx);
+      sy = button_grab_sy + (ly - button_grab_ly);
+      hit_surface = true;
+    }
+
+    if (!hit_surface) {
+      if (event->event_type == WD_POINTER_EVENT_MOTION) {
+        const uint64_t now_ns = wd_now_ns();
+        const int ilx = (int)lx;
+        const int ily = (int)ly;
+        const bool target_changed =
+            last_logged_motion_surface != NULL ||
+            last_logged_motion_view != NULL;
+        const bool moved_enough =
+            last_logged_motion_x < 0 ||
+            last_logged_motion_y < 0 ||
+            ilx < last_logged_motion_x - 24 ||
+            ilx > last_logged_motion_x + 24 ||
+            ily < last_logged_motion_y - 24 ||
+            ily > last_logged_motion_y + 24;
+        const bool old_enough = now_ns - last_motion_log_ns > 250000000ull;
+
+        if (target_changed || (moved_enough && old_enough)) {
+          WD_LOG_INFO(
+                  "WayDisplay: pointer motion target none at layout %.1f %.1f",
+                  lx,
+                  ly);
+          last_logged_motion_surface = NULL;
+          last_logged_motion_view = NULL;
+          last_logged_motion_x = ilx;
+          last_logged_motion_y = ily;
+          last_motion_log_ns = now_ns;
+        }
+      }
+
+      if (event->event_type == WD_POINTER_EVENT_BUTTON &&
+          event->button == WD_BTN_RIGHT) {
+        WD_LOG_INFO(
+                "WayDisplay: right click %s had no target at layout %.1f %.1f "
+                "mods=0x%x",
+                event->button_state == WD_POINTER_BUTTON_PRESSED
+                    ? "press"
+                    : "release",
+                lx,
+                ly,
+                event->modifiers);
+      }
       wd_cursor_set_shape(server, WD_CURSOR_SHAPE_DEFAULT);
+      wd_pointer_clear_focus(server);
       continue;
       }
+
+    if (event->event_type == WD_POINTER_EVENT_MOTION) {
+      const uint64_t now_ns = wd_now_ns();
+      const int ilx = (int)lx;
+      const int ily = (int)ly;
+      const bool target_changed =
+          target_surface != last_logged_motion_surface ||
+          target_view != last_logged_motion_view;
+      const bool moved_enough =
+          last_logged_motion_x < 0 ||
+          last_logged_motion_y < 0 ||
+          ilx < last_logged_motion_x - 24 ||
+          ilx > last_logged_motion_x + 24 ||
+          ily < last_logged_motion_y - 24 ||
+          ily > last_logged_motion_y + 24;
+      const bool old_enough = now_ns - last_motion_log_ns > 250000000ull;
+
+      if (target_changed || (moved_enough && old_enough)) {
+        WD_LOG_INFO(
+                "WayDisplay: pointer motion target layout %.1f %.1f "
+                "surface=%p view=%p sx=%.1f sy=%.1f",
+                lx,
+                ly,
+                (void *)target_surface,
+                (void *)target_view,
+                sx,
+                sy);
+        last_logged_motion_surface = target_surface;
+        last_logged_motion_view = target_view;
+        last_logged_motion_x = ilx;
+        last_logged_motion_y = ily;
+        last_motion_log_ns = now_ns;
+      }
+    }
+
+    if (event->event_type == WD_POINTER_EVENT_BUTTON &&
+        event->button == WD_BTN_RIGHT) {
+      WD_LOG_INFO(
+              "WayDisplay: right click target %s at layout %.1f %.1f "
+              "surface=%p view=%p sx=%.1f sy=%.1f state=%s mods=0x%x",
+              event->button_state == WD_POINTER_BUTTON_PRESSED
+                  ? "press"
+                  : "release",
+              lx,
+              ly,
+              (void *)target_surface,
+              (void *)target_view,
+              sx,
+              sy,
+              event->button_state == WD_POINTER_BUTTON_PRESSED
+                  ? "pressed"
+                  : "released",
+              event->modifiers);
+    }
 
     switch (event->event_type) {
       case WD_POINTER_EVENT_MOTION:
@@ -509,15 +663,36 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
                                                        target_surface)) {
           wd_pointer_update_hover_cursor(server, target_view, sx, sy);
         }
-        wlr_seat_pointer_notify_enter(server->seat,
-                                      target_surface,
-                                      sx,
-                                      sy);
+        if (event->button_state == WD_POINTER_BUTTON_PRESSED) {
+          if (button_grab_count == 0) {
+            button_grab_surface = target_surface;
+            button_grab_view = target_view;
+            button_grab_lx = lx;
+            button_grab_ly = ly;
+            button_grab_sx = sx;
+            button_grab_sy = sy;
+
+            WD_LOG_INFO(
+                    "WayDisplay: pointer button grab begin surface=%p view=%p "
+                    "layout=%.1f %.1f sx=%.1f sy=%.1f",
+                    (void *)button_grab_surface,
+                    (void *)button_grab_view,
+                    button_grab_lx,
+                    button_grab_ly,
+                    button_grab_sx,
+                    button_grab_sy);
+          }
+
+          ++button_grab_count;
+        }
+
+        notify_pointer_enter_if_needed(server, target_surface, sx, sy);
 
         wlr_seat_pointer_notify_motion(server->seat,
                                        time_msec,
                                        sx,
                                        sy);
+        wlr_seat_pointer_notify_frame(server->seat);
         break;
 
       case WD_POINTER_EVENT_BUTTON: {
@@ -567,15 +742,26 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
            */
         }
 
-        wlr_seat_pointer_notify_enter(server->seat,
-                                      target_surface,
-                                      sx,
-                                      sy);
+        notify_pointer_enter_if_needed(server, target_surface, sx, sy);
 
         wlr_seat_pointer_notify_motion(server->seat,
                                        time_msec,
                                        sx,
                                        sy);
+
+        if (event->button == WD_BTN_RIGHT) {
+          WD_LOG_INFO(
+                  "WayDisplay: notifying seat right click %s "
+                  "button=0x%x time=%u surface=%p sx=%.1f sy=%.1f",
+                  event->button_state == WD_POINTER_BUTTON_PRESSED
+                      ? "press"
+                      : "release",
+                  event->button,
+                  time_msec,
+                  (void *)target_surface,
+                  sx,
+                  sy);
+        }
 
         wlr_seat_pointer_notify_button(
           server->seat,
@@ -584,6 +770,26 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
           event->button_state == WD_POINTER_BUTTON_PRESSED
           ? WL_POINTER_BUTTON_STATE_PRESSED
           : WL_POINTER_BUTTON_STATE_RELEASED);
+        wlr_seat_pointer_notify_frame(server->seat);
+
+        if (event->button_state == WD_POINTER_BUTTON_RELEASED &&
+            button_grab_count > 0) {
+          --button_grab_count;
+
+          if (button_grab_count == 0) {
+            WD_LOG_INFO(
+                    "WayDisplay: pointer button grab end surface=%p view=%p",
+                    (void *)button_grab_surface,
+                    (void *)button_grab_view);
+            button_grab_surface = NULL;
+            button_grab_view = NULL;
+            button_grab_lx = 0.0;
+            button_grab_ly = 0.0;
+            button_grab_sx = 0.0;
+            button_grab_sy = 0.0;
+          }
+        }
+
         break;
       }
 
@@ -597,6 +803,7 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
           server->seat, time_msec, orientation, (double)event->axis_value,
           event->axis_value, WL_POINTER_AXIS_SOURCE_WHEEL,
           WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+      wlr_seat_pointer_notify_frame(server->seat);
       break;
     }
 

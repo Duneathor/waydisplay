@@ -106,7 +106,7 @@ static void handle_new_xdg_toplevel_decoration(struct wl_listener *listener,
 
     struct wd_xdg_decoration *decoration = calloc(1, sizeof(*decoration));
     if (!decoration) {
-        wlr_log(WLR_ERROR,
+        WD_LOG_ERROR(
                 "WayDisplay: failed to allocate xdg-decoration state");
         return;
     }
@@ -125,7 +125,7 @@ static void handle_new_xdg_toplevel_decoration(struct wl_listener *listener,
     schedule_decoration_configure(decoration);
 
     (void)server;
-    wlr_log(WLR_INFO, "WayDisplay: queued xdg-decoration client-side mode");
+    WD_LOG_INFO( "WayDisplay: queued xdg-decoration client-side mode");
 }
 
 bool wd_xdg_decoration_init(struct wd_server *server) {
@@ -136,7 +136,7 @@ bool wd_xdg_decoration_init(struct wd_server *server) {
     server->xdg_decoration_manager =
         wlr_xdg_decoration_manager_v1_create(server->display);
     if (!server->xdg_decoration_manager) {
-        wlr_log(WLR_ERROR,
+        WD_LOG_ERROR(
                 "WayDisplay: failed to create xdg-decoration manager");
         return false;
     }

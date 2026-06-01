@@ -197,7 +197,7 @@ static uint16_t run_udp_mtu_probe(struct wd_server *server,
     result = WD_UDP_PAYLOAD_TARGET;
   }
 
-  wlr_log(WLR_INFO,
+  WD_LOG_INFO(
           "WayDisplay: UDP payload target selected by probe: %u",
           result);
 
@@ -231,7 +231,7 @@ void *wd_net_thread_main(void *arg) {
 
   net->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (net->listen_fd < 0) {
-    wlr_log(WLR_ERROR, "WayDisplay: TCP socket failed: %s", strerror(errno));
+    WD_LOG_ERROR( "WayDisplay: TCP socket failed: %s", strerror(errno));
     return NULL;
   }
 
@@ -247,22 +247,22 @@ void *wd_net_thread_main(void *arg) {
 
   if (bind(net->listen_fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) <
       0) {
-    wlr_log(WLR_ERROR, "WayDisplay: bind TCP failed: %s", strerror(errno));
+    WD_LOG_ERROR( "WayDisplay: bind TCP failed: %s", strerror(errno));
     return NULL;
   }
 
   if (listen(net->listen_fd, 1) < 0) {
-    wlr_log(WLR_ERROR, "WayDisplay: listen failed: %s", strerror(errno));
+    WD_LOG_ERROR( "WayDisplay: listen failed: %s", strerror(errno));
     return NULL;
   }
 
   net->udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
   if (net->udp_fd < 0) {
-    wlr_log(WLR_ERROR, "WayDisplay: UDP socket failed: %s", strerror(errno));
+    WD_LOG_ERROR( "WayDisplay: UDP socket failed: %s", strerror(errno));
     return NULL;
   }
 
-  wlr_log(WLR_INFO, "WayDisplay: network server listening on TCP port %u",
+  WD_LOG_INFO( "WayDisplay: network server listening on TCP port %u",
           net->tcp_port);
 
   int sndbuf = 16 * 1024 * 1024;
@@ -271,7 +271,7 @@ void *wd_net_thread_main(void *arg) {
     SO_SNDBUF,
     &sndbuf,
     sizeof(sndbuf)) < 0) {
-    wlr_log(WLR_ERROR,
+    WD_LOG_ERROR(
             "WayDisplay: setsockopt SO_SNDBUF failed: %s",
             strerror(errno));
     } else {
@@ -283,7 +283,7 @@ void *wd_net_thread_main(void *arg) {
         SO_SNDBUF,
         &actual,
         &actual_len) == 0) {
-        wlr_log(WLR_INFO,
+        WD_LOG_INFO(
                 "WayDisplay: UDP send buffer requested=%d actual=%d",
                 sndbuf,
                 actual);
@@ -306,7 +306,7 @@ void *wd_net_thread_main(void *arg) {
         continue;
       }
 
-      wlr_log(WLR_ERROR, "WayDisplay: accept failed: %s", strerror(errno));
+      WD_LOG_ERROR( "WayDisplay: accept failed: %s", strerror(errno));
       continue;
     }
 
@@ -317,7 +317,7 @@ void *wd_net_thread_main(void *arg) {
     if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size) ||
         type != WD_MSG_CLIENT_HELLO ||
         payload_size < sizeof(struct wd_client_hello_payload)) {
-      wlr_log(WLR_ERROR, "WayDisplay: invalid client hello");
+      WD_LOG_ERROR( "WayDisplay: invalid client hello");
       free(payload);
       close(tcp_fd);
       continue;
@@ -334,7 +334,7 @@ void *wd_net_thread_main(void *arg) {
           !wd_server_apply_display_size(server,
                                         hello.desired_width,
                                         hello.desired_height)) {
-        wlr_log(WLR_ERROR,
+        WD_LOG_ERROR(
                 "WayDisplay: rejected requested client display size %ux%u",
                 hello.desired_width,
                 hello.desired_height);
@@ -373,7 +373,7 @@ void *wd_net_thread_main(void *arg) {
     wd_server_fill_config(server, session_id, selected_udp_payload, &cfg);
 
     if (!wd_send_tcp_message(tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg))) {
-      wlr_log(WLR_ERROR, "WayDisplay: failed to send server config");
+      WD_LOG_ERROR( "WayDisplay: failed to send server config");
       close(tcp_fd);
       continue;
     }
@@ -414,7 +414,7 @@ void *wd_net_thread_main(void *arg) {
 
     pthread_mutex_unlock(&net->lock);
 
-    wlr_log(WLR_INFO,
+    WD_LOG_INFO(
             "WayDisplay: client connected; UDP port=%u display=%ux%u stream_mode=%u fps=%u max_tiles_per_sec=%u retx_tiles_per_sec=%u",
             hello.client_udp_port,
             server->display_width,
@@ -515,12 +515,12 @@ void *wd_net_thread_main(void *arg) {
               break;
             }
 
-            wlr_log(WLR_INFO,
+            WD_LOG_INFO(
                     "WayDisplay: client resized display to %ux%u",
                     server->display_width,
                     server->display_height);
           } else {
-            wlr_log(WLR_ERROR,
+            WD_LOG_ERROR(
                     "WayDisplay: rejected live display resize to %ux%u",
                     resize.width,
                     resize.height);
@@ -542,6 +542,19 @@ void *wd_net_thread_main(void *arg) {
         memcpy(&pointer, payload, sizeof(pointer));
 
         if (pointer.session_id == cfg.session_id) {
+          if (pointer.event_type == WD_POINTER_EVENT_BUTTON &&
+              pointer.button == 0x111) {
+            WD_LOG_INFO(
+                    "WayDisplay: received right click %s from client "
+                    "x=%u y=%u mods=0x%x timestamp=%" PRIu64,
+                    pointer.button_state == WD_POINTER_BUTTON_PRESSED
+                        ? "press"
+                        : "release",
+                    pointer.x,
+                    pointer.y,
+                    pointer.modifiers,
+                    pointer.client_timestamp_ns);
+          }
           pthread_mutex_lock(&net->lock);
           wd_pointer_queue_event_locked(net, &pointer);
           pthread_mutex_unlock(&net->lock);
@@ -575,7 +588,7 @@ void *wd_net_thread_main(void *arg) {
 
     close(tcp_fd);
 
-    wlr_log(WLR_INFO, "WayDisplay: client disconnected; waiting for reconnect");
+    WD_LOG_INFO( "WayDisplay: client disconnected; waiting for reconnect");
   }
 
   return NULL;

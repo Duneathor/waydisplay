@@ -954,6 +954,18 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
         send_host_clipboard_to_server(state, true);
     }
 
+    if (linux_button == WD_BTN_RIGHT) {
+        std::fprintf(stderr,
+                     "WayDisplay client: sending right click %s "
+                     "window=%d,%d remote=%u,%u mods=0x%x\n",
+                     event.type == SDL_MOUSEBUTTONDOWN ? "press" : "release",
+                     event.button.x,
+                     event.button.y,
+                     pointer.x,
+                     pointer.y,
+                     pointer.modifiers);
+    }
+
     if (!client_send_pointer_event(state, pointer)) {
         std::fprintf(stderr, "failed to send pointer button\n");
         state.running.store(false, std::memory_order_relaxed);

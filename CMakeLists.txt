@@ -16,6 +16,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(WAYDISPLAY_BUILD_CLIENT_SDL "Build the SDL WayDisplay client" ON)
 option(WAYDISPLAY_BUILD_WLROOTS_SERVER "Build the wlroots headless compositor server" ON)
 option(WAYDISPLAY_BUILD_LEGACY_PROTO "Build the old monolithic prototype" OFF)
+option(WAYDISPLAY_ENABLE_LOGGING "Enable WayDisplay runtime logging" ON)
+option(WAYDISPLAY_ENABLE_DEBUG_LOGGING "Enable WayDisplay debug-level logging" OFF)
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -59,6 +61,7 @@ pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
 
 add_library(waydisplay_common STATIC
     src/common/wd_time.c
+    src/common/wd_log.c
     src/common/wd_net.c
     src/common/wd_tile.c
     src/common/wd_zstd.c
@@ -68,6 +71,11 @@ waydisplay_apply_common_warnings(waydisplay_common)
 
 target_include_directories(waydisplay_common PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_definitions(waydisplay_common PUBLIC
+    WAYDISPLAY_ENABLE_LOGGING=$<BOOL:${WAYDISPLAY_ENABLE_LOGGING}>
+    WAYDISPLAY_ENABLE_DEBUG_LOGGING=$<BOOL:${WAYDISPLAY_ENABLE_DEBUG_LOGGING}>
 )
 
 target_link_libraries(waydisplay_common PUBLIC
@@ -316,6 +324,8 @@ message(STATUS "WayDisplay build options:")
 message(STATUS "  WAYDISPLAY_BUILD_CLIENT_SDL=${WAYDISPLAY_BUILD_CLIENT_SDL}")
 message(STATUS "  WAYDISPLAY_BUILD_WLROOTS_SERVER=${WAYDISPLAY_BUILD_WLROOTS_SERVER}")
 message(STATUS "  WAYDISPLAY_BUILD_LEGACY_PROTO=${WAYDISPLAY_BUILD_LEGACY_PROTO}")
+message(STATUS "  WAYDISPLAY_ENABLE_LOGGING=${WAYDISPLAY_ENABLE_LOGGING}")
+message(STATUS "  WAYDISPLAY_ENABLE_DEBUG_LOGGING=${WAYDISPLAY_ENABLE_DEBUG_LOGGING}")
 
 if(DEFINED WAYDISPLAY_WLROOTS_MODULE)
     message(STATUS "  WAYDISPLAY_WLROOTS_MODULE=${WAYDISPLAY_WLROOTS_MODULE}")

@@ -56,7 +56,7 @@ static bool launch_startup_command(struct wd_server *server) {
         _exit(127);
     }
 
-    wlr_log(WLR_INFO,
+    WD_LOG_INFO(
             "WayDisplay: launched app pid=%d command=%s",
             pid,
             server->startup_command);
@@ -238,6 +238,7 @@ bool wd_server_init(struct wd_server *server,
     memset(server, 0, sizeof(*server));
 
     wl_list_init(&server->views);
+    wl_list_init(&server->popup_commit_trackers);
 
     if (!wd_server_set_geometry(server, display_width, display_height)) {
         return false;
@@ -293,7 +294,7 @@ bool wd_server_init(struct wd_server *server,
                             server);
 
     if (!server->frame_timer) {
-        wlr_log(WLR_ERROR,
+        WD_LOG_ERROR(
                 "WayDisplay: failed to create frame timer");
         return false;
     }
@@ -302,7 +303,7 @@ bool wd_server_init(struct wd_server *server,
 
     setenv("WAYLAND_DISPLAY", server->socket_name, 1);
 
-    wlr_log(WLR_INFO,
+    WD_LOG_INFO(
             "WayDisplay: running on WAYLAND_DISPLAY=%s",
             server->socket_name);
 
@@ -370,7 +371,11 @@ bool wd_server_init(struct wd_server *server,
                     }
 
                     int wd_server_run(struct wd_server *server) {
+#if WAYDISPLAY_ENABLE_LOGGING && WAYDISPLAY_ENABLE_DEBUG_LOGGING
                         wlr_log_init(WLR_DEBUG, NULL);
+#else
+                        wlr_log_init(WLR_ERROR, NULL);
+#endif
 
                         g_server_for_signal = server;
                         g_terminate_requested = 0;

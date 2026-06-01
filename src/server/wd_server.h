@@ -40,6 +40,7 @@
 #include <wlr/util/log.h>
 
 #include "waydisplay/wd_config.h"
+#include "waydisplay/wd_log.h"
 #include "waydisplay/wd_protocol.h"
 
 /*
@@ -290,6 +291,7 @@ extern "C" {
         struct wlr_keyboard *keyboard;
 
         struct wl_list views;
+        struct wl_list popup_commit_trackers;
 
         struct wd_view *focused_view;
         struct wlr_surface *focused_surface;
@@ -298,6 +300,13 @@ extern "C" {
         double pointer_y;
         uint32_t next_view_offset;
 
+        bool pointer_button_grab_active;
+        struct wd_view *pointer_button_grab_view;
+        struct wlr_surface *pointer_button_grab_surface;
+        double pointer_button_grab_surface_lx;
+        double pointer_button_grab_surface_ly;
+        uint32_t pointer_button_grab_buttons;
+
         struct wd_move_grab move_grab;
         struct wd_resize_grab resize_grab;
 
@@ -305,6 +314,7 @@ extern "C" {
 
         struct wl_listener new_xdg_surface;
         struct wl_listener new_xdg_toplevel;
+        struct wl_listener new_xdg_popup;
         struct wl_listener new_xdg_toplevel_decoration;
         struct wl_listener request_activate;
         struct wl_listener set_xdg_toplevel_icon;
@@ -450,6 +460,7 @@ extern "C" {
                                        const struct wd_pointer_event_payload *event);
 
     void wd_pointer_drain_and_inject(struct wd_server *server);
+    void wd_pointer_clear_focus(struct wd_server *server);
 
     struct wd_view *wd_scene_view_at(struct wd_server *server,
                                      double lx,

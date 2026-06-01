@@ -165,7 +165,7 @@ static void handle_cursor_shape_request(struct wl_listener *listener,
     uint16_t shape = wd_shape_from_wp_shape(event->shape);
     wd_cursor_set_shape(server, shape);
 
-    wlr_log(WLR_DEBUG,
+    WD_LOG_DEBUG(
             "WayDisplay: client requested cursor-shape=%s mapped=%u",
             wlr_cursor_shape_v1_name(event->shape),
             shape);
@@ -181,7 +181,7 @@ bool wd_cursor_init(struct wd_server *server) {
     server->cursor_shape_manager =
         wlr_cursor_shape_manager_v1_create(server->display, 1);
     if (!server->cursor_shape_manager) {
-        wlr_log(WLR_ERROR,
+        WD_LOG_ERROR(
                 "WayDisplay: failed to create cursor-shape manager");
         return false;
     }
@@ -191,7 +191,7 @@ bool wd_cursor_init(struct wd_server *server) {
     wl_signal_add(&server->cursor_shape_manager->events.request_set_shape,
                   &server->request_cursor_shape);
 
-    wlr_log(WLR_INFO, "WayDisplay: cursor-shape enabled");
+    WD_LOG_INFO( "WayDisplay: cursor-shape enabled");
     return true;
 }
 

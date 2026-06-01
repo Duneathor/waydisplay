@@ -70,7 +70,7 @@ static void handle_request_activate(struct wl_listener *listener, void *data) {
         view_from_toplevel_surface(server, event->surface);
 
     if (!view) {
-        wlr_log(WLR_DEBUG,
+        WD_LOG_DEBUG(
                 "WayDisplay: xdg-activation requested unknown surface=%p",
                 (void *)event->surface);
         return;
@@ -82,7 +82,7 @@ static void handle_request_activate(struct wl_listener *listener, void *data) {
          * The map handler already focuses new mapped toplevels, so there is no
          * extra pending-activation state needed here yet.
          */
-        wlr_log(WLR_DEBUG,
+        WD_LOG_DEBUG(
                 "WayDisplay: xdg-activation requested unmapped view=%p",
                 (void *)view);
         return;
@@ -94,7 +94,7 @@ static void handle_request_activate(struct wl_listener *listener, void *data) {
         const char *token_name =
             wlr_xdg_activation_token_v1_get_name(event->token);
 
-        wlr_log(WLR_INFO,
+        WD_LOG_INFO(
                 "WayDisplay: xdg-activation focused view=%p token=%s",
                 (void *)view,
                 token_name ? token_name : "(null)");
@@ -105,7 +105,7 @@ static void handle_request_activate(struct wl_listener *listener, void *data) {
          */
         wlr_xdg_activation_token_v1_destroy(event->token);
     } else {
-        wlr_log(WLR_INFO,
+        WD_LOG_INFO(
                 "WayDisplay: xdg-activation focused view=%p without token",
                 (void *)view);
     }
@@ -118,7 +118,7 @@ bool wd_xdg_activation_init(struct wd_server *server) {
 
     server->xdg_activation = wlr_xdg_activation_v1_create(server->display);
     if (!server->xdg_activation) {
-        wlr_log(WLR_ERROR,
+        WD_LOG_ERROR(
                 "WayDisplay: failed to create xdg-activation manager");
         return false;
     }
@@ -134,7 +134,7 @@ bool wd_xdg_activation_init(struct wd_server *server) {
     wl_signal_add(&server->xdg_activation->events.request_activate,
                   &server->request_activate);
 
-    wlr_log(WLR_INFO, "WayDisplay: xdg-activation enabled");
+    WD_LOG_INFO( "WayDisplay: xdg-activation enabled");
     return true;
 }
 

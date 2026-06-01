@@ -413,7 +413,7 @@ bool wd_stream_send_cached_tile_locked(struct wd_server *server, uint16_t tile_i
                sizeof(net->client_udp_addr));
 
         if (sent < 0) {
-            wlr_log(WLR_ERROR,
+            WD_LOG_ERROR(
                     "WayDisplay: sendto failed: %s",
                     strerror(errno));
             return false;
@@ -566,7 +566,7 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
                                                                                              tile->compressed_capacity,
                                                                                              WD_ZSTD_LEVEL,
                                                                                              &compressed_size)) {
-                                                                                             wlr_log(WLR_ERROR,
+                                                                                             WD_LOG_ERROR(
                                                                                                      "WayDisplay: zstd compression failed for full-frame tile %u",
                                                                                                      tile_id);
                                                                                              continue;
@@ -669,7 +669,7 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state *net,
                                                                                      tile->compressed_capacity,
                                                                                      WD_ZSTD_LEVEL,
                                                                                      &compressed_size)) {
-                                                                                     wlr_log(WLR_ERROR,
+                                                                                     WD_LOG_ERROR(
                                                                                              "WayDisplay: zstd compression failed for dirty tile %u",
                                                                                              tile_id);
                                                                                      continue;
@@ -759,7 +759,7 @@ void wd_stream_print_and_reset_stats(struct wd_server *server) {
 
     pthread_mutex_unlock(&net->lock);
 
-    wlr_log(WLR_INFO,
+    WD_LOG_INFO(
             "WayDisplay stats/s: dirty_tiles=%llu udp_tiles_sent=%llu udp_pkts=%llu udp_kib=%.1f "
             "tcp_hello_rx=%llu tcp_cfg_tx=%llu tcp_summary_tx=%llu retx_req_rx=%llu retx_tiles_req=%llu "
             "key_rx=%llu key_injected=%llu key_dropped=%llu",

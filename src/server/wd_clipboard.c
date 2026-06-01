@@ -98,14 +98,14 @@ static void remote_data_source_send(struct wlr_data_source *source,
   struct wd_server *server = remote->server;
 
   if (!server || !is_text_mime_type(mime_type)) {
-    wlr_log(WLR_DEBUG,
+    WD_LOG_DEBUG(
             "WayDisplay: rejecting remote clipboard request for mime=%s",
             mime_type ? mime_type : "(null)");
     close(fd);
     return;
   }
 
-  wlr_log(WLR_DEBUG,
+  WD_LOG_DEBUG(
           "WayDisplay: sending remote clipboard selection mime=%s size=%u",
           mime_type,
           remote->text_size);
@@ -140,14 +140,14 @@ static void remote_primary_source_send(
   struct wd_server *server = remote->server;
 
   if (!server || !is_text_mime_type(mime_type)) {
-    wlr_log(WLR_DEBUG,
+    WD_LOG_DEBUG(
             "WayDisplay: rejecting remote primary request for mime=%s",
             mime_type ? mime_type : "(null)");
     close(fd);
     return;
   }
 
-  wlr_log(WLR_DEBUG,
+  WD_LOG_DEBUG(
           "WayDisplay: sending remote primary selection mime=%s size=%u",
           mime_type,
           remote->text_size);
@@ -216,7 +216,7 @@ bool wd_clipboard_init(struct wd_server *server) {
       wlr_data_device_manager_create(server->display);
 
   if (!server->data_device_manager) {
-    wlr_log(WLR_ERROR, "WayDisplay: failed to create data device manager");
+    WD_LOG_ERROR( "WayDisplay: failed to create data device manager");
     return false;
   }
 
@@ -224,7 +224,7 @@ bool wd_clipboard_init(struct wd_server *server) {
       wlr_primary_selection_v1_device_manager_create(server->display);
 
   if (!server->primary_selection_manager) {
-    wlr_log(WLR_ERROR,
+    WD_LOG_ERROR(
             "WayDisplay: failed to create primary selection manager");
     return false;
   }
@@ -540,7 +540,7 @@ static void synthesize_clipboard_paste_shortcut(struct wd_server *server) {
      * the keyboard drain before clipboard drain runs, so only replay V while
      * those modifiers are held.
      */
-    wlr_log(WLR_DEBUG,
+    WD_LOG_DEBUG(
             "WayDisplay: synthesizing V with existing Ctrl+Shift paste modifiers");
     synthesize_key(server, key_v, true, time_msec);
     synthesize_key(server, key_v, false, time_msec);
@@ -553,7 +553,7 @@ static void synthesize_clipboard_paste_shortcut(struct wd_server *server) {
      * avoids disturbing the user's modifier state while still replaying the
      * suppressed V key after publishing the data-device selection.
      */
-    wlr_log(WLR_DEBUG,
+    WD_LOG_DEBUG(
             "WayDisplay: synthesizing V with existing Ctrl paste modifier");
     synthesize_key(server, key_v, true, time_msec);
     synthesize_key(server, key_v, false, time_msec);
@@ -561,7 +561,7 @@ static void synthesize_clipboard_paste_shortcut(struct wd_server *server) {
   }
 
   /* Fallback for unusual event ordering where Ctrl was not still depressed. */
-  wlr_log(WLR_DEBUG, "WayDisplay: synthesizing full Ctrl+V paste trigger");
+  WD_LOG_DEBUG( "WayDisplay: synthesizing full Ctrl+V paste trigger");
   synthesize_key(server, key_leftctrl, true, time_msec);
   synthesize_key(server, key_v, true, time_msec);
   synthesize_key(server, key_v, false, time_msec);
@@ -614,13 +614,13 @@ static void store_remote_selection(struct wd_server *server,
   }
 
   if (!published) {
-    wlr_log(WLR_ERROR,
+    WD_LOG_ERROR(
             "WayDisplay: failed to publish remote %s selection",
             primary ? "primary" : "clipboard");
     return;
   }
 
-  wlr_log(WLR_DEBUG,
+  WD_LOG_DEBUG(
           "WayDisplay: published remote %s selection (%u bytes)",
           primary ? "primary" : "clipboard",
           text_size);

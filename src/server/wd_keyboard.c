@@ -10,7 +10,7 @@
 bool wd_keyboard_init(struct wd_server *server) {
     server->keyboard_group = wlr_keyboard_group_create();
     if (!server->keyboard_group) {
-        wlr_log(WLR_ERROR, "WayDisplay: failed to create keyboard group");
+        WD_LOG_ERROR( "WayDisplay: failed to create keyboard group");
         return false;
     }
 
@@ -18,7 +18,7 @@ bool wd_keyboard_init(struct wd_server *server) {
 
     struct xkb_context *xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     if (!xkb_context) {
-        wlr_log(WLR_ERROR, "WayDisplay: failed to create xkb context");
+        WD_LOG_ERROR( "WayDisplay: failed to create xkb context");
         return false;
     }
 
@@ -40,7 +40,7 @@ bool wd_keyboard_init(struct wd_server *server) {
                               XKB_KEYMAP_COMPILE_NO_FLAGS);
 
     if (!keymap) {
-        wlr_log(WLR_ERROR, "WayDisplay: failed to create xkb keymap");
+        WD_LOG_ERROR( "WayDisplay: failed to create xkb keymap");
         xkb_context_unref(xkb_context);
         return false;
     }
