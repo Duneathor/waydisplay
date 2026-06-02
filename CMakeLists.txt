@@ -36,8 +36,8 @@ function(waydisplay_find_wlroots)
         wlroots
         wlroots-0.19
         wlroots0.19
-        wlroots-0.18
-        wlroots0.18
+        wlroots-0.20
+        wlroots0.20
     )
 
     foreach(candidate IN LISTS WAYDISPLAY_WLROOTS_CANDIDATES)

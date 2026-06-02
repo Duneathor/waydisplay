@@ -40,23 +40,23 @@ static bool is_text_mime_type(const char *mime_type) {
           strcmp(mime_type, "STRING") == 0);
 }
 
-static void release_mime_types(struct wl_array *mime_types) {
-  /*
-   * MIME type strings are static literals added by add_mime_type().  wlroots
-   * owns the wl_array storage, but not duplicated strings here.  Do not free
-   * the individual entries: doing so can crash when wlroots destroys a source
-   * that still contains borrowed/static MIME pointers.
-   */
-  wl_array_release(mime_types);
-}
-
 static bool add_mime_type(struct wl_array *mime_types, const char *mime_type) {
-  const char **slot = wl_array_add(mime_types, sizeof(*slot));
-  if (!slot) {
+  if (!mime_types || !mime_type) {
     return false;
   }
 
-  *slot = mime_type;
+  char *copy = strdup(mime_type);
+  if (!copy) {
+    return false;
+  }
+
+  char **slot = wl_array_add(mime_types, sizeof(*slot));
+  if (!slot) {
+    free(copy);
+    return false;
+  }
+
+  *slot = copy;
   return true;
 }
 
@@ -121,7 +121,6 @@ static void remote_data_source_destroy(struct wlr_data_source *source) {
     remote->server->remote_clipboard_source = NULL;
   }
 
-  release_mime_types(&remote->source.mime_types);
   free(remote->text);
   free(remote);
 }
@@ -164,7 +163,6 @@ static void remote_primary_source_destroy(
     remote->server->remote_primary_source = NULL;
   }
 
-  release_mime_types(&remote->source.mime_types);
   free(remote->text);
   free(remote);
 }
@@ -408,7 +406,7 @@ static bool publish_remote_clipboard_selection(struct wd_server *server) {
   wlr_data_source_init(&source->source, &remote_data_source_impl);
 
   if (!add_text_mime_types(&source->source.mime_types)) {
-    remote_data_source_destroy(&source->source);
+    wlr_data_source_destroy(&source->source);
     return false;
   }
 
@@ -442,7 +440,7 @@ static bool publish_remote_primary_selection(struct wd_server *server) {
                                     &remote_primary_source_impl);
 
   if (!add_text_mime_types(&source->source.mime_types)) {
-    remote_primary_source_destroy(&source->source);
+    wlr_primary_selection_source_destroy(&source->source);
     return false;
   }
 
@@ -587,6 +585,26 @@ static void store_remote_selection(struct wd_server *server,
                                    bool primary) {
   if (!server) {
     free(text);
+    return;
+  }
+
+  if (text_size == 0) {
+    free(text);
+
+    if (primary) {
+      free(server->remote_primary_text);
+      server->remote_primary_text = NULL;
+      server->remote_primary_text_size = 0;
+    } else {
+      free(server->remote_clipboard_text);
+      server->remote_clipboard_text = NULL;
+      server->remote_clipboard_text_size = 0;
+    }
+
+    clear_remote_selection_source(server, primary);
+    WD_LOG_DEBUG(
+            "WayDisplay: cleared remote %s selection",
+            primary ? "primary" : "clipboard");
     return;
   }
 

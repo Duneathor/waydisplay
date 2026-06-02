@@ -114,6 +114,12 @@ struct wd_view *wd_scene_view_at(struct wd_server *server, double lx, double ly,
     int surface_w = surface->current.width;
     int surface_h = surface->current.height;
 
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    if (view->xwayland_surface) {
+      surface_h += 28;
+    }
+#endif
+
     if (surface_w <= 0) {
       surface_w = (int)server->display_width;
     }

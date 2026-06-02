@@ -79,10 +79,6 @@ static bool scene_surface_at(struct wd_server *server,
     wlr_scene_surface_try_from_buffer(scene_buffer);
   }
 
-  if (!scene_surface || !scene_surface->surface) {
-    return false;
-  }
-
   struct wd_view *view = view_from_scene_node(node);
 
   if (!view) {
@@ -94,7 +90,7 @@ static bool scene_surface_at(struct wd_server *server,
   }
 
   if (out_surface) {
-    *out_surface = scene_surface->surface;
+    *out_surface = scene_surface ? scene_surface->surface : NULL;
   }
 
   if (out_sx) {
@@ -538,6 +534,23 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
     static double button_grab_sx = 0.0;
     static double button_grab_sy = 0.0;
 
+#define WD_CLEAR_POINTER_BUTTON_GRAB() \
+    do { \
+      if (button_grab_count > 0) { \
+        WD_LOG_INFO( \
+                "WayDisplay: pointer button grab cancel surface=%p view=%p", \
+                (void *)button_grab_surface, \
+                (void *)button_grab_view); \
+      } \
+      button_grab_surface = NULL; \
+      button_grab_view = NULL; \
+      button_grab_count = 0; \
+      button_grab_lx = 0.0; \
+      button_grab_ly = 0.0; \
+      button_grab_sx = 0.0; \
+      button_grab_sy = 0.0; \
+    } while (0)
+
     /*
      * If the compositor is currently moving a window, pointer motion updates
      * the scene position and is not forwarded to the client surface.
@@ -552,6 +565,8 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
           event->button_state == WD_POINTER_BUTTON_RELEASED) {
         wd_pointer_update_move(server);
         wd_pointer_end_move(server);
+        WD_CLEAR_POINTER_BUTTON_GRAB();
+        wd_pointer_clear_focus(server);
         continue;
       }
 
@@ -573,6 +588,8 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
           event->button == WD_BTN_LEFT) {
         wd_pointer_update_resize(server);
         wd_pointer_end_resize(server);
+        WD_CLEAR_POINTER_BUTTON_GRAB();
+        wd_pointer_clear_focus(server);
         continue;
       }
 
@@ -600,6 +617,18 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
       sy = button_grab_sy + (ly - button_grab_ly);
       hit_surface = true;
     }
+
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    if (hit_surface && target_view && !target_surface &&
+        target_view->xwayland_surface) {
+      sx = lx - target_view->x;
+      sy = ly - target_view->y;
+
+      if (!wd_xwayland_view_decoration_at(target_view, sx, sy)) {
+        hit_surface = false;
+      }
+    }
+#endif
 
     if (!hit_surface) {
       if (event->event_type == WD_POINTER_EVENT_MOTION) {
@@ -702,6 +731,26 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
               event->modifiers);
     }
 
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    if (!target_surface && target_view && target_view->xwayland_surface) {
+      switch (event->event_type) {
+        case WD_POINTER_EVENT_MOTION:
+          wd_cursor_set_shape(server, WD_CURSOR_SHAPE_DEFAULT);
+          break;
+        case WD_POINTER_EVENT_BUTTON:
+          if (event->button == WD_BTN_LEFT &&
+              event->button_state == WD_POINTER_BUTTON_PRESSED) {
+            wd_xwayland_view_handle_decoration_press(target_view, sx, sy);
+          }
+          break;
+        case WD_POINTER_EVENT_AXIS:
+          break;
+      }
+
+      continue;
+    }
+#endif
+
     switch (event->event_type) {
       case WD_POINTER_EVENT_MOTION:
         if (target_allows_compositor_fallback_gestures(target_view,
@@ -757,6 +806,7 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
 
           if (allow_fallback_gestures &&
               pointer_event_is_alt_left_press(event)) {
+            WD_CLEAR_POINTER_BUTTON_GRAB();
             wd_pointer_begin_move(server, target_view);
             break;
           }
@@ -772,6 +822,7 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
               !view_point_is_titlebar_move_zone(sx, sy)) {
             uint32_t edges = resize_edges_at_view_point(target_view, sx, sy);
             if (edges != WLR_EDGE_NONE) {
+              WD_CLEAR_POINTER_BUTTON_GRAB();
               wd_pointer_begin_resize(server, target_view, edges);
               break;
             }
@@ -856,4 +907,6 @@ void wd_pointer_drain_and_inject(struct wd_server *server) {
       break;
     }
   }
+
+#undef WD_CLEAR_POINTER_BUTTON_GRAB
 }

@@ -86,6 +86,13 @@ extern "C" {
         struct wlr_xwayland_surface *xwayland_surface;
 #endif
         struct wlr_scene_tree *scene_tree;
+#if WAYDISPLAY_ENABLE_XWAYLAND
+        struct wlr_scene_tree *xwayland_surface_tree;
+        struct wlr_scene_rect *xwayland_titlebar_rect;
+        struct wlr_scene_rect *xwayland_close_rect;
+        struct wlr_scene_rect *xwayland_maximize_rect;
+        struct wlr_scene_rect *xwayland_minimize_rect;
+#endif
         struct wlr_xdg_toplevel_icon_v1 *toplevel_icon;
 
         char *app_id;
@@ -117,6 +124,10 @@ extern "C" {
         struct wl_listener xwayland_commit;
         struct wl_listener xwayland_map_request;
         struct wl_listener xwayland_request_configure;
+        struct wl_listener xwayland_request_maximize;
+        struct wl_listener xwayland_request_fullscreen;
+        struct wl_listener xwayland_request_minimize;
+        struct wl_listener xwayland_request_close;
 #endif
 
         struct wl_event_source *configure_idle;
@@ -401,6 +412,10 @@ extern "C" {
     /* wd_xwayland.c */
     bool wd_xwayland_init(struct wd_server *server);
     void wd_xwayland_destroy(struct wd_server *server);
+    bool wd_xwayland_view_decoration_at(struct wd_view *view, double sx, double sy);
+    bool wd_xwayland_view_handle_decoration_press(struct wd_view *view,
+                                                  double sx,
+                                                  double sy);
 #endif
 
     /* wd_xdg_decoration.c */
