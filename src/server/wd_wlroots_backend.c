@@ -54,7 +54,12 @@ bool wd_wlroots_init(struct wd_server *server) {
         return false;
     }
 
-    wlr_compositor_create(server->display, 5, server->renderer);
+    server->compositor = wlr_compositor_create(server->display, 5, server->renderer);
+    if (!server->compositor) {
+        WD_LOG_ERROR( "WayDisplay: failed to create compositor global");
+        return false;
+    }
+
     wlr_subcompositor_create(server->display);
 
     server->viewporter = wlr_viewporter_create(server->display);
@@ -153,6 +158,12 @@ bool wd_wlroots_init(struct wd_server *server) {
     if (!wd_clipboard_init(server)) {
         return false;
     }
+
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    if (server->enable_xwayland && !wd_xwayland_init(server)) {
+        return false;
+    }
+#endif
 
     wd_scene_init_listeners(server);
 

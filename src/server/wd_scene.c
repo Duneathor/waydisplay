@@ -31,6 +31,7 @@ static void view_handle_request_fullscreen(struct wl_listener *listener,
 static void view_handle_request_minimize(struct wl_listener *listener,
                                          void *data);
 static void view_handle_new_popup(struct wl_listener *listener, void *data);
+static struct wlr_surface *view_root_surface(struct wd_view *view);
 
 struct wd_popup_unconstrain {
   struct wl_listener popup_destroy;
@@ -105,12 +106,13 @@ struct wd_view *wd_scene_view_at(struct wd_server *server, double lx, double ly,
    * should insert at server->views.prev.
    */
   wl_list_for_each_reverse(view, &server->views, link) {
-    if (!view->mapped || !view->xdg_surface || !view->xdg_surface->surface) {
+    struct wlr_surface *surface = view_root_surface(view);
+    if (!view->mapped || !surface) {
       continue;
     }
 
-    int surface_w = view->xdg_surface->surface->current.width;
-    int surface_h = view->xdg_surface->surface->current.height;
+    int surface_w = surface->current.width;
+    int surface_h = surface->current.height;
 
     if (surface_w <= 0) {
       surface_w = (int)server->display_width;
@@ -156,6 +158,24 @@ void wd_scene_set_view_position(struct wd_view *view) {
   }
 
   wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+}
+
+static struct wlr_surface *view_root_surface(struct wd_view *view) {
+  if (!view) {
+    return NULL;
+  }
+
+  if (view->xdg_surface) {
+    return view->xdg_surface->surface;
+  }
+
+#if WAYDISPLAY_ENABLE_XWAYLAND
+  if (view->xwayland_surface) {
+    return view->xwayland_surface->surface;
+  }
+#endif
+
+  return NULL;
 }
 
 static char *dup_or_empty(const char *text) {
@@ -209,9 +229,7 @@ static const char *view_title(struct wd_view *view) {
 }
 
 static void view_set_activated(struct wd_view *view, bool activated) {
-  if (!view || !view->xdg_surface ||
-      view->xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL ||
-      !view->xdg_surface->toplevel) {
+  if (!view) {
     return;
   }
 
@@ -220,7 +238,18 @@ static void view_set_activated(struct wd_view *view, bool activated) {
   }
 
   view->activated = activated;
-  wlr_xdg_toplevel_set_activated(view->xdg_surface->toplevel, activated);
+
+  if (view->xdg_surface &&
+      view->xdg_surface->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL &&
+      view->xdg_surface->toplevel) {
+    wlr_xdg_toplevel_set_activated(view->xdg_surface->toplevel, activated);
+  }
+
+#if WAYDISPLAY_ENABLE_XWAYLAND
+  if (view->xwayland_surface) {
+    wlr_xwayland_surface_activate(view->xwayland_surface, activated);
+  }
+#endif
 }
 
 void wd_scene_deactivate_view(struct wd_view *view) {
@@ -286,11 +315,12 @@ static uint32_t output_logical_height(struct wd_server *server) {
 
 static uint32_t view_surface_width_or(struct wd_view *view,
                                       uint32_t fallback) {
-  if (!view || !view->xdg_surface || !view->xdg_surface->surface) {
+  struct wlr_surface *surface = view_root_surface(view);
+  if (!surface) {
     return fallback;
   }
 
-  int width = view->xdg_surface->surface->current.width;
+  int width = surface->current.width;
   if (width <= 0) {
     return fallback;
   }
@@ -300,11 +330,12 @@ static uint32_t view_surface_width_or(struct wd_view *view,
 
 static uint32_t view_surface_height_or(struct wd_view *view,
                                        uint32_t fallback) {
-  if (!view || !view->xdg_surface || !view->xdg_surface->surface) {
+  struct wlr_surface *surface = view_root_surface(view);
+  if (!surface) {
     return fallback;
   }
 
-  int height = view->xdg_surface->surface->current.height;
+  int height = surface->current.height;
   if (height <= 0) {
     return fallback;
   }
@@ -512,9 +543,8 @@ void wd_scene_note_dialog_state(struct wd_view *view) {
 }
 
 void wd_scene_focus_view(struct wd_view *view) {
-  if (!view || !view->mapped || !view->xdg_surface ||
-      view->xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL ||
-      !view->xdg_surface->toplevel) {
+  struct wlr_surface *surface = view_root_surface(view);
+  if (!view || !view->mapped || !surface) {
     return;
   }
 
@@ -526,7 +556,7 @@ void wd_scene_focus_view(struct wd_view *view) {
 
   view->minimized = false;
   server->focused_view = view;
-  server->focused_surface = view->xdg_surface->surface;
+  server->focused_surface = surface;
 
   view_set_activated(view, true);
   wd_keyboard_shortcuts_inhibit_refresh(server);

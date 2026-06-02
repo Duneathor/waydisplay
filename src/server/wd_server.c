@@ -38,7 +38,15 @@ static bool launch_startup_command(struct wd_server *server) {
         setenv("WAYLAND_DISPLAY", server->socket_name, 1);
         setenv("XDG_SESSION_TYPE", "wayland", 1);
 
+#if WAYDISPLAY_ENABLE_XWAYLAND
+        if (server->xwayland && server->xwayland->display_name) {
+            setenv("DISPLAY", server->xwayland->display_name, 1);
+        } else {
+            unsetenv("DISPLAY");
+        }
+#else
         unsetenv("DISPLAY");
+#endif
         unsetenv("WAYLAND_SOCKET");
 
         setenv("GDK_BACKEND", "wayland", 1);
@@ -234,7 +242,8 @@ bool wd_server_init(struct wd_server *server,
                     const char *app_cmd,
                     double output_scale,
                     uint32_t display_width,
-                    uint32_t display_height) {
+                    uint32_t display_height,
+                    bool enable_xwayland) {
     memset(server, 0, sizeof(*server));
 
     wl_list_init(&server->views);
@@ -251,6 +260,11 @@ bool wd_server_init(struct wd_server *server,
 
     server->startup_command = app_cmd;
     server->output_scale = output_scale;
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    server->enable_xwayland = enable_xwayland;
+#else
+    (void)enable_xwayland;
+#endif
 
     if (server->output_scale <= 0.0) {
         server->output_scale = 1.0;
@@ -324,6 +338,9 @@ bool wd_server_init(struct wd_server *server,
                         }
 
                         wd_clipboard_destroy(server);
+#if WAYDISPLAY_ENABLE_XWAYLAND
+                        wd_xwayland_destroy(server);
+#endif
                         wd_keyboard_shortcuts_inhibit_destroy(server);
                         wd_cursor_destroy(server);
                         wd_xdg_activation_destroy(server);

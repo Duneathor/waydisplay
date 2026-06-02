@@ -8,7 +8,7 @@
 static void usage(const char *argv0) {
     fprintf(stderr,
             "Usage:\n"
-            "  %s [--port 5000] [--scale 1.0] [--size 1664x1024] [--app <command>]\n\n"
+            "  %s [--port 5000] [--scale 1.0] [--size 1664x1024] [--app <command>] [--xwayland|--no-xwayland]\n\n"
             "Examples:\n"
             "  %s --port 5000 --app foot\n"
             "  %s --port 5000 --scale 1.25 --size 1366x768 --app foot\n"
@@ -27,6 +27,7 @@ int main(int argc, char **argv) {
     double output_scale = 1.0;
     uint32_t display_width = WD_DISPLAY_WIDTH;
     uint32_t display_height = WD_DISPLAY_HEIGHT;
+    bool enable_xwayland = true;
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--app") == 0) {
@@ -88,6 +89,10 @@ int main(int argc, char **argv) {
                 usage(argv[0]);
                 return 1;
             }
+        } else if (strcmp(argv[i], "--xwayland") == 0) {
+            enable_xwayland = true;
+        } else if (strcmp(argv[i], "--no-xwayland") == 0) {
+            enable_xwayland = false;
         } else if (strcmp(argv[i], "--help") == 0 ||
             strcmp(argv[i], "-h") == 0) {
             usage(argv[0]);
@@ -106,7 +111,8 @@ int main(int argc, char **argv) {
                         app_cmd,
                         output_scale,
                         display_width,
-                        display_height)) {
+                        display_height,
+                        enable_xwayland)) {
         wd_server_destroy(&server);
         return 1;
     }

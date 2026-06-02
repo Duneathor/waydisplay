@@ -18,6 +18,7 @@ option(WAYDISPLAY_BUILD_WLROOTS_SERVER "Build the wlroots headless compositor se
 option(WAYDISPLAY_BUILD_LEGACY_PROTO "Build the old monolithic prototype" OFF)
 option(WAYDISPLAY_ENABLE_LOGGING "Enable WayDisplay runtime logging" ON)
 option(WAYDISPLAY_ENABLE_DEBUG_LOGGING "Enable WayDisplay debug-level logging" OFF)
+option(WAYDISPLAY_ENABLE_XWAYLAND "Enable Xwayland support in the wlroots server" ON)
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -248,6 +249,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/wd_xdg_toplevel_icon.c
             src/server/wd_xdg_decoration.c
             src/server/wd_wlroots_backend.c
+            src/server/wd_xwayland.c
             src/server/wd_scene.c
             src/server/wd_readback.c
             src/server/wd_pointer.c
@@ -261,6 +263,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
 
         target_compile_definitions(waydisplay_server_wlroots PRIVATE
             WLR_USE_UNSTABLE
+            WAYDISPLAY_ENABLE_XWAYLAND=$<BOOL:${WAYDISPLAY_ENABLE_XWAYLAND}>
         )
 
         target_include_directories(waydisplay_server_wlroots PRIVATE
@@ -327,6 +330,7 @@ message(STATUS "  WAYDISPLAY_BUILD_WLROOTS_SERVER=${WAYDISPLAY_BUILD_WLROOTS_SER
 message(STATUS "  WAYDISPLAY_BUILD_LEGACY_PROTO=${WAYDISPLAY_BUILD_LEGACY_PROTO}")
 message(STATUS "  WAYDISPLAY_ENABLE_LOGGING=${WAYDISPLAY_ENABLE_LOGGING}")
 message(STATUS "  WAYDISPLAY_ENABLE_DEBUG_LOGGING=${WAYDISPLAY_ENABLE_DEBUG_LOGGING}")
+message(STATUS "  WAYDISPLAY_ENABLE_XWAYLAND=${WAYDISPLAY_ENABLE_XWAYLAND}")
 
 if(DEFINED WAYDISPLAY_WLROOTS_MODULE)
     message(STATUS "  WAYDISPLAY_WLROOTS_MODULE=${WAYDISPLAY_WLROOTS_MODULE}")

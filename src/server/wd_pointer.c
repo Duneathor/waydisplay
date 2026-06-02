@@ -124,12 +124,31 @@ void wd_pointer_queue_event_locked(
   net->pointer_queue[net->pointer_queue_count++].event = *event;
 }
 
+static struct wlr_surface *view_root_surface(struct wd_view *view) {
+  if (!view) {
+    return NULL;
+  }
+
+  if (view->xdg_surface) {
+    return view->xdg_surface->surface;
+  }
+
+#if WAYDISPLAY_ENABLE_XWAYLAND
+  if (view->xwayland_surface) {
+    return view->xwayland_surface->surface;
+  }
+#endif
+
+  return NULL;
+}
+
 static uint32_t view_width(struct wd_view *view) {
-  if (!view || !view->xdg_surface || !view->xdg_surface->surface) {
+  struct wlr_surface *surface = view_root_surface(view);
+  if (!surface) {
     return view && view->server ? view->server->display_width : WD_DISPLAY_WIDTH;
   }
 
-  int width = view->xdg_surface->surface->current.width;
+  int width = surface->current.width;
   if (width <= 0) {
     return view && view->server ? view->server->display_width : WD_DISPLAY_WIDTH;
   }
@@ -138,11 +157,12 @@ static uint32_t view_width(struct wd_view *view) {
 }
 
 static uint32_t view_height(struct wd_view *view) {
-  if (!view || !view->xdg_surface || !view->xdg_surface->surface) {
+  struct wlr_surface *surface = view_root_surface(view);
+  if (!surface) {
     return view && view->server ? view->server->display_height : WD_DISPLAY_HEIGHT;
   }
 
-  int height = view->xdg_surface->surface->current.height;
+  int height = surface->current.height;
   if (height <= 0) {
     return view && view->server ? view->server->display_height : WD_DISPLAY_HEIGHT;
   }
@@ -202,10 +222,7 @@ static bool view_point_is_titlebar_move_zone(double sx, double sy) {
 
 static bool target_is_view_root_surface(struct wd_view *view,
                                         struct wlr_surface *surface) {
-  return view &&
-         surface &&
-         view->xdg_surface &&
-         view->xdg_surface->surface == surface;
+  return view && surface && view_root_surface(view) == surface;
 }
 
 static bool target_allows_compositor_fallback_gestures(
@@ -299,9 +316,18 @@ void wd_pointer_end_move(struct wd_server *server) {
 void wd_pointer_begin_resize(struct wd_server *server,
                              struct wd_view *view,
                              uint32_t edges) {
-  if (!server || !view || !view->xdg_surface ||
-      !view->xdg_surface->toplevel || edges == WLR_EDGE_NONE) {
+  if (!server || !view || edges == WLR_EDGE_NONE) {
     return;
+  }
+
+  if (!view->xdg_surface || !view->xdg_surface->toplevel) {
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    if (!view->xwayland_surface) {
+      return;
+    }
+#else
+    return;
+#endif
   }
 
   server->resize_grab.active = true;
@@ -315,7 +341,9 @@ void wd_pointer_begin_resize(struct wd_server *server,
   server->resize_grab.view_height = view_height(view);
   wd_cursor_set_shape(server, wd_cursor_shape_for_resize_edges(edges));
 
-  wlr_xdg_toplevel_set_resizing(view->xdg_surface->toplevel, true);
+  if (view->xdg_surface && view->xdg_surface->toplevel) {
+    wlr_xdg_toplevel_set_resizing(view->xdg_surface->toplevel, true);
+  }
 
   WD_LOG_INFO(
           "WayDisplay: begin resize view=%p edges=0x%x pointer %.1f %.1f "
@@ -338,7 +366,13 @@ void wd_pointer_update_resize(struct wd_server *server) {
   struct wd_view *view = server->resize_grab.view;
 
   if (!view->xdg_surface || !view->xdg_surface->toplevel) {
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    if (!view->xwayland_surface) {
+      return;
+    }
+#else
     return;
+#endif
   }
 
   const double dx = server->pointer_x - server->resize_grab.grab_x;
@@ -390,9 +424,20 @@ void wd_pointer_update_resize(struct wd_server *server) {
   view->y = new_y;
 
   wd_scene_set_view_position(view);
-  wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel,
-                            (uint32_t)new_width,
-                            (uint32_t)new_height);
+  if (view->xdg_surface && view->xdg_surface->toplevel) {
+    wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel,
+                              (uint32_t)new_width,
+                              (uint32_t)new_height);
+  }
+#if WAYDISPLAY_ENABLE_XWAYLAND
+  if (view->xwayland_surface) {
+    wlr_xwayland_surface_configure(view->xwayland_surface,
+                                   new_x,
+                                   new_y,
+                                   (uint32_t)new_width,
+                                   (uint32_t)new_height);
+  }
+#endif
 
   wd_server_mark_scene_dirty(server);
 }

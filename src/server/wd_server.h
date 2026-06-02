@@ -19,6 +19,13 @@
 #include <wlr/render/wlr_texture.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
+#if WAYDISPLAY_ENABLE_XWAYLAND
+#if __has_include(<wlr/xwayland/xwayland.h>)
+#include <wlr/xwayland/xwayland.h>
+#elif __has_include(<wlr/xwayland.h>)
+#include <wlr/xwayland.h>
+#endif
+#endif
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_keyboard.h>
@@ -75,6 +82,9 @@ extern "C" {
         struct wl_list link;
 
         struct wlr_xdg_surface *xdg_surface;
+#if WAYDISPLAY_ENABLE_XWAYLAND
+        struct wlr_xwayland_surface *xwayland_surface;
+#endif
         struct wlr_scene_tree *scene_tree;
         struct wlr_xdg_toplevel_icon_v1 *toplevel_icon;
 
@@ -98,6 +108,16 @@ extern "C" {
         struct wl_listener xdg_surface_destroy;
         struct wl_listener xdg_toplevel_destroy;
         struct wl_listener new_popup;
+#if WAYDISPLAY_ENABLE_XWAYLAND
+        struct wl_listener xwayland_destroy;
+        struct wl_listener xwayland_associate;
+        struct wl_listener xwayland_dissociate;
+        struct wl_listener xwayland_map;
+        struct wl_listener xwayland_unmap;
+        struct wl_listener xwayland_commit;
+        struct wl_listener xwayland_map_request;
+        struct wl_listener xwayland_request_configure;
+#endif
 
         struct wl_event_source *configure_idle;
 
@@ -257,6 +277,7 @@ extern "C" {
         struct wlr_backend *backend;
         struct wlr_renderer *renderer;
         struct wlr_allocator *allocator;
+        struct wlr_compositor *compositor;
 
         struct wlr_output *output;
         struct wlr_output_layout *output_layout;
@@ -274,6 +295,12 @@ extern "C" {
         struct wlr_cursor_shape_manager_v1 *cursor_shape_manager;
         struct wlr_fractional_scale_manager_v1 *fractional_scale_manager;
         struct wlr_viewporter *viewporter;
+#if WAYDISPLAY_ENABLE_XWAYLAND
+        struct wlr_xwayland *xwayland;
+        struct wl_listener xwayland_ready;
+        struct wl_listener new_xwayland_surface;
+        bool enable_xwayland;
+#endif
         double output_scale;
 
         uint32_t display_width;
@@ -357,7 +384,8 @@ extern "C" {
                         const char *app_cmd,
                         double output_scale,
                         uint32_t display_width,
-                        uint32_t display_height);
+                        uint32_t display_height,
+                        bool enable_xwayland);
 
     void wd_server_destroy(struct wd_server *server);
 
@@ -368,6 +396,12 @@ extern "C" {
     bool wd_wlroots_start(struct wd_server *server);
     bool wd_wlroots_create_headless_output(struct wd_server *server);
     bool wd_wlroots_resize_headless_output(struct wd_server *server);
+
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    /* wd_xwayland.c */
+    bool wd_xwayland_init(struct wd_server *server);
+    void wd_xwayland_destroy(struct wd_server *server);
+#endif
 
     /* wd_xdg_decoration.c */
     bool wd_xdg_decoration_init(struct wd_server *server);
