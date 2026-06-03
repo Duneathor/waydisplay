@@ -1,0 +1,49 @@
+# .clang-format - C/C++ style with no single-line functions and required braces for control statements
+BasedOnStyle: LLVM
+Language: Cpp
+
+# Indentation & columns
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 140
+
+# Disallow single-line functions and control statements
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+
+# Braces wrapping (preferred placement)
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: false
+  AfterControlStatement: true
+  AfterFunction: false
+  AfterNamespace: false
+  BeforeCatch: true
+  BeforeElse: true
+  IndentBraces: false
+
+# Pointers/references
+PointerAlignment: Left
+
+# Alignments
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+AlignConsecutiveMacros: true
+AlignOperands: true
+AlignTrailingComments: true
+
+# Includes & comments
+SortIncludes: true
+IncludeBlocks: Regroup
+ReflowComments: true
+
+# Misc
+SpaceBeforeParens: ControlStatements
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+PenaltyBreakBeforeFirstCallParameter: 19
+PenaltyBreakAssignment: 2
+PenaltyBreakString: 1000

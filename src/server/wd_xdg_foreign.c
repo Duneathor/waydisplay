@@ -1,7 +1,8 @@
 #include "wd_server.h"
 
-bool wd_xdg_foreign_init(struct wd_server *server) {
-    if (!server || !server->display || !server->xdg_shell) {
+bool wd_xdg_foreign_init(struct wd_server* server) {
+    if (!server || !server->display || !server->xdg_shell)
+    {
         return false;
     }
 
@@ -16,27 +17,26 @@ bool wd_xdg_foreign_init(struct wd_server *server) {
      * when clients establish the parent relationship, the existing
      * xdg_toplevel.set_parent listener centers/transient-places the child.
      */
-    server->xdg_foreign_registry =
-        wlr_xdg_foreign_registry_create(server->display);
-    if (!server->xdg_foreign_registry) {
-        WD_LOG_ERROR(
-                "WayDisplay: failed to create xdg-foreign registry");
+    server->xdg_foreign_registry = wlr_xdg_foreign_registry_create(server->display);
+    if (!server->xdg_foreign_registry)
+    {
+        WD_LOG_ERROR("WayDisplay: failed to create xdg-foreign registry");
         return false;
     }
 
-    if (!wlr_xdg_foreign_v2_create(server->display,
-                                   server->xdg_foreign_registry)) {
-        WD_LOG_ERROR(
-                "WayDisplay: failed to create xdg-foreign v2 manager");
+    if (!wlr_xdg_foreign_v2_create(server->display, server->xdg_foreign_registry))
+    {
+        WD_LOG_ERROR("WayDisplay: failed to create xdg-foreign v2 manager");
         return false;
     }
 
-    WD_LOG_INFO( "WayDisplay: xdg-foreign v2 enabled");
+    WD_LOG_INFO("WayDisplay: xdg-foreign v2 enabled");
     return true;
 }
 
-void wd_xdg_foreign_destroy(struct wd_server *server) {
-    if (!server) {
+void wd_xdg_foreign_destroy(struct wd_server* server) {
+    if (!server)
+    {
         return;
     }
 

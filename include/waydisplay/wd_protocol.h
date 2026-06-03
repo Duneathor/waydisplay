@@ -1,8 +1,8 @@
 #pragma once
 
-#include <stdint.h>
-
 #include "waydisplay/wd_config.h"
+
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,40 +14,40 @@ extern "C" {
  * Historical value used by the prototype/server.
  * Integer value is compared directly on same-endian Linux peers.
  */
-#define WD_TCP_MAGIC 0x54434457u
+#define WD_TCP_MAGIC             0x54434457u
 #define WD_UDP_TILE_ID_MTU_PROBE 0xffffu
 
 enum wd_message_type {
-    WD_MSG_CLIENT_HELLO = 1,
-    WD_MSG_SERVER_CONFIG = 2,
+    WD_MSG_CLIENT_HELLO            = 1,
+    WD_MSG_SERVER_CONFIG           = 2,
     WD_MSG_TILE_GENERATION_SUMMARY = 3,
-    WD_MSG_RETRANSMIT_REQUEST = 4,
-    WD_MSG_KEYBOARD_KEY = 5,
-    WD_MSG_POINTER_EVENT = 6,
-    WD_MSG_MTU_PROBE_START = 7,
-    WD_MSG_MTU_PROBE_RESULT = 8,
-    WD_MSG_CLIPBOARD_SET = 9,
-    WD_MSG_CLIPBOARD_REQUEST = 10,
-    WD_MSG_PRIMARY_SET = 11,
-    WD_MSG_PRIMARY_REQUEST = 12,
-    WD_MSG_CURSOR_SHAPE = 13,
-    WD_MSG_DISPLAY_RESIZE = 14,
-    WD_MSG_ERROR = 255,
+    WD_MSG_RETRANSMIT_REQUEST      = 4,
+    WD_MSG_KEYBOARD_KEY            = 5,
+    WD_MSG_POINTER_EVENT           = 6,
+    WD_MSG_MTU_PROBE_START         = 7,
+    WD_MSG_MTU_PROBE_RESULT        = 8,
+    WD_MSG_CLIPBOARD_SET           = 9,
+    WD_MSG_CLIPBOARD_REQUEST       = 10,
+    WD_MSG_PRIMARY_SET             = 11,
+    WD_MSG_PRIMARY_REQUEST         = 12,
+    WD_MSG_CURSOR_SHAPE            = 13,
+    WD_MSG_DISPLAY_RESIZE          = 14,
+    WD_MSG_ERROR                   = 255,
 };
 
 enum wd_pointer_event_type {
     WD_POINTER_EVENT_MOTION = 1,
     WD_POINTER_EVENT_BUTTON = 2,
-    WD_POINTER_EVENT_AXIS = 3,
+    WD_POINTER_EVENT_AXIS   = 3,
 };
 
 enum wd_pointer_button_state {
     WD_POINTER_BUTTON_RELEASED = 0,
-    WD_POINTER_BUTTON_PRESSED = 1,
+    WD_POINTER_BUTTON_PRESSED  = 1,
 };
 
 enum wd_pointer_axis {
-    WD_POINTER_AXIS_VERTICAL = 0,
+    WD_POINTER_AXIS_VERTICAL   = 0,
     WD_POINTER_AXIS_HORIZONTAL = 1,
 };
 
@@ -82,15 +82,15 @@ enum wd_compression_mode {
 };
 
 enum wd_cursor_shape {
-    WD_CURSOR_SHAPE_DEFAULT = 0,
-    WD_CURSOR_SHAPE_POINTER = 1,
-    WD_CURSOR_SHAPE_TEXT = 2,
-    WD_CURSOR_SHAPE_MOVE = 3,
-    WD_CURSOR_SHAPE_EW_RESIZE = 4,
-    WD_CURSOR_SHAPE_NS_RESIZE = 5,
+    WD_CURSOR_SHAPE_DEFAULT     = 0,
+    WD_CURSOR_SHAPE_POINTER     = 1,
+    WD_CURSOR_SHAPE_TEXT        = 2,
+    WD_CURSOR_SHAPE_MOVE        = 3,
+    WD_CURSOR_SHAPE_EW_RESIZE   = 4,
+    WD_CURSOR_SHAPE_NS_RESIZE   = 5,
     WD_CURSOR_SHAPE_NWSE_RESIZE = 6,
     WD_CURSOR_SHAPE_NESW_RESIZE = 7,
-    WD_CURSOR_SHAPE_WAIT = 8,
+    WD_CURSOR_SHAPE_WAIT        = 8,
     WD_CURSOR_SHAPE_NOT_ALLOWED = 9,
 
     WD_CURSOR_SHAPE_COUNT,
@@ -98,10 +98,10 @@ enum wd_cursor_shape {
 
 #if defined(_MSC_VER)
 #define WD_PACKED_BEGIN __pragma(pack(push, 1))
-#define WD_PACKED_END __pragma(pack(pop))
+#define WD_PACKED_END   __pragma(pack(pop))
 #else
 #define WD_PACKED_BEGIN _Pragma("pack(push, 1)")
-#define WD_PACKED_END _Pragma("pack(pop)")
+#define WD_PACKED_END   _Pragma("pack(pop)")
 #endif
 
 WD_PACKED_BEGIN
@@ -191,8 +191,8 @@ struct wd_keyboard_event_payload {
     uint32_t session_id;
     uint64_t client_timestamp_ns;
     uint16_t evdev_key_code;
-    uint8_t pressed;
-    uint8_t reserved;
+    uint8_t  pressed;
+    uint8_t  reserved;
 };
 
 struct wd_pointer_event_payload {
@@ -248,6 +248,12 @@ struct wd_udp_tile_packet_header {
     uint16_t payload_size;
     uint64_t tile_generation;
     uint32_t compressed_tile_size;
+
+    /*
+     * Server monotonic timestamp for when this tile generation was produced.
+     * Used for best-effort same-host latency telemetry.
+     */
+    uint64_t tile_timestamp_ns;
 };
 
 struct wd_mtu_probe_start_payload {
@@ -268,9 +274,9 @@ struct wd_mtu_probe_result_payload {
     uint16_t reserved;
 };
 
-#define WD_SELECTION_MIME_TEXT_UTF8 1u
+#define WD_SELECTION_MIME_TEXT_UTF8  1u
 #define WD_SELECTION_MIME_TEXT_PLAIN 2u
-#define WD_SELECTION_MAX_TEXT_BYTES (1024u * 1024u)
+#define WD_SELECTION_MAX_TEXT_BYTES  (1024u * 1024u)
 
 struct wd_selection_payload_header {
     uint32_t session_id;
@@ -298,40 +304,24 @@ WD_PACKED_END
 
 #if defined(__cplusplus)
 static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
-static_assert(sizeof(struct wd_udp_tile_packet_header) == 20,
-              "unexpected wd_udp_tile_packet_header size");
-static_assert(sizeof(struct wd_client_hello_payload) == 16,
-              "unexpected wd_client_hello_payload size");
-static_assert(sizeof(struct wd_pointer_event_payload) == 28,
-              "unexpected wd_pointer_event_payload size");
-static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8,
-              "unexpected wd_mtu_probe_start_payload size");
-static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8,
-              "unexpected wd_mtu_probe_result_payload size");
-static_assert(sizeof(struct wd_selection_payload_header) == 12,
-              "unexpected wd_selection_payload_header size");
-static_assert(sizeof(struct wd_cursor_shape_payload) == 8,
-              "unexpected wd_cursor_shape_payload size");
-static_assert(sizeof(struct wd_display_resize_payload) == 8,
-              "unexpected wd_display_resize_payload size");
+static_assert(sizeof(struct wd_udp_tile_packet_header) == 28, "unexpected wd_udp_tile_packet_header size");
+static_assert(sizeof(struct wd_client_hello_payload) == 16, "unexpected wd_client_hello_payload size");
+static_assert(sizeof(struct wd_pointer_event_payload) == 28, "unexpected wd_pointer_event_payload size");
+static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mtu_probe_start_payload size");
+static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8, "unexpected wd_mtu_probe_result_payload size");
+static_assert(sizeof(struct wd_selection_payload_header) == 12, "unexpected wd_selection_payload_header size");
+static_assert(sizeof(struct wd_cursor_shape_payload) == 8, "unexpected wd_cursor_shape_payload size");
+static_assert(sizeof(struct wd_display_resize_payload) == 8, "unexpected wd_display_resize_payload size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
-_Static_assert(sizeof(struct wd_udp_tile_packet_header) == 20,
-               "unexpected wd_udp_tile_packet_header size");
-_Static_assert(sizeof(struct wd_client_hello_payload) == 16,
-               "unexpected wd_client_hello_payload size");
-_Static_assert(sizeof(struct wd_pointer_event_payload) == 28,
-               "unexpected wd_pointer_event_payload size");
-_Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8,
-               "unexpected wd_mtu_probe_start_payload size");
-_Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8,
-               "unexpected wd_mtu_probe_result_payload size");
-_Static_assert(sizeof(struct wd_selection_payload_header) == 12,
-               "unexpected wd_selection_payload_header size");
-_Static_assert(sizeof(struct wd_cursor_shape_payload) == 8,
-               "unexpected wd_cursor_shape_payload size");
-_Static_assert(sizeof(struct wd_display_resize_payload) == 8,
-               "unexpected wd_display_resize_payload size");
+_Static_assert(sizeof(struct wd_udp_tile_packet_header) == 28, "unexpected wd_udp_tile_packet_header size");
+_Static_assert(sizeof(struct wd_client_hello_payload) == 16, "unexpected wd_client_hello_payload size");
+_Static_assert(sizeof(struct wd_pointer_event_payload) == 28, "unexpected wd_pointer_event_payload size");
+_Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mtu_probe_start_payload size");
+_Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8, "unexpected wd_mtu_probe_result_payload size");
+_Static_assert(sizeof(struct wd_selection_payload_header) == 12, "unexpected wd_selection_payload_header size");
+_Static_assert(sizeof(struct wd_cursor_shape_payload) == 8, "unexpected wd_cursor_shape_payload size");
+_Static_assert(sizeof(struct wd_display_resize_payload) == 8, "unexpected wd_display_resize_payload size");
 #endif
 
 #ifdef __cplusplus

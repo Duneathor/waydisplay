@@ -3,74 +3,79 @@
 #include <drm_fourcc.h>
 #include <stdlib.h>
 
-static void output_handle_frame(struct wl_listener *listener, void *data) {
+static void output_handle_frame(struct wl_listener* listener, void* data) {
     (void)data;
 
-    struct wd_server *server =
-    wl_container_of(listener, server, output_frame);
+    struct wd_server* server = wl_container_of(listener, server, output_frame);
 
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
 
-    if (server->scene_output) {
+    if (server->scene_output)
+    {
         wlr_scene_output_send_frame_done(server->scene_output, &ts);
     }
 }
 
-static void output_handle_destroy(struct wl_listener *listener, void *data) {
+static void output_handle_destroy(struct wl_listener* listener, void* data) {
     (void)data;
 
-    struct wd_server *server =
-    wl_container_of(listener, server, output_destroy);
+    struct wd_server* server = wl_container_of(listener, server, output_destroy);
 
-    server->output = NULL;
+    server->output       = NULL;
     server->scene_output = NULL;
 }
 
-bool wd_wlroots_init(struct wd_server *server) {
+bool wd_wlroots_init(struct wd_server* server) {
     server->display = wl_display_create();
-    if (!server->display) {
+    if (!server->display)
+    {
         return false;
     }
 
     server->event_loop = wl_display_get_event_loop(server->display);
 
     server->backend = wlr_headless_backend_create(server->event_loop);
-    if (!server->backend) {
+    if (!server->backend)
+    {
         return false;
     }
 
     server->renderer = wlr_renderer_autocreate(server->backend);
-    if (!server->renderer) {
+    if (!server->renderer)
+    {
         return false;
     }
 
     wlr_renderer_init_wl_display(server->renderer, server->display);
 
-    server->allocator =
-    wlr_allocator_autocreate(server->backend, server->renderer);
+    server->allocator = wlr_allocator_autocreate(server->backend, server->renderer);
 
-    if (!server->allocator) {
+    if (!server->allocator)
+    {
         return false;
     }
 
     server->compositor = wlr_compositor_create(server->display, 5, server->renderer);
-    if (!server->compositor) {
-        WD_LOG_ERROR( "WayDisplay: failed to create compositor global");
+    if (!server->compositor)
+    {
+        WD_LOG_ERROR("WayDisplay: failed to create compositor global");
         return false;
     }
 
     wlr_subcompositor_create(server->display);
 
     server->viewporter = wlr_viewporter_create(server->display);
-    if (!server->viewporter) {
-        WD_LOG_ERROR( "WayDisplay: failed to create wp_viewporter global");
+    if (!server->viewporter)
+    {
+        WD_LOG_ERROR("WayDisplay: failed to create wp_viewporter global");
         return false;
     }
 
     server->output_layout = wlr_output_layout_create(server->display);
-    if (!server->output_layout) {
-        WD_LOG_ERROR( "WayDisplay: failed to create output layout");
+    if (!server->output_layout)
+    {
+        WD_LOG_ERROR("WayDisplay: failed to create output layout");
         return false;
     }
 
@@ -78,18 +83,17 @@ bool wd_wlroots_init(struct wd_server *server) {
      * xdg-output reports logical output name, description, position, and size.
      * Qt/Electron/toolkits often query this in addition to wl_output.
      */
-    server->xdg_output_manager =
-        wlr_xdg_output_manager_v1_create(server->display,
-                                         server->output_layout);
-    if (!server->xdg_output_manager) {
-        WD_LOG_ERROR( "WayDisplay: failed to create xdg-output manager");
+    server->xdg_output_manager = wlr_xdg_output_manager_v1_create(server->display, server->output_layout);
+    if (!server->xdg_output_manager)
+    {
+        WD_LOG_ERROR("WayDisplay: failed to create xdg-output manager");
         return false;
     }
 
-    server->fractional_scale_manager =
-        wlr_fractional_scale_manager_v1_create(server->display, 1);
-    if (!server->fractional_scale_manager) {
-        WD_LOG_ERROR( "WayDisplay: failed to create fractional scale manager");
+    server->fractional_scale_manager = wlr_fractional_scale_manager_v1_create(server->display, 1);
+    if (!server->fractional_scale_manager)
+    {
+        WD_LOG_ERROR("WayDisplay: failed to create fractional scale manager");
         return false;
     }
 
@@ -105,62 +109,73 @@ bool wd_wlroots_init(struct wd_server *server) {
     setenv("WLR_SCENE_DISABLE_DIRECT_SCANOUT", "1", 1);
 
     server->scene = wlr_scene_create();
-    if (!server->scene) {
+    if (!server->scene)
+    {
         return false;
     }
 
     server->xdg_shell = wlr_xdg_shell_create(server->display, 6);
-    if (!server->xdg_shell) {
+    if (!server->xdg_shell)
+    {
         return false;
     }
 
-    if (!wd_xdg_activation_init(server)) {
+    if (!wd_xdg_activation_init(server))
+    {
         return false;
     }
 
-    if (!wd_xdg_foreign_init(server)) {
+    if (!wd_xdg_foreign_init(server))
+    {
         return false;
     }
 
-    if (!wd_xdg_dialog_init(server)) {
+    if (!wd_xdg_dialog_init(server))
+    {
         return false;
     }
 
-    if (!wd_xdg_toplevel_icon_init(server)) {
+    if (!wd_xdg_toplevel_icon_init(server))
+    {
         return false;
     }
 
-    if (!wd_cursor_init(server)) {
+    if (!wd_cursor_init(server))
+    {
         return false;
     }
 
-    if (!wd_xdg_decoration_init(server)) {
+    if (!wd_xdg_decoration_init(server))
+    {
         return false;
     }
 
     server->seat = wlr_seat_create(server->display, "seat0");
-    if (!server->seat) {
+    if (!server->seat)
+    {
         return false;
     }
 
-    wlr_seat_set_capabilities(server->seat,
-                              WL_SEAT_CAPABILITY_POINTER |
-                              WL_SEAT_CAPABILITY_KEYBOARD);
+    wlr_seat_set_capabilities(server->seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
 
-    if (!wd_keyboard_shortcuts_inhibit_init(server)) {
+    if (!wd_keyboard_shortcuts_inhibit_init(server))
+    {
         return false;
     }
 
-    if (!wd_keyboard_init(server)) {
+    if (!wd_keyboard_init(server))
+    {
         return false;
     }
 
-    if (!wd_clipboard_init(server)) {
+    if (!wd_clipboard_init(server))
+    {
         return false;
     }
 
 #if WAYDISPLAY_ENABLE_XWAYLAND
-    if (server->enable_xwayland && !wd_xwayland_init(server)) {
+    if (server->enable_xwayland && !wd_xwayland_init(server))
+    {
         return false;
     }
 #endif
@@ -170,42 +185,36 @@ bool wd_wlroots_init(struct wd_server *server) {
     return true;
 }
 
-bool wd_wlroots_start(struct wd_server *server) {
-    if (!wlr_backend_start(server->backend)) {
+bool wd_wlroots_start(struct wd_server* server) {
+    if (!wlr_backend_start(server->backend))
+    {
         return false;
     }
 
     return true;
 }
 
-bool wd_wlroots_create_headless_output(struct wd_server *server) {
-    server->output =
-    wlr_headless_add_output(server->backend,
-                            (int)server->display_width,
-                            (int)server->display_height);
+bool wd_wlroots_create_headless_output(struct wd_server* server) {
+    server->output = wlr_headless_add_output(server->backend, (int)server->display_width, (int)server->display_height);
 
-    if (!server->output) {
+    if (!server->output)
+    {
         return false;
     }
 
-    if (!wlr_output_init_render(server->output,
-        server->allocator,
-        server->renderer)) {
+    if (!wlr_output_init_render(server->output, server->allocator, server->renderer))
+    {
         return false;
-        }
+    }
 
-        wlr_output_set_name(server->output, "WayDisplay-0");
-    wlr_output_set_description(server->output,
-                               "WayDisplay headless remote output");
+    wlr_output_set_name(server->output, "WayDisplay-0");
+    wlr_output_set_description(server->output, "WayDisplay headless remote output");
 
     struct wlr_output_state state;
     wlr_output_state_init(&state);
 
     wlr_output_state_set_enabled(&state, true);
-    wlr_output_state_set_custom_mode(&state,
-                                     (int)server->display_width,
-                                     (int)server->display_height,
-                                     60000);
+    wlr_output_state_set_custom_mode(&state, (int)server->display_width, (int)server->display_height, 60000);
     wlr_output_state_set_scale(&state, server->output_scale);
     wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
 
@@ -213,7 +222,8 @@ bool wd_wlroots_create_headless_output(struct wd_server *server) {
 
     wlr_output_state_finish(&state);
 
-    if (!ok) {
+    if (!ok)
+    {
         return false;
     }
 
@@ -227,17 +237,15 @@ bool wd_wlroots_create_headless_output(struct wd_server *server) {
      * xdg-output is driven by wlr_output_layout. WayDisplay has one logical
      * output at compositor-space origin 0,0.
      */
-    if (server->output_layout) {
-        wlr_output_layout_add(server->output_layout,
-                              server->output,
-                              0,
-                              0);
+    if (server->output_layout)
+    {
+        wlr_output_layout_add(server->output_layout, server->output, 0, 0);
     }
 
-    server->scene_output =
-    wlr_scene_output_create(server->scene, server->output);
+    server->scene_output = wlr_scene_output_create(server->scene, server->output);
 
-    if (!server->scene_output) {
+    if (!server->scene_output)
+    {
         return false;
     }
 
@@ -249,16 +257,14 @@ bool wd_wlroots_create_headless_output(struct wd_server *server) {
     server->output_destroy.notify = output_handle_destroy;
     wl_signal_add(&server->output->events.destroy, &server->output_destroy);
 
-    WD_LOG_INFO(
-            "WayDisplay: created headless output %ux%u",
-            server->display_width,
-            server->display_height);
+    WD_LOG_INFO("WayDisplay: created headless output %ux%u", server->display_width, server->display_height);
 
     return true;
 }
 
-bool wd_wlroots_resize_headless_output(struct wd_server *server) {
-    if (!server || !server->output) {
+bool wd_wlroots_resize_headless_output(struct wd_server* server) {
+    if (!server || !server->output)
+    {
         return true;
     }
 
@@ -266,10 +272,7 @@ bool wd_wlroots_resize_headless_output(struct wd_server *server) {
     wlr_output_state_init(&state);
 
     wlr_output_state_set_enabled(&state, true);
-    wlr_output_state_set_custom_mode(&state,
-                                     (int)server->display_width,
-                                     (int)server->display_height,
-                                     60000);
+    wlr_output_state_set_custom_mode(&state, (int)server->display_width, (int)server->display_height, 60000);
     wlr_output_state_set_scale(&state, server->output_scale);
     wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
 
@@ -277,25 +280,22 @@ bool wd_wlroots_resize_headless_output(struct wd_server *server) {
 
     wlr_output_state_finish(&state);
 
-    if (!ok) {
+    if (!ok)
+    {
         return false;
     }
 
-    if (server->output_layout) {
-        wlr_output_layout_add(server->output_layout,
-                              server->output,
-                              0,
-                              0);
+    if (server->output_layout)
+    {
+        wlr_output_layout_add(server->output_layout, server->output, 0, 0);
     }
 
-    if (server->scene_output) {
+    if (server->scene_output)
+    {
         wlr_scene_output_set_position(server->scene_output, 0, 0);
     }
 
-    WD_LOG_INFO(
-            "WayDisplay: resized headless output to %ux%u",
-            server->display_width,
-            server->display_height);
+    WD_LOG_INFO("WayDisplay: resized headless output to %ux%u", server->display_width, server->display_height);
 
     return true;
 }

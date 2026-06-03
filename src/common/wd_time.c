@@ -2,9 +2,9 @@
 
 #include "waydisplay/wd_time.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <time.h>
-#include <errno.h>
 
 uint64_t wd_now_ns(void) {
     struct timespec ts;
@@ -18,14 +18,13 @@ uint32_t wd_now_ms32(void) {
     return (uint32_t)(wd_now_ns() / 1000000ull);
 }
 
-
-void wd_sleep_ms(uint32_t ms)
-{
+void wd_sleep_ms(uint32_t ms) {
     struct timespec ts;
-    ts.tv_sec = ms / 1000;
+    ts.tv_sec  = ms / 1000;
     ts.tv_nsec = (long)(ms % 1000) * 1000000L;
 
-    while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {
+    while (nanosleep(&ts, &ts) == -1 && errno == EINTR)
+    {
         // Retry with remaining time if interrupted by a signal.
     }
 }

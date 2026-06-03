@@ -1,5 +1,8 @@
 #pragma once
 
+#include "waydisplay/wd_config.h"
+#include "waydisplay/wd_protocol.h"
+
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -8,92 +11,98 @@
 #include <thread>
 #include <vector>
 
-#include "waydisplay/wd_config.h"
-#include "waydisplay/wd_protocol.h"
-
 namespace waydisplay {
 
-    enum class ClientStreamMode : uint16_t {
-        Full = WD_STREAM_MODE_FULL,
-        Partial = WD_STREAM_MODE_PARTIAL,
-        Limited = WD_STREAM_MODE_LIMITED,
-        Live = WD_STREAM_MODE_LIVE,
-    };
+enum class ClientStreamMode : uint16_t {
+    Full    = WD_STREAM_MODE_FULL,
+    Partial = WD_STREAM_MODE_PARTIAL,
+    Limited = WD_STREAM_MODE_LIMITED,
+    Live    = WD_STREAM_MODE_LIVE,
+};
 
-    struct ClientStreamConfig {
-        ClientStreamMode mode = ClientStreamMode::Partial;
-        uint16_t target_fps = 30;
-        uint32_t max_tiles_per_second = 120;
-    };
+struct ClientStreamConfig {
+    ClientStreamMode mode                 = ClientStreamMode::Partial;
+    uint16_t         target_fps           = 30;
+    uint32_t         max_tiles_per_second = 120;
+};
 
-    struct ClientStats {
-        std::atomic<uint64_t> udp_packets_rx{0};
-        std::atomic<uint64_t> udp_bytes_rx{0};
-        std::atomic<uint64_t> udp_ignored_invalid{0};
-        std::atomic<uint64_t> udp_ignored_old_generation{0};
-        std::atomic<uint64_t> udp_tiles_completed{0};
-        std::atomic<uint64_t> tcp_summaries_rx{0};
-        std::atomic<uint64_t> tcp_retx_requests_tx{0};
-        std::atomic<uint64_t> tcp_keyboard_tx{0};
-    };
+struct ClientStats {
+    std::atomic<uint64_t> udp_packets_rx{0};
+    std::atomic<uint64_t> udp_bytes_rx{0};
+    std::atomic<uint64_t> udp_ignored_invalid{0};
+    std::atomic<uint64_t> udp_ignored_old_generation{0};
+    std::atomic<uint64_t> udp_tiles_completed{0};
+    std::atomic<uint64_t> tcp_summaries_rx{0};
+    std::atomic<uint64_t> tcp_retx_requests_tx{0};
+    std::atomic<uint64_t> tcp_keyboard_tx{0};
+    std::atomic<uint64_t> tcp_pointer_tx{0};
 
-    struct ClientState {
-        std::atomic<bool> running{false};
+    std::atomic<uint64_t> summary_latency_samples{0};
+    std::atomic<uint64_t> summary_latency_sum_ns{0};
+    std::atomic<uint64_t> tile_rx_latency_samples{0};
+    std::atomic<uint64_t> tile_rx_latency_sum_ns{0};
+    std::atomic<uint64_t> tile_present_latency_samples{0};
+    std::atomic<uint64_t> tile_present_latency_sum_ns{0};
+};
 
-        int tcp_fd = -1;
-        int udp_fd = -1;
+struct ClientState {
+    std::atomic<bool> running{false};
 
-        std::string server_host;
-        uint16_t tcp_port = 0;
-        uint16_t client_udp_port = 0;
-        uint16_t desired_width = 0;
-        uint16_t desired_height = 0;
+    int tcp_fd = -1;
+    int udp_fd = -1;
 
-        ClientStreamConfig stream_config;
+    std::string server_host;
+    uint16_t    tcp_port        = 0;
+    uint16_t    client_udp_port = 0;
+    uint16_t    desired_width   = 0;
+    uint16_t    desired_height  = 0;
 
-        wd_server_config_payload config{};
+    ClientStreamConfig stream_config;
 
-        std::vector<uint32_t> framebuffer;
-        std::vector<uint64_t> displayed_generation;
+    wd_server_config_payload config{};
 
-        std::mutex config_mutex;
-        wd_server_config_payload pending_config{};
-        bool pending_config_valid = false;
+    std::vector<uint32_t> framebuffer;
+    std::vector<uint64_t> displayed_generation;
 
-        uint32_t framebuffer_pixels() const {
-            return static_cast<uint32_t>(config.width) * static_cast<uint32_t>(config.height);
-        }
+    std::mutex               config_mutex;
+    wd_server_config_payload pending_config{};
+    bool                     pending_config_valid = false;
 
-        uint32_t framebuffer_bytes() const {
-            return framebuffer_pixels() * WD_BYTES_PER_PIXEL;
-        }
+    uint32_t framebuffer_pixels() const {
+        return static_cast<uint32_t>(config.width) * static_cast<uint32_t>(config.height);
+    }
 
-        uint32_t tile_count() const {
-            return static_cast<uint32_t>(config.total_tiles);
-        }
+    uint32_t framebuffer_bytes() const {
+        return framebuffer_pixels() * WD_BYTES_PER_PIXEL;
+    }
 
-        uint32_t tile_uncompressed_bytes() const {
-            return static_cast<uint32_t>(config.tile_width) *
-                   static_cast<uint32_t>(config.tile_height) *
-                   WD_BYTES_PER_PIXEL;
-        }
+    uint32_t tile_count() const {
+        return static_cast<uint32_t>(config.total_tiles);
+    }
 
-        std::mutex generation_mutex;
+    uint32_t tile_uncompressed_bytes() const {
+        return static_cast<uint32_t>(config.tile_width) * static_cast<uint32_t>(config.tile_height) * WD_BYTES_PER_PIXEL;
+    }
 
-        std::mutex retx_mutex;
-        std::deque<wd_retransmit_entry> retx_queue;
+    std::mutex generation_mutex;
 
-        std::mutex selection_mutex;
-        std::string pending_clipboard_text;
-        bool pending_clipboard_text_valid = false;
-        std::string pending_primary_text;
-        bool pending_primary_text_valid = false;
+    std::mutex                      retx_mutex;
+    std::deque<wd_retransmit_entry> retx_queue;
+    std::vector<uint64_t>           retx_queued_generation;
 
-        std::atomic<uint16_t> pending_cursor_shape{WD_CURSOR_SHAPE_DEFAULT};
-        std::atomic<bool> pending_cursor_shape_dirty{true};
+    std::vector<uint8_t> udp_recv_buffer;
 
-        ClientStats stats;
-        std::thread tcp_thread;
-    };
+    std::mutex  selection_mutex;
+    std::string pending_clipboard_text;
+    bool        pending_clipboard_text_valid = false;
+    std::string pending_primary_text;
+    bool        pending_primary_text_valid = false;
+
+    std::atomic<uint16_t> pending_cursor_shape{WD_CURSOR_SHAPE_DEFAULT};
+    std::atomic<bool>     pending_cursor_shape_dirty{true};
+
+    ClientStats stats;
+    std::thread tcp_thread;
+};
 
 } // namespace waydisplay
