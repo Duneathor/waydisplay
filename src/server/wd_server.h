@@ -100,7 +100,7 @@ struct wd_view {
     struct wd_view*     parent;
     bool                positioned;
 #if WAYDISPLAY_ENABLE_XWAYLAND
-    bool                xwayland_had_map_request;
+    bool xwayland_had_map_request;
 #endif
 
     struct wl_listener map;

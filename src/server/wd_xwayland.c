@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-
 enum wd_xwayland_decoration_part {
     WD_XWAYLAND_DECORATION_NONE = 0,
     WD_XWAYLAND_DECORATION_TITLEBAR,

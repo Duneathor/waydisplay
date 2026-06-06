@@ -264,9 +264,8 @@ struct wd_udp_tile_packet_header {
 #define WD_IPV4_HEADER_BYTES    20u
 #define WD_UDP_HEADER_BYTES     8u
 #define WD_IPV4_UDP_PAYLOAD_MAX 65507u
-#define WD_UDP_TILE_PAYLOAD_MAX \
-    ((uint16_t)(WD_IPV4_UDP_PAYLOAD_MAX - sizeof(struct wd_udp_tile_packet_header)))
-#define WD_IPV4_MTU_TO_TILE_PAYLOAD(mtu) \
+#define WD_UDP_TILE_PAYLOAD_MAX ((uint16_t)(WD_IPV4_UDP_PAYLOAD_MAX - sizeof(struct wd_udp_tile_packet_header)))
+#define WD_IPV4_MTU_TO_TILE_PAYLOAD(mtu)                                                                                                   \
     ((uint16_t)((mtu) - WD_IPV4_HEADER_BYTES - WD_UDP_HEADER_BYTES - sizeof(struct wd_udp_tile_packet_header)))
 
 struct wd_mtu_probe_start_payload {

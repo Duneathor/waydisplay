@@ -56,12 +56,12 @@ struct wd_popup_commit_tracker {
 };
 
 struct wd_surface_commit_tracker {
-    struct wl_list        link;
-    struct wl_listener    commit;
-    struct wl_listener    destroy;
-    struct wl_listener    view_destroy;
-    struct wlr_surface*   surface;
-    struct wd_view*       view;
+    struct wl_list      link;
+    struct wl_listener  commit;
+    struct wl_listener  destroy;
+    struct wl_listener  view_destroy;
+    struct wlr_surface* surface;
+    struct wd_view*     view;
 };
 
 static void popup_unconstrain_idle(void* data);
@@ -251,8 +251,7 @@ static bool xdg_surface_can_configure(struct wlr_xdg_surface* xdg_surface) {
 }
 
 static bool xdg_toplevel_can_configure(struct wd_view* view) {
-    return view && xdg_surface_can_configure(view->xdg_surface) &&
-           view->xdg_surface->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL &&
+    return view && xdg_surface_can_configure(view->xdg_surface) && view->xdg_surface->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL &&
            view->xdg_surface->toplevel;
 }
 
@@ -566,7 +565,6 @@ static void view_update_parent_and_position(struct wd_view* view, bool force_rep
         wd_scene_set_view_position(view);
     }
 }
-
 
 static struct wd_view* view_topmost_modal_child(struct wd_view* parent) {
     if (!parent || !parent->server)

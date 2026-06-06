@@ -322,7 +322,6 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
                 continue;
             }
 
-
             if (state.retx_queued_generation[entry.tile_id] >= entry.tile_generation)
             {
                 continue;
@@ -455,10 +454,9 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
         session_id = state.config.session_id;
     }
 
-    if (config.session_id != session_id || config.width == 0 || config.height == 0 || config.tile_width == 0 ||
-        config.tile_height == 0 || config.tiles_x == 0 || config.tiles_y == 0 || config.total_tiles == 0 ||
-        expected_tiles != config.total_tiles || config.pixel_format != WD_PIXEL_FORMAT_XRGB8888 ||
-        config.compression_mode != WD_COMPRESSION_ZSTD)
+    if (config.session_id != session_id || config.width == 0 || config.height == 0 || config.tile_width == 0 || config.tile_height == 0 ||
+        config.tiles_x == 0 || config.tiles_y == 0 || config.total_tiles == 0 || expected_tiles != config.total_tiles ||
+        config.pixel_format != WD_PIXEL_FORMAT_XRGB8888 || config.compression_mode != WD_COMPRESSION_ZSTD)
     {
         return;
     }

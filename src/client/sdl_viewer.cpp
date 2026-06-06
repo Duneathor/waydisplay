@@ -22,12 +22,12 @@
 namespace waydisplay {
 namespace {
 
-const wd_server_config_payload*       g_client_config = nullptr;
-int                                   g_window_width  = 1;
-int                                   g_window_height = 1;
-SDL_Rect                              g_content_rect{0, 0, 1, 1};
-std::array<bool, SDL_NUM_SCANCODES>   g_forwarded_keys{};
-bool                                  g_suppress_paste_v_keyup = false;
+const wd_server_config_payload*     g_client_config = nullptr;
+int                                 g_window_width  = 1;
+int                                 g_window_height = 1;
+SDL_Rect                            g_content_rect{0, 0, 1, 1};
+std::array<bool, SDL_NUM_SCANCODES> g_forwarded_keys{};
+bool                                g_suppress_paste_v_keyup = false;
 
 constexpr uint16_t WD_BTN_LEFT   = 0x110;
 constexpr uint16_t WD_BTN_RIGHT  = 0x111;
@@ -433,11 +433,12 @@ void render_context_menu(SDL_Renderer* renderer, const ContextMenu& menu) {
         if (i == 2)
         {
             SDL_SetRenderDrawColor(renderer, 66, 70, 76, 255);
-            SDL_RenderDrawLine(renderer, menu.x + WD_CLIENT_CONTEXT_MENU_PADDING_X, item_rect.y - 1, menu.x + WD_CLIENT_CONTEXT_MENU_WIDTH - WD_CLIENT_CONTEXT_MENU_PADDING_X, item_rect.y - 1);
+            SDL_RenderDrawLine(renderer, menu.x + WD_CLIENT_CONTEXT_MENU_PADDING_X, item_rect.y - 1,
+                               menu.x + WD_CLIENT_CONTEXT_MENU_WIDTH - WD_CLIENT_CONTEXT_MENU_PADDING_X, item_rect.y - 1);
         }
 
-        draw_text(renderer, CONTEXT_MENU_ITEMS[i].label, item_rect.x + WD_CLIENT_CONTEXT_MENU_TEXT_X, item_rect.y + WD_CLIENT_CONTEXT_MENU_TEXT_Y, WD_CLIENT_CONTEXT_MENU_TEXT_SCALE,
-                  CONTEXT_MENU_ITEMS[i].enabled);
+        draw_text(renderer, CONTEXT_MENU_ITEMS[i].label, item_rect.x + WD_CLIENT_CONTEXT_MENU_TEXT_X,
+                  item_rect.y + WD_CLIENT_CONTEXT_MENU_TEXT_Y, WD_CLIENT_CONTEXT_MENU_TEXT_SCALE, CONTEXT_MENU_ITEMS[i].enabled);
     }
 }
 
@@ -718,20 +719,20 @@ double avg_ms(uint64_t sum_ns, uint64_t samples) {
 }
 
 void print_client_stats(ClientState& state) {
-    const uint64_t udp_packets          = take_stat(state.stats.udp_packets_rx);
-    const uint64_t udp_bytes            = take_stat(state.stats.udp_bytes_rx);
-    const uint64_t invalid              = take_stat(state.stats.udp_ignored_invalid);
-    const uint64_t old_gen              = take_stat(state.stats.udp_ignored_old_generation);
-    const uint64_t completed            = take_stat(state.stats.udp_tiles_completed);
-    const uint64_t summaries            = take_stat(state.stats.tcp_summaries_rx);
-    const uint64_t retx                 = take_stat(state.stats.tcp_retx_requests_tx);
-    const uint64_t keys                 = take_stat(state.stats.tcp_keyboard_tx);
-    const uint64_t pointer              = take_stat(state.stats.tcp_pointer_tx);
-    const uint64_t input_events         = take_stat(state.stats.tcp_input_events_tx);
-    const uint64_t summary_samples      = take_stat(state.stats.summary_latency_samples);
-    const uint64_t summary_sum_ns       = take_stat(state.stats.summary_latency_sum_ns);
-    const uint64_t tile_rx_samples      = take_stat(state.stats.tile_rx_latency_samples);
-    const uint64_t tile_rx_sum_ns       = take_stat(state.stats.tile_rx_latency_sum_ns);
+    const uint64_t udp_packets              = take_stat(state.stats.udp_packets_rx);
+    const uint64_t udp_bytes                = take_stat(state.stats.udp_bytes_rx);
+    const uint64_t invalid                  = take_stat(state.stats.udp_ignored_invalid);
+    const uint64_t old_gen                  = take_stat(state.stats.udp_ignored_old_generation);
+    const uint64_t completed                = take_stat(state.stats.udp_tiles_completed);
+    const uint64_t summaries                = take_stat(state.stats.tcp_summaries_rx);
+    const uint64_t retx                     = take_stat(state.stats.tcp_retx_requests_tx);
+    const uint64_t keys                     = take_stat(state.stats.tcp_keyboard_tx);
+    const uint64_t pointer                  = take_stat(state.stats.tcp_pointer_tx);
+    const uint64_t input_events             = take_stat(state.stats.tcp_input_events_tx);
+    const uint64_t summary_samples          = take_stat(state.stats.summary_latency_samples);
+    const uint64_t summary_sum_ns           = take_stat(state.stats.summary_latency_sum_ns);
+    const uint64_t tile_rx_samples          = take_stat(state.stats.tile_rx_latency_samples);
+    const uint64_t tile_rx_sum_ns           = take_stat(state.stats.tile_rx_latency_sum_ns);
     const uint64_t tile_present_samples     = take_stat(state.stats.tile_present_latency_samples);
     const uint64_t tile_present_sum_ns      = take_stat(state.stats.tile_present_latency_sum_ns);
     const uint64_t input_to_present_samples = take_stat(state.stats.input_to_present_latency_samples);
@@ -742,26 +743,24 @@ void print_client_stats(ClientState& state) {
      * lossy links can eventually repair state. Do not log a stats line when
      * summaries are the only activity.
      */
-    const bool useful_activity =
-        udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 || retx != 0 || keys != 0 ||
-        pointer != 0 || input_events != 0;
+    const bool useful_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 || retx != 0 ||
+                                 keys != 0 || pointer != 0 || input_events != 0;
 
     if (!useful_activity)
     {
         return;
     }
 
-    WD_LOG_DEBUG("[client stats/s] udp_pkts=%llu udp_kib=%.1f completed_tiles=%llu "
-                 "invalid=%llu old_gen=%llu summaries=%llu retx_req=%llu keys=%llu "
-                 "pointer=%llu input_events=%llu summary_rx_avg_ms=%.2f tile_rx_avg_ms=%.2f "
-                 "tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f",
-                 static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0,
-                 static_cast<unsigned long long>(completed), static_cast<unsigned long long>(invalid),
-                 static_cast<unsigned long long>(old_gen), static_cast<unsigned long long>(summaries),
-                 static_cast<unsigned long long>(retx), static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
-                 static_cast<unsigned long long>(input_events), avg_ms(summary_sum_ns, summary_samples),
-                 avg_ms(tile_rx_sum_ns, tile_rx_samples), avg_ms(tile_present_sum_ns, tile_present_samples),
-                 avg_ms(input_to_present_sum_ns, input_to_present_samples));
+    WD_LOG_DEBUG(
+        "[client stats/s] udp_pkts=%llu udp_kib=%.1f completed_tiles=%llu "
+        "invalid=%llu old_gen=%llu summaries=%llu retx_req=%llu keys=%llu "
+        "pointer=%llu input_events=%llu summary_rx_avg_ms=%.2f tile_rx_avg_ms=%.2f "
+        "tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f",
+        static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0, static_cast<unsigned long long>(completed),
+        static_cast<unsigned long long>(invalid), static_cast<unsigned long long>(old_gen), static_cast<unsigned long long>(summaries),
+        static_cast<unsigned long long>(retx), static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
+        static_cast<unsigned long long>(input_events), avg_ms(summary_sum_ns, summary_samples), avg_ms(tile_rx_sum_ns, tile_rx_samples),
+        avg_ms(tile_present_sum_ns, tile_present_samples), avg_ms(input_to_present_sum_ns, input_to_present_samples));
 }
 
 bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, const std::vector<uint8_t>& tile_bytes) {
@@ -1070,9 +1069,9 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
         std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
 
-        state.config                 = config;
-        state.framebuffer            = std::move(new_framebuffer);
-        state.displayed_generation   = std::move(new_displayed_generation);
+        state.config               = config;
+        state.framebuffer          = std::move(new_framebuffer);
+        state.displayed_generation = std::move(new_displayed_generation);
         state.retx_queue.clear();
         state.retx_queued_generation = std::move(new_retx_queued_generation);
         state.udp_recv_buffer        = std::move(new_udp_recv_buffer);
@@ -1378,7 +1377,7 @@ int run_sdl_viewer(ClientState& state) {
             pending_resize_height   = 0;
             pending_resize_since_ns = 0;
             present_tile_timestamps.clear();
-            frame_dirty             = true;
+            frame_dirty = true;
         }
 
         SDL_Event event;
@@ -1484,8 +1483,7 @@ int run_sdl_viewer(ClientState& state) {
             }
             present_tile_timestamps.clear();
 
-            const uint64_t input_timestamp_ns =
-                state.stats.latest_input_event_timestamp_ns.exchange(0, std::memory_order_relaxed);
+            const uint64_t input_timestamp_ns = state.stats.latest_input_event_timestamp_ns.exchange(0, std::memory_order_relaxed);
             if (input_timestamp_ns != 0 && present_ns >= input_timestamp_ns)
             {
                 state.stats.input_to_present_latency_samples.fetch_add(1, std::memory_order_relaxed);

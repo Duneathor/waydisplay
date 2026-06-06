@@ -1,5 +1,5 @@
-#include "waydisplay/wd_time.h"
 #include "waydisplay/wd_tile.h"
+#include "waydisplay/wd_time.h"
 #include "wd_server.h"
 
 #include <drm_fourcc.h>

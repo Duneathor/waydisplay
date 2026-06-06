@@ -5,9 +5,9 @@
 #include <wayland-server-protocol.h>
 #include <wlr/types/wlr_scene.h>
 
-#define WD_POINTER_MOD_ALT           (1u << 0)
-#define WD_BTN_LEFT                  0x110
-#define WD_BTN_RIGHT                 0x111
+#define WD_POINTER_MOD_ALT (1u << 0)
+#define WD_BTN_LEFT        0x110
+#define WD_BTN_RIGHT       0x111
 
 static struct wd_view* view_from_scene_node(struct wlr_scene_node* node) {
     while (node)
