@@ -24,6 +24,7 @@ namespace {
 constexpr size_t   MAX_RETRANSMIT_ENTRIES_PER_MESSAGE = 64;
 constexpr size_t   MAX_RETRANSMIT_QUEUE_DEPTH         = 512;
 constexpr uint64_t RETRANSMIT_REREQUEST_INTERVAL_NS   = 100ull * 1000ull * 1000ull;
+constexpr uint64_t RETRANSMIT_INFLIGHT_GRACE_NS       = 250ull * 1000ull * 1000ull;
 
 bool set_socket_rcvbuf(int fd, int requested_bytes) {
     if (fd < 0)
@@ -330,6 +331,16 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             state.retx_last_request_ns.assign(total_tiles, 0);
         }
 
+        if (state.retx_inflight_generation.size() != total_tiles)
+        {
+            state.retx_inflight_generation.assign(total_tiles, 0);
+        }
+
+        if (state.retx_inflight_since_ns.size() != total_tiles)
+        {
+            state.retx_inflight_since_ns.assign(total_tiles, 0);
+        }
+
         for (uint16_t i = 0; i < summary.tile_count; ++i)
         {
             const wd_tile_generation_entry& entry = entries[i];
@@ -345,6 +356,13 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             }
 
             if (state.retx_queued_generation[entry.tile_id] >= entry.tile_generation)
+            {
+                continue;
+            }
+
+            if (state.retx_inflight_generation[entry.tile_id] >= entry.tile_generation &&
+                state.retx_inflight_since_ns[entry.tile_id] != 0 &&
+                now_ns - state.retx_inflight_since_ns[entry.tile_id] < RETRANSMIT_INFLIGHT_GRACE_NS)
             {
                 continue;
             }
@@ -583,6 +601,8 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         state.retx_queued_generation.assign(state.tile_count(), 0);
         state.retx_last_requested_generation.assign(state.tile_count(), 0);
         state.retx_last_request_ns.assign(state.tile_count(), 0);
+        state.retx_inflight_generation.assign(state.tile_count(), 0);
+        state.retx_inflight_since_ns.assign(state.tile_count(), 0);
     }
 
     state.udp_recv_buffer.assign(sizeof(wd_udp_tile_packet_header) + state.config.udp_payload_target + 512, 0);
@@ -759,8 +779,20 @@ bool client_flush_retransmit_requests(ClientState& state) {
                 state.retx_last_request_ns.assign(state.config.total_tiles, 0);
             }
 
-            while (!state.retx_queue.empty() && entries.size() < MAX_RETRANSMIT_ENTRIES_PER_MESSAGE)
+            if (state.retx_inflight_generation.size() != state.config.total_tiles)
             {
+                state.retx_inflight_generation.assign(state.config.total_tiles, 0);
+            }
+
+            if (state.retx_inflight_since_ns.size() != state.config.total_tiles)
+            {
+                state.retx_inflight_since_ns.assign(state.config.total_tiles, 0);
+            }
+
+            size_t pending_to_scan = state.retx_queue.size();
+            while (!state.retx_queue.empty() && pending_to_scan > 0 && entries.size() < MAX_RETRANSMIT_ENTRIES_PER_MESSAGE)
+            {
+                pending_to_scan--;
                 wd_retransmit_entry retx = state.retx_queue.front();
                 state.retx_queue.pop_front();
 
@@ -788,6 +820,15 @@ bool client_flush_retransmit_requests(ClientState& state) {
                  */
                 if (state.displayed_generation[retx.tile_id] >= retx.desired_generation)
                 {
+                    continue;
+                }
+
+                if (state.retx_inflight_generation[retx.tile_id] >= retx.desired_generation &&
+                    state.retx_inflight_since_ns[retx.tile_id] != 0 &&
+                    now_ns - state.retx_inflight_since_ns[retx.tile_id] < RETRANSMIT_INFLIGHT_GRACE_NS)
+                {
+                    state.retx_queued_generation[retx.tile_id] = retx.desired_generation;
+                    state.retx_queue.push_back(retx);
                     continue;
                 }
 

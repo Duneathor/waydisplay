@@ -729,10 +729,10 @@ void print_client_stats(ClientState& state) {
     const uint64_t keys                     = take_stat(state.stats.tcp_keyboard_tx);
     const uint64_t pointer                  = take_stat(state.stats.tcp_pointer_tx);
     const uint64_t input_events             = take_stat(state.stats.tcp_input_events_tx);
-    const uint64_t summary_samples          = take_stat(state.stats.summary_latency_samples);
-    const uint64_t summary_sum_ns           = take_stat(state.stats.summary_latency_sum_ns);
-    const uint64_t tile_rx_samples          = take_stat(state.stats.tile_rx_latency_samples);
-    const uint64_t tile_rx_sum_ns           = take_stat(state.stats.tile_rx_latency_sum_ns);
+    take_stat(state.stats.summary_latency_samples);
+    take_stat(state.stats.summary_latency_sum_ns);
+    const uint64_t tile_assembly_samples    = take_stat(state.stats.tile_assembly_samples);
+    const uint64_t tile_assembly_sum_ns     = take_stat(state.stats.tile_assembly_sum_ns);
     const uint64_t tile_present_samples     = take_stat(state.stats.tile_present_latency_samples);
     const uint64_t tile_present_sum_ns      = take_stat(state.stats.tile_present_latency_sum_ns);
     const uint64_t input_to_present_samples = take_stat(state.stats.input_to_present_latency_samples);
@@ -754,12 +754,12 @@ void print_client_stats(ClientState& state) {
     WD_LOG_DEBUG(
         "[client stats/s] udp_pkts=%llu udp_kib=%.1f completed_tiles=%llu "
         "invalid=%llu old_gen=%llu summaries=%llu retx_req=%llu keys=%llu "
-        "pointer=%llu input_events=%llu summary_rx_avg_ms=%.2f tile_rx_avg_ms=%.2f "
+        "pointer=%llu input_events=%llu summary_rx_avg_ms=n/a tile_assembly_avg_ms=%.2f "
         "tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f",
         static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0, static_cast<unsigned long long>(completed),
         static_cast<unsigned long long>(invalid), static_cast<unsigned long long>(old_gen), static_cast<unsigned long long>(summaries),
         static_cast<unsigned long long>(retx), static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
-        static_cast<unsigned long long>(input_events), avg_ms(summary_sum_ns, summary_samples), avg_ms(tile_rx_sum_ns, tile_rx_samples),
+        static_cast<unsigned long long>(input_events), avg_ms(tile_assembly_sum_ns, tile_assembly_samples),
         avg_ms(tile_present_sum_ns, tile_present_samples), avg_ms(input_to_present_sum_ns, input_to_present_samples));
 }
 
@@ -860,12 +860,16 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
             }
         }
 
-        const uint64_t now_ns = wd_now_ns();
-        if (completed.tile_timestamp_ns != 0 && now_ns >= completed.tile_timestamp_ns)
+        if (completed.first_packet_ns != 0 && completed.completed_timestamp_ns >= completed.first_packet_ns)
         {
-            state.stats.tile_rx_latency_samples.fetch_add(1, std::memory_order_relaxed);
-            state.stats.tile_rx_latency_sum_ns.fetch_add(now_ns - completed.tile_timestamp_ns, std::memory_order_relaxed);
-            out_present_tile_timestamps.push_back(completed.tile_timestamp_ns);
+            state.stats.tile_assembly_samples.fetch_add(1, std::memory_order_relaxed);
+            state.stats.tile_assembly_sum_ns.fetch_add(completed.completed_timestamp_ns - completed.first_packet_ns,
+                                                       std::memory_order_relaxed);
+        }
+
+        if (completed.completed_timestamp_ns != 0)
+        {
+            out_present_tile_timestamps.push_back(completed.completed_timestamp_ns);
         }
 
         state.stats.udp_tiles_completed.fetch_add(1, std::memory_order_relaxed);
@@ -1054,6 +1058,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     std::vector<uint64_t> new_retx_queued_generation(config.total_tiles, 0);
     std::vector<uint64_t> new_retx_last_requested_generation(config.total_tiles, 0);
     std::vector<uint64_t> new_retx_last_request_ns(config.total_tiles, 0);
+    std::vector<uint64_t> new_retx_inflight_generation(config.total_tiles, 0);
+    std::vector<uint64_t> new_retx_inflight_since_ns(config.total_tiles, 0);
     std::vector<uint8_t>  new_udp_recv_buffer(sizeof(wd_udp_tile_packet_header) + config.udp_payload_target + 512, 0);
 
     SDL_Texture* new_texture =
@@ -1078,6 +1084,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         state.retx_queued_generation          = std::move(new_retx_queued_generation);
         state.retx_last_requested_generation = std::move(new_retx_last_requested_generation);
         state.retx_last_request_ns           = std::move(new_retx_last_request_ns);
+        state.retx_inflight_generation       = std::move(new_retx_inflight_generation);
+        state.retx_inflight_since_ns         = std::move(new_retx_inflight_since_ns);
         state.udp_recv_buffer                = std::move(new_udp_recv_buffer);
     }
 

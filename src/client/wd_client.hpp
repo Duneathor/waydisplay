@@ -40,8 +40,8 @@ struct ClientStats {
 
     std::atomic<uint64_t> summary_latency_samples{0};
     std::atomic<uint64_t> summary_latency_sum_ns{0};
-    std::atomic<uint64_t> tile_rx_latency_samples{0};
-    std::atomic<uint64_t> tile_rx_latency_sum_ns{0};
+    std::atomic<uint64_t> tile_assembly_samples{0};
+    std::atomic<uint64_t> tile_assembly_sum_ns{0};
     std::atomic<uint64_t> tile_present_latency_samples{0};
     std::atomic<uint64_t> tile_present_latency_sum_ns{0};
     std::atomic<uint64_t> input_to_present_latency_samples{0};
@@ -95,6 +95,8 @@ struct ClientState {
     std::vector<uint64_t>           retx_queued_generation;
     std::vector<uint64_t>           retx_last_requested_generation;
     std::vector<uint64_t>           retx_last_request_ns;
+    std::vector<uint64_t>           retx_inflight_generation;
+    std::vector<uint64_t>           retx_inflight_since_ns;
 
     std::vector<uint8_t> udp_recv_buffer;
 

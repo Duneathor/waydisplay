@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 namespace waydisplay {
 namespace {
@@ -122,6 +123,17 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         entry.packet_count      = header.tile_pkt_count;
         entry.compressed_size   = header.compressed_tile_size;
         entry.first_packet_ns   = wd_now_ns();
+
+        {
+            std::lock_guard<std::mutex> lock(state.retx_mutex);
+
+            if (state.retx_inflight_generation.size() == state.config.total_tiles &&
+                state.retx_inflight_since_ns.size() == state.config.total_tiles)
+            {
+                state.retx_inflight_generation[entry.tile_id] = entry.generation;
+                state.retx_inflight_since_ns[entry.tile_id]  = entry.first_packet_ns;
+            }
+        }
         entry.compressed.assign(header.compressed_tile_size, 0);
         entry.received.assign(header.tile_pkt_count, 0);
         entry.received_count = 0;
@@ -162,14 +174,39 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
     {
         std::fprintf(stderr, "failed to decompress tile %u generation %llu\n", entry.tile_id,
                      static_cast<unsigned long long>(entry.generation));
+
+        {
+            std::lock_guard<std::mutex> lock(state.retx_mutex);
+
+            if (state.retx_inflight_generation.size() == state.config.total_tiles &&
+                state.retx_inflight_generation[entry.tile_id] == entry.generation)
+            {
+                state.retx_inflight_generation[entry.tile_id] = 0;
+                state.retx_inflight_since_ns[entry.tile_id]  = 0;
+            }
+        }
+
         entry = Entry{};
         return completed;
     }
 
-    completed.valid             = true;
-    completed.tile_id           = entry.tile_id;
-    completed.generation        = entry.generation;
-    completed.tile_timestamp_ns = entry.tile_timestamp_ns;
+    completed.valid                  = true;
+    completed.tile_id                = entry.tile_id;
+    completed.generation             = entry.generation;
+    completed.tile_timestamp_ns      = entry.tile_timestamp_ns;
+    completed.first_packet_ns        = entry.first_packet_ns;
+    completed.completed_timestamp_ns = wd_now_ns();
+
+    {
+        std::lock_guard<std::mutex> lock(state.retx_mutex);
+
+        if (state.retx_inflight_generation.size() == state.config.total_tiles &&
+            state.retx_inflight_generation[entry.tile_id] == entry.generation)
+        {
+            state.retx_inflight_generation[entry.tile_id] = 0;
+            state.retx_inflight_since_ns[entry.tile_id]  = 0;
+        }
+    }
 
     entry = Entry{};
 

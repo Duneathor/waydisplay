@@ -1141,14 +1141,13 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                  "tcp_hello_rx=%llu tcp_cfg_tx=%llu tcp_summary_tx=%llu retx_req_rx=%llu "
                  "retx_tiles_req=%llu "
                  "key_rx=%llu key_injected=%llu key_dropped=%llu pointer_rx=%llu pointer_injected=%llu "
-                 "pointer_dropped=%llu input_net_avg_ms=%.2f input_queue_avg_ms=%.2f "
+                 "pointer_dropped=%llu input_net_avg_ms=n/a input_queue_avg_ms=%.2f "
                  "input_to_summary_avg_ms=%.2f",
                  (unsigned long long)s.dirty_tiles, (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_packets_sent,
                  (double)s.udp_bytes_sent / 1024.0, (unsigned long long)s.tcp_hello_rx, (unsigned long long)s.tcp_config_tx,
                  (unsigned long long)s.tcp_summary_tx, (unsigned long long)s.retx_req_rx, (unsigned long long)s.retx_tiles_req,
                  (unsigned long long)s.key_events_rx, (unsigned long long)s.key_events_injected, (unsigned long long)s.key_events_dropped,
                  (unsigned long long)s.pointer_events_rx, (unsigned long long)s.pointer_events_injected,
-                 (unsigned long long)s.pointer_events_dropped, wd_avg_ms(s.input_net_latency_sum_ns, s.input_net_latency_samples),
-                 wd_avg_ms(s.input_queue_latency_sum_ns, s.input_queue_latency_samples),
+                 (unsigned long long)s.pointer_events_dropped, wd_avg_ms(s.input_queue_latency_sum_ns, s.input_queue_latency_samples),
                  wd_avg_ms(s.input_to_summary_sum_ns, s.input_to_summary_samples));
 }

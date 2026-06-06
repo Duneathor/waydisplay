@@ -104,16 +104,10 @@ static bool scene_surface_at(struct wd_server* server, double lx, double ly, str
     return true;
 }
 
-static void wd_stats_note_pointer_input_rx_locked(struct wd_net_state* net, uint64_t client_timestamp_ns, uint64_t server_rx_timestamp_ns) {
-    if (!net || client_timestamp_ns == 0 || server_rx_timestamp_ns == 0 || server_rx_timestamp_ns < client_timestamp_ns)
-    {
-        return;
-    }
-
-    net->stats.input_net_latency_samples++;
-    net->stats.input_net_latency_sum_ns += server_rx_timestamp_ns - client_timestamp_ns;
-}
-
+/*
+ * Client timestamps come from the client monotonic clock and cannot be compared
+ * with the server monotonic clock when client and server are different hosts.
+ */
 static void wd_stats_note_pointer_input_inject_locked(struct wd_net_state* net, uint64_t server_rx_timestamp_ns,
                                                       uint64_t inject_timestamp_ns) {
     if (!net || server_rx_timestamp_ns == 0 || inject_timestamp_ns == 0 || inject_timestamp_ns < server_rx_timestamp_ns)
@@ -148,7 +142,6 @@ void wd_pointer_queue_event_locked(struct wd_net_state* net, const struct wd_poi
         {
             last->event                  = *event;
             last->server_rx_timestamp_ns = server_rx_timestamp_ns;
-            wd_stats_note_pointer_input_rx_locked(net, event->client_timestamp_ns, server_rx_timestamp_ns);
             net->stats.pointer_events_rx++;
             return;
         }
@@ -166,7 +159,6 @@ void wd_pointer_queue_event_locked(struct wd_net_state* net, const struct wd_poi
     dst->event                          = *event;
     dst->server_rx_timestamp_ns         = server_rx_timestamp_ns;
 
-    wd_stats_note_pointer_input_rx_locked(net, event->client_timestamp_ns, server_rx_timestamp_ns);
     net->stats.pointer_events_rx++;
 }
 
@@ -585,7 +577,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
         pthread_mutex_unlock(&server->net.lock);
 
         const uint32_t time_msec =
-            event->client_timestamp_ns ? (uint32_t)(event->client_timestamp_ns / 1000000ull) : (uint32_t)(wd_now_ns() / 1000000ull);
+            local[i].server_rx_timestamp_ns ? (uint32_t)(local[i].server_rx_timestamp_ns / 1000000ull) : (uint32_t)(wd_now_ns() / 1000000ull);
 
         const double lx = clamp_layout_x(server, event->x);
         const double ly = clamp_layout_y(server, event->y);

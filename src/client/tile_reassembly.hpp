@@ -11,7 +11,9 @@ struct CompletedTile {
     bool                 valid             = false;
     uint16_t             tile_id           = 0;
     uint64_t             generation        = 0;
-    uint64_t             tile_timestamp_ns = 0;
+    uint64_t             tile_timestamp_ns      = 0;
+    uint64_t             first_packet_ns        = 0;
+    uint64_t             completed_timestamp_ns = 0;
     std::vector<uint8_t> tile_bytes;
 };
 

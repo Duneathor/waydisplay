@@ -65,16 +65,11 @@ bool wd_keyboard_init(struct wd_server* server) {
     return true;
 }
 
-static void wd_stats_note_input_rx_locked(struct wd_net_state* net, uint64_t client_timestamp_ns, uint64_t server_rx_timestamp_ns) {
-    if (!net || client_timestamp_ns == 0 || server_rx_timestamp_ns == 0 || server_rx_timestamp_ns < client_timestamp_ns)
-    {
-        return;
-    }
-
-    net->stats.input_net_latency_samples++;
-    net->stats.input_net_latency_sum_ns += server_rx_timestamp_ns - client_timestamp_ns;
-}
-
+/*
+ * Client timestamps are monotonic-clock values from another process and often
+ * another host.  They are useful as opaque ordering/debug payload, but they
+ * cannot be subtracted from the server monotonic clock to produce latency.
+ */
 static void wd_stats_note_input_inject_locked(struct wd_net_state* net, uint64_t server_rx_timestamp_ns, uint64_t inject_timestamp_ns) {
     if (!net || server_rx_timestamp_ns == 0 || inject_timestamp_ns == 0 || inject_timestamp_ns < server_rx_timestamp_ns)
     {
@@ -102,14 +97,13 @@ void wd_keyboard_queue_event_locked(struct wd_net_state* net, const struct wd_ke
     dst->client_timestamp_ns    = event->client_timestamp_ns;
     dst->server_rx_timestamp_ns = server_rx_timestamp_ns;
 
-    wd_stats_note_input_rx_locked(net, event->client_timestamp_ns, server_rx_timestamp_ns);
     net->stats.key_events_rx++;
 }
 
 static uint32_t key_time_msec(const struct wd_queued_key_event* event) {
-    if (event && event->client_timestamp_ns != 0)
+    if (event && event->server_rx_timestamp_ns != 0)
     {
-        return (uint32_t)(event->client_timestamp_ns / 1000000ull);
+        return (uint32_t)(event->server_rx_timestamp_ns / 1000000ull);
     }
 
     return (uint32_t)(wd_now_ns() / 1000000ull);
