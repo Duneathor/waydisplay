@@ -111,9 +111,9 @@ struct wd_view* wd_scene_view_at(struct wd_server* server, double lx, double ly,
         int surface_h = surface->current.height;
 
 #if WAYDISPLAY_ENABLE_XWAYLAND
-        if (view->xwayland_surface)
+        if (wd_xwayland_view_has_decoration(view))
         {
-            surface_h += 28;
+            surface_h += WD_XWAYLAND_TITLEBAR_HEIGHT;
         }
 #endif
 
@@ -567,6 +567,55 @@ static void view_update_parent_and_position(struct wd_view* view, bool force_rep
     }
 }
 
+
+static struct wd_view* view_topmost_modal_child(struct wd_view* parent) {
+    if (!parent || !parent->server)
+    {
+        return NULL;
+    }
+
+    struct wd_view* child  = NULL;
+    struct wd_view* result = NULL;
+
+    wl_list_for_each(child, &parent->server->views, link) {
+        if (child->parent == parent && child->mapped && child->dialog_modal)
+        {
+            result = child;
+        }
+    }
+
+    return result;
+}
+
+static struct wd_view* view_focus_target(struct wd_view* view) {
+    for (unsigned depth = 0; view && depth < 8; ++depth)
+    {
+        struct wd_view* modal_child = view_topmost_modal_child(view);
+        if (!modal_child || modal_child == view)
+        {
+            break;
+        }
+
+        view = modal_child;
+    }
+
+    return view;
+}
+
+static void view_raise_with_parent(struct wd_view* view) {
+    if (!view)
+    {
+        return;
+    }
+
+    if (view->parent && view->parent->mapped && view->parent != view)
+    {
+        wd_scene_raise_view(view->parent);
+    }
+
+    wd_scene_raise_view(view);
+}
+
 void wd_scene_note_dialog_state(struct wd_view* view) {
     if (!view || !view->server)
     {
@@ -583,10 +632,26 @@ void wd_scene_note_dialog_state(struct wd_view* view) {
     WD_LOG_INFO("WayDisplay: xdg-dialog view=%p app_id=%s title=%s modal=%d parent=%p", (void*)view, view_app_id(view), view_title(view),
                 view->dialog_modal ? 1 : 0, (void*)view->parent);
 
+    if (view->mapped)
+    {
+        view_raise_with_parent(view);
+        if (view->dialog_modal && view->parent && view->server->focused_view == view->parent)
+        {
+            wd_scene_focus_view(view);
+        }
+    }
+
     wd_server_mark_view_dirty(view);
 }
 
 void wd_scene_focus_view(struct wd_view* view) {
+    if (!view || !view->mapped)
+    {
+        return;
+    }
+
+    view = view_focus_target(view);
+
     struct wlr_surface* surface = view_root_surface(view);
     if (!view || !view->mapped || !surface)
     {
@@ -607,7 +672,7 @@ void wd_scene_focus_view(struct wd_view* view) {
     view_set_activated(view, true);
     wd_keyboard_shortcuts_inhibit_refresh(server);
 
-    wd_scene_raise_view(view);
+    view_raise_with_parent(view);
 
     wlr_seat_set_capabilities(server->seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
 

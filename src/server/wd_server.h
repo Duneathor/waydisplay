@@ -99,6 +99,9 @@ struct wd_view {
     struct wl_resource* xdg_dialog_resource;
     struct wd_view*     parent;
     bool                positioned;
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    bool                xwayland_had_map_request;
+#endif
 
     struct wl_listener map;
     struct wl_listener unmap;
@@ -430,6 +433,7 @@ bool wd_wlroots_resize_headless_output(struct wd_server* server);
 /* wd_xwayland.c */
 bool wd_xwayland_init(struct wd_server* server);
 void wd_xwayland_destroy(struct wd_server* server);
+bool wd_xwayland_view_has_decoration(struct wd_view* view);
 bool wd_xwayland_view_decoration_at(struct wd_view* view, double sx, double sy);
 bool wd_xwayland_view_handle_decoration_press(struct wd_view* view, double sx, double sy);
 #endif

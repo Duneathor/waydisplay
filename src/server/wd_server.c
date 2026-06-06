@@ -260,7 +260,11 @@ static void view_bounds_for_damage(struct wd_view* view, int origin_x, int origi
     else if (view->xwayland_surface && view->xwayland_surface->surface)
     {
         width  = view->xwayland_surface->surface->current.width;
-        height = view->xwayland_surface->surface->current.height + 28;
+        height = view->xwayland_surface->surface->current.height;
+        if (wd_xwayland_view_has_decoration(view))
+        {
+            height += WD_XWAYLAND_TITLEBAR_HEIGHT;
+        }
     }
 #endif
 

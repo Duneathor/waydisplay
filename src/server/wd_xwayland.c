@@ -56,6 +56,10 @@ static uint16_t sane_height(uint16_t height) {
     return height >= WD_XWAYLAND_MIN_VISIBLE_HEIGHT ? height : WD_XWAYLAND_DEFAULT_HEIGHT;
 }
 
+bool wd_xwayland_view_has_decoration(struct wd_view* view) {
+    return view && view->xwayland_surface && view->xwayland_had_map_request;
+}
+
 static uint16_t xwayland_content_width(struct wd_view* view) {
     if (!view || !view->xwayland_surface)
     {
@@ -73,7 +77,21 @@ static void xwayland_decoration_set_node_data(struct wlr_scene_rect* rect, struc
 }
 
 static void xwayland_view_update_decoration(struct wd_view* view) {
-    if (!view || !view->xwayland_surface || !view->xwayland_titlebar_rect)
+    if (!view || !view->xwayland_surface)
+    {
+        return;
+    }
+
+    if (!wd_xwayland_view_has_decoration(view))
+    {
+        if (view->xwayland_surface_tree)
+        {
+            wlr_scene_node_set_position(&view->xwayland_surface_tree->node, 0, 0);
+        }
+        return;
+    }
+
+    if (!view->xwayland_titlebar_rect)
     {
         return;
     }
@@ -118,7 +136,7 @@ static void xwayland_view_update_decoration(struct wd_view* view) {
 }
 
 static enum wd_xwayland_decoration_part xwayland_decoration_part_at(struct wd_view* view, double sx, double sy) {
-    if (!view || !view->xwayland_surface || sx < 0.0 || sy < 0.0 || sy >= (double)WD_XWAYLAND_TITLEBAR_HEIGHT)
+    if (!wd_xwayland_view_has_decoration(view) || sx < 0.0 || sy < 0.0 || sy >= (double)WD_XWAYLAND_TITLEBAR_HEIGHT)
     {
         return WD_XWAYLAND_DECORATION_NONE;
     }
@@ -333,9 +351,16 @@ static void xwayland_view_mark_mapped(struct wd_view* view, bool focus) {
     wd_scene_set_view_position(view);
     xwayland_view_update_decoration(view);
 
-    if (focus && view->scene_tree)
+    if (view->scene_tree)
     {
-        wd_scene_focus_view(view);
+        if (focus && wd_xwayland_view_has_decoration(view))
+        {
+            wd_scene_focus_view(view);
+        }
+        else
+        {
+            wd_scene_raise_view(view);
+        }
     }
 
     xwayland_mark_scene_dirty(view);
@@ -485,21 +510,24 @@ static void xwayland_view_associate(struct wd_view* view) {
         if (view->scene_tree)
         {
             view->scene_tree->node.data = view;
-            view->xwayland_titlebar_rect =
-                wlr_scene_rect_create(view->scene_tree, xwayland_content_width(view), WD_XWAYLAND_TITLEBAR_HEIGHT, titlebar_color);
-            xwayland_decoration_set_node_data(view->xwayland_titlebar_rect, view);
+            if (wd_xwayland_view_has_decoration(view))
+            {
+                view->xwayland_titlebar_rect =
+                    wlr_scene_rect_create(view->scene_tree, xwayland_content_width(view), WD_XWAYLAND_TITLEBAR_HEIGHT, titlebar_color);
+                xwayland_decoration_set_node_data(view->xwayland_titlebar_rect, view);
 
-            view->xwayland_minimize_rect =
-                wlr_scene_rect_create(view->scene_tree, WD_XWAYLAND_BUTTON_SIZE, WD_XWAYLAND_BUTTON_SIZE, minimize_color);
-            xwayland_decoration_set_node_data(view->xwayland_minimize_rect, view);
+                view->xwayland_minimize_rect =
+                    wlr_scene_rect_create(view->scene_tree, WD_XWAYLAND_BUTTON_SIZE, WD_XWAYLAND_BUTTON_SIZE, minimize_color);
+                xwayland_decoration_set_node_data(view->xwayland_minimize_rect, view);
 
-            view->xwayland_maximize_rect =
-                wlr_scene_rect_create(view->scene_tree, WD_XWAYLAND_BUTTON_SIZE, WD_XWAYLAND_BUTTON_SIZE, maximize_color);
-            xwayland_decoration_set_node_data(view->xwayland_maximize_rect, view);
+                view->xwayland_maximize_rect =
+                    wlr_scene_rect_create(view->scene_tree, WD_XWAYLAND_BUTTON_SIZE, WD_XWAYLAND_BUTTON_SIZE, maximize_color);
+                xwayland_decoration_set_node_data(view->xwayland_maximize_rect, view);
 
-            view->xwayland_close_rect =
-                wlr_scene_rect_create(view->scene_tree, WD_XWAYLAND_BUTTON_SIZE, WD_XWAYLAND_BUTTON_SIZE, close_color);
-            xwayland_decoration_set_node_data(view->xwayland_close_rect, view);
+                view->xwayland_close_rect =
+                    wlr_scene_rect_create(view->scene_tree, WD_XWAYLAND_BUTTON_SIZE, WD_XWAYLAND_BUTTON_SIZE, close_color);
+                xwayland_decoration_set_node_data(view->xwayland_close_rect, view);
+            }
 
             view->xwayland_surface_tree = wlr_scene_subsurface_tree_create(view->scene_tree, view->xwayland_surface->surface);
             if (view->xwayland_surface_tree)
@@ -556,6 +584,8 @@ static void handle_xwayland_map_request(struct wl_listener* listener, void* data
     {
         return;
     }
+
+    view->xwayland_had_map_request = true;
 
     xwayland_view_mark_mapped(view, view->scene_tree != NULL);
     xwayland_view_configure_current_geometry(view);
