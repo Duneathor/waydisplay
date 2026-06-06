@@ -1,5 +1,6 @@
 #include "waydisplay/wd_net.h"
 
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_protocol.h"
 
 #include <errno.h>
@@ -9,8 +10,6 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <unistd.h>
-
-#define WD_TCP_MAX_PAYLOAD_SIZE (2u * 1024u * 1024u)
 
 bool wd_send_all(int fd, const void* data, size_t size) {
     const uint8_t* p = (const uint8_t*)data;

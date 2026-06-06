@@ -71,7 +71,7 @@ bool open_udp_socket(ClientState& state) {
         return false;
     }
 
-    set_socket_rcvbuf(state.udp_fd, 16 * 1024 * 1024);
+    set_socket_rcvbuf(state.udp_fd, WD_UDP_SOCKET_BUFFER_BYTES);
 
     return true;
 }
@@ -273,11 +273,6 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
         state.stats.summary_latency_sum_ns.fetch_add(now_ns - summary.server_timestamp_ns, std::memory_order_relaxed);
     }
 
-    if (summary.session_id != state.config.session_id)
-    {
-        return;
-    }
-
     const size_t needed =
         sizeof(wd_tile_summary_payload_header) + static_cast<size_t>(summary.tile_count) * sizeof(wd_tile_generation_entry);
 
@@ -293,14 +288,31 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
     missing.reserve(32);
 
     {
+        std::lock_guard<std::mutex> config_lock(state.config_mutex);
         std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
         std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+
+        if (summary.session_id != state.config.session_id)
+        {
+            return;
+        }
+
+        const uint16_t total_tiles = state.config.total_tiles;
+        if (total_tiles == 0 || state.displayed_generation.size() != total_tiles)
+        {
+            return;
+        }
+
+        if (state.retx_queued_generation.size() != total_tiles)
+        {
+            state.retx_queued_generation.assign(total_tiles, 0);
+        }
 
         for (uint16_t i = 0; i < summary.tile_count; ++i)
         {
             const wd_tile_generation_entry& entry = entries[i];
 
-            if (entry.tile_id >= state.config.total_tiles)
+            if (entry.tile_id >= total_tiles)
             {
                 continue;
             }
@@ -310,10 +322,6 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
                 continue;
             }
 
-            if (state.retx_queued_generation.size() != state.config.total_tiles)
-            {
-                state.retx_queued_generation.assign(state.config.total_tiles, 0);
-            }
 
             if (state.retx_queued_generation[entry.tile_id] >= entry.tile_generation)
             {
@@ -383,8 +391,14 @@ bool selection_payload_to_string(const uint8_t* payload, uint32_t payload_size, 
 }
 
 void store_selection_text(ClientState& state, const uint8_t* payload, uint32_t payload_size, bool primary) {
+    uint32_t session_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(state.config_mutex);
+        session_id = state.config.session_id;
+    }
+
     std::string text;
-    if (!selection_payload_to_string(payload, payload_size, state.config.session_id, text))
+    if (!selection_payload_to_string(payload, payload_size, session_id, text))
     {
         return;
     }
@@ -411,7 +425,13 @@ void store_cursor_shape(ClientState& state, const uint8_t* payload, uint32_t pay
     wd_cursor_shape_payload cursor{};
     std::memcpy(&cursor, payload, sizeof(cursor));
 
-    if (cursor.session_id == state.config.session_id && cursor.shape < WD_CURSOR_SHAPE_COUNT)
+    uint32_t session_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(state.config_mutex);
+        session_id = state.config.session_id;
+    }
+
+    if (cursor.session_id == session_id && cursor.shape < WD_CURSOR_SHAPE_COUNT)
     {
         state.pending_cursor_shape.store(cursor.shape, std::memory_order_relaxed);
         state.pending_cursor_shape_dirty.store(true, std::memory_order_release);
@@ -429,7 +449,13 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
 
     const uint32_t expected_tiles = static_cast<uint32_t>(config.tiles_x) * static_cast<uint32_t>(config.tiles_y);
 
-    if (config.session_id != state.config.session_id || config.width == 0 || config.height == 0 || config.tile_width == 0 ||
+    uint32_t session_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(state.config_mutex);
+        session_id = state.config.session_id;
+    }
+
+    if (config.session_id != session_id || config.width == 0 || config.height == 0 || config.tile_width == 0 ||
         config.tile_height == 0 || config.tiles_x == 0 || config.tiles_y == 0 || config.total_tiles == 0 ||
         expected_tiles != config.total_tiles || config.pixel_format != WD_PIXEL_FORMAT_XRGB8888 ||
         config.compression_mode != WD_COMPRESSION_ZSTD)
@@ -588,6 +614,8 @@ bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool 
     if (ok)
     {
         state.stats.tcp_keyboard_tx.fetch_add(1, std::memory_order_relaxed);
+        state.stats.tcp_input_events_tx.fetch_add(1, std::memory_order_relaxed);
+        state.stats.latest_input_event_timestamp_ns.store(event.client_timestamp_ns, std::memory_order_relaxed);
     }
 
     return ok;
@@ -604,6 +632,12 @@ bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payloa
     if (ok)
     {
         state.stats.tcp_pointer_tx.fetch_add(1, std::memory_order_relaxed);
+        state.stats.tcp_input_events_tx.fetch_add(1, std::memory_order_relaxed);
+
+        if (event.client_timestamp_ns != 0)
+        {
+            state.stats.latest_input_event_timestamp_ns.store(event.client_timestamp_ns, std::memory_order_relaxed);
+        }
     }
 
     return ok;
@@ -670,9 +704,14 @@ bool client_flush_retransmit_requests(ClientState& state) {
         std::vector<wd_retransmit_entry> entries;
         entries.reserve(MAX_RETRANSMIT_ENTRIES_PER_MESSAGE);
 
+        uint32_t session_id = 0;
+
         {
-            std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+            std::lock_guard<std::mutex> config_lock(state.config_mutex);
             std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
+            std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+
+            session_id = state.config.session_id;
 
             while (!state.retx_queue.empty() && entries.size() < MAX_RETRANSMIT_ENTRIES_PER_MESSAGE)
             {
@@ -708,7 +747,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
         }
 
         wd_retransmit_request_payload_header header{};
-        header.session_id    = state.config.session_id;
+        header.session_id    = session_id;
         header.request_count = static_cast<uint16_t>(entries.size());
 
         const size_t payload_size = sizeof(header) + entries.size() * sizeof(wd_retransmit_entry);

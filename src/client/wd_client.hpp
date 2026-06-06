@@ -22,8 +22,8 @@ enum class ClientStreamMode : uint16_t {
 
 struct ClientStreamConfig {
     ClientStreamMode mode                 = ClientStreamMode::Partial;
-    uint16_t         target_fps           = 30;
-    uint32_t         max_tiles_per_second = 120;
+    uint16_t         target_fps           = WD_CLIENT_DEFAULT_TARGET_FPS;
+    uint32_t         max_tiles_per_second = WD_CLIENT_DEFAULT_MAX_TILES_PER_SECOND;
 };
 
 struct ClientStats {
@@ -36,6 +36,7 @@ struct ClientStats {
     std::atomic<uint64_t> tcp_retx_requests_tx{0};
     std::atomic<uint64_t> tcp_keyboard_tx{0};
     std::atomic<uint64_t> tcp_pointer_tx{0};
+    std::atomic<uint64_t> tcp_input_events_tx{0};
 
     std::atomic<uint64_t> summary_latency_samples{0};
     std::atomic<uint64_t> summary_latency_sum_ns{0};
@@ -43,6 +44,9 @@ struct ClientStats {
     std::atomic<uint64_t> tile_rx_latency_sum_ns{0};
     std::atomic<uint64_t> tile_present_latency_samples{0};
     std::atomic<uint64_t> tile_present_latency_sum_ns{0};
+    std::atomic<uint64_t> input_to_present_latency_samples{0};
+    std::atomic<uint64_t> input_to_present_latency_sum_ns{0};
+    std::atomic<uint64_t> latest_input_event_timestamp_ns{0};
 };
 
 struct ClientState {

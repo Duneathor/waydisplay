@@ -22,14 +22,12 @@
 namespace waydisplay {
 namespace {
 
-const wd_server_config_payload* g_client_config = nullptr;
-int                             g_window_width  = 1;
-int                             g_window_height = 1;
-SDL_Rect                        g_content_rect{0, 0, 1, 1};
-
-constexpr uint64_t STATS_INTERVAL_NS  = 1000000000ull;
-constexpr uint64_t RESIZE_DEBOUNCE_NS = 150000000ull;
-constexpr int      SDL_FRAME_DELAY_MS = 8;
+const wd_server_config_payload*       g_client_config = nullptr;
+int                                   g_window_width  = 1;
+int                                   g_window_height = 1;
+SDL_Rect                              g_content_rect{0, 0, 1, 1};
+std::array<bool, SDL_NUM_SCANCODES>   g_forwarded_keys{};
+bool                                  g_suppress_paste_v_keyup = false;
 
 constexpr uint16_t WD_BTN_LEFT   = 0x110;
 constexpr uint16_t WD_BTN_RIGHT  = 0x111;
@@ -64,14 +62,6 @@ struct ContextMenu {
     int  hover = -1;
 };
 
-constexpr int MENU_PADDING_X   = 8;
-constexpr int MENU_PADDING_Y   = 7;
-constexpr int MENU_ITEM_HEIGHT = 20;
-constexpr int MENU_WIDTH       = 184;
-constexpr int MENU_TEXT_SCALE  = 1;
-constexpr int MENU_TEXT_X      = 8;
-constexpr int MENU_TEXT_Y      = 6;
-
 const std::array<ContextMenuItem, 5> CONTEXT_MENU_ITEMS{{
     {"COPY FROM REMOTE", ContextMenuAction::Disabled, false},
     {"PASTE TO REMOTE", ContextMenuAction::Disabled, false},
@@ -81,7 +71,7 @@ const std::array<ContextMenuItem, 5> CONTEXT_MENU_ITEMS{{
 }};
 
 int context_menu_height() {
-    return MENU_PADDING_Y * 2 + static_cast<int>(CONTEXT_MENU_ITEMS.size()) * MENU_ITEM_HEIGHT;
+    return WD_CLIENT_CONTEXT_MENU_PADDING_Y * 2 + static_cast<int>(CONTEXT_MENU_ITEMS.size()) * WD_CLIENT_CONTEXT_MENU_ITEM_HEIGHT;
 }
 
 void close_context_menu(ContextMenu& menu) {
@@ -95,9 +85,9 @@ void open_context_menu(ContextMenu& menu, int x, int y) {
     menu.y     = y;
     menu.hover = -1;
 
-    if (menu.x + MENU_WIDTH > g_window_width)
+    if (menu.x + WD_CLIENT_CONTEXT_MENU_WIDTH > g_window_width)
     {
-        menu.x = g_window_width - MENU_WIDTH;
+        menu.x = g_window_width - WD_CLIENT_CONTEXT_MENU_WIDTH;
     }
 
     if (menu.y + context_menu_height() > g_window_height)
@@ -122,18 +112,18 @@ int context_menu_hit_test(const ContextMenu& menu, int x, int y) {
         return -1;
     }
 
-    if (x < menu.x || x >= menu.x + MENU_WIDTH)
+    if (x < menu.x || x >= menu.x + WD_CLIENT_CONTEXT_MENU_WIDTH)
     {
         return -1;
     }
 
-    const int content_y = y - menu.y - MENU_PADDING_Y;
+    const int content_y = y - menu.y - WD_CLIENT_CONTEXT_MENU_PADDING_Y;
     if (content_y < 0)
     {
         return -1;
     }
 
-    const int index = content_y / MENU_ITEM_HEIGHT;
+    const int index = content_y / WD_CLIENT_CONTEXT_MENU_ITEM_HEIGHT;
     if (index < 0 || index >= static_cast<int>(CONTEXT_MENU_ITEMS.size()))
     {
         return -1;
@@ -410,28 +400,28 @@ void render_context_menu(SDL_Renderer* renderer, const ContextMenu& menu) {
 
     const int height = context_menu_height();
 
-    SDL_Rect shadow{menu.x + 5, menu.y + 5, MENU_WIDTH, height};
+    SDL_Rect shadow{menu.x + 5, menu.y + 5, WD_CLIENT_CONTEXT_MENU_WIDTH, height};
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 150);
     SDL_RenderFillRect(renderer, &shadow);
 
-    SDL_Rect bg{menu.x, menu.y, MENU_WIDTH, height};
+    SDL_Rect bg{menu.x, menu.y, WD_CLIENT_CONTEXT_MENU_WIDTH, height};
     SDL_SetRenderDrawColor(renderer, 26, 29, 33, 248);
     SDL_RenderFillRect(renderer, &bg);
 
     SDL_SetRenderDrawColor(renderer, 72, 78, 86, 255);
     SDL_RenderDrawRect(renderer, &bg);
 
-    SDL_Rect inner{menu.x + 1, menu.y + 1, MENU_WIDTH - 2, height - 2};
+    SDL_Rect inner{menu.x + 1, menu.y + 1, WD_CLIENT_CONTEXT_MENU_WIDTH - 2, height - 2};
     SDL_SetRenderDrawColor(renderer, 43, 47, 53, 255);
     SDL_RenderDrawRect(renderer, &inner);
 
     for (int i = 0; i < static_cast<int>(CONTEXT_MENU_ITEMS.size()); ++i)
     {
         const SDL_Rect item_rect{
-            menu.x + MENU_PADDING_X,
-            menu.y + MENU_PADDING_Y + i * MENU_ITEM_HEIGHT,
-            MENU_WIDTH - MENU_PADDING_X * 2,
-            MENU_ITEM_HEIGHT,
+            menu.x + WD_CLIENT_CONTEXT_MENU_PADDING_X,
+            menu.y + WD_CLIENT_CONTEXT_MENU_PADDING_Y + i * WD_CLIENT_CONTEXT_MENU_ITEM_HEIGHT,
+            WD_CLIENT_CONTEXT_MENU_WIDTH - WD_CLIENT_CONTEXT_MENU_PADDING_X * 2,
+            WD_CLIENT_CONTEXT_MENU_ITEM_HEIGHT,
         };
 
         if (i == menu.hover && CONTEXT_MENU_ITEMS[i].enabled)
@@ -443,10 +433,10 @@ void render_context_menu(SDL_Renderer* renderer, const ContextMenu& menu) {
         if (i == 2)
         {
             SDL_SetRenderDrawColor(renderer, 66, 70, 76, 255);
-            SDL_RenderDrawLine(renderer, menu.x + MENU_PADDING_X, item_rect.y - 1, menu.x + MENU_WIDTH - MENU_PADDING_X, item_rect.y - 1);
+            SDL_RenderDrawLine(renderer, menu.x + WD_CLIENT_CONTEXT_MENU_PADDING_X, item_rect.y - 1, menu.x + WD_CLIENT_CONTEXT_MENU_WIDTH - WD_CLIENT_CONTEXT_MENU_PADDING_X, item_rect.y - 1);
         }
 
-        draw_text(renderer, CONTEXT_MENU_ITEMS[i].label, item_rect.x + MENU_TEXT_X, item_rect.y + MENU_TEXT_Y, MENU_TEXT_SCALE,
+        draw_text(renderer, CONTEXT_MENU_ITEMS[i].label, item_rect.x + WD_CLIENT_CONTEXT_MENU_TEXT_X, item_rect.y + WD_CLIENT_CONTEXT_MENU_TEXT_Y, WD_CLIENT_CONTEXT_MENU_TEXT_SCALE,
                   CONTEXT_MENU_ITEMS[i].enabled);
     }
 }
@@ -737,12 +727,15 @@ void print_client_stats(ClientState& state) {
     const uint64_t retx                 = take_stat(state.stats.tcp_retx_requests_tx);
     const uint64_t keys                 = take_stat(state.stats.tcp_keyboard_tx);
     const uint64_t pointer              = take_stat(state.stats.tcp_pointer_tx);
+    const uint64_t input_events         = take_stat(state.stats.tcp_input_events_tx);
     const uint64_t summary_samples      = take_stat(state.stats.summary_latency_samples);
     const uint64_t summary_sum_ns       = take_stat(state.stats.summary_latency_sum_ns);
     const uint64_t tile_rx_samples      = take_stat(state.stats.tile_rx_latency_samples);
     const uint64_t tile_rx_sum_ns       = take_stat(state.stats.tile_rx_latency_sum_ns);
-    const uint64_t tile_present_samples = take_stat(state.stats.tile_present_latency_samples);
-    const uint64_t tile_present_sum_ns  = take_stat(state.stats.tile_present_latency_sum_ns);
+    const uint64_t tile_present_samples     = take_stat(state.stats.tile_present_latency_samples);
+    const uint64_t tile_present_sum_ns      = take_stat(state.stats.tile_present_latency_sum_ns);
+    const uint64_t input_to_present_samples = take_stat(state.stats.input_to_present_latency_samples);
+    const uint64_t input_to_present_sum_ns  = take_stat(state.stats.input_to_present_latency_sum_ns);
 
     /*
      * Periodic generation summaries are intentionally sent even while idle so
@@ -750,7 +743,8 @@ void print_client_stats(ClientState& state) {
      * summaries are the only activity.
      */
     const bool useful_activity =
-        udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 || retx != 0 || keys != 0 || pointer != 0;
+        udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 || retx != 0 || keys != 0 ||
+        pointer != 0 || input_events != 0;
 
     if (!useful_activity)
     {
@@ -759,14 +753,15 @@ void print_client_stats(ClientState& state) {
 
     WD_LOG_DEBUG("[client stats/s] udp_pkts=%llu udp_kib=%.1f completed_tiles=%llu "
                  "invalid=%llu old_gen=%llu summaries=%llu retx_req=%llu keys=%llu "
-                 "pointer=%llu summary_rx_avg_ms=%.2f tile_rx_avg_ms=%.2f "
-                 "tile_present_avg_ms=%.2f",
+                 "pointer=%llu input_events=%llu summary_rx_avg_ms=%.2f tile_rx_avg_ms=%.2f "
+                 "tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f",
                  static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0,
                  static_cast<unsigned long long>(completed), static_cast<unsigned long long>(invalid),
                  static_cast<unsigned long long>(old_gen), static_cast<unsigned long long>(summaries),
                  static_cast<unsigned long long>(retx), static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
-                 avg_ms(summary_sum_ns, summary_samples), avg_ms(tile_rx_sum_ns, tile_rx_samples),
-                 avg_ms(tile_present_sum_ns, tile_present_samples));
+                 static_cast<unsigned long long>(input_events), avg_ms(summary_sum_ns, summary_samples),
+                 avg_ms(tile_rx_sum_ns, tile_rx_samples), avg_ms(tile_present_sum_ns, tile_present_samples),
+                 avg_ms(input_to_present_sum_ns, input_to_present_samples));
 }
 
 bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, const std::vector<uint8_t>& tile_bytes) {
@@ -1010,6 +1005,18 @@ void update_window_size(SDL_Window* window) {
     };
 }
 
+bool client_config_dimensions_valid(const wd_server_config_payload& config) {
+    if (config.width == 0 || config.height == 0 || config.width > WD_CLIENT_MAX_DIMENSION || config.height > WD_CLIENT_MAX_DIMENSION)
+    {
+        return false;
+    }
+
+    const uint64_t pixels = static_cast<uint64_t>(config.width) * config.height;
+    const uint64_t bytes  = pixels * WD_BYTES_PER_PIXEL;
+
+    return bytes <= WD_CLIENT_MAX_FRAMEBUFFER_BYTES;
+}
+
 bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Renderer* renderer, SDL_Texture*& texture,
                                  TileReassembler& reassembler) {
     wd_server_config_payload config{};
@@ -1026,9 +1033,16 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         state.pending_config_valid = false;
     }
 
+    if (!client_config_dimensions_valid(config))
+    {
+        WD_LOG_ERROR("refusing oversized server display resize: %ux%u", config.width, config.height);
+        return false;
+    }
+
     if (config.width == state.config.width && config.height == state.config.height && config.tiles_x == state.config.tiles_x &&
         config.tiles_y == state.config.tiles_y && config.total_tiles == state.config.total_tiles)
     {
+        std::lock_guard<std::mutex> lock(state.config_mutex);
         state.config = config;
         return false;
     }
@@ -1036,27 +1050,13 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     WD_LOG_INFO("server display resized: %ux%u tiles=%ux%u total=%u", config.width, config.height, config.tiles_x, config.tiles_y,
                 config.total_tiles);
 
-    state.config = config;
-
-    state.framebuffer.assign(state.framebuffer_pixels(), 0);
-
-    {
-        std::lock_guard<std::mutex> lock(state.generation_mutex);
-        state.displayed_generation.assign(state.tile_count(), 0);
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(state.retx_mutex);
-        state.retx_queue.clear();
-        state.retx_queued_generation.assign(state.tile_count(), 0);
-    }
-
-    state.udp_recv_buffer.assign(sizeof(wd_udp_tile_packet_header) + state.config.udp_payload_target + 512, 0);
-
-    reassembler.reset();
+    std::vector<uint32_t> new_framebuffer(static_cast<size_t>(config.width) * config.height, 0);
+    std::vector<uint64_t> new_displayed_generation(config.total_tiles, 0);
+    std::vector<uint64_t> new_retx_queued_generation(config.total_tiles, 0);
+    std::vector<uint8_t>  new_udp_recv_buffer(sizeof(wd_udp_tile_packet_header) + config.udp_payload_target + 512, 0);
 
     SDL_Texture* new_texture =
-        SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, state.config.width, state.config.height);
+        SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, config.width, config.height);
 
     if (!new_texture)
     {
@@ -1065,18 +1065,70 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         return false;
     }
 
+    {
+        std::lock_guard<std::mutex> config_lock(state.config_mutex);
+        std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
+        std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+
+        state.config                 = config;
+        state.framebuffer            = std::move(new_framebuffer);
+        state.displayed_generation   = std::move(new_displayed_generation);
+        state.retx_queue.clear();
+        state.retx_queued_generation = std::move(new_retx_queued_generation);
+        state.udp_recv_buffer        = std::move(new_udp_recv_buffer);
+    }
+
+    reassembler.reset();
+
     SDL_DestroyTexture(texture);
     texture = new_texture;
 
     g_client_config = &state.config;
-    SDL_SetWindowMinimumSize(window, 64, 64);
+    SDL_SetWindowMinimumSize(window, WD_CLIENT_MIN_WINDOW_WIDTH, WD_CLIENT_MIN_WINDOW_HEIGHT);
     update_window_size(window);
 
     return true;
 }
 
+bool client_send_keyboard_key_checked(ClientState& state, uint16_t evdev_key_code, bool pressed) {
+    if (client_send_keyboard_key(state, evdev_key_code, pressed))
+    {
+        return true;
+    }
+
+    std::fprintf(stderr, "failed to send keyboard event evdev=%u pressed=%u\n", evdev_key_code, pressed ? 1 : 0);
+    state.running.store(false, std::memory_order_relaxed);
+    return false;
+}
+
+void release_forwarded_keyboard_keys(ClientState& state) {
+    for (size_t i = 0; i < g_forwarded_keys.size(); ++i)
+    {
+        if (!g_forwarded_keys[i])
+        {
+            continue;
+        }
+
+        const auto     scancode       = static_cast<SDL_Scancode>(i);
+        const uint16_t evdev_key_code = sdl_scancode_to_evdev(scancode);
+
+        if (evdev_key_code != 0)
+        {
+            client_send_keyboard_key_checked(state, evdev_key_code, false);
+        }
+
+        g_forwarded_keys[i] = false;
+    }
+
+    g_suppress_paste_v_keyup = false;
+}
+
 void handle_sdl_event(ClientState& state, const SDL_Event& event) {
-    static bool suppress_paste_v_keyup = false;
+    if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+    {
+        release_forwarded_keyboard_keys(state);
+        return;
+    }
 
     if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP)
     {
@@ -1106,21 +1158,27 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
                  * held remotely. Forwarding V here races ahead of publication.
                  */
                 send_host_clipboard_to_server(state, false);
-                suppress_paste_v_keyup = true;
+                g_suppress_paste_v_keyup = true;
                 return;
             }
 
-            if (!pressed && suppress_paste_v_keyup)
+            if (!pressed && g_suppress_paste_v_keyup)
             {
-                suppress_paste_v_keyup = false;
+                g_suppress_paste_v_keyup = false;
                 return;
             }
         }
 
-        if (!client_send_keyboard_key(state, evdev_key_code, pressed))
+        bool& forwarded = g_forwarded_keys[static_cast<size_t>(scancode)];
+
+        if (pressed == forwarded)
         {
-            std::fprintf(stderr, "failed to send keyboard event evdev=%u pressed=%u\n", evdev_key_code, pressed ? 1 : 0);
-            state.running.store(false, std::memory_order_relaxed);
+            return;
+        }
+
+        if (client_send_keyboard_key_checked(state, evdev_key_code, pressed))
+        {
+            forwarded = pressed;
         }
 
         return;
@@ -1213,7 +1271,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
              * Wayland scroll convention: negative value usually means scroll down.
              * SDL wheel y > 0 means wheel up.
              */
-            pointer.axis_value = -event.wheel.y * 15;
+            pointer.axis_value = -event.wheel.y * WD_CLIENT_WHEEL_AXIS_STEP;
 
             if (!client_send_pointer_event(state, pointer))
             {
@@ -1231,7 +1289,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
             pointer.x                   = map_mouse_coord_x(mouse_x);
             pointer.y                   = map_mouse_coord_y(mouse_y);
             pointer.axis                = WD_POINTER_AXIS_HORIZONTAL;
-            pointer.axis_value          = event.wheel.x * 15;
+            pointer.axis_value          = event.wheel.x * WD_CLIENT_WHEEL_AXIS_STEP;
             pointer.modifiers           = current_pointer_modifiers();
 
             if (!client_send_pointer_event(state, pointer))
@@ -1266,13 +1324,12 @@ int run_sdl_viewer(ClientState& state) {
         return 1;
     }
 
-    SDL_SetWindowMinimumSize(window, 64, 64);
+    SDL_SetWindowMinimumSize(window, WD_CLIENT_MIN_WINDOW_WIDTH, WD_CLIENT_MIN_WINDOW_HEIGHT);
     update_window_size(window);
 
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
-    SDL_RenderSetLogicalSize(renderer, 0, 0);
+
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 
     if (!renderer)
     {
@@ -1281,6 +1338,8 @@ int run_sdl_viewer(ClientState& state) {
         SDL_Quit();
         return 1;
     }
+
+    SDL_RenderSetLogicalSize(renderer, 0, 0);
 
     SDL_Texture* texture =
         SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, state.config.width, state.config.height);
@@ -1318,6 +1377,7 @@ int run_sdl_viewer(ClientState& state) {
             pending_resize_width    = 0;
             pending_resize_height   = 0;
             pending_resize_since_ns = 0;
+            present_tile_timestamps.clear();
             frame_dirty             = true;
         }
 
@@ -1327,6 +1387,7 @@ int run_sdl_viewer(ClientState& state) {
         {
             if (event.type == SDL_QUIT)
             {
+                release_forwarded_keyboard_keys(state);
                 state.running.store(false, std::memory_order_relaxed);
                 break;
             }
@@ -1365,7 +1426,7 @@ int run_sdl_viewer(ClientState& state) {
         {
             const uint64_t now = wd_now_ns();
 
-            if (now - pending_resize_since_ns >= RESIZE_DEBOUNCE_NS)
+            if (now - pending_resize_since_ns >= WD_CLIENT_RESIZE_DEBOUNCE_NS)
             {
                 last_requested_width    = pending_resize_width;
                 last_requested_height   = pending_resize_height;
@@ -1395,11 +1456,22 @@ int run_sdl_viewer(ClientState& state) {
 
         if (frame_dirty)
         {
-            SDL_UpdateTexture(texture, nullptr, state.framebuffer.data(), state.config.width * WD_BYTES_PER_PIXEL);
+            const uint32_t frame_width     = state.config.width;
+            const uint32_t frame_height    = state.config.height;
+            const size_t   expected_pixels = static_cast<size_t>(frame_width) * frame_height;
+
+            if (frame_width == 0 || frame_height == 0 || state.framebuffer.size() < expected_pixels ||
+                SDL_UpdateTexture(texture, nullptr, state.framebuffer.data(), static_cast<int>(frame_width * WD_BYTES_PER_PIXEL)) != 0)
+            {
+                std::fprintf(stderr, "failed to update SDL texture: %s\n", SDL_GetError());
+                state.running.store(false, std::memory_order_relaxed);
+                break;
+            }
 
             SDL_RenderClear(renderer);
             SDL_RenderCopy(renderer, texture, nullptr, &g_content_rect);
             render_context_menu(renderer, context_menu);
+            SDL_RenderPresent(renderer);
 
             const uint64_t present_ns = wd_now_ns();
             for (uint64_t tile_timestamp_ns : present_tile_timestamps)
@@ -1412,19 +1484,25 @@ int run_sdl_viewer(ClientState& state) {
             }
             present_tile_timestamps.clear();
 
-            SDL_RenderPresent(renderer);
+            const uint64_t input_timestamp_ns =
+                state.stats.latest_input_event_timestamp_ns.exchange(0, std::memory_order_relaxed);
+            if (input_timestamp_ns != 0 && present_ns >= input_timestamp_ns)
+            {
+                state.stats.input_to_present_latency_samples.fetch_add(1, std::memory_order_relaxed);
+                state.stats.input_to_present_latency_sum_ns.fetch_add(present_ns - input_timestamp_ns, std::memory_order_relaxed);
+            }
 
             frame_dirty = false;
         }
 
         const uint64_t now = wd_now_ns();
-        if (now - last_stats_ns >= STATS_INTERVAL_NS)
+        if (now - last_stats_ns >= WD_CLIENT_STATS_INTERVAL_NS)
         {
             print_client_stats(state);
             last_stats_ns = now;
         }
 
-        SDL_Delay(SDL_FRAME_DELAY_MS);
+        SDL_Delay(WD_CLIENT_FRAME_DELAY_MS);
     }
 
     SDL_DestroyTexture(texture);

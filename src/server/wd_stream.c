@@ -10,13 +10,6 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
-#define WD_DEFAULT_PARTIAL_FPS                        30u
-#define WD_DEFAULT_LIMITED_TILES_PER_SECOND           120u
-#define WD_MAX_REASONABLE_FPS                         120u
-#define WD_MAX_REASONABLE_TILES_PER_SECOND            10000u
-#define WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND        32u
-#define WD_MAX_REASONABLE_RETRANSMIT_TILES_PER_SECOND 2000u
-
 void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     if (!policy)
     {
@@ -80,11 +73,11 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
          * Full mode can repair faster, but still cap repair so it does not
          * dominate fresh updates.
          */
-        retx_tiles = 128;
+        retx_tiles = WD_FULL_MODE_RETRANSMIT_TILES_PER_SECOND;
         break;
 
     case WD_STREAM_MODE_PARTIAL:
-        retx_tiles = 64;
+        retx_tiles = WD_PARTIAL_MODE_RETRANSMIT_TILES_PER_SECOND;
         break;
 
     case WD_STREAM_MODE_LIMITED:
@@ -92,10 +85,10 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
          * Limited mode: retransmit gets roughly 20% of the fresh tile budget,
          * with a small floor.
          */
-        retx_tiles = max_tiles / 5;
-        if (retx_tiles < 8)
+        retx_tiles = max_tiles / WD_LIMITED_MODE_RETRANSMIT_DIVISOR;
+        if (retx_tiles < WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC)
         {
-            retx_tiles = 8;
+            retx_tiles = WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC;
         }
         break;
 
@@ -331,6 +324,15 @@ bool wd_stream_init(struct wd_server* server) {
         return false;
     }
 
+    server->damage_tiles = calloc(server->total_tiles, sizeof(*server->damage_tiles));
+    if (!server->damage_tiles)
+    {
+        wd_stream_destroy(server);
+        return false;
+    }
+    server->damage_all_tiles  = true;
+    server->damage_tile_count = 0;
+
     for (uint16_t i = 0; i < server->total_tiles; ++i)
     {
         struct wd_cached_tile* tile = &server->net.tiles[i];
@@ -366,6 +368,11 @@ void wd_stream_destroy(struct wd_server* server) {
 
     free(server->net.tiles);
     server->net.tiles = NULL;
+
+    free(server->damage_tiles);
+    server->damage_tiles      = NULL;
+    server->damage_all_tiles  = false;
+    server->damage_tile_count = 0;
 }
 
 bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id) {
@@ -390,9 +397,9 @@ bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_i
         udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
 
-    if (udp_payload_target > 65487)
+    if (udp_payload_target > WD_UDP_TILE_PAYLOAD_MAX)
     {
-        udp_payload_target = 65487;
+        udp_payload_target = WD_UDP_TILE_PAYLOAD_MAX;
     }
 
     if (udp_payload_target < 512)
@@ -505,24 +512,66 @@ static bool wd_dirty_queue_pop_locked(struct wd_net_state* net, uint16_t* out_ti
     return true;
 }
 
-static void wd_detect_dirty_tiles_into_queue_locked(struct wd_server* server) {
+static void wd_clear_damage_tiles(struct wd_server* server) {
+    if (!server || !server->damage_tiles)
+    {
+        return;
+    }
+
+    if (server->damage_tile_count > 0)
+    {
+        memset(server->damage_tiles, 0, (size_t)server->total_tiles * sizeof(*server->damage_tiles));
+    }
+
+    server->damage_all_tiles  = false;
+    server->damage_tile_count = 0;
+}
+
+static void wd_detect_one_dirty_tile_into_queue_locked(struct wd_server* server, uint16_t tile_id) {
     struct wd_net_state* net = &server->net;
 
+    if (tile_id >= server->total_tiles)
+    {
+        return;
+    }
+
+    uint32_t hash = wd_fnv1a_tile_hash_xrgb8888_for(server->framebuffer_xrgb8888, server->display_width, server->display_height,
+                                                    server->tiles_x, server->total_tiles, tile_id);
+
+    if (hash != net->tiles[tile_id].last_hash)
+    {
+        wd_dirty_queue_push_locked(net, tile_id, server->total_tiles);
+    }
+}
+
+static void wd_detect_dirty_tiles_into_queue_locked(struct wd_server* server) {
     /*
-     * Hash the current framebuffer and enqueue each changed tile once.
-     * A tile that changes repeatedly before being sent remains queued once;
-     * when sent, we send the latest pixels.
+     * Hash only tiles intersecting compositor-side damage when we know it.
+     * Full-frame damage is still used for first frames, resized displays, and
+     * any legacy mark path that cannot describe a smaller rectangle safely.
      */
+    if (!server->damage_all_tiles && server->damage_tiles && server->damage_tile_count > 0)
+    {
+        for (uint16_t tile_id = 0; tile_id < server->total_tiles; ++tile_id)
+        {
+            if (!server->damage_tiles[tile_id])
+            {
+                continue;
+            }
+
+            wd_detect_one_dirty_tile_into_queue_locked(server, tile_id);
+        }
+
+        wd_clear_damage_tiles(server);
+        return;
+    }
+
     for (uint16_t tile_id = 0; tile_id < server->total_tiles; ++tile_id)
     {
-        uint32_t hash = wd_fnv1a_tile_hash_xrgb8888_for(server->framebuffer_xrgb8888, server->display_width, server->display_height,
-                                                        server->tiles_x, server->total_tiles, tile_id);
-
-        if (hash != net->tiles[tile_id].last_hash)
-        {
-            wd_dirty_queue_push_locked(net, tile_id, server->total_tiles);
-        }
+        wd_detect_one_dirty_tile_into_queue_locked(server, tile_id);
     }
+
+    wd_clear_damage_tiles(server);
 }
 
 bool wd_stream_send_dirty_tiles(struct wd_server* server) {
@@ -618,6 +667,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
             net->dirty_queue_write = 0;
             net->dirty_queue_count = 0;
 
+            wd_clear_damage_tiles(server);
             server->scene_dirty = false;
         }
         else

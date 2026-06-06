@@ -5,14 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define WD_XWAYLAND_DEFAULT_WIDTH      800u
-#define WD_XWAYLAND_DEFAULT_HEIGHT     600u
-#define WD_XWAYLAND_MIN_VISIBLE_WIDTH  64u
-#define WD_XWAYLAND_MIN_VISIBLE_HEIGHT 48u
-#define WD_XWAYLAND_TITLEBAR_HEIGHT    28u
-#define WD_XWAYLAND_BUTTON_SIZE        18u
-#define WD_XWAYLAND_BUTTON_MARGIN      5u
-#define WD_XWAYLAND_BUTTON_GAP         5u
 
 enum wd_xwayland_decoration_part {
     WD_XWAYLAND_DECORATION_NONE = 0,
@@ -285,6 +277,46 @@ static uint16_t xwayland_view_display_height(struct wd_view* view) {
     return display_height;
 }
 
+static void xwayland_mark_scene_dirty(struct wd_view* view) {
+    if (!view || !view->server)
+    {
+        return;
+    }
+
+    /*
+     * Keep lifecycle events conservative: map/unmap/associate/dissociate can
+     * create or remove scene nodes and can therefore affect arbitrary output
+     * areas.
+     */
+    wd_server_mark_scene_dirty(view->server);
+}
+
+static void xwayland_mark_content_dirty(struct wd_view* view) {
+    if (!view || !view->server)
+    {
+        return;
+    }
+
+    /*
+     * Xwayland clients often commit repeatedly while reusing or cycling
+     * equivalent buffers. Treat ordinary content commits as damage to the
+     * Xwayland view bounds instead of forcing a full-output readback/hash pass
+     * every time. This remains conservative for subwindows and redirected X11
+     * drawing inside the window while avoiding redundant work in unrelated
+     * parts of the output.
+     */
+    wd_server_mark_view_dirty(view);
+}
+
+static void xwayland_mark_configure_dirty(struct wd_view* view, int old_x, int old_y) {
+    if (!view || !view->server)
+    {
+        return;
+    }
+
+    wd_server_mark_view_move_dirty(view, old_x, old_y);
+}
+
 static void xwayland_view_mark_mapped(struct wd_view* view, bool focus) {
     if (!view || !view->xwayland_surface || !view->server)
     {
@@ -306,7 +338,7 @@ static void xwayland_view_mark_mapped(struct wd_view* view, bool focus) {
         wd_scene_focus_view(view);
     }
 
-    wd_server_mark_scene_dirty(view->server);
+    xwayland_mark_scene_dirty(view);
 }
 
 static void handle_xwayland_ready(struct wl_listener* listener, void* data) {
@@ -343,7 +375,7 @@ static void handle_xwayland_surface_commit(struct wl_listener* listener, void* d
     if (view && view->server)
     {
         xwayland_view_update_decoration(view);
-        wd_server_mark_scene_dirty(view->server);
+        xwayland_mark_content_dirty(view);
     }
 }
 
@@ -378,7 +410,7 @@ static void handle_xwayland_surface_unmap(struct wl_listener* listener, void* da
 
     if (view->server)
     {
-        wd_server_mark_scene_dirty(view->server);
+        xwayland_mark_scene_dirty(view);
     }
 }
 
@@ -410,7 +442,7 @@ static void xwayland_view_disassociate(struct wd_view* view) {
 
     if (view->server)
     {
-        wd_server_mark_scene_dirty(view->server);
+        xwayland_mark_scene_dirty(view);
     }
 }
 
@@ -495,7 +527,7 @@ static void xwayland_view_associate(struct wd_view* view) {
     }
     else
     {
-        wd_server_mark_scene_dirty(view->server);
+        xwayland_mark_scene_dirty(view);
     }
 
     WD_LOG_DEBUG("WayDisplay: Xwayland associated view=%p scene_tree=%p mapped=%d", (void*)view, (void*)view->scene_tree,
@@ -565,7 +597,7 @@ static void xwayland_view_set_maximized(struct wd_view* view, bool maximize) {
 
     wlr_xwayland_surface_set_maximized(xsurface, maximize, maximize);
     wd_scene_focus_view(view);
-    wd_server_mark_scene_dirty(view->server);
+    xwayland_mark_scene_dirty(view);
 }
 
 static void handle_xwayland_request_maximize(struct wl_listener* listener, void* data) {
@@ -615,7 +647,7 @@ static void handle_xwayland_request_fullscreen(struct wl_listener* listener, voi
 
     wlr_xwayland_surface_set_fullscreen(xsurface, fullscreen);
     wd_scene_focus_view(view);
-    wd_server_mark_scene_dirty(view->server);
+    xwayland_mark_scene_dirty(view);
 }
 
 static void handle_xwayland_request_minimize(struct wl_listener* listener, void* data) {
@@ -649,7 +681,7 @@ static void handle_xwayland_request_minimize(struct wl_listener* listener, void*
         wd_scene_focus_view(view);
     }
 
-    wd_server_mark_scene_dirty(view->server);
+    xwayland_mark_scene_dirty(view);
 }
 
 static void handle_xwayland_request_close(struct wl_listener* listener, void* data) {
@@ -673,6 +705,9 @@ static void handle_xwayland_request_configure(struct wl_listener* listener, void
         return;
     }
 
+    int old_x = view->x;
+    int old_y = view->y;
+
     view->x = event->x;
     view->y = event->y;
 
@@ -685,7 +720,7 @@ static void handle_xwayland_request_configure(struct wl_listener* listener, void
 
     if (view->server)
     {
-        wd_server_mark_scene_dirty(view->server);
+        xwayland_mark_configure_dirty(view, old_x, old_y);
     }
 }
 
@@ -842,7 +877,7 @@ bool wd_xwayland_view_handle_decoration_press(struct wd_view* view, double sx, d
     case WD_XWAYLAND_DECORATION_MINIMIZE:
         view->minimized = true;
         wlr_xwayland_surface_set_minimized(view->xwayland_surface, true);
-        wd_server_mark_scene_dirty(view->server);
+        xwayland_mark_scene_dirty(view);
         return true;
     case WD_XWAYLAND_DECORATION_TITLEBAR:
         wd_pointer_begin_move(view->server, view);

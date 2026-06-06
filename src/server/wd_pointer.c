@@ -5,10 +5,6 @@
 #include <wayland-server-protocol.h>
 #include <wlr/types/wlr_scene.h>
 
-#define WD_FALLBACK_MOVE_ZONE_HEIGHT 32.0
-#define WD_RESIZE_EDGE_ZONE          8.0
-#define WD_MIN_WINDOW_WIDTH          120u
-#define WD_MIN_WINDOW_HEIGHT         80u
 #define WD_POINTER_MOD_ALT           (1u << 0)
 #define WD_BTN_LEFT                  0x110
 #define WD_BTN_RIGHT                 0x111
@@ -309,6 +305,7 @@ void wd_pointer_clear_focus(struct wd_server* server) {
     }
 
     wlr_seat_pointer_clear_focus(server->seat);
+    wlr_seat_pointer_notify_frame(server->seat);
 }
 
 void wd_pointer_begin_move(struct wd_server* server, struct wd_view* view) {
@@ -340,11 +337,14 @@ void wd_pointer_update_move(struct wd_server* server) {
     const double dx = server->pointer_x - server->move_grab.grab_x;
     const double dy = server->pointer_y - server->move_grab.grab_y;
 
+    int old_x = view->x;
+    int old_y = view->y;
+
     view->x = server->move_grab.view_x + (int)dx;
     view->y = server->move_grab.view_y + (int)dy;
 
     wd_scene_set_view_position(view);
-    wd_server_mark_scene_dirty(server);
+    wd_server_mark_view_move_dirty(view, old_x, old_y);
 }
 
 void wd_pointer_end_move(struct wd_server* server) {
@@ -355,10 +355,13 @@ void wd_pointer_end_move(struct wd_server* server) {
 
     WD_LOG_INFO("WayDisplay: end move");
 
+    if (server->move_grab.view)
+    {
+        wd_server_mark_view_dirty(server->move_grab.view);
+    }
+
     server->move_grab.active = false;
     server->move_grab.view   = NULL;
-
-    wd_server_mark_scene_dirty(server);
 }
 
 void wd_pointer_begin_resize(struct wd_server* server, struct wd_view* view, uint32_t edges) {
@@ -474,6 +477,9 @@ void wd_pointer_update_resize(struct wd_server* server) {
         }
     }
 
+    int old_x = view->x;
+    int old_y = view->y;
+
     view->x = new_x;
     view->y = new_y;
 
@@ -489,7 +495,7 @@ void wd_pointer_update_resize(struct wd_server* server) {
     }
 #endif
 
-    wd_server_mark_scene_dirty(server);
+    wd_server_mark_view_move_dirty(view, old_x, old_y);
 }
 
 void wd_pointer_end_resize(struct wd_server* server) {
@@ -505,11 +511,14 @@ void wd_pointer_end_resize(struct wd_server* server) {
 
     WD_LOG_INFO("WayDisplay: end resize");
 
+    if (server->resize_grab.view)
+    {
+        wd_server_mark_view_dirty(server->resize_grab.view);
+    }
+
     server->resize_grab.active = false;
     server->resize_grab.view   = NULL;
     server->resize_grab.edges  = WLR_EDGE_NONE;
-
-    wd_server_mark_scene_dirty(server);
 }
 
 static double clamp_layout_x(struct wd_server* server, uint16_t x) {
@@ -788,26 +797,6 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
             {
                 wd_pointer_update_hover_cursor(server, target_view, sx, sy);
             }
-            if (event->button_state == WD_POINTER_BUTTON_PRESSED)
-            {
-                if (button_grab_count == 0)
-                {
-                    button_grab_surface = target_surface;
-                    button_grab_view    = target_view;
-                    button_grab_lx      = lx;
-                    button_grab_ly      = ly;
-                    button_grab_sx      = sx;
-                    button_grab_sy      = sy;
-
-                    WD_LOG_INFO("WayDisplay: pointer button grab begin surface=%p view=%p "
-                                "layout=%.1f %.1f sx=%.1f sy=%.1f",
-                                (void*)button_grab_surface, (void*)button_grab_view, button_grab_lx, button_grab_ly, button_grab_sx,
-                                button_grab_sy);
-                }
-
-                ++button_grab_count;
-            }
-
             notify_pointer_enter_if_needed(server, target_surface, sx, sy);
 
             wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
@@ -862,6 +851,22 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
                  *
                  * Child-surface presses are also forwarded unchanged.
                  */
+                if (button_grab_count == 0)
+                {
+                    button_grab_surface = target_surface;
+                    button_grab_view    = target_view;
+                    button_grab_lx      = lx;
+                    button_grab_ly      = ly;
+                    button_grab_sx      = sx;
+                    button_grab_sy      = sy;
+
+                    WD_LOG_INFO("WayDisplay: pointer button grab begin surface=%p view=%p "
+                                "layout=%.1f %.1f sx=%.1f sy=%.1f",
+                                (void*)button_grab_surface, (void*)button_grab_view, button_grab_lx, button_grab_ly, button_grab_sx,
+                                button_grab_sy);
+                }
+
+                ++button_grab_count;
             }
 
             notify_pointer_enter_if_needed(server, target_surface, sx, sy);

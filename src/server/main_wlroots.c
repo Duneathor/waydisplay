@@ -20,7 +20,7 @@ static void usage(const char* argv0) {
 
 int main(int argc, char** argv) {
     const char* app_cmd         = "foot";
-    uint16_t    tcp_port        = 5000;
+    uint16_t    tcp_port        = WD_DEFAULT_TCP_PORT;
     double      output_scale    = 1.0;
     uint32_t    display_width   = WD_DISPLAY_WIDTH;
     uint32_t    display_height  = WD_DISPLAY_HEIGHT;

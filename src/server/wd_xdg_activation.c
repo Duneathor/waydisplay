@@ -98,10 +98,13 @@ static void handle_request_activate(struct wl_listener* listener, void* data) {
         WD_LOG_INFO("WayDisplay: xdg-activation focused view=%p token=%s", (void*)view, token_name ? token_name : "(null)");
 
         /*
-         * Tokens are single-use from the compositor policy perspective.
-         * Destroying after accepting avoids replay.
+         * Do not destroy event->token here. wlroots owns activation token
+         * lifetime and may already have unlinked the token by the time the
+         * request_activate handler runs. Firefox's profile wizard can trigger
+         * this path while creating a new toplevel; explicitly destroying the
+         * token here can double-remove its wl_list link and crash in
+         * wl_list_remove().
          */
-        wlr_xdg_activation_token_v1_destroy(event->token);
     }
     else
     {
@@ -126,7 +129,7 @@ bool wd_xdg_activation_init(struct wd_server* server) {
      * Keep tokens alive long enough for common launcher/browser handoffs while
      * still limiting stale focus-stealing attempts.
      */
-    server->xdg_activation->token_timeout_msec = 10000;
+    server->xdg_activation->token_timeout_msec = WD_XDG_ACTIVATION_TOKEN_TIMEOUT_MS;
 
     wl_list_init(&server->request_activate.link);
     server->request_activate.notify = handle_request_activate;

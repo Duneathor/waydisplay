@@ -4,10 +4,13 @@
 #include <string.h>
 
 static void                view_configure_idle(void* data);
+static void                view_schedule_initial_configure(struct wd_view* view);
 static void                view_handle_commit(struct wl_listener* listener, void* data);
 static void                view_handle_map(struct wl_listener* listener, void* data);
 static void                view_handle_unmap(struct wl_listener* listener, void* data);
 static void                view_apply_fractional_scale(struct wd_view* view);
+static void                view_track_surface_commits(struct wd_view* view);
+static void                view_surface_commit_trackers_destroy(struct wd_view* view);
 static void                view_handle_xdg_surface_destroy(struct wl_listener* listener, void* data);
 static void                view_handle_xdg_toplevel_destroy(struct wl_listener* listener, void* data);
 static void                server_handle_new_xdg_surface(struct wl_listener* listener, void* data);
@@ -52,6 +55,15 @@ struct wd_popup_commit_tracker {
     int                    last_geometry_height;
 };
 
+struct wd_surface_commit_tracker {
+    struct wl_list        link;
+    struct wl_listener    commit;
+    struct wl_listener    destroy;
+    struct wl_listener    view_destroy;
+    struct wlr_surface*   surface;
+    struct wd_view*       view;
+};
+
 static void popup_unconstrain_idle(void* data);
 static void popup_unconstrain_handle_popup_destroy(struct wl_listener* listener, void* data);
 static void popup_unconstrain_handle_popup_surface_destroy(struct wl_listener* listener, void* data);
@@ -61,6 +73,9 @@ static void popup_commit_tracker_handle_map(struct wl_listener* listener, void* 
 static void popup_commit_tracker_handle_unmap(struct wl_listener* listener, void* data);
 static void popup_commit_tracker_handle_destroy(struct wl_listener* listener, void* data);
 static void popup_commit_tracker_handle_view_destroy(struct wl_listener* listener, void* data);
+static void surface_commit_tracker_handle_commit(struct wl_listener* listener, void* data);
+static void surface_commit_tracker_handle_destroy(struct wl_listener* listener, void* data);
+static void surface_commit_tracker_handle_view_destroy(struct wl_listener* listener, void* data);
 
 void wd_scene_init_listeners(struct wd_server* server) {
     server->new_xdg_surface.notify = server_handle_new_xdg_surface;
@@ -231,6 +246,16 @@ static const char* view_title(struct wd_view* view) {
     return view && view->title && view->title[0] ? view->title : "(no title)";
 }
 
+static bool xdg_surface_can_configure(struct wlr_xdg_surface* xdg_surface) {
+    return xdg_surface && xdg_surface->initialized;
+}
+
+static bool xdg_toplevel_can_configure(struct wd_view* view) {
+    return view && xdg_surface_can_configure(view->xdg_surface) &&
+           view->xdg_surface->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL &&
+           view->xdg_surface->toplevel;
+}
+
 static void view_set_activated(struct wd_view* view, bool activated) {
     if (!view)
     {
@@ -244,7 +269,7 @@ static void view_set_activated(struct wd_view* view, bool activated) {
 
     view->activated = activated;
 
-    if (view->xdg_surface && view->xdg_surface->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL && view->xdg_surface->toplevel)
+    if (xdg_toplevel_can_configure(view))
     {
         wlr_xdg_toplevel_set_activated(view->xdg_surface->toplevel, activated);
     }
@@ -274,13 +299,18 @@ void wd_scene_deactivate_view(struct wd_view* view) {
 }
 
 static void view_set_bounds(struct wd_view* view, uint32_t width, uint32_t height) {
-    if (!view || !view->xdg_surface || view->xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL || !view->xdg_surface->toplevel)
+    if (!view)
     {
         return;
     }
 
     view->bounds_width  = width;
     view->bounds_height = height;
+
+    if (!xdg_toplevel_can_configure(view))
+    {
+        return;
+    }
 
     wlr_xdg_toplevel_set_bounds(view->xdg_surface->toplevel, width, height);
 }
@@ -553,7 +583,7 @@ void wd_scene_note_dialog_state(struct wd_view* view) {
     WD_LOG_INFO("WayDisplay: xdg-dialog view=%p app_id=%s title=%s modal=%d parent=%p", (void*)view, view_app_id(view), view_title(view),
                 view->dialog_modal ? 1 : 0, (void*)view->parent);
 
-    wd_server_mark_scene_dirty(view->server);
+    wd_server_mark_view_dirty(view);
 }
 
 void wd_scene_focus_view(struct wd_view* view) {
@@ -590,6 +620,138 @@ void wd_scene_focus_view(struct wd_view* view) {
     }
 
     wd_server_mark_scene_dirty(server);
+}
+
+static void surface_commit_tracker_destroy(struct wd_surface_commit_tracker* state) {
+    if (!state)
+    {
+        return;
+    }
+
+    if (state->link.prev && state->link.next)
+    {
+        wl_list_remove(&state->link);
+        wl_list_init(&state->link);
+    }
+
+    remove_listener_if_linked(&state->commit);
+    remove_listener_if_linked(&state->destroy);
+    remove_listener_if_linked(&state->view_destroy);
+
+    free(state);
+}
+
+static void view_surface_commit_trackers_destroy(struct wd_view* view) {
+    if (!view || !view->surface_commit_trackers.prev || !view->surface_commit_trackers.next)
+    {
+        return;
+    }
+
+    struct wd_surface_commit_tracker* state;
+    struct wd_surface_commit_tracker* tmp;
+    wl_list_for_each_safe(state, tmp, &view->surface_commit_trackers, link) {
+        surface_commit_tracker_destroy(state);
+    }
+}
+
+static struct wd_surface_commit_tracker* surface_commit_tracker_for_surface(struct wd_view* view, struct wlr_surface* surface) {
+    if (!view || !surface || !view->surface_commit_trackers.prev || !view->surface_commit_trackers.next)
+    {
+        return NULL;
+    }
+
+    struct wd_surface_commit_tracker* state;
+    wl_list_for_each(state, &view->surface_commit_trackers, link) {
+        if (state->surface == surface)
+        {
+            return state;
+        }
+    }
+
+    return NULL;
+}
+
+static void surface_commit_tracker_handle_commit(struct wl_listener* listener, void* data) {
+    (void)data;
+
+    struct wd_surface_commit_tracker* state = wl_container_of(listener, state, commit);
+    if (!state || !state->view)
+    {
+        return;
+    }
+
+    wd_server_mark_view_dirty(state->view);
+
+    /*
+     * Child/subsurface trees can appear after the toplevel has already been
+     * created. Refresh the tracked set from any commit we do observe so the
+     * next child commit wakes the streamer directly instead of waiting for an
+     * unrelated input event.
+     */
+    view_track_surface_commits(state->view);
+}
+
+static void surface_commit_tracker_handle_destroy(struct wl_listener* listener, void* data) {
+    (void)data;
+
+    struct wd_surface_commit_tracker* state = wl_container_of(listener, state, destroy);
+    surface_commit_tracker_destroy(state);
+}
+
+static void surface_commit_tracker_handle_view_destroy(struct wl_listener* listener, void* data) {
+    (void)data;
+
+    struct wd_surface_commit_tracker* state = wl_container_of(listener, state, view_destroy);
+    surface_commit_tracker_destroy(state);
+}
+
+static void track_surface_commit_iterator(struct wlr_surface* surface, int sx, int sy, void* data) {
+    (void)sx;
+    (void)sy;
+
+    struct wd_view* view = data;
+    if (!view || !surface || surface_commit_tracker_for_surface(view, surface))
+    {
+        return;
+    }
+
+    struct wd_surface_commit_tracker* state = calloc(1, sizeof(*state));
+    if (!state)
+    {
+        WD_LOG_ERROR("WayDisplay: failed to allocate xdg surface commit tracker");
+        return;
+    }
+
+    wl_list_init(&state->link);
+    wl_list_init(&state->commit.link);
+    wl_list_init(&state->destroy.link);
+    wl_list_init(&state->view_destroy.link);
+
+    state->surface = surface;
+    state->view    = view;
+
+    state->commit.notify = surface_commit_tracker_handle_commit;
+    wl_signal_add(&surface->events.commit, &state->commit);
+
+    state->destroy.notify = surface_commit_tracker_handle_destroy;
+    wl_signal_add(&surface->events.destroy, &state->destroy);
+
+    if (view->xdg_surface)
+    {
+        state->view_destroy.notify = surface_commit_tracker_handle_view_destroy;
+        wl_signal_add(&view->xdg_surface->events.destroy, &state->view_destroy);
+    }
+
+    wl_list_insert(&view->surface_commit_trackers, &state->link);
+}
+
+static void view_track_surface_commits(struct wd_view* view) {
+    if (!view || !view->xdg_surface || !view->surface_commit_trackers.prev || !view->surface_commit_trackers.next)
+    {
+        return;
+    }
+
+    wlr_xdg_surface_for_each_surface(view->xdg_surface, track_surface_commit_iterator, view);
 }
 
 static int32_t preferred_buffer_scale_for(double scale) {
@@ -635,6 +797,15 @@ static void view_apply_fractional_scale(struct wd_view* view) {
     wlr_xdg_surface_for_each_surface(view->xdg_surface, surface_apply_fractional_scale, view->server);
 }
 
+static void view_schedule_initial_configure(struct wd_view* view) {
+    if (!view || view->configured_once || view->configure_idle || !view->server || !view->server->event_loop)
+    {
+        return;
+    }
+
+    view->configure_idle = wl_event_loop_add_idle(view->server->event_loop, view_configure_idle, view);
+}
+
 static void view_configure_idle(void* data) {
     struct wd_view* view = data;
 
@@ -645,14 +816,13 @@ static void view_configure_idle(void* data) {
 
     view->configure_idle = NULL;
 
-    if (!view->xdg_surface || view->xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL || !view->xdg_surface->toplevel ||
-        view->configured_once)
+    if (view->configured_once || !xdg_toplevel_can_configure(view))
     {
         return;
     }
 
     /*
-     * wlroots 0.19: defer initial configure until idle.
+     * wlroots 0.19: defer initial configure until idle after initialization.
      */
     uint32_t width  = 0;
     uint32_t height = 0;
@@ -692,7 +862,7 @@ void wd_scene_raise_view(struct wd_view* view) {
     wl_list_remove(&view->link);
     wl_list_insert(view->server->views.prev, &view->link);
 
-    wd_server_mark_scene_dirty(view->server);
+    wd_server_mark_view_dirty(view);
 }
 
 static void view_handle_commit(struct wl_listener* listener, void* data) {
@@ -700,12 +870,13 @@ static void view_handle_commit(struct wl_listener* listener, void* data) {
 
     struct wd_view* view = wl_container_of(listener, view, commit);
 
-    wd_server_mark_scene_dirty(view->server);
+    wd_server_mark_view_dirty(view);
+    view_track_surface_commits(view);
     view_apply_fractional_scale(view);
 
-    if (!view->configured_once && !view->configure_idle)
+    if (!view->configured_once && xdg_toplevel_can_configure(view))
     {
-        view->configure_idle = wl_event_loop_add_idle(view->server->event_loop, view_configure_idle, view);
+        view_schedule_initial_configure(view);
     }
 }
 
@@ -720,7 +891,7 @@ static void view_handle_set_parent(struct wl_listener* listener, void* data) {
     }
 
     view_update_parent_and_position(view, true);
-    wd_server_mark_scene_dirty(view->server);
+    wd_server_mark_view_dirty(view);
 }
 
 static void view_handle_map(struct wl_listener* listener, void* data) {
@@ -735,9 +906,10 @@ static void view_handle_map(struct wl_listener* listener, void* data) {
     view->minimized = false;
 
     wd_scene_set_view_position(view);
+    view_track_surface_commits(view);
     view_apply_fractional_scale(view);
     wd_scene_focus_view(view);
-    wd_server_mark_scene_dirty(view->server);
+    wd_server_mark_view_dirty(view);
 
     WD_LOG_INFO("WayDisplay: xdg toplevel mapped scene_tree=%p", (void*)view->scene_tree);
 }
@@ -820,6 +992,8 @@ static void view_handle_xdg_surface_destroy(struct wl_listener* listener, void* 
     remove_listener_if_linked(&view->request_fullscreen);
     remove_listener_if_linked(&view->request_minimize);
     remove_listener_if_linked(&view->xdg_toplevel_destroy);
+
+    view_surface_commit_trackers_destroy(view);
 
     remove_listener_if_linked(&view->new_popup);
     remove_listener_if_linked(&view->map);
@@ -969,7 +1143,8 @@ static void popup_unconstrain_idle(void* data) {
 
     state->idle = NULL;
 
-    if (!state->popup || !state->view || !state->view->server || !state->view->xdg_surface || !state->view->xdg_surface->surface)
+    if (!state->popup || !state->popup->base || !xdg_surface_can_configure(state->popup->base) || !state->view || !state->view->server ||
+        !state->view->xdg_surface || !state->view->xdg_surface->surface)
     {
         popup_unconstrain_destroy(state);
         return;
@@ -1005,7 +1180,7 @@ static void popup_unconstrain_idle(void* data) {
     };
 
     wlr_xdg_popup_unconstrain_from_box(state->popup, &root_box);
-    wd_server_mark_scene_dirty(state->view->server);
+    wd_server_mark_view_dirty(state->view);
 
     popup_unconstrain_destroy(state);
 }
@@ -1186,7 +1361,7 @@ static void popup_commit_tracker_mark_dirty(struct wd_popup_commit_tracker* stat
      * wlr_xdg_surface_schedule_configure().  The popup is unconstrained once when
      * it is first observed instead.
      */
-    wd_server_mark_scene_dirty(state->view->server);
+    wd_server_mark_view_dirty(state->view);
 }
 
 static void popup_commit_tracker_handle_commit(struct wl_listener* listener, void* data) {
@@ -1225,7 +1400,7 @@ static void popup_commit_tracker_handle_destroy(struct wl_listener* listener, vo
 
     if (state->view && state->view->server)
     {
-        wd_server_mark_scene_dirty(state->view->server);
+        wd_server_mark_view_dirty(state->view);
     }
 
     popup_commit_tracker_destroy(state);
@@ -1386,8 +1561,9 @@ static void view_handle_new_popup(struct wl_listener* listener, void* data) {
                 popup ? popup->current.geometry.y : 0, popup ? popup->current.geometry.width : 0,
                 popup ? popup->current.geometry.height : 0);
 
+    view_track_surface_commits(view);
     view_apply_fractional_scale(view);
-    wd_server_mark_scene_dirty(view->server);
+    wd_server_mark_view_dirty(view);
 }
 
 static void view_handle_set_app_id(struct wl_listener* listener, void* data) {
@@ -1445,7 +1621,10 @@ static void view_restore_saved_geometry(struct wd_view* view) {
     view->y = view->saved_y;
 
     wd_scene_set_view_position(view);
-    wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, view->saved_width, view->saved_height);
+    if (xdg_toplevel_can_configure(view))
+    {
+        wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, view->saved_width, view->saved_height);
+    }
 }
 
 static void view_save_geometry(struct wd_view* view) {
@@ -1500,8 +1679,11 @@ static void view_handle_request_maximize(struct wl_listener* listener, void* dat
             scale = 1.0;
         }
 
-        wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, (uint32_t)((double)view->server->display_width / scale),
-                                  (uint32_t)((double)view->server->display_height / scale));
+        if (xdg_toplevel_can_configure(view))
+        {
+            wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, (uint32_t)((double)view->server->display_width / scale),
+                                      (uint32_t)((double)view->server->display_height / scale));
+        }
     }
     else if (!maximize && view->maximized)
     {
@@ -1511,9 +1693,12 @@ static void view_handle_request_maximize(struct wl_listener* listener, void* dat
     view->maximized   = maximize;
     view->minimized   = false;
     view->tiled_edges = 0;
-    wlr_xdg_toplevel_set_maximized(view->xdg_surface->toplevel, maximize);
+    if (xdg_toplevel_can_configure(view))
+    {
+        wlr_xdg_toplevel_set_maximized(view->xdg_surface->toplevel, maximize);
+    }
     wd_scene_focus_view(view);
-    wd_server_mark_scene_dirty(view->server);
+    wd_server_mark_view_dirty(view);
 }
 
 static void view_handle_request_fullscreen(struct wl_listener* listener, void* data) {
@@ -1541,8 +1726,11 @@ static void view_handle_request_fullscreen(struct wl_listener* listener, void* d
             scale = 1.0;
         }
 
-        wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, (uint32_t)((double)view->server->display_width / scale),
-                                  (uint32_t)((double)view->server->display_height / scale));
+        if (xdg_toplevel_can_configure(view))
+        {
+            wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, (uint32_t)((double)view->server->display_width / scale),
+                                      (uint32_t)((double)view->server->display_height / scale));
+        }
     }
     else if (!fullscreen && view->fullscreen)
     {
@@ -1552,9 +1740,12 @@ static void view_handle_request_fullscreen(struct wl_listener* listener, void* d
     view->fullscreen  = fullscreen;
     view->minimized   = false;
     view->tiled_edges = 0;
-    wlr_xdg_toplevel_set_fullscreen(view->xdg_surface->toplevel, fullscreen);
+    if (xdg_toplevel_can_configure(view))
+    {
+        wlr_xdg_toplevel_set_fullscreen(view->xdg_surface->toplevel, fullscreen);
+    }
     wd_scene_focus_view(view);
-    wd_server_mark_scene_dirty(view->server);
+    wd_server_mark_view_dirty(view);
 }
 
 static void view_handle_request_minimize(struct wl_listener* listener, void* data) {
@@ -1582,8 +1773,11 @@ static void view_handle_request_minimize(struct wl_listener* listener, void* dat
         wd_keyboard_shortcuts_inhibit_refresh(view->server);
     }
 
-    wlr_xdg_surface_schedule_configure(view->xdg_surface);
-    wd_server_mark_scene_dirty(view->server);
+    if (xdg_surface_can_configure(view->xdg_surface))
+    {
+        wlr_xdg_surface_schedule_configure(view->xdg_surface);
+    }
+    wd_server_mark_view_dirty(view);
 }
 
 static void server_handle_new_xdg_surface(struct wl_listener* listener, void* data) {
@@ -1657,6 +1851,7 @@ static void server_handle_new_xdg_popup(struct wl_listener* listener, void* data
             view_schedule_popup_unconstrain(server->focused_view, popup);
         }
         view_track_popup_commits(server->focused_view, popup);
+        view_track_surface_commits(server->focused_view);
         view_apply_fractional_scale(server->focused_view);
     }
 
@@ -1695,6 +1890,7 @@ static void server_handle_new_xdg_toplevel(struct wl_listener* listener, void* d
     wl_list_init(&view->xdg_surface_destroy.link);
     wl_list_init(&view->xdg_toplevel_destroy.link);
     wl_list_init(&view->new_popup.link);
+    wl_list_init(&view->surface_commit_trackers);
 
     view->server      = server;
     view->xdg_surface = xdg_surface;
@@ -1708,6 +1904,8 @@ static void server_handle_new_xdg_toplevel(struct wl_listener* listener, void* d
         view->scene_tree->node.data = view;
         wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
     }
+
+    view_track_surface_commits(view);
 
     wl_list_insert(server->views.prev, &view->link);
 
@@ -1761,5 +1959,9 @@ static void server_handle_new_xdg_toplevel(struct wl_listener* listener, void* d
 
     WD_LOG_INFO("WayDisplay: new xdg toplevel scene_tree=%p", (void*)view->scene_tree);
 
-    view->configure_idle = wl_event_loop_add_idle(server->event_loop, view_configure_idle, view);
+    /*
+     * Wait for the first surface commit before sending the initial configure.
+     * wlroots can emit new_toplevel and metadata events before the xdg_surface
+     * is initialized, and every toplevel state setter schedules a configure.
+     */
 }

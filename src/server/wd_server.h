@@ -1,6 +1,8 @@
 #pragma once
 
+#ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#endif
 
 #include <netinet/in.h>
 #include <pthread.h>
@@ -128,6 +130,13 @@ struct wd_view {
 #endif
 
     struct wl_event_source* configure_idle;
+
+    /*
+     * Commit listeners for the whole xdg surface tree.  Some clients,
+     * especially Firefox, render important content through child/subsurfaces
+     * whose commits do not fire the toplevel root surface commit listener.
+     */
+    struct wl_list surface_commit_trackers;
 
     int x;
     int y;
@@ -308,6 +317,9 @@ struct wd_server {
     struct wlr_scene*                 scene;
     struct wlr_scene_output*          scene_output;
     bool                              scene_dirty;
+    bool                              damage_all_tiles;
+    bool*                             damage_tiles;
+    uint16_t                          damage_tile_count;
 
     struct wlr_xdg_shell*                    xdg_shell;
     struct wlr_xdg_decoration_manager_v1*    xdg_decoration_manager;
@@ -485,6 +497,9 @@ uint32_t wd_stream_policy_retransmit_budget(struct wd_server* server, uint64_t n
 
 void wd_stream_policy_consume_retransmit_tiles(struct wd_server* server, uint32_t count);
 void wd_server_mark_scene_dirty(struct wd_server* server);
+void wd_server_mark_rect_dirty(struct wd_server* server, int x, int y, int width, int height);
+void wd_server_mark_view_dirty(struct wd_view* view);
+void wd_server_mark_view_move_dirty(struct wd_view* view, int old_x, int old_y);
 bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t height);
 bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint32_t height);
 void wd_server_set_default_geometry(struct wd_server* server);

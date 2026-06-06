@@ -12,9 +12,6 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#define WD_TCP_HANDSHAKE_TIMEOUT_MS      3000L
-#define WD_TCP_CONNECTED_SEND_TIMEOUT_MS 3000L
-
 static void wd_close_fd(int* fd) {
     if (fd && *fd >= 0)
     {
@@ -139,11 +136,23 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
     /*
      * Payload size excluding wd_udp_tile_packet_header.
      *
-     * 65487 = max IPv4 UDP payload 65507 - WayDisplay UDP tile header 20.
-     * This should work on loopback if the OS accepts max-size UDP datagrams.
+     * Probe sizes are tile payload bytes, excluding
+     * struct wd_udp_tile_packet_header. Include exact payload budgets for
+     * common IPv4 MTUs so the selected value is the real maximum usable
+     * tile payload for that path instead of the next lower coarse bucket.
      */
     static const uint16_t probe_sizes[] = {
-        65487, 8192, 4096, 1450, 1400, 1360, 1300, 1200,
+        WD_UDP_TILE_PAYLOAD_MAX,
+        WD_IPV4_MTU_TO_TILE_PAYLOAD(9000u),
+        WD_IPV4_MTU_TO_TILE_PAYLOAD(8192u),
+        WD_IPV4_MTU_TO_TILE_PAYLOAD(4096u),
+        WD_IPV4_MTU_TO_TILE_PAYLOAD(1500u),
+        WD_IPV4_MTU_TO_TILE_PAYLOAD(1492u),
+        WD_IPV4_MTU_TO_TILE_PAYLOAD(1460u),
+        1400,
+        1360,
+        1300,
+        1200,
     };
 
     const uint16_t probe_count = (uint16_t)(sizeof(probe_sizes) / sizeof(probe_sizes[0]));
@@ -163,7 +172,7 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
      */
     wd_sleep_ms(10);
 
-    uint8_t packet[sizeof(struct wd_udp_tile_packet_header) + 65487];
+    uint8_t packet[sizeof(struct wd_udp_tile_packet_header) + WD_UDP_TILE_PAYLOAD_MAX];
 
     for (uint16_t i = 0; i < probe_count; ++i)
     {
@@ -212,7 +221,7 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
         struct wd_mtu_probe_result_payload probe_result;
         memcpy(&probe_result, payload, sizeof(probe_result));
 
-        if (probe_result.session_id == net->session_id && probe_result.max_udp_payload_received >= 512)
+        if (probe_result.session_id == net->session_id && probe_result.max_udp_payload_received >= WD_MIN_PROBED_UDP_PAYLOAD)
         {
             result = probe_result.max_udp_payload_received;
         }
@@ -220,9 +229,9 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
 
     free(payload);
 
-    if (result > 65487)
+    if (result > WD_UDP_TILE_PAYLOAD_MAX)
     {
-        result = 65487;
+        result = WD_UDP_TILE_PAYLOAD_MAX;
     }
 
     if (result < 512)
@@ -303,7 +312,7 @@ void* wd_net_thread_main(void* arg) {
 
     WD_LOG_INFO("WayDisplay: network server listening on TCP port %u", net->tcp_port);
 
-    int sndbuf = 16 * 1024 * 1024;
+    int sndbuf = WD_UDP_SOCKET_BUFFER_BYTES;
     if (setsockopt(net->udp_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0)
     {
         WD_LOG_ERROR("WayDisplay: setsockopt SO_SNDBUF failed: %s", strerror(errno));

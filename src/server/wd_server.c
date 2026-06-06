@@ -141,11 +141,181 @@ static int server_frame_timer(void* data) {
     return 0;
 }
 
-void wd_server_mark_scene_dirty(struct wd_server* server) {
-    if (server)
+static void mark_damage_tile(struct wd_server* server, uint16_t tile_id) {
+    if (!server || tile_id >= server->total_tiles)
     {
-        server->scene_dirty = true;
+        return;
     }
+
+    if (!server->damage_tiles)
+    {
+        server->damage_all_tiles = true;
+        return;
+    }
+
+    if (!server->damage_tiles[tile_id])
+    {
+        server->damage_tiles[tile_id] = true;
+        server->damage_tile_count++;
+    }
+}
+
+void wd_server_mark_scene_dirty(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    server->scene_dirty       = true;
+    server->damage_all_tiles  = true;
+    server->damage_tile_count = 0;
+
+    if (server->damage_tiles && server->total_tiles > 0)
+    {
+        memset(server->damage_tiles, 0, (size_t)server->total_tiles * sizeof(*server->damage_tiles));
+    }
+}
+
+void wd_server_mark_rect_dirty(struct wd_server* server, int x, int y, int width, int height) {
+    if (!server || width <= 0 || height <= 0 || server->total_tiles == 0)
+    {
+        return;
+    }
+
+    server->scene_dirty = true;
+
+    int x1 = x;
+    int y1 = y;
+    int x2 = x + width;
+    int y2 = y + height;
+
+    if (x1 < 0)
+    {
+        x1 = 0;
+    }
+    if (y1 < 0)
+    {
+        y1 = 0;
+    }
+    if (x2 > (int)server->display_width)
+    {
+        x2 = (int)server->display_width;
+    }
+    if (y2 > (int)server->display_height)
+    {
+        y2 = (int)server->display_height;
+    }
+
+    if (x1 >= x2 || y1 >= y2)
+    {
+        return;
+    }
+
+    if (!server->damage_tiles || server->damage_all_tiles)
+    {
+        server->damage_all_tiles = true;
+        return;
+    }
+
+    uint16_t start_tile_x = (uint16_t)((uint32_t)x1 / WD_TILE_WIDTH);
+    uint16_t end_tile_x   = (uint16_t)(((uint32_t)(x2 - 1)) / WD_TILE_WIDTH);
+    uint16_t start_tile_y = (uint16_t)((uint32_t)y1 / WD_TILE_HEIGHT);
+    uint16_t end_tile_y   = (uint16_t)(((uint32_t)(y2 - 1)) / WD_TILE_HEIGHT);
+
+    if (end_tile_x >= server->tiles_x)
+    {
+        end_tile_x = (uint16_t)(server->tiles_x - 1);
+    }
+    if (end_tile_y >= server->tiles_y)
+    {
+        end_tile_y = (uint16_t)(server->tiles_y - 1);
+    }
+
+    for (uint16_t ty = start_tile_y; ty <= end_tile_y; ++ty)
+    {
+        for (uint16_t tx = start_tile_x; tx <= end_tile_x; ++tx)
+        {
+            uint16_t tile_id = (uint16_t)(ty * server->tiles_x + tx);
+            mark_damage_tile(server, tile_id);
+        }
+    }
+}
+
+static void view_bounds_for_damage(struct wd_view* view, int origin_x, int origin_y, int* out_x, int* out_y, int* out_width,
+                                   int* out_height) {
+    if (!view || !out_x || !out_y || !out_width || !out_height)
+    {
+        return;
+    }
+
+    int width  = 0;
+    int height = 0;
+
+    if (view->xdg_surface && view->xdg_surface->surface)
+    {
+        width  = view->xdg_surface->surface->current.width;
+        height = view->xdg_surface->surface->current.height;
+    }
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    else if (view->xwayland_surface && view->xwayland_surface->surface)
+    {
+        width  = view->xwayland_surface->surface->current.width;
+        height = view->xwayland_surface->surface->current.height + 28;
+    }
+#endif
+
+    if (width <= 0)
+    {
+        width = (int)view->bounds_width;
+    }
+    if (height <= 0)
+    {
+        height = (int)view->bounds_height;
+    }
+    if (width <= 0)
+    {
+        width = (int)view->server->display_width;
+    }
+    if (height <= 0)
+    {
+        height = (int)view->server->display_height;
+    }
+
+    *out_x      = origin_x;
+    *out_y      = origin_y;
+    *out_width  = width;
+    *out_height = height;
+}
+
+void wd_server_mark_view_dirty(struct wd_view* view) {
+    if (!view || !view->server)
+    {
+        return;
+    }
+
+    int x      = 0;
+    int y      = 0;
+    int width  = 0;
+    int height = 0;
+    view_bounds_for_damage(view, view->x, view->y, &x, &y, &width, &height);
+    wd_server_mark_rect_dirty(view->server, x, y, width, height);
+}
+
+void wd_server_mark_view_move_dirty(struct wd_view* view, int old_x, int old_y) {
+    if (!view || !view->server)
+    {
+        return;
+    }
+
+    int x      = 0;
+    int y      = 0;
+    int width  = 0;
+    int height = 0;
+    view_bounds_for_damage(view, old_x, old_y, &x, &y, &width, &height);
+    wd_server_mark_rect_dirty(view->server, x, y, width, height);
+
+    view_bounds_for_damage(view, view->x, view->y, &x, &y, &width, &height);
+    wd_server_mark_rect_dirty(view->server, x, y, width, height);
 }
 
 bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t height) {

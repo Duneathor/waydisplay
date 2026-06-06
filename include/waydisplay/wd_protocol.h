@@ -256,6 +256,19 @@ struct wd_udp_tile_packet_header {
     uint64_t tile_timestamp_ns;
 };
 
+/*
+ * Maximum IPv4 UDP payload is 65507 bytes. WayDisplay stores its
+ * own tile packet header inside that UDP payload, so the tile data
+ * budget must subtract sizeof(struct wd_udp_tile_packet_header) too.
+ */
+#define WD_IPV4_HEADER_BYTES    20u
+#define WD_UDP_HEADER_BYTES     8u
+#define WD_IPV4_UDP_PAYLOAD_MAX 65507u
+#define WD_UDP_TILE_PAYLOAD_MAX \
+    ((uint16_t)(WD_IPV4_UDP_PAYLOAD_MAX - sizeof(struct wd_udp_tile_packet_header)))
+#define WD_IPV4_MTU_TO_TILE_PAYLOAD(mtu) \
+    ((uint16_t)((mtu) - WD_IPV4_HEADER_BYTES - WD_UDP_HEADER_BYTES - sizeof(struct wd_udp_tile_packet_header)))
+
 struct wd_mtu_probe_start_payload {
     uint32_t session_id;
     uint16_t probe_count;
