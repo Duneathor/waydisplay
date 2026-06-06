@@ -1086,6 +1086,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         state.retx_last_request_ns           = std::move(new_retx_last_request_ns);
         state.retx_inflight_generation       = std::move(new_retx_inflight_generation);
         state.retx_inflight_since_ns         = std::move(new_retx_inflight_since_ns);
+        state.retx_request_tokens            = 0.0;
+        state.retx_request_last_refill_ns    = 0;
         state.udp_recv_buffer                = std::move(new_udp_recv_buffer);
     }
 

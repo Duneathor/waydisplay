@@ -97,6 +97,8 @@ struct ClientState {
     std::vector<uint64_t>           retx_last_request_ns;
     std::vector<uint64_t>           retx_inflight_generation;
     std::vector<uint64_t>           retx_inflight_since_ns;
+    double                          retx_request_tokens = 0.0;
+    uint64_t                        retx_request_last_refill_ns = 0;
 
     std::vector<uint8_t> udp_recv_buffer;
 

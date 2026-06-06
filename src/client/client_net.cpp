@@ -21,10 +21,12 @@
 namespace waydisplay {
 namespace {
 
-constexpr size_t   MAX_RETRANSMIT_ENTRIES_PER_MESSAGE = 64;
-constexpr size_t   MAX_RETRANSMIT_QUEUE_DEPTH         = 512;
-constexpr uint64_t RETRANSMIT_REREQUEST_INTERVAL_NS   = 100ull * 1000ull * 1000ull;
-constexpr uint64_t RETRANSMIT_INFLIGHT_GRACE_NS       = 250ull * 1000ull * 1000ull;
+constexpr size_t   MAX_RETRANSMIT_ENTRIES_PER_MESSAGE = 16;
+constexpr size_t   MAX_RETRANSMIT_QUEUE_DEPTH         = 256;
+constexpr double   RETRANSMIT_REQUEST_TILES_PER_SECOND = 16.0;
+constexpr double   RETRANSMIT_REQUEST_BURST_TILES      = 16.0;
+constexpr uint64_t RETRANSMIT_REREQUEST_INTERVAL_NS   = 500ull * 1000ull * 1000ull;
+constexpr uint64_t RETRANSMIT_INFLIGHT_GRACE_NS       = 500ull * 1000ull * 1000ull;
 
 bool set_socket_rcvbuf(int fd, int requested_bytes) {
     if (fd < 0)
@@ -603,6 +605,8 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         state.retx_last_request_ns.assign(state.tile_count(), 0);
         state.retx_inflight_generation.assign(state.tile_count(), 0);
         state.retx_inflight_since_ns.assign(state.tile_count(), 0);
+        state.retx_request_tokens = RETRANSMIT_REQUEST_BURST_TILES;
+        state.retx_request_last_refill_ns = wd_now_ns();
     }
 
     state.udp_recv_buffer.assign(sizeof(wd_udp_tile_packet_header) + state.config.udp_payload_target + 512, 0);
@@ -753,21 +757,43 @@ bool client_flush_retransmit_requests(ClientState& state) {
         return false;
     }
 
-    for (;;)
+    std::vector<wd_retransmit_entry> entries;
+    entries.reserve(MAX_RETRANSMIT_ENTRIES_PER_MESSAGE);
+
+    uint32_t session_id = 0;
+
     {
-        std::vector<wd_retransmit_entry> entries;
-        entries.reserve(MAX_RETRANSMIT_ENTRIES_PER_MESSAGE);
+        std::lock_guard<std::mutex> config_lock(state.config_mutex);
+        std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
+        std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
 
-        uint32_t session_id = 0;
+        session_id = state.config.session_id;
 
+        const uint64_t now_ns = wd_now_ns();
+
+        if (state.retx_request_last_refill_ns == 0)
         {
-            std::lock_guard<std::mutex> config_lock(state.config_mutex);
-            std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
-            std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+            state.retx_request_last_refill_ns = now_ns;
+            state.retx_request_tokens         = RETRANSMIT_REQUEST_BURST_TILES;
+        }
+        else if (now_ns > state.retx_request_last_refill_ns)
+        {
+            const double elapsed_seconds = static_cast<double>(now_ns - state.retx_request_last_refill_ns) / 1000000000.0;
+            state.retx_request_tokens += elapsed_seconds * RETRANSMIT_REQUEST_TILES_PER_SECOND;
+            if (state.retx_request_tokens > RETRANSMIT_REQUEST_BURST_TILES)
+            {
+                state.retx_request_tokens = RETRANSMIT_REQUEST_BURST_TILES;
+            }
+            state.retx_request_last_refill_ns = now_ns;
+        }
 
-            session_id = state.config.session_id;
+        const size_t request_budget = static_cast<size_t>(state.retx_request_tokens);
+        if (request_budget == 0)
+        {
+            return true;
+        }
 
-            const uint64_t now_ns = wd_now_ns();
+        const size_t max_entries_this_flush = std::min(MAX_RETRANSMIT_ENTRIES_PER_MESSAGE, request_budget);
 
             if (state.retx_last_requested_generation.size() != state.config.total_tiles)
             {
@@ -790,7 +816,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
             }
 
             size_t pending_to_scan = state.retx_queue.size();
-            while (!state.retx_queue.empty() && pending_to_scan > 0 && entries.size() < MAX_RETRANSMIT_ENTRIES_PER_MESSAGE)
+            while (!state.retx_queue.empty() && pending_to_scan > 0 && entries.size() < max_entries_this_flush)
             {
                 pending_to_scan--;
                 wd_retransmit_entry retx = state.retx_queue.front();
@@ -844,34 +870,41 @@ bool client_flush_retransmit_requests(ClientState& state) {
 
                 entries.push_back(retx);
             }
-        }
 
-        if (entries.empty())
+        if (!entries.empty())
         {
-            return true;
+            state.retx_request_tokens -= static_cast<double>(entries.size());
+            if (state.retx_request_tokens < 0.0)
+            {
+                state.retx_request_tokens = 0.0;
+            }
         }
-
-        wd_retransmit_request_payload_header header{};
-        header.session_id    = session_id;
-        header.request_count = static_cast<uint16_t>(entries.size());
-
-        const size_t payload_size = sizeof(header) + entries.size() * sizeof(wd_retransmit_entry);
-
-        std::vector<uint8_t> payload(payload_size);
-
-        std::memcpy(payload.data(), &header, sizeof(header));
-        std::memcpy(payload.data() + sizeof(header), entries.data(), entries.size() * sizeof(wd_retransmit_entry));
-
-        const bool ok = wd_send_tcp_message(state.tcp_fd, WD_MSG_RETRANSMIT_REQUEST, payload.data(), static_cast<uint32_t>(payload.size()));
-
-        if (!ok)
-        {
-            return false;
-        }
-
-        state.stats.tcp_retx_requests_tx.fetch_add(1, std::memory_order_relaxed);
     }
 
+    if (entries.empty())
+    {
+        return true;
+    }
+
+    wd_retransmit_request_payload_header header{};
+    header.session_id    = session_id;
+    header.request_count = static_cast<uint16_t>(entries.size());
+
+    const size_t payload_size = sizeof(header) + entries.size() * sizeof(wd_retransmit_entry);
+
+    std::vector<uint8_t> payload(payload_size);
+
+    std::memcpy(payload.data(), &header, sizeof(header));
+    std::memcpy(payload.data() + sizeof(header), entries.data(), entries.size() * sizeof(wd_retransmit_entry));
+
+    const bool ok = wd_send_tcp_message(state.tcp_fd, WD_MSG_RETRANSMIT_REQUEST, payload.data(), static_cast<uint32_t>(payload.size()));
+
+    if (!ok)
+    {
+        return false;
+    }
+
+    state.stats.tcp_retx_requests_tx.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 } // namespace waydisplay

@@ -826,12 +826,12 @@ bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t t
 
     if (net->dirty_queued && net->dirty_queued[tile_id])
     {
-        return true;
+        return false;
     }
 
     if (net->retransmit_queued[tile_id])
     {
-        return true;
+        return false;
     }
 
     if (net->retransmit_queue_count >= server->total_tiles)

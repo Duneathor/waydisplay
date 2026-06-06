@@ -586,18 +586,38 @@ void* wd_net_thread_main(void* arg) {
                     pthread_mutex_lock(&net->lock);
 
                     net->stats.retx_req_rx++;
-                    net->stats.retx_tiles_req += rh.request_count;
+
+                    uint64_t accepted_retransmits = 0;
 
                     if (!net->full_frame_needed)
                     {
                         for (uint16_t i = 0; i < rh.request_count; ++i)
                         {
-                            if (entries[i].tile_id < server->total_tiles)
+                            if (entries[i].tile_id >= server->total_tiles)
                             {
-                                wd_stream_queue_retransmit_tile_locked(server, entries[i].tile_id);
+                                continue;
+                            }
+
+                            struct wd_cached_tile* tile = &net->tiles[entries[i].tile_id];
+
+                            if (tile->compressed_size == 0 || !tile->compressed)
+                            {
+                                continue;
+                            }
+
+                            if (entries[i].desired_generation > tile->generation)
+                            {
+                                continue;
+                            }
+
+                            if (wd_stream_queue_retransmit_tile_locked(server, entries[i].tile_id))
+                            {
+                                accepted_retransmits++;
                             }
                         }
                     }
+
+                    net->stats.retx_tiles_req += accepted_retransmits;
 
                     pthread_mutex_unlock(&net->lock);
                 }
