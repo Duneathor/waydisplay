@@ -118,7 +118,7 @@ static void handle_new_xdg_toplevel_decoration(struct wl_listener* listener, voi
     schedule_decoration_configure(decoration);
 
     (void)server;
-    WD_LOG_INFO("WayDisplay: queued xdg-decoration client-side mode");
+    WD_LOG_DEBUG("WayDisplay: queued xdg-decoration client-side mode");
 }
 
 bool wd_xdg_decoration_init(struct wd_server* server) {

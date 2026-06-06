@@ -77,12 +77,12 @@ static void handle_set_xdg_toplevel_icon(struct wl_listener* listener, void* dat
     {
         view->toplevel_icon = wlr_xdg_toplevel_icon_v1_ref(event->icon);
 
-        WD_LOG_INFO("WayDisplay: xdg-toplevel-icon set view=%p name=%s buffers=%zu", (void*)view,
-                    view->toplevel_icon->name ? view->toplevel_icon->name : "(none)", icon_buffer_count(view->toplevel_icon));
+        WD_LOG_DEBUG("WayDisplay: xdg-toplevel-icon set view=%p name=%s buffers=%zu", (void*)view,
+                     view->toplevel_icon->name ? view->toplevel_icon->name : "(none)", icon_buffer_count(view->toplevel_icon));
     }
     else
     {
-        WD_LOG_INFO("WayDisplay: xdg-toplevel-icon cleared view=%p", (void*)view);
+        WD_LOG_DEBUG("WayDisplay: xdg-toplevel-icon cleared view=%p", (void*)view);
     }
 }
 

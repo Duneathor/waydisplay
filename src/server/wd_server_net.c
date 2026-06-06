@@ -591,10 +591,10 @@ void* wd_net_thread_main(void* arg) {
                 {
                     if (pointer.event_type == WD_POINTER_EVENT_BUTTON && pointer.button == 0x111)
                     {
-                        WD_LOG_INFO("WayDisplay: received right click %s from client "
-                                    "x=%u y=%u mods=0x%x timestamp=%" PRIu64,
-                                    pointer.button_state == WD_POINTER_BUTTON_PRESSED ? "press" : "release", pointer.x, pointer.y,
-                                    pointer.modifiers, pointer.client_timestamp_ns);
+                        WD_LOG_DEBUG("WayDisplay: received right click %s from client "
+                                     "x=%u y=%u mods=0x%x timestamp=%" PRIu64,
+                                     pointer.button_state == WD_POINTER_BUTTON_PRESSED ? "press" : "release", pointer.x, pointer.y,
+                                     pointer.modifiers, pointer.client_timestamp_ns);
                     }
                     pthread_mutex_lock(&net->lock);
                     wd_pointer_queue_event_locked(net, &pointer, wd_now_ns());

@@ -194,7 +194,7 @@ bool wd_cursor_init(struct wd_server* server) {
     server->request_cursor_shape.notify = handle_cursor_shape_request;
     wl_signal_add(&server->cursor_shape_manager->events.request_set_shape, &server->request_cursor_shape);
 
-    WD_LOG_INFO("WayDisplay: cursor-shape enabled");
+    WD_LOG_DEBUG("WayDisplay: cursor-shape enabled");
     return true;
 }
 

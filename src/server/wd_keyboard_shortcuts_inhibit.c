@@ -32,12 +32,12 @@ void wd_keyboard_shortcuts_inhibit_refresh(struct wd_server* server) {
         if (should_activate && !state->inhibitor->active)
         {
             wlr_keyboard_shortcuts_inhibitor_v1_activate(state->inhibitor);
-            WD_LOG_INFO("WayDisplay: keyboard shortcuts inhibited for focused surface=%p", (void*)state->inhibitor->surface);
+            WD_LOG_DEBUG("WayDisplay: keyboard shortcuts inhibited for focused surface=%p", (void*)state->inhibitor->surface);
         }
         else if (!should_activate && state->inhibitor->active)
         {
             wlr_keyboard_shortcuts_inhibitor_v1_deactivate(state->inhibitor);
-            WD_LOG_INFO("WayDisplay: keyboard shortcuts restored for surface=%p", (void*)state->inhibitor->surface);
+            WD_LOG_DEBUG("WayDisplay: keyboard shortcuts restored for surface=%p", (void*)state->inhibitor->surface);
         }
     }
 }
@@ -113,7 +113,7 @@ static void handle_new_keyboard_shortcuts_inhibitor(struct wl_listener* listener
     state->destroy.notify = handle_inhibitor_destroy;
     wl_signal_add(&inhibitor->events.destroy, &state->destroy);
 
-    WD_LOG_INFO("WayDisplay: keyboard-shortcuts-inhibit requested surface=%p seat=%p", (void*)inhibitor->surface, (void*)inhibitor->seat);
+    WD_LOG_DEBUG("WayDisplay: keyboard-shortcuts-inhibit requested surface=%p seat=%p", (void*)inhibitor->surface, (void*)inhibitor->seat);
 
     wd_keyboard_shortcuts_inhibit_refresh(server);
 }
@@ -161,7 +161,7 @@ bool wd_keyboard_shortcuts_inhibit_init(struct wd_server* server) {
     server->keyboard_shortcuts_inhibit_manager_destroy.notify = handle_keyboard_shortcuts_inhibit_manager_destroy;
     wl_signal_add(&server->keyboard_shortcuts_inhibit_manager->events.destroy, &server->keyboard_shortcuts_inhibit_manager_destroy);
 
-    WD_LOG_INFO("WayDisplay: keyboard-shortcuts-inhibit enabled");
+    WD_LOG_DEBUG("WayDisplay: keyboard-shortcuts-inhibit enabled");
 
     return true;
 }

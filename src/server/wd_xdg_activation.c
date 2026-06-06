@@ -95,7 +95,7 @@ static void handle_request_activate(struct wl_listener* listener, void* data) {
     {
         const char* token_name = wlr_xdg_activation_token_v1_get_name(event->token);
 
-        WD_LOG_INFO("WayDisplay: xdg-activation focused view=%p token=%s", (void*)view, token_name ? token_name : "(null)");
+        WD_LOG_DEBUG("WayDisplay: xdg-activation focused view=%p token=%s", (void*)view, token_name ? token_name : "(null)");
 
         /*
          * Do not destroy event->token here. wlroots owns activation token
@@ -108,7 +108,7 @@ static void handle_request_activate(struct wl_listener* listener, void* data) {
     }
     else
     {
-        WD_LOG_INFO("WayDisplay: xdg-activation focused view=%p without token", (void*)view);
+        WD_LOG_DEBUG("WayDisplay: xdg-activation focused view=%p without token", (void*)view);
     }
 }
 
