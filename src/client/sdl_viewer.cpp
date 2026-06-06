@@ -1052,6 +1052,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     std::vector<uint32_t> new_framebuffer(static_cast<size_t>(config.width) * config.height, 0);
     std::vector<uint64_t> new_displayed_generation(config.total_tiles, 0);
     std::vector<uint64_t> new_retx_queued_generation(config.total_tiles, 0);
+    std::vector<uint64_t> new_retx_last_requested_generation(config.total_tiles, 0);
+    std::vector<uint64_t> new_retx_last_request_ns(config.total_tiles, 0);
     std::vector<uint8_t>  new_udp_recv_buffer(sizeof(wd_udp_tile_packet_header) + config.udp_payload_target + 512, 0);
 
     SDL_Texture* new_texture =
@@ -1073,8 +1075,10 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         state.framebuffer          = std::move(new_framebuffer);
         state.displayed_generation = std::move(new_displayed_generation);
         state.retx_queue.clear();
-        state.retx_queued_generation = std::move(new_retx_queued_generation);
-        state.udp_recv_buffer        = std::move(new_udp_recv_buffer);
+        state.retx_queued_generation          = std::move(new_retx_queued_generation);
+        state.retx_last_requested_generation = std::move(new_retx_last_requested_generation);
+        state.retx_last_request_ns           = std::move(new_retx_last_request_ns);
+        state.udp_recv_buffer                = std::move(new_udp_recv_buffer);
     }
 
     reassembler.reset();

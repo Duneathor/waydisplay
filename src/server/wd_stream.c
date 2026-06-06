@@ -513,6 +513,27 @@ bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_i
                                               cache->compressed_size, NULL);
 }
 
+static uint32_t wd_tile_queue_random_locked(struct wd_net_state* net) {
+    if (!net)
+    {
+        return 0;
+    }
+
+    uint32_t x = net->tile_queue_rng_state;
+    if (x == 0)
+    {
+        x = 0x9e3779b9u;
+    }
+
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+
+    net->tile_queue_rng_state = x ? x : 0x9e3779b9u;
+
+    return net->tile_queue_rng_state;
+}
+
 static bool wd_dirty_queue_push_locked(struct wd_net_state* net, uint16_t tile_id, uint16_t total_tiles) {
     if (!net || tile_id >= total_tiles)
     {
@@ -526,42 +547,53 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state* net, uint16_t tile_i
 
     if (net->dirty_queue_count >= total_tiles)
     {
-        /*
-         * Queue is full. This should not happen because each tile can only
-         * appear once, but keep it safe.
-         */
         return false;
     }
 
-    net->dirty_queue[net->dirty_queue_write] = tile_id;
-    net->dirty_queue_write                   = (uint16_t)((net->dirty_queue_write + 1) % total_tiles);
-    net->dirty_queue_count++;
+    /*
+     * Fresh content supersedes any queued repair for the same tile. Leave the
+     * stale repair entry in-place; the repair popper will discard it when it
+     * sees retransmit_queued[tile_id] is no longer set.
+     */
+    if (net->retransmit_queued)
+    {
+        net->retransmit_queued[tile_id] = false;
+    }
+
+    net->dirty_queue[net->dirty_queue_count++] = tile_id;
     net->dirty_queued[tile_id] = true;
 
     return true;
 }
 
-static bool wd_dirty_queue_pop_locked(struct wd_net_state* net, uint16_t* out_tile_id, uint16_t total_tiles) {
-    if (!net || !out_tile_id || net->dirty_queue_count == 0)
+static bool wd_dirty_queue_pop_random_locked(struct wd_net_state* net, uint16_t* out_tile_id, uint16_t total_tiles) {
+    if (!net || !out_tile_id)
     {
         return false;
     }
 
-    uint16_t tile_id = net->dirty_queue[net->dirty_queue_read];
-
-    net->dirty_queue_read = (uint16_t)((net->dirty_queue_read + 1) % total_tiles);
-    net->dirty_queue_count--;
-
-    if (tile_id < total_tiles)
+    while (net->dirty_queue_count > 0)
     {
+        uint16_t index = (uint16_t)(wd_tile_queue_random_locked(net) % net->dirty_queue_count);
+        uint16_t tile_id = net->dirty_queue[index];
+
+        net->dirty_queue_count--;
+        net->dirty_queue[index] = net->dirty_queue[net->dirty_queue_count];
+
+        if (tile_id >= total_tiles || !net->dirty_queued[tile_id])
+        {
+            continue;
+        }
+
         net->dirty_queued[tile_id] = false;
+        *out_tile_id = tile_id;
+        return true;
     }
 
-    *out_tile_id = tile_id;
-    return true;
+    return false;
 }
 
-static bool wd_dirty_queue_reinsert_front_locked(struct wd_net_state* net, uint16_t tile_id, uint16_t total_tiles) {
+static bool wd_dirty_queue_reinsert_locked(struct wd_net_state* net, uint16_t tile_id, uint16_t total_tiles) {
     if (!net || tile_id >= total_tiles)
     {
         return false;
@@ -577,12 +609,80 @@ static bool wd_dirty_queue_reinsert_front_locked(struct wd_net_state* net, uint1
         return false;
     }
 
-    net->dirty_queue_read = (uint16_t)((net->dirty_queue_read + total_tiles - 1) % total_tiles);
-    net->dirty_queue[net->dirty_queue_read] = tile_id;
-    net->dirty_queue_count++;
+    net->dirty_queue[net->dirty_queue_count++] = tile_id;
     net->dirty_queued[tile_id] = true;
 
     return true;
+}
+
+bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id) {
+    if (!server || tile_id >= server->total_tiles)
+    {
+        return false;
+    }
+
+    struct wd_net_state* net = &server->net;
+
+    if (!net->retransmit_queue || !net->retransmit_queued)
+    {
+        return false;
+    }
+
+    if (net->dirty_queued && net->dirty_queued[tile_id])
+    {
+        return true;
+    }
+
+    if (net->retransmit_queued[tile_id])
+    {
+        return true;
+    }
+
+    if (net->retransmit_queue_count >= server->total_tiles)
+    {
+        return false;
+    }
+
+    net->retransmit_queue[net->retransmit_queue_count++] = tile_id;
+    net->retransmit_queued[tile_id] = true;
+    server->scene_dirty = true;
+
+    return true;
+}
+
+static bool wd_retransmit_queue_pop_random_locked(struct wd_server* server, uint16_t* out_tile_id) {
+    if (!server || !out_tile_id)
+    {
+        return false;
+    }
+
+    struct wd_net_state* net = &server->net;
+
+    while (net->retransmit_queue_count > 0)
+    {
+        uint16_t index = (uint16_t)(wd_tile_queue_random_locked(net) % net->retransmit_queue_count);
+        uint16_t tile_id = net->retransmit_queue[index];
+
+        net->retransmit_queue_count--;
+        net->retransmit_queue[index] = net->retransmit_queue[net->retransmit_queue_count];
+
+        if (tile_id >= server->total_tiles || !net->retransmit_queued[tile_id])
+        {
+            continue;
+        }
+
+        net->retransmit_queued[tile_id] = false;
+
+        if (net->dirty_queued && net->dirty_queued[tile_id])
+        {
+            continue;
+        }
+
+        *out_tile_id = tile_id;
+        return true;
+    }
+
+    return false;
 }
 
 static void wd_clear_damage_tiles(struct wd_server* server) {
@@ -657,9 +757,11 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
     const uint64_t now                  = wd_now_ns();
     uint32_t       tile_budget          = wd_stream_policy_tile_budget(server, now);
+    uint32_t       retransmit_budget    = wd_stream_policy_retransmit_budget(server, now);
     uint32_t       tiles_sent_this_pass = 0;
+    uint32_t       retransmits_sent     = 0;
 
-    if (tile_budget == 0)
+    if (tile_budget == 0 && retransmit_budget == 0)
     {
         return true;
     }
@@ -744,9 +846,14 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
             {
                 memset(net->dirty_queued, 0, server->total_tiles * sizeof(*net->dirty_queued));
             }
-            net->dirty_queue_read  = 0;
-            net->dirty_queue_write = 0;
-            net->dirty_queue_count = 0;
+            if (net->retransmit_queued)
+            {
+                memset(net->retransmit_queued, 0, server->total_tiles * sizeof(*net->retransmit_queued));
+            }
+            net->dirty_queue_read       = 0;
+            net->dirty_queue_write      = 0;
+            net->dirty_queue_count      = 0;
+            net->retransmit_queue_count = 0;
 
             wd_clear_damage_tiles(server);
             server->scene_dirty = false;
@@ -778,7 +885,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     {
         uint16_t tile_id = 0;
 
-        if (!wd_dirty_queue_pop_locked(net, &tile_id, server->total_tiles))
+        if (!wd_dirty_queue_pop_random_locked(net, &tile_id, server->total_tiles))
         {
             break;
         }
@@ -826,7 +933,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
         if (!launched)
         {
-            wd_dirty_queue_reinsert_front_locked(net, tile_id, server->total_tiles);
+            wd_dirty_queue_reinsert_locked(net, tile_id, server->total_tiles);
             break;
         }
 
@@ -840,15 +947,47 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         tiles_sent_this_pass++;
     }
 
+    if (net->dirty_queue_count == 0)
+    {
+        while (net->retransmit_queue_count > 0 && retransmits_sent < retransmit_budget)
+        {
+            uint16_t tile_id = 0;
+
+            if (!wd_retransmit_queue_pop_random_locked(server, &tile_id))
+            {
+                break;
+            }
+
+            if (tile_id >= server->total_tiles)
+            {
+                continue;
+            }
+
+            if (net->dirty_queued && net->dirty_queued[tile_id])
+            {
+                continue;
+            }
+
+            if (!wd_stream_send_cached_tile_locked(server, tile_id))
+            {
+                continue;
+            }
+
+            retransmits_sent++;
+        }
+    }
+
     /*
-     * Keep scene_dirty true if there are queued tiles we could not send yet.
-     * Otherwise, this pass fully drained known dirty work.
+     * Keep scene_dirty true if there are queued fresh or repair tiles.
+     * Repair tiles are only drained after fresh dirty work, so repairs do not
+     * fight with newer generations of the same tile.
      */
-    server->scene_dirty = net->dirty_queue_count > 0;
+    server->scene_dirty = net->dirty_queue_count > 0 || net->retransmit_queue_count > 0;
 
     pthread_mutex_unlock(&net->lock);
 
     wd_stream_policy_consume_tiles(server, tiles_sent_this_pass);
+    wd_stream_policy_consume_retransmit_tiles(server, retransmits_sent);
 
     free(compressed_tile);
     return true;

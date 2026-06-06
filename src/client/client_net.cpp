@@ -6,6 +6,7 @@
 #include "waydisplay/wd_time.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <arpa/inet.h>
 #include <cstdio>
 #include <cstdlib>
@@ -20,8 +21,9 @@
 namespace waydisplay {
 namespace {
 
-constexpr size_t MAX_RETRANSMIT_ENTRIES_PER_MESSAGE = 64;
-constexpr size_t MAX_RETRANSMIT_QUEUE_DEPTH         = 512;
+constexpr size_t   MAX_RETRANSMIT_ENTRIES_PER_MESSAGE = 64;
+constexpr size_t   MAX_RETRANSMIT_QUEUE_DEPTH         = 512;
+constexpr uint64_t RETRANSMIT_REREQUEST_INTERVAL_NS   = 100ull * 1000ull * 1000ull;
 
 bool set_socket_rcvbuf(int fd, int requested_bytes) {
     if (fd < 0)
@@ -318,6 +320,16 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             state.retx_queued_generation.assign(total_tiles, 0);
         }
 
+        if (state.retx_last_requested_generation.size() != total_tiles)
+        {
+            state.retx_last_requested_generation.assign(total_tiles, 0);
+        }
+
+        if (state.retx_last_request_ns.size() != total_tiles)
+        {
+            state.retx_last_request_ns.assign(total_tiles, 0);
+        }
+
         for (uint16_t i = 0; i < summary.tile_count; ++i)
         {
             const wd_tile_generation_entry& entry = entries[i];
@@ -337,6 +349,13 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
                 continue;
             }
 
+            if (state.retx_last_requested_generation[entry.tile_id] >= entry.tile_generation &&
+                state.retx_last_request_ns[entry.tile_id] != 0 &&
+                now_ns - state.retx_last_request_ns[entry.tile_id] < RETRANSMIT_REREQUEST_INTERVAL_NS)
+            {
+                continue;
+            }
+
             wd_retransmit_entry retx{};
             retx.tile_id            = entry.tile_id;
             retx.reserved           = 0;
@@ -349,7 +368,12 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
          * Keep the repair queue bounded. If it grows too large, prefer newer
          * summary-derived requests by dropping oldest queued repair work.
          */
-        while (state.retx_queue.size() + missing.size() > MAX_RETRANSMIT_QUEUE_DEPTH)
+        if (missing.size() > MAX_RETRANSMIT_QUEUE_DEPTH)
+        {
+            missing.erase(missing.begin(), missing.end() - static_cast<std::ptrdiff_t>(MAX_RETRANSMIT_QUEUE_DEPTH));
+        }
+
+        while (!state.retx_queue.empty() && state.retx_queue.size() + missing.size() > MAX_RETRANSMIT_QUEUE_DEPTH)
         {
             const wd_retransmit_entry dropped = state.retx_queue.front();
             state.retx_queue.pop_front();
@@ -557,6 +581,8 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
         state.retx_queue.clear();
         state.retx_queued_generation.assign(state.tile_count(), 0);
+        state.retx_last_requested_generation.assign(state.tile_count(), 0);
+        state.retx_last_request_ns.assign(state.tile_count(), 0);
     }
 
     state.udp_recv_buffer.assign(sizeof(wd_udp_tile_packet_header) + state.config.udp_payload_target + 512, 0);
@@ -721,21 +747,41 @@ bool client_flush_retransmit_requests(ClientState& state) {
 
             session_id = state.config.session_id;
 
+            const uint64_t now_ns = wd_now_ns();
+
+            if (state.retx_last_requested_generation.size() != state.config.total_tiles)
+            {
+                state.retx_last_requested_generation.assign(state.config.total_tiles, 0);
+            }
+
+            if (state.retx_last_request_ns.size() != state.config.total_tiles)
+            {
+                state.retx_last_request_ns.assign(state.config.total_tiles, 0);
+            }
+
             while (!state.retx_queue.empty() && entries.size() < MAX_RETRANSMIT_ENTRIES_PER_MESSAGE)
             {
                 wd_retransmit_entry retx = state.retx_queue.front();
                 state.retx_queue.pop_front();
 
-                if (retx.tile_id < state.retx_queued_generation.size() &&
-                    state.retx_queued_generation[retx.tile_id] == retx.desired_generation)
-                {
-                    state.retx_queued_generation[retx.tile_id] = 0;
-                }
-
                 if (retx.tile_id >= state.config.total_tiles)
                 {
                     continue;
                 }
+
+                /*
+                 * A newer summary for this tile arrived while this request was
+                 * queued. The server currently repairs by tile id, not by the
+                 * desired_generation payload field, so the stale request would
+                 * only add noise.
+                 */
+                if (retx.tile_id >= state.retx_queued_generation.size() ||
+                    state.retx_queued_generation[retx.tile_id] != retx.desired_generation)
+                {
+                    continue;
+                }
+
+                state.retx_queued_generation[retx.tile_id] = 0;
 
                 /*
                  * Tile already arrived while this request was queued.
@@ -744,6 +790,16 @@ bool client_flush_retransmit_requests(ClientState& state) {
                 {
                     continue;
                 }
+
+                if (state.retx_last_requested_generation[retx.tile_id] >= retx.desired_generation &&
+                    state.retx_last_request_ns[retx.tile_id] != 0 &&
+                    now_ns - state.retx_last_request_ns[retx.tile_id] < RETRANSMIT_REREQUEST_INTERVAL_NS)
+                {
+                    continue;
+                }
+
+                state.retx_last_requested_generation[retx.tile_id] = retx.desired_generation;
+                state.retx_last_request_ns[retx.tile_id]         = now_ns;
 
                 entries.push_back(retx);
             }

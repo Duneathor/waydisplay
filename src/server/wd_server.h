@@ -274,6 +274,12 @@ struct wd_net_state {
     uint16_t  dirty_queue_write;
     uint16_t  dirty_queue_count;
 
+    uint16_t* retransmit_queue;
+    bool*     retransmit_queued;
+    uint16_t  retransmit_queue_count;
+
+    uint32_t tile_queue_rng_state;
+
     int listen_fd;
     int tcp_fd;
     int udp_fd;
@@ -492,6 +498,7 @@ void wd_stream_destroy(struct wd_server* server);
 bool wd_stream_send_dirty_tiles(struct wd_server* server);
 bool wd_stream_send_generation_summary_locked(struct wd_server* server);
 bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id);
+bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id);
 void wd_stream_print_and_reset_stats(struct wd_server* server);
 
 void     wd_stream_policy_set_defaults(struct wd_stream_policy* policy);

@@ -68,20 +68,28 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->full_frame_needed    = true;
     net->full_frame_next_tile = 0;
     net->dirty_scan_next_tile = 0;
-    net->dirty_queue          = calloc(server->total_tiles, sizeof(*net->dirty_queue));
-    net->dirty_queued         = calloc(server->total_tiles, sizeof(*net->dirty_queued));
-    if (!net->dirty_queue || !net->dirty_queued)
+    net->dirty_queue       = calloc(server->total_tiles, sizeof(*net->dirty_queue));
+    net->dirty_queued      = calloc(server->total_tiles, sizeof(*net->dirty_queued));
+    net->retransmit_queue  = calloc(server->total_tiles, sizeof(*net->retransmit_queue));
+    net->retransmit_queued = calloc(server->total_tiles, sizeof(*net->retransmit_queued));
+    if (!net->dirty_queue || !net->dirty_queued || !net->retransmit_queue || !net->retransmit_queued)
     {
         free(net->dirty_queue);
         free(net->dirty_queued);
-        net->dirty_queue  = NULL;
-        net->dirty_queued = NULL;
+        free(net->retransmit_queue);
+        free(net->retransmit_queued);
+        net->dirty_queue        = NULL;
+        net->dirty_queued       = NULL;
+        net->retransmit_queue   = NULL;
+        net->retransmit_queued  = NULL;
         pthread_mutex_destroy(&net->lock);
         return false;
     }
-    net->dirty_queue_read   = 0;
-    net->dirty_queue_write  = 0;
-    net->dirty_queue_count  = 0;
+    net->dirty_queue_read       = 0;
+    net->dirty_queue_write      = 0;
+    net->dirty_queue_count      = 0;
+    net->retransmit_queue_count = 0;
+    net->tile_queue_rng_state   = (uint32_t)wd_now_ns() | 1u;
     net->udp_payload_target = WD_UDP_PAYLOAD_TARGET;
 
     wd_stream_policy_set_defaults(&net->stream_policy);
@@ -117,6 +125,12 @@ void wd_net_destroy(struct wd_server* server) {
 
     free(net->dirty_queued);
     net->dirty_queued = NULL;
+
+    free(net->retransmit_queue);
+    net->retransmit_queue = NULL;
+
+    free(net->retransmit_queued);
+    net->retransmit_queued = NULL;
 
     free(net->clipboard_text);
     net->clipboard_text         = NULL;
@@ -509,9 +523,14 @@ void* wd_net_thread_main(void* arg) {
         {
             memset(net->dirty_queued, 0, server->total_tiles * sizeof(*net->dirty_queued));
         }
-        net->dirty_queue_read  = 0;
-        net->dirty_queue_write = 0;
-        net->dirty_queue_count = 0;
+        if (net->retransmit_queued)
+        {
+            memset(net->retransmit_queued, 0, server->total_tiles * sizeof(*net->retransmit_queued));
+        }
+        net->dirty_queue_read       = 0;
+        net->dirty_queue_write      = 0;
+        net->dirty_queue_count      = 0;
+        net->retransmit_queue_count = 0;
 
         net->stats.tcp_hello_rx++;
         net->stats.tcp_config_tx++;
@@ -559,51 +578,23 @@ void* wd_net_thread_main(void* arg) {
                 {
                     struct wd_retransmit_entry* entries = (struct wd_retransmit_entry*)(payload + sizeof(rh));
 
-                    uint32_t budget = wd_stream_policy_retransmit_budget(server, wd_now_ns());
+                    pthread_mutex_lock(&net->lock);
 
-                    if (budget == 0)
+                    net->stats.retx_req_rx++;
+                    net->stats.retx_tiles_req += rh.request_count;
+
+                    if (!net->full_frame_needed)
                     {
-                        /*
-                         * Count the request but do not send repair tiles this tick.
-                         */
-                        pthread_mutex_lock(&net->lock);
-                        net->stats.retx_req_rx++;
-                        net->stats.retx_tiles_req += rh.request_count;
-                        pthread_mutex_unlock(&net->lock);
-                    }
-                    else
-                    {
-                        uint32_t sent_retx = 0;
-
-                        pthread_mutex_lock(&net->lock);
-
-                        net->stats.retx_req_rx++;
-                        net->stats.retx_tiles_req += rh.request_count;
-
-                        if (!net->full_frame_needed)
+                        for (uint16_t i = 0; i < rh.request_count; ++i)
                         {
-                            for (uint16_t i = 0; i < rh.request_count; ++i)
+                            if (entries[i].tile_id < server->total_tiles)
                             {
-                                if (sent_retx >= budget)
-                                {
-                                    break;
-                                }
-
-                                if (entries[i].tile_id < server->total_tiles)
-                                {
-                                    wd_stream_send_cached_tile_locked(server, entries[i].tile_id);
-                                    sent_retx++;
-                                }
+                                wd_stream_queue_retransmit_tile_locked(server, entries[i].tile_id);
                             }
                         }
-
-                        pthread_mutex_unlock(&net->lock);
-
-                        if (sent_retx > 0)
-                        {
-                            wd_stream_policy_consume_retransmit_tiles(server, sent_retx);
-                        }
                     }
+
+                    pthread_mutex_unlock(&net->lock);
                 }
             }
             else if ((type == WD_MSG_CLIPBOARD_SET || type == WD_MSG_PRIMARY_SET) &&

@@ -373,6 +373,12 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     free(server->net.dirty_queued);
     server->net.dirty_queued = NULL;
 
+    free(server->net.retransmit_queue);
+    server->net.retransmit_queue = NULL;
+
+    free(server->net.retransmit_queued);
+    server->net.retransmit_queued = NULL;
+
     free(server->framebuffer_xrgb8888);
     server->framebuffer_xrgb8888 = NULL;
 
@@ -386,9 +392,11 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 
     if (ok)
     {
-        server->net.dirty_queue  = calloc(server->total_tiles, sizeof(*server->net.dirty_queue));
-        server->net.dirty_queued = calloc(server->total_tiles, sizeof(*server->net.dirty_queued));
-        ok                       = server->net.dirty_queue && server->net.dirty_queued;
+        server->net.dirty_queue       = calloc(server->total_tiles, sizeof(*server->net.dirty_queue));
+        server->net.dirty_queued      = calloc(server->total_tiles, sizeof(*server->net.dirty_queued));
+        server->net.retransmit_queue  = calloc(server->total_tiles, sizeof(*server->net.retransmit_queue));
+        server->net.retransmit_queued = calloc(server->total_tiles, sizeof(*server->net.retransmit_queued));
+        ok = server->net.dirty_queue && server->net.dirty_queued && server->net.retransmit_queue && server->net.retransmit_queued;
     }
 
     if (ok)
@@ -406,9 +414,10 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
         server->net.full_frame_needed    = true;
         server->net.full_frame_next_tile = 0;
         server->net.dirty_scan_next_tile = 0;
-        server->net.dirty_queue_read     = 0;
-        server->net.dirty_queue_write    = 0;
-        server->net.dirty_queue_count    = 0;
+        server->net.dirty_queue_read       = 0;
+        server->net.dirty_queue_write      = 0;
+        server->net.dirty_queue_count      = 0;
+        server->net.retransmit_queue_count = 0;
         server->scene_dirty              = true;
     }
 

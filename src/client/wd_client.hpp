@@ -93,6 +93,8 @@ struct ClientState {
     std::mutex                      retx_mutex;
     std::deque<wd_retransmit_entry> retx_queue;
     std::vector<uint64_t>           retx_queued_generation;
+    std::vector<uint64_t>           retx_last_requested_generation;
+    std::vector<uint64_t>           retx_last_request_ns;
 
     std::vector<uint8_t> udp_recv_buffer;
 
