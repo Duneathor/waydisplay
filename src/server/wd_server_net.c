@@ -605,11 +605,6 @@ void* wd_net_thread_main(void* arg) {
                                 continue;
                             }
 
-                            if (entries[i].desired_generation > tile->generation)
-                            {
-                                continue;
-                            }
-
                             if (wd_stream_queue_retransmit_tile_locked(server, entries[i].tile_id))
                             {
                                 accepted_retransmits++;

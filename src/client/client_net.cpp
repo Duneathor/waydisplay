@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cmath>
 #include <arpa/inet.h>
 #include <cstdio>
 #include <cstdlib>
@@ -26,7 +27,14 @@ constexpr size_t   MAX_RETRANSMIT_QUEUE_DEPTH         = 256;
 constexpr double   RETRANSMIT_REQUEST_TILES_PER_SECOND = 16.0;
 constexpr double   RETRANSMIT_REQUEST_BURST_TILES      = 16.0;
 constexpr uint64_t RETRANSMIT_REREQUEST_INTERVAL_NS   = 500ull * 1000ull * 1000ull;
-constexpr uint64_t RETRANSMIT_INFLIGHT_GRACE_NS       = 500ull * 1000ull * 1000ull;
+constexpr uint64_t RETRANSMIT_GRACE_MIN_NS            = 50ull * 1000ull * 1000ull;
+constexpr uint64_t RETRANSMIT_GRACE_DEFAULT_NS        = 250ull * 1000ull * 1000ull;
+constexpr uint64_t RETRANSMIT_GRACE_MAX_NS            = 500ull * 1000ull * 1000ull;
+constexpr uint64_t MTU_PROBE_SERVER_STARTUP_DELAY_NS  = 10ull * 1000ull * 1000ull;
+
+uint64_t clamp_retransmit_grace_ns(uint64_t ns) {
+    return std::max(RETRANSMIT_GRACE_MIN_NS, std::min(RETRANSMIT_GRACE_MAX_NS, ns));
+}
 
 bool set_socket_rcvbuf(int fd, int requested_bytes) {
     if (fd < 0)
@@ -117,8 +125,11 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
     wd_mtu_probe_start_payload start{};
     std::memcpy(&start, payload, sizeof(start));
 
-    uint16_t       max_received = 0;
-    const uint64_t deadline_ns  = wd_now_ns() + 500000000ull;
+    uint16_t              max_received = 0;
+    const uint64_t        start_ns     = wd_now_ns();
+    const uint64_t        deadline_ns  = start_ns + 500000000ull;
+    std::vector<uint64_t> probe_offsets_ns;
+    probe_offsets_ns.reserve(start.probe_count);
 
     std::vector<uint8_t> recvbuf(sizeof(wd_udp_tile_packet_header) + 65535);
 
@@ -170,10 +181,43 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
             continue;
         }
 
+        const uint64_t rx_ns = wd_now_ns();
+        uint64_t offset_ns  = rx_ns - start_ns;
+        if (offset_ns > MTU_PROBE_SERVER_STARTUP_DELAY_NS)
+        {
+            offset_ns -= MTU_PROBE_SERVER_STARTUP_DELAY_NS;
+        }
+        probe_offsets_ns.push_back(offset_ns);
+
         if (h.payload_size > max_received)
         {
             max_received = h.payload_size;
         }
+    }
+
+    if (!probe_offsets_ns.empty())
+    {
+        double mean_ns = 0.0;
+        for (uint64_t sample : probe_offsets_ns)
+        {
+            mean_ns += static_cast<double>(sample);
+        }
+        mean_ns /= static_cast<double>(probe_offsets_ns.size());
+
+        double variance_ns = 0.0;
+        for (uint64_t sample : probe_offsets_ns)
+        {
+            const double delta = static_cast<double>(sample) - mean_ns;
+            variance_ns += delta * delta;
+        }
+        variance_ns /= static_cast<double>(probe_offsets_ns.size());
+
+        const double stddev_ns = std::sqrt(variance_ns);
+        state.retx_inflight_grace_ns = clamp_retransmit_grace_ns(static_cast<uint64_t>(mean_ns + 2.0 * stddev_ns));
+    }
+    else
+    {
+        state.retx_inflight_grace_ns = RETRANSMIT_GRACE_DEFAULT_NS;
     }
 
     if (max_received == 0)
@@ -299,9 +343,6 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
     const auto* entries = reinterpret_cast<const wd_tile_generation_entry*>(payload + sizeof(wd_tile_summary_payload_header));
 
-    std::vector<wd_retransmit_entry> missing;
-    missing.reserve(32);
-
     {
         std::lock_guard<std::mutex> config_lock(state.config_mutex);
         std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
@@ -357,14 +398,9 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
                 continue;
             }
 
-            if (state.retx_queued_generation[entry.tile_id] >= entry.tile_generation)
-            {
-                continue;
-            }
-
             if (state.retx_inflight_generation[entry.tile_id] >= entry.tile_generation &&
                 state.retx_inflight_since_ns[entry.tile_id] != 0 &&
-                now_ns - state.retx_inflight_since_ns[entry.tile_id] < RETRANSMIT_INFLIGHT_GRACE_NS)
+                now_ns - state.retx_inflight_since_ns[entry.tile_id] < state.retx_inflight_grace_ns)
             {
                 continue;
             }
@@ -376,42 +412,30 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
                 continue;
             }
 
-            wd_retransmit_entry retx{};
-            retx.tile_id            = entry.tile_id;
-            retx.reserved           = 0;
-            retx.desired_generation = entry.tile_generation;
-
-            missing.push_back(retx);
-        }
-
-        /*
-         * Keep the repair queue bounded. If it grows too large, prefer newer
-         * summary-derived requests by dropping oldest queued repair work.
-         */
-        if (missing.size() > MAX_RETRANSMIT_QUEUE_DEPTH)
-        {
-            missing.erase(missing.begin(), missing.end() - static_cast<std::ptrdiff_t>(MAX_RETRANSMIT_QUEUE_DEPTH));
-        }
-
-        while (!state.retx_queue.empty() && state.retx_queue.size() + missing.size() > MAX_RETRANSMIT_QUEUE_DEPTH)
-        {
-            const wd_retransmit_entry dropped = state.retx_queue.front();
-            state.retx_queue.pop_front();
-
-            if (dropped.tile_id < state.retx_queued_generation.size() &&
-                state.retx_queued_generation[dropped.tile_id] == dropped.desired_generation)
+            /*
+             * The wire request is tile-id-only. Keep the generation only as
+             * local suppression metadata so a newer summary can promote an
+             * already-queued tile without allocating another queue entry.
+             */
+            if (state.retx_queued_generation[entry.tile_id] == 0)
             {
-                state.retx_queued_generation[dropped.tile_id] = 0;
+                while (state.retx_queue.size() >= MAX_RETRANSMIT_QUEUE_DEPTH)
+                {
+                    const uint16_t dropped_tile_id = state.retx_queue.front();
+                    state.retx_queue.pop_front();
+
+                    if (dropped_tile_id < state.retx_queued_generation.size())
+                    {
+                        state.retx_queued_generation[dropped_tile_id] = 0;
+                    }
+                }
+
+                state.retx_queue.push_back(entry.tile_id);
             }
-        }
 
-        for (const wd_retransmit_entry& retx : missing)
-        {
-            state.retx_queue.push_back(retx);
-
-            if (retx.tile_id < state.retx_queued_generation.size())
+            if (state.retx_queued_generation[entry.tile_id] < entry.tile_generation)
             {
-                state.retx_queued_generation[retx.tile_id] = retx.desired_generation;
+                state.retx_queued_generation[entry.tile_id] = entry.tile_generation;
             }
         }
     }
@@ -795,81 +819,74 @@ bool client_flush_retransmit_requests(ClientState& state) {
 
         const size_t max_entries_this_flush = std::min(MAX_RETRANSMIT_ENTRIES_PER_MESSAGE, request_budget);
 
-            if (state.retx_last_requested_generation.size() != state.config.total_tiles)
+        if (state.retx_last_requested_generation.size() != state.config.total_tiles)
+        {
+            state.retx_last_requested_generation.assign(state.config.total_tiles, 0);
+        }
+
+        if (state.retx_last_request_ns.size() != state.config.total_tiles)
+        {
+            state.retx_last_request_ns.assign(state.config.total_tiles, 0);
+        }
+
+        if (state.retx_inflight_generation.size() != state.config.total_tiles)
+        {
+            state.retx_inflight_generation.assign(state.config.total_tiles, 0);
+        }
+
+        if (state.retx_inflight_since_ns.size() != state.config.total_tiles)
+        {
+            state.retx_inflight_since_ns.assign(state.config.total_tiles, 0);
+        }
+
+        size_t pending_to_scan = state.retx_queue.size();
+        while (!state.retx_queue.empty() && pending_to_scan > 0 && entries.size() < max_entries_this_flush)
+        {
+            pending_to_scan--;
+            const uint16_t tile_id = state.retx_queue.front();
+            state.retx_queue.pop_front();
+
+            if (tile_id >= state.config.total_tiles || tile_id >= state.retx_queued_generation.size())
             {
-                state.retx_last_requested_generation.assign(state.config.total_tiles, 0);
+                continue;
             }
 
-            if (state.retx_last_request_ns.size() != state.config.total_tiles)
+            const uint64_t target_generation = state.retx_queued_generation[tile_id];
+            state.retx_queued_generation[tile_id] = 0;
+
+            if (target_generation == 0)
             {
-                state.retx_last_request_ns.assign(state.config.total_tiles, 0);
+                continue;
             }
 
-            if (state.retx_inflight_generation.size() != state.config.total_tiles)
+            /* Tile already arrived while this request was queued. */
+            if (state.displayed_generation[tile_id] >= target_generation)
             {
-                state.retx_inflight_generation.assign(state.config.total_tiles, 0);
+                continue;
             }
 
-            if (state.retx_inflight_since_ns.size() != state.config.total_tiles)
+            if (state.retx_inflight_generation[tile_id] >= target_generation && state.retx_inflight_since_ns[tile_id] != 0 &&
+                now_ns - state.retx_inflight_since_ns[tile_id] < state.retx_inflight_grace_ns)
             {
-                state.retx_inflight_since_ns.assign(state.config.total_tiles, 0);
+                state.retx_queued_generation[tile_id] = target_generation;
+                state.retx_queue.push_back(tile_id);
+                continue;
             }
 
-            size_t pending_to_scan = state.retx_queue.size();
-            while (!state.retx_queue.empty() && pending_to_scan > 0 && entries.size() < max_entries_this_flush)
+            if (state.retx_last_requested_generation[tile_id] >= target_generation && state.retx_last_request_ns[tile_id] != 0 &&
+                now_ns - state.retx_last_request_ns[tile_id] < RETRANSMIT_REREQUEST_INTERVAL_NS)
             {
-                pending_to_scan--;
-                wd_retransmit_entry retx = state.retx_queue.front();
-                state.retx_queue.pop_front();
-
-                if (retx.tile_id >= state.config.total_tiles)
-                {
-                    continue;
-                }
-
-                /*
-                 * A newer summary for this tile arrived while this request was
-                 * queued. The server currently repairs by tile id, not by the
-                 * desired_generation payload field, so the stale request would
-                 * only add noise.
-                 */
-                if (retx.tile_id >= state.retx_queued_generation.size() ||
-                    state.retx_queued_generation[retx.tile_id] != retx.desired_generation)
-                {
-                    continue;
-                }
-
-                state.retx_queued_generation[retx.tile_id] = 0;
-
-                /*
-                 * Tile already arrived while this request was queued.
-                 */
-                if (state.displayed_generation[retx.tile_id] >= retx.desired_generation)
-                {
-                    continue;
-                }
-
-                if (state.retx_inflight_generation[retx.tile_id] >= retx.desired_generation &&
-                    state.retx_inflight_since_ns[retx.tile_id] != 0 &&
-                    now_ns - state.retx_inflight_since_ns[retx.tile_id] < RETRANSMIT_INFLIGHT_GRACE_NS)
-                {
-                    state.retx_queued_generation[retx.tile_id] = retx.desired_generation;
-                    state.retx_queue.push_back(retx);
-                    continue;
-                }
-
-                if (state.retx_last_requested_generation[retx.tile_id] >= retx.desired_generation &&
-                    state.retx_last_request_ns[retx.tile_id] != 0 &&
-                    now_ns - state.retx_last_request_ns[retx.tile_id] < RETRANSMIT_REREQUEST_INTERVAL_NS)
-                {
-                    continue;
-                }
-
-                state.retx_last_requested_generation[retx.tile_id] = retx.desired_generation;
-                state.retx_last_request_ns[retx.tile_id]         = now_ns;
-
-                entries.push_back(retx);
+                continue;
             }
+
+            state.retx_last_requested_generation[tile_id] = target_generation;
+            state.retx_last_request_ns[tile_id]          = now_ns;
+
+            wd_retransmit_entry request{};
+            request.tile_id  = tile_id;
+            request.reserved = 0;
+            entries.push_back(request);
+        }
 
         if (!entries.empty())
         {
@@ -907,4 +924,5 @@ bool client_flush_retransmit_requests(ClientState& state) {
     state.stats.tcp_retx_requests_tx.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
+
 } // namespace waydisplay

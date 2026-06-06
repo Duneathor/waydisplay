@@ -184,7 +184,6 @@ struct wd_retransmit_request_payload_header {
 struct wd_retransmit_entry {
     uint16_t tile_id;
     uint16_t reserved;
-    uint64_t desired_generation;
 };
 
 struct wd_keyboard_event_payload {
@@ -321,6 +320,7 @@ static_assert(sizeof(struct wd_client_hello_payload) == 16, "unexpected wd_clien
 static_assert(sizeof(struct wd_pointer_event_payload) == 28, "unexpected wd_pointer_event_payload size");
 static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mtu_probe_start_payload size");
 static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8, "unexpected wd_mtu_probe_result_payload size");
+static_assert(sizeof(struct wd_retransmit_entry) == 4, "unexpected wd_retransmit_entry size");
 static_assert(sizeof(struct wd_selection_payload_header) == 12, "unexpected wd_selection_payload_header size");
 static_assert(sizeof(struct wd_cursor_shape_payload) == 8, "unexpected wd_cursor_shape_payload size");
 static_assert(sizeof(struct wd_display_resize_payload) == 8, "unexpected wd_display_resize_payload size");
@@ -331,6 +331,7 @@ _Static_assert(sizeof(struct wd_client_hello_payload) == 16, "unexpected wd_clie
 _Static_assert(sizeof(struct wd_pointer_event_payload) == 28, "unexpected wd_pointer_event_payload size");
 _Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mtu_probe_start_payload size");
 _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8, "unexpected wd_mtu_probe_result_payload size");
+_Static_assert(sizeof(struct wd_retransmit_entry) == 4, "unexpected wd_retransmit_entry size");
 _Static_assert(sizeof(struct wd_selection_payload_header) == 12, "unexpected wd_selection_payload_header size");
 _Static_assert(sizeof(struct wd_cursor_shape_payload) == 8, "unexpected wd_cursor_shape_payload size");
 _Static_assert(sizeof(struct wd_display_resize_payload) == 8, "unexpected wd_display_resize_payload size");
