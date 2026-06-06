@@ -14,6 +14,20 @@
 namespace waydisplay {
 namespace {
 
+constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_NS = 750ull * 1000ull * 1000ull;
+
+void clear_retx_inflight(ClientState& state, uint16_t tile_id, uint64_t generation) {
+    std::lock_guard<std::mutex> lock(state.retx_mutex);
+
+    if (state.retx_inflight_generation.size() == state.config.total_tiles &&
+        state.retx_inflight_since_ns.size() == state.config.total_tiles && tile_id < state.retx_inflight_generation.size() &&
+        state.retx_inflight_generation[tile_id] == generation)
+    {
+        state.retx_inflight_generation[tile_id] = 0;
+        state.retx_inflight_since_ns[tile_id]  = 0;
+    }
+}
+
 bool packet_header_valid(const wd_udp_tile_packet_header& header, size_t packet_size, uint16_t udp_payload_target,
                          const wd_server_config_payload& config) {
     if (header.tile_id >= config.total_tiles)
@@ -113,6 +127,21 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
 
     Entry& entry = entries_[header.tile_id];
 
+    const uint64_t now_ns = wd_now_ns();
+
+    if (entry.active && header.tile_generation < entry.generation)
+    {
+        state.stats.udp_ignored_old_generation.fetch_add(1, std::memory_order_relaxed);
+        return completed;
+    }
+
+    if (entry.active && entry.generation == header.tile_generation && entry.first_packet_ns != 0 &&
+        now_ns - entry.first_packet_ns > TILE_REASSEMBLY_TIMEOUT_NS)
+    {
+        clear_retx_inflight(state, entry.tile_id, entry.generation);
+        entry = Entry{};
+    }
+
     if (!entry.active || entry.generation != header.tile_generation)
     {
         entry                   = Entry{};
@@ -122,7 +151,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         entry.tile_timestamp_ns = header.tile_timestamp_ns;
         entry.packet_count      = header.tile_pkt_count;
         entry.compressed_size   = header.compressed_tile_size;
-        entry.first_packet_ns   = wd_now_ns();
+        entry.first_packet_ns   = now_ns;
 
         {
             std::lock_guard<std::mutex> lock(state.retx_mutex);
@@ -175,16 +204,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         std::fprintf(stderr, "failed to decompress tile %u generation %llu\n", entry.tile_id,
                      static_cast<unsigned long long>(entry.generation));
 
-        {
-            std::lock_guard<std::mutex> lock(state.retx_mutex);
-
-            if (state.retx_inflight_generation.size() == state.config.total_tiles &&
-                state.retx_inflight_generation[entry.tile_id] == entry.generation)
-            {
-                state.retx_inflight_generation[entry.tile_id] = 0;
-                state.retx_inflight_since_ns[entry.tile_id]  = 0;
-            }
-        }
+        clear_retx_inflight(state, entry.tile_id, entry.generation);
 
         entry = Entry{};
         return completed;
@@ -197,16 +217,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
     completed.first_packet_ns        = entry.first_packet_ns;
     completed.completed_timestamp_ns = wd_now_ns();
 
-    {
-        std::lock_guard<std::mutex> lock(state.retx_mutex);
-
-        if (state.retx_inflight_generation.size() == state.config.total_tiles &&
-            state.retx_inflight_generation[entry.tile_id] == entry.generation)
-        {
-            state.retx_inflight_generation[entry.tile_id] = 0;
-            state.retx_inflight_since_ns[entry.tile_id]  = 0;
-        }
-    }
+    clear_retx_inflight(state, entry.tile_id, entry.generation);
 
     entry = Entry{};
 

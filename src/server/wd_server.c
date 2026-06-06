@@ -363,6 +363,40 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
         return true;
     }
 
+    const uint32_t old_width              = server->display_width;
+    const uint32_t old_height             = server->display_height;
+    const uint16_t old_tiles_x            = server->tiles_x;
+    const uint16_t old_tiles_y            = server->tiles_y;
+    const uint16_t old_total_tiles        = server->total_tiles;
+    const uint32_t old_framebuffer_pixels = server->framebuffer_pixels;
+    const uint32_t old_framebuffer_bytes  = server->framebuffer_bytes;
+
+    /*
+     * Resize the wlroots output before tearing down the current stream buffers.
+     * Some renderers can reject a live resize transiently; keeping the old
+     * buffers/state intact lets the server reject the client request without
+     * leaving the compositor in a half-destroyed state.
+     */
+    if (!wd_server_set_geometry(server, width, height))
+    {
+        return false;
+    }
+
+    bool output_resized = wd_wlroots_resize_headless_output(server);
+
+    server->display_width      = old_width;
+    server->display_height     = old_height;
+    server->tiles_x            = old_tiles_x;
+    server->tiles_y            = old_tiles_y;
+    server->total_tiles        = old_total_tiles;
+    server->framebuffer_pixels = old_framebuffer_pixels;
+    server->framebuffer_bytes  = old_framebuffer_bytes;
+
+    if (!output_resized)
+    {
+        return false;
+    }
+
     pthread_mutex_lock(&server->net.lock);
 
     wd_stream_destroy(server);
@@ -402,11 +436,6 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     if (ok)
     {
         ok = wd_stream_init(server);
-    }
-
-    if (ok)
-    {
-        ok = wd_wlroots_resize_headless_output(server);
     }
 
     if (ok)

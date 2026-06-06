@@ -28,6 +28,26 @@ static const char* wd_stream_mode_name(uint16_t mode) {
     }
 }
 
+
+static uint32_t wd_stream_burst_cap_for_rate(uint32_t rate) {
+    if (rate == 0)
+    {
+        return 0;
+    }
+
+    uint32_t cap = rate / WD_STREAM_TOKEN_BURST_DIVISOR;
+    return cap ? cap : 1u;
+}
+
+static uint32_t wd_stream_limited_tile_rate(uint32_t requested_rate) {
+    if (requested_rate == 0 || requested_rate > WD_LIMITED_MODE_MAX_TILES_PER_SECOND)
+    {
+        return WD_LIMITED_MODE_MAX_TILES_PER_SECOND;
+    }
+
+    return requested_rate;
+}
+
 static void wd_stream_policy_reset_tokens(struct wd_stream_policy* policy) {
     if (!policy)
     {
@@ -110,17 +130,23 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
         retx_tiles = WD_PARTIAL_MODE_RETRANSMIT_TILES_PER_SECOND;
         break;
 
-    case WD_STREAM_MODE_LIMITED:
+    case WD_STREAM_MODE_LIMITED: {
         /*
-         * Limited mode: retransmit gets roughly 20% of the fresh tile budget,
-         * with a small floor.
+         * Limited mode must be an actual congestion fallback, not just the
+         * client's requested fresh tile rate with a smaller repair sidecar.
          */
-        retx_tiles = max_tiles / WD_LIMITED_MODE_RETRANSMIT_DIVISOR;
+        uint32_t limited_tiles = wd_stream_limited_tile_rate(max_tiles);
+        retx_tiles             = limited_tiles / WD_LIMITED_MODE_RETRANSMIT_DIVISOR;
         if (retx_tiles < WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC)
         {
             retx_tiles = WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC;
         }
+        if (retx_tiles > WD_LIMITED_MODE_MAX_RETRANSMIT_TILES_PER_SEC)
+        {
+            retx_tiles = WD_LIMITED_MODE_MAX_RETRANSMIT_TILES_PER_SEC;
+        }
         break;
+    }
 
     default:
         retx_tiles = WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND;
@@ -150,10 +176,15 @@ static uint32_t wd_stream_retransmit_rate_for_mode(uint16_t mode, uint32_t max_t
     case WD_STREAM_MODE_PARTIAL:
         return WD_PARTIAL_MODE_RETRANSMIT_TILES_PER_SECOND;
     case WD_STREAM_MODE_LIMITED: {
-        uint32_t retx_tiles = max_tiles_per_second / WD_LIMITED_MODE_RETRANSMIT_DIVISOR;
+        uint32_t limited_tiles = wd_stream_limited_tile_rate(max_tiles_per_second);
+        uint32_t retx_tiles    = limited_tiles / WD_LIMITED_MODE_RETRANSMIT_DIVISOR;
         if (retx_tiles < WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC)
         {
             retx_tiles = WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC;
+        }
+        if (retx_tiles > WD_LIMITED_MODE_MAX_RETRANSMIT_TILES_PER_SEC)
+        {
+            retx_tiles = WD_LIMITED_MODE_MAX_RETRANSMIT_TILES_PER_SEC;
         }
         return retx_tiles;
     }
@@ -180,9 +211,13 @@ static void wd_stream_policy_set_effective_mode_locked(struct wd_stream_policy* 
     policy->throttle_good_windows = 0;
     wd_stream_policy_reset_tokens(policy);
 
+    uint32_t effective_tiles_per_second = policy->mode == WD_STREAM_MODE_LIMITED
+                                            ? wd_stream_limited_tile_rate(policy->max_tiles_per_second)
+                                            : policy->max_tiles_per_second;
+
     WD_LOG_INFO("WayDisplay: adaptive stream throttle: %s -> %s requested=%s max_tiles_per_sec=%u retx_tiles_per_sec=%u",
                 wd_stream_mode_name(old_mode), wd_stream_mode_name(policy->mode), wd_stream_mode_name(policy->requested_mode),
-                policy->max_tiles_per_second, policy->max_retransmit_tiles_per_second);
+                effective_tiles_per_second, policy->max_retransmit_tiles_per_second);
 }
 
 static uint16_t wd_stream_next_lower_mode(uint16_t mode) {
@@ -353,24 +388,24 @@ uint32_t wd_stream_policy_tile_budget(struct wd_server* server, uint64_t now_ns)
         return server->total_tiles;
     }
 
+    uint32_t limited_rate = wd_stream_limited_tile_rate(policy->max_tiles_per_second);
+
     if (policy->last_token_refill_ns == 0)
     {
         policy->last_token_refill_ns = now_ns;
-        policy->tile_tokens          = (double)policy->max_tiles_per_second;
+        policy->tile_tokens          = 0.0;
     }
     else
     {
         uint64_t elapsed_ns      = now_ns - policy->last_token_refill_ns;
         double   elapsed_seconds = (double)elapsed_ns / 1000000000.0;
 
-        policy->tile_tokens += elapsed_seconds * (double)policy->max_tiles_per_second;
+        policy->tile_tokens += elapsed_seconds * (double)limited_rate;
 
-        /*
-         * Allow one second of burst.
-         */
-        if (policy->tile_tokens > (double)policy->max_tiles_per_second)
+        uint32_t burst_cap = wd_stream_burst_cap_for_rate(limited_rate);
+        if (policy->tile_tokens > (double)burst_cap)
         {
-            policy->tile_tokens = (double)policy->max_tiles_per_second;
+            policy->tile_tokens = (double)burst_cap;
         }
 
         policy->last_token_refill_ns = now_ns;
@@ -422,7 +457,7 @@ uint32_t wd_stream_policy_retransmit_budget(struct wd_server* server, uint64_t n
     if (policy->last_retransmit_token_refill_ns == 0)
     {
         policy->last_retransmit_token_refill_ns = now_ns;
-        policy->retransmit_tile_tokens          = (double)rate;
+        policy->retransmit_tile_tokens          = 0.0;
     }
     else
     {
@@ -432,12 +467,10 @@ uint32_t wd_stream_policy_retransmit_budget(struct wd_server* server, uint64_t n
 
         policy->retransmit_tile_tokens += elapsed_seconds * (double)rate;
 
-        /*
-         * Allow one second of retransmit burst.
-         */
-        if (policy->retransmit_tile_tokens > (double)rate)
+        uint32_t burst_cap = wd_stream_burst_cap_for_rate(rate);
+        if (policy->retransmit_tile_tokens > (double)burst_cap)
         {
-            policy->retransmit_tile_tokens = (double)rate;
+            policy->retransmit_tile_tokens = (double)burst_cap;
         }
 
         policy->last_retransmit_token_refill_ns = now_ns;
@@ -1275,7 +1308,9 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     wd_stream_policy_update_adaptive_locked(&net->stream_policy, &s);
     uint16_t effective_mode = net->stream_policy.mode;
     uint16_t requested_mode = net->stream_policy.requested_mode;
-    uint32_t max_tiles_per_second = net->stream_policy.max_tiles_per_second;
+    uint32_t max_tiles_per_second = net->stream_policy.mode == WD_STREAM_MODE_LIMITED
+                                    ? wd_stream_limited_tile_rate(net->stream_policy.max_tiles_per_second)
+                                    : net->stream_policy.max_tiles_per_second;
     uint32_t retx_tiles_per_second = net->stream_policy.max_retransmit_tiles_per_second;
 
     pthread_mutex_unlock(&net->lock);
