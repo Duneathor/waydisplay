@@ -844,9 +844,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         return false;
     }
 
-    const uint64_t now                  = wd_now_ns();
-    uint32_t       tiles_sent_this_pass = 0;
-    uint32_t       retransmits_sent     = 0;
+    const uint64_t now = wd_now_ns();
 
     uint8_t  tile_bytes[WD_UNCOMPRESSED_TILE_BYTES];
     size_t   compressed_capacity = wd_zstd_compress_bound(WD_UNCOMPRESSED_TILE_BYTES);
@@ -934,7 +932,6 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
             if (launched)
             {
-                tiles_sent_this_pass++;
                 wd_stream_policy_consume_limited_bytes_locked(&net->stream_policy, bytes_sent);
             }
 
@@ -1034,7 +1031,6 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
             if (launched)
             {
-                retransmits_sent++;
                 wd_stream_policy_consume_limited_bytes_locked(&net->stream_policy, bytes_sent);
             }
 
@@ -1117,7 +1113,6 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         tile->compressed_size = compressed_size;
 
         net->stats.dirty_tiles++;
-        tiles_sent_this_pass++;
         wd_stream_policy_consume_limited_bytes_locked(&net->stream_policy, bytes_sent);
 
         if (send_blocked)
@@ -1128,8 +1123,8 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
     /*
      * Keep scene_dirty true if there are queued fresh or repair tiles.
-     * Repair tiles are only drained after fresh dirty work, so repairs do not
-     * fight with newer generations of the same tile.
+     * Repairs are drained before fresh work so missing visible tiles do not get
+     * starved behind newly dirtied tiles.
      */
     server->scene_dirty = net->dirty_queue_count > 0 || net->retransmit_queue_count > 0;
 

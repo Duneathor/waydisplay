@@ -16,7 +16,7 @@ void usage(const char* argv0) {
                  "Options:\n"
                  "  --mode full                 Send every dirty compositor tick\n"
                  "  --mode partial              Cap send pass to target FPS, default 30\n"
-                 "  --mode limited              Cap by tile budget, default 120 tiles/sec\n"
+                 "  --mode limited              Cap by throughput-probed byte budget\n"
                  "  --mode live                 Lossy mode for video\n"
                  "  --fps <N>                   Target FPS for partial mode\n"
                  "  --size <WxH>                 Request remote display size\n\n"

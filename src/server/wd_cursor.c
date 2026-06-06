@@ -169,10 +169,14 @@ static void handle_cursor_shape_request(struct wl_listener* listener, void* data
      * WayDisplay, relay the semantic cursor shape to the SDL viewer so the
      * user's host cursor changes.
      */
-    uint16_t shape = wd_shape_from_wp_shape(event->shape);
+    uint16_t shape     = wd_shape_from_wp_shape(event->shape);
+    bool     changed   = server->cursor_shape != shape;
     wd_cursor_set_shape(server, shape);
 
-    WD_LOG_DEBUG("WayDisplay: client requested cursor-shape=%s mapped=%u", wlr_cursor_shape_v1_name(event->shape), shape);
+    if (changed)
+    {
+        WD_LOG_DEBUG("WayDisplay: client requested cursor-shape=%s mapped=%u", wlr_cursor_shape_v1_name(event->shape), shape);
+    }
 }
 
 bool wd_cursor_init(struct wd_server* server) {

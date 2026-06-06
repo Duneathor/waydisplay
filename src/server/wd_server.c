@@ -581,6 +581,12 @@ void wd_server_destroy(struct wd_server* server) {
         wl_list_init(&server->new_xdg_toplevel.link);
     }
 
+    if (server->new_xdg_popup.link.prev && server->new_xdg_popup.link.next)
+    {
+        wl_list_remove(&server->new_xdg_popup.link);
+        wl_list_init(&server->new_xdg_popup.link);
+    }
+
     if (server->new_xdg_toplevel_decoration.link.prev && server->new_xdg_toplevel_decoration.link.next)
     {
         wl_list_remove(&server->new_xdg_toplevel_decoration.link);
