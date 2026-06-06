@@ -21,9 +21,8 @@ enum class ClientStreamMode : uint16_t {
 };
 
 struct ClientStreamConfig {
-    ClientStreamMode mode                 = ClientStreamMode::Partial;
-    uint16_t         target_fps           = WD_CLIENT_DEFAULT_TARGET_FPS;
-    uint32_t         max_tiles_per_second = WD_CLIENT_DEFAULT_MAX_TILES_PER_SECOND;
+    ClientStreamMode mode       = ClientStreamMode::Partial;
+    uint16_t         target_fps = WD_CLIENT_DEFAULT_TARGET_FPS;
 };
 
 struct ClientStats {

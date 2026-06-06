@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <stdlib.h>
@@ -328,6 +329,122 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
     return result;
 }
 
+static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, const struct sockaddr_in* client_udp_addr,
+                                         uint16_t udp_payload_target) {
+    struct wd_net_state* net = &server->net;
+
+    if (udp_payload_target == 0 || udp_payload_target > WD_UDP_TILE_PAYLOAD_MAX)
+    {
+        udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    }
+
+    if (udp_payload_target < WD_MIN_PROBED_UDP_PAYLOAD)
+    {
+        udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    }
+
+    size_t packet_size = sizeof(struct wd_udp_tile_packet_header) + udp_payload_target;
+    uint32_t target_packets = WD_THROUGHPUT_PROBE_TARGET_BYTES / (uint32_t)packet_size;
+    if (target_packets == 0)
+    {
+        target_packets = 1;
+    }
+    if (target_packets > UINT16_MAX)
+    {
+        target_packets = UINT16_MAX;
+    }
+
+    struct wd_throughput_probe_start_payload start;
+    memset(&start, 0, sizeof(start));
+    start.session_id  = net->session_id;
+    start.probe_count = (uint16_t)target_packets;
+    start.payload_size = udp_payload_target;
+    start.duration_ms = WD_THROUGHPUT_PROBE_DURATION_MS;
+
+    if (!wd_send_tcp_message(tcp_fd, WD_MSG_THROUGHPUT_PROBE_START, &start, sizeof(start)))
+    {
+        return WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
+    }
+
+    wd_udp_socket_disable_df_best_effort(net->udp_fd);
+
+    /* Give the client a moment to switch from MTU probing to throughput probing. */
+    wd_sleep_ms(10);
+
+    uint8_t* packet = malloc(packet_size);
+    if (!packet)
+    {
+        return WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
+    }
+
+    memset(packet, 0, packet_size);
+    struct wd_udp_tile_packet_header* h = (struct wd_udp_tile_packet_header*)packet;
+    h->tile_id              = WD_UDP_TILE_ID_THROUGHPUT_PROBE;
+    h->tile_pkt_count       = (uint16_t)target_packets;
+    h->payload_size         = udp_payload_target;
+    h->tile_generation      = net->session_id;
+    h->compressed_tile_size = udp_payload_target;
+    memset(packet + sizeof(*h), 0x5a, udp_payload_target);
+
+    const uint64_t start_ns = wd_now_ns();
+    const uint64_t duration_ns = (uint64_t)WD_THROUGHPUT_PROBE_DURATION_MS * 1000000ull;
+
+    for (uint32_t i = 0; i < target_packets; ++i)
+    {
+        h->tile_pkt_id = (uint16_t)i;
+        (void)sendto(net->udp_fd, packet, packet_size, 0, (const struct sockaddr*)client_udp_addr, sizeof(*client_udp_addr));
+
+        uint64_t next_ns = start_ns + ((uint64_t)(i + 1) * duration_ns) / target_packets;
+        while (wd_now_ns() < next_ns)
+        {
+            wd_sleep_ms(1);
+        }
+    }
+
+    free(packet);
+
+    uint16_t type         = 0;
+    uint8_t* payload      = NULL;
+    uint32_t payload_size_rx = 0;
+
+    if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size_rx))
+    {
+        free(payload);
+        return WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
+    }
+
+    uint64_t limited_rate = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
+
+    if (type == WD_MSG_THROUGHPUT_PROBE_RESULT && payload_size_rx >= sizeof(struct wd_throughput_probe_result_payload))
+    {
+        struct wd_throughput_probe_result_payload result;
+        memcpy(&result, payload, sizeof(result));
+
+        if (result.session_id == net->session_id && result.bytes_received > 0 && result.duration_ms > 0)
+        {
+            uint64_t bytes_per_second = ((uint64_t)result.bytes_received * 1000ull) / result.duration_ms;
+            bytes_per_second = (bytes_per_second * WD_LIMITED_MODE_THROUGHPUT_SAFETY_PERCENT) / 100ull;
+
+            if (bytes_per_second < WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND)
+            {
+                bytes_per_second = WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND;
+            }
+            if (bytes_per_second > WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND)
+            {
+                bytes_per_second = WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND;
+            }
+
+            limited_rate = bytes_per_second;
+        }
+    }
+
+    free(payload);
+
+    WD_LOG_INFO("WayDisplay: limited-mode UDP byte budget selected by throughput probe: %llu KiB/s", (unsigned long long)(limited_rate / 1024ull));
+
+    return limited_rate;
+}
+
 static void wd_server_fill_config(struct wd_server* server, uint32_t session_id, uint16_t udp_payload_target,
                                   struct wd_server_config_payload* cfg) {
     memset(cfg, 0, sizeof(*cfg));
@@ -498,9 +615,11 @@ void* wd_net_thread_main(void* arg) {
         client_udp_addr.sin_port   = htons(hello.client_udp_port);
 
         uint16_t selected_udp_payload = run_udp_mtu_probe(server, tcp_fd, &client_udp_addr);
+        uint64_t selected_limited_udp_rate = run_udp_throughput_probe(server, tcp_fd, &client_udp_addr, selected_udp_payload);
 
         pthread_mutex_lock(&net->lock);
         net->udp_payload_target = selected_udp_payload;
+        wd_stream_policy_set_limited_udp_byte_rate(&net->stream_policy, selected_limited_udp_rate);
         pthread_mutex_unlock(&net->lock);
 
         wd_server_fill_config(server, session_id, selected_udp_payload, &cfg);
@@ -556,10 +675,9 @@ void* wd_net_thread_main(void* arg) {
 
         pthread_mutex_unlock(&net->lock);
 
-        WD_LOG_INFO("WayDisplay: client connected; UDP port=%u display=%ux%u stream_mode=%u fps=%u "
-                    "max_tiles_per_sec=%u retx_tiles_per_sec=%u",
+        WD_LOG_INFO("WayDisplay: client connected; UDP port=%u display=%ux%u stream_mode=%u fps=%u limited_udp_kib_per_sec=%llu",
                     hello.client_udp_port, server->display_width, server->display_height, hello.stream_mode, hello.target_fps,
-                    hello.max_tiles_per_second, net->stream_policy.max_retransmit_tiles_per_second);
+                    (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
 
         while (net->running)
         {

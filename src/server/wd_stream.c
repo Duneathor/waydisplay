@@ -5,10 +5,13 @@
 #include "wd_server.h"
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
+
+#define WD_NSEC_PER_SEC 1000000000ull
 
 #define WD_UDP_SEND_PRESSURE_LOG_INTERVAL_NS 1000000000ull
 
@@ -29,23 +32,37 @@ static const char* wd_stream_mode_name(uint16_t mode) {
 }
 
 
-static uint32_t wd_stream_burst_cap_for_rate(uint32_t rate) {
-    if (rate == 0)
+static uint64_t wd_stream_byte_burst_cap_for_rate(uint64_t bytes_per_second) {
+    if (bytes_per_second == 0)
     {
         return 0;
     }
 
-    uint32_t cap = rate / WD_STREAM_TOKEN_BURST_DIVISOR;
-    return cap ? cap : 1u;
+    uint64_t cap = bytes_per_second / WD_STREAM_TOKEN_BURST_DIVISOR;
+    if (cap < (uint64_t)WD_UNCOMPRESSED_TILE_BYTES * 2ull)
+    {
+        cap = (uint64_t)WD_UNCOMPRESSED_TILE_BYTES * 2ull;
+    }
+    return cap ? cap : bytes_per_second;
 }
 
-static uint32_t wd_stream_limited_tile_rate(uint32_t requested_rate) {
-    if (requested_rate == 0 || requested_rate > WD_LIMITED_MODE_MAX_TILES_PER_SECOND)
+static uint64_t wd_stream_clamp_limited_udp_byte_rate(uint64_t bytes_per_second) {
+    if (bytes_per_second == 0)
     {
-        return WD_LIMITED_MODE_MAX_TILES_PER_SECOND;
+        bytes_per_second = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
     }
 
-    return requested_rate;
+    if (bytes_per_second < WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND)
+    {
+        bytes_per_second = WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND;
+    }
+
+    if (bytes_per_second > WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND)
+    {
+        bytes_per_second = WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND;
+    }
+
+    return bytes_per_second;
 }
 
 static void wd_stream_policy_reset_tokens(struct wd_stream_policy* policy) {
@@ -54,11 +71,9 @@ static void wd_stream_policy_reset_tokens(struct wd_stream_policy* policy) {
         return;
     }
 
-    policy->retransmit_tile_tokens          = 0.0;
-    policy->last_retransmit_token_refill_ns = 0;
     policy->last_frame_send_ns              = 0;
-    policy->tile_tokens                     = 0.0;
-    policy->last_token_refill_ns            = 0;
+    policy->limited_udp_byte_tokens         = 0.0;
+    policy->last_limited_udp_byte_refill_ns = 0;
 }
 
 void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
@@ -69,13 +84,12 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
 
     memset(policy, 0, sizeof(*policy));
 
-    policy->requested_mode                  = WD_STREAM_MODE_PARTIAL;
-    policy->mode                            = WD_STREAM_MODE_PARTIAL;
-    policy->target_fps                      = WD_DEFAULT_PARTIAL_FPS;
-    policy->max_tiles_per_second            = WD_DEFAULT_LIMITED_TILES_PER_SECOND;
-    policy->throttle_bad_windows            = 0;
-    policy->throttle_good_windows           = 0;
-    policy->max_retransmit_tiles_per_second = WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND;
+    policy->requested_mode               = WD_STREAM_MODE_PARTIAL;
+    policy->mode                         = WD_STREAM_MODE_PARTIAL;
+    policy->target_fps                   = WD_DEFAULT_PARTIAL_FPS;
+    policy->throttle_bad_windows         = 0;
+    policy->throttle_good_windows        = 0;
+    policy->limited_udp_bytes_per_second = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
     wd_stream_policy_reset_tokens(policy);
 }
 
@@ -103,94 +117,27 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
         fps = WD_MAX_REASONABLE_FPS;
     }
 
-    uint32_t max_tiles = hello->max_tiles_per_second;
-    if (max_tiles == 0)
+    policy->requested_mode       = mode;
+    policy->mode                 = mode;
+    policy->target_fps           = fps;
+    policy->throttle_bad_windows = 0;
+    policy->throttle_good_windows = 0;
+    if (policy->limited_udp_bytes_per_second == 0)
     {
-        max_tiles = WD_DEFAULT_LIMITED_TILES_PER_SECOND;
+        policy->limited_udp_bytes_per_second = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
     }
-
-    if (max_tiles > WD_MAX_REASONABLE_TILES_PER_SECOND)
-    {
-        max_tiles = WD_MAX_REASONABLE_TILES_PER_SECOND;
-    }
-
-    uint32_t retx_tiles = WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND;
-
-    switch (mode)
-    {
-    case WD_STREAM_MODE_FULL:
-        /*
-         * Full mode can repair faster, but still cap repair so it does not
-         * dominate fresh updates.
-         */
-        retx_tiles = WD_FULL_MODE_RETRANSMIT_TILES_PER_SECOND;
-        break;
-
-    case WD_STREAM_MODE_PARTIAL:
-        retx_tiles = WD_PARTIAL_MODE_RETRANSMIT_TILES_PER_SECOND;
-        break;
-
-    case WD_STREAM_MODE_LIMITED: {
-        /*
-         * Limited mode must be an actual congestion fallback, not just the
-         * client's requested fresh tile rate with a smaller repair sidecar.
-         */
-        uint32_t limited_tiles = wd_stream_limited_tile_rate(max_tiles);
-        retx_tiles             = limited_tiles / WD_LIMITED_MODE_RETRANSMIT_DIVISOR;
-        if (retx_tiles < WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC)
-        {
-            retx_tiles = WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC;
-        }
-        if (retx_tiles > WD_LIMITED_MODE_MAX_RETRANSMIT_TILES_PER_SEC)
-        {
-            retx_tiles = WD_LIMITED_MODE_MAX_RETRANSMIT_TILES_PER_SEC;
-        }
-        break;
-    }
-
-    default:
-        retx_tiles = WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND;
-        break;
-    }
-
-    if (retx_tiles > WD_MAX_REASONABLE_RETRANSMIT_TILES_PER_SECOND)
-    {
-        retx_tiles = WD_MAX_REASONABLE_RETRANSMIT_TILES_PER_SECOND;
-    }
-
-    policy->requested_mode                  = mode;
-    policy->mode                            = mode;
-    policy->target_fps                      = fps;
-    policy->max_tiles_per_second            = max_tiles;
-    policy->throttle_bad_windows            = 0;
-    policy->throttle_good_windows           = 0;
-    policy->max_retransmit_tiles_per_second = retx_tiles;
     wd_stream_policy_reset_tokens(policy);
 }
 
-static uint32_t wd_stream_retransmit_rate_for_mode(uint16_t mode, uint32_t max_tiles_per_second) {
-    switch (mode)
+void wd_stream_policy_set_limited_udp_byte_rate(struct wd_stream_policy* policy, uint64_t bytes_per_second) {
+    if (!policy)
     {
-    case WD_STREAM_MODE_FULL:
-        return WD_FULL_MODE_RETRANSMIT_TILES_PER_SECOND;
-    case WD_STREAM_MODE_PARTIAL:
-        return WD_PARTIAL_MODE_RETRANSMIT_TILES_PER_SECOND;
-    case WD_STREAM_MODE_LIMITED: {
-        uint32_t limited_tiles = wd_stream_limited_tile_rate(max_tiles_per_second);
-        uint32_t retx_tiles    = limited_tiles / WD_LIMITED_MODE_RETRANSMIT_DIVISOR;
-        if (retx_tiles < WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC)
-        {
-            retx_tiles = WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC;
-        }
-        if (retx_tiles > WD_LIMITED_MODE_MAX_RETRANSMIT_TILES_PER_SEC)
-        {
-            retx_tiles = WD_LIMITED_MODE_MAX_RETRANSMIT_TILES_PER_SEC;
-        }
-        return retx_tiles;
+        return;
     }
-    default:
-        return WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND;
-    }
+
+    policy->limited_udp_bytes_per_second = wd_stream_clamp_limited_udp_byte_rate(bytes_per_second);
+    policy->limited_udp_byte_tokens      = 0.0;
+    policy->last_limited_udp_byte_refill_ns = 0;
 }
 
 static void wd_stream_policy_set_effective_mode_locked(struct wd_stream_policy* policy, uint16_t mode) {
@@ -201,23 +148,14 @@ static void wd_stream_policy_set_effective_mode_locked(struct wd_stream_policy* 
 
     uint16_t old_mode = policy->mode;
 
-    policy->mode                            = mode;
-    policy->max_retransmit_tiles_per_second = wd_stream_retransmit_rate_for_mode(mode, policy->max_tiles_per_second);
-    if (policy->max_retransmit_tiles_per_second > WD_MAX_REASONABLE_RETRANSMIT_TILES_PER_SECOND)
-    {
-        policy->max_retransmit_tiles_per_second = WD_MAX_REASONABLE_RETRANSMIT_TILES_PER_SECOND;
-    }
+    policy->mode                  = mode;
     policy->throttle_bad_windows  = 0;
     policy->throttle_good_windows = 0;
     wd_stream_policy_reset_tokens(policy);
 
-    uint32_t effective_tiles_per_second = policy->mode == WD_STREAM_MODE_LIMITED
-                                            ? wd_stream_limited_tile_rate(policy->max_tiles_per_second)
-                                            : policy->max_tiles_per_second;
-
-    WD_LOG_INFO("WayDisplay: adaptive stream throttle: %s -> %s requested=%s max_tiles_per_sec=%u retx_tiles_per_sec=%u",
+    WD_LOG_INFO("WayDisplay: adaptive stream throttle: %s -> %s requested=%s limited_udp_kib_per_sec=%llu",
                 wd_stream_mode_name(old_mode), wd_stream_mode_name(policy->mode), wd_stream_mode_name(policy->requested_mode),
-                effective_tiles_per_second, policy->max_retransmit_tiles_per_second);
+                (unsigned long long)(policy->limited_udp_bytes_per_second / 1024ull));
 }
 
 static uint16_t wd_stream_next_lower_mode(uint16_t mode) {
@@ -352,7 +290,7 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
 
     case WD_STREAM_MODE_LIMITED:
     /*
-     * Limited mode is tile-budget based, but we still need to render
+     * Limited mode is byte-budget based, but we still need to render
      * periodically so we can discover changed tiles.
      *
      * Use a 30fps discovery cadence by default.
@@ -373,133 +311,6 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
     pthread_mutex_unlock(&net->lock);
 
     return should;
-}
-
-uint32_t wd_stream_policy_tile_budget(struct wd_server* server, uint64_t now_ns) {
-    struct wd_net_state* net = &server->net;
-
-    pthread_mutex_lock(&net->lock);
-
-    struct wd_stream_policy* policy = &net->stream_policy;
-
-    if (policy->mode != WD_STREAM_MODE_LIMITED)
-    {
-        pthread_mutex_unlock(&net->lock);
-        return server->total_tiles;
-    }
-
-    uint32_t limited_rate = wd_stream_limited_tile_rate(policy->max_tiles_per_second);
-
-    if (policy->last_token_refill_ns == 0)
-    {
-        policy->last_token_refill_ns = now_ns;
-        policy->tile_tokens          = 0.0;
-    }
-    else
-    {
-        uint64_t elapsed_ns      = now_ns - policy->last_token_refill_ns;
-        double   elapsed_seconds = (double)elapsed_ns / 1000000000.0;
-
-        policy->tile_tokens += elapsed_seconds * (double)limited_rate;
-
-        uint32_t burst_cap = wd_stream_burst_cap_for_rate(limited_rate);
-        if (policy->tile_tokens > (double)burst_cap)
-        {
-            policy->tile_tokens = (double)burst_cap;
-        }
-
-        policy->last_token_refill_ns = now_ns;
-    }
-
-    uint32_t budget = (uint32_t)policy->tile_tokens;
-
-    pthread_mutex_unlock(&net->lock);
-
-    return budget;
-}
-
-void wd_stream_policy_consume_tiles(struct wd_server* server, uint32_t count) {
-    struct wd_net_state* net = &server->net;
-
-    pthread_mutex_lock(&net->lock);
-
-    struct wd_stream_policy* policy = &net->stream_policy;
-
-    if (policy->mode == WD_STREAM_MODE_LIMITED)
-    {
-        if (policy->tile_tokens >= (double)count)
-        {
-            policy->tile_tokens -= (double)count;
-        }
-        else
-        {
-            policy->tile_tokens = 0.0;
-        }
-    }
-
-    pthread_mutex_unlock(&net->lock);
-}
-
-uint32_t wd_stream_policy_retransmit_budget(struct wd_server* server, uint64_t now_ns) {
-    struct wd_net_state* net = &server->net;
-
-    pthread_mutex_lock(&net->lock);
-
-    struct wd_stream_policy* policy = &net->stream_policy;
-
-    uint32_t rate = policy->max_retransmit_tiles_per_second;
-    if (rate == 0)
-    {
-        pthread_mutex_unlock(&net->lock);
-        return 0;
-    }
-
-    if (policy->last_retransmit_token_refill_ns == 0)
-    {
-        policy->last_retransmit_token_refill_ns = now_ns;
-        policy->retransmit_tile_tokens          = 0.0;
-    }
-    else
-    {
-        uint64_t elapsed_ns = now_ns - policy->last_retransmit_token_refill_ns;
-
-        double elapsed_seconds = (double)elapsed_ns / 1000000000.0;
-
-        policy->retransmit_tile_tokens += elapsed_seconds * (double)rate;
-
-        uint32_t burst_cap = wd_stream_burst_cap_for_rate(rate);
-        if (policy->retransmit_tile_tokens > (double)burst_cap)
-        {
-            policy->retransmit_tile_tokens = (double)burst_cap;
-        }
-
-        policy->last_retransmit_token_refill_ns = now_ns;
-    }
-
-    uint32_t budget = (uint32_t)policy->retransmit_tile_tokens;
-
-    pthread_mutex_unlock(&net->lock);
-
-    return budget;
-}
-
-void wd_stream_policy_consume_retransmit_tiles(struct wd_server* server, uint32_t count) {
-    struct wd_net_state* net = &server->net;
-
-    pthread_mutex_lock(&net->lock);
-
-    struct wd_stream_policy* policy = &net->stream_policy;
-
-    if (policy->retransmit_tile_tokens >= (double)count)
-    {
-        policy->retransmit_tile_tokens -= (double)count;
-    }
-    else
-    {
-        policy->retransmit_tile_tokens = 0.0;
-    }
-
-    pthread_mutex_unlock(&net->lock);
 }
 
 bool wd_stream_init(struct wd_server* server) {
@@ -584,9 +395,82 @@ static void wd_note_udp_send_pressure_locked(struct wd_net_state* net, int send_
     WD_LOG_DEBUG("WayDisplay: dropped %llu UDP tile packets under send pressure: %s", (unsigned long long)drops, strerror(send_errno));
 }
 
+static uint32_t wd_stream_tile_wire_bytes(uint32_t compressed_size, uint16_t udp_payload_target) {
+    if (compressed_size == 0)
+    {
+        return 0;
+    }
+
+    if (udp_payload_target == 0)
+    {
+        udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    }
+
+    if (udp_payload_target > WD_UDP_TILE_PAYLOAD_MAX)
+    {
+        udp_payload_target = WD_UDP_TILE_PAYLOAD_MAX;
+    }
+
+    if (udp_payload_target < 512)
+    {
+        udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    }
+
+    uint32_t packet_count = (compressed_size + udp_payload_target - 1u) / udp_payload_target;
+    return compressed_size + packet_count * (uint32_t)sizeof(struct wd_udp_tile_packet_header);
+}
+
+static uint64_t wd_stream_policy_limited_byte_budget_locked(struct wd_stream_policy* policy, uint64_t now_ns) {
+    if (!policy || policy->mode != WD_STREAM_MODE_LIMITED)
+    {
+        return UINT64_MAX;
+    }
+
+    uint64_t rate = wd_stream_clamp_limited_udp_byte_rate(policy->limited_udp_bytes_per_second);
+    policy->limited_udp_bytes_per_second = rate;
+
+    if (policy->last_limited_udp_byte_refill_ns == 0)
+    {
+        policy->last_limited_udp_byte_refill_ns = now_ns;
+        policy->limited_udp_byte_tokens         = 0.0;
+    }
+    else
+    {
+        uint64_t elapsed_ns = now_ns - policy->last_limited_udp_byte_refill_ns;
+        double elapsed_seconds = (double)elapsed_ns / (double)WD_NSEC_PER_SEC;
+        policy->limited_udp_byte_tokens += elapsed_seconds * (double)rate;
+
+        uint64_t burst_cap = wd_stream_byte_burst_cap_for_rate(rate);
+        if (policy->limited_udp_byte_tokens > (double)burst_cap)
+        {
+            policy->limited_udp_byte_tokens = (double)burst_cap;
+        }
+
+        policy->last_limited_udp_byte_refill_ns = now_ns;
+    }
+
+    return (uint64_t)policy->limited_udp_byte_tokens;
+}
+
+static void wd_stream_policy_consume_limited_bytes_locked(struct wd_stream_policy* policy, uint32_t bytes) {
+    if (!policy || policy->mode != WD_STREAM_MODE_LIMITED || bytes == 0)
+    {
+        return;
+    }
+
+    if (policy->limited_udp_byte_tokens >= (double)bytes)
+    {
+        policy->limited_udp_byte_tokens -= (double)bytes;
+    }
+    else
+    {
+        policy->limited_udp_byte_tokens = 0.0;
+    }
+}
+
 static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_t tile_id, uint64_t generation, uint64_t timestamp_ns,
                                                const uint8_t* compressed, uint32_t compressed_size, bool* launched,
-                                               bool* send_blocked) {
+                                               bool* send_blocked, uint32_t* bytes_sent) {
     struct wd_net_state* net = &server->net;
 
     if (launched)
@@ -597,6 +481,11 @@ static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_
     if (send_blocked)
     {
         *send_blocked = false;
+    }
+
+    if (bytes_sent)
+    {
+        *bytes_sent = 0;
     }
 
     if (tile_id >= server->total_tiles)
@@ -685,6 +574,10 @@ static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_
 
         net->stats.udp_packets_sent++;
         net->stats.udp_bytes_sent += (uint64_t)sent;
+        if (bytes_sent)
+        {
+            *bytes_sent += (uint32_t)sent;
+        }
     }
 
     if (launched && *launched)
@@ -695,7 +588,7 @@ static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_
     return true;
 }
 
-bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id, bool* launched, bool* send_blocked) {
+bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id, bool* launched, bool* send_blocked, uint32_t* bytes_sent) {
     struct wd_net_state* net = &server->net;
 
     if (tile_id >= server->total_tiles)
@@ -706,7 +599,7 @@ bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_i
     struct wd_cached_tile* cache = &net->tiles[tile_id];
 
     return wd_stream_send_tile_payload_locked(server, tile_id, cache->generation, cache->timestamp_ns, cache->compressed,
-                                              cache->compressed_size, launched, send_blocked);
+                                              cache->compressed_size, launched, send_blocked, bytes_sent);
 }
 
 static uint32_t wd_tile_queue_random_locked(struct wd_net_state* net) {
@@ -952,15 +845,8 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     }
 
     const uint64_t now                  = wd_now_ns();
-    uint32_t       tile_budget          = wd_stream_policy_tile_budget(server, now);
-    uint32_t       retransmit_budget    = wd_stream_policy_retransmit_budget(server, now);
     uint32_t       tiles_sent_this_pass = 0;
     uint32_t       retransmits_sent     = 0;
-
-    if (tile_budget == 0 && retransmit_budget == 0)
-    {
-        return true;
-    }
 
     uint8_t  tile_bytes[WD_UNCOMPRESSED_TILE_BYTES];
     size_t   compressed_capacity = wd_zstd_compress_bound(WD_UNCOMPRESSED_TILE_BYTES);
@@ -989,7 +875,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
      */
     if (net->full_frame_needed)
     {
-        while (net->full_frame_next_tile < server->total_tiles && tiles_sent_this_pass < tile_budget)
+        while (net->full_frame_next_tile < server->total_tiles)
         {
             uint16_t               tile_id = net->full_frame_next_tile;
             struct wd_cached_tile* tile    = &net->tiles[tile_id];
@@ -1024,10 +910,17 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
                 net->stats.dirty_tiles++;
             }
 
-            bool launched     = false;
-            bool send_blocked = false;
+            bool     launched     = false;
+            bool     send_blocked = false;
+            uint32_t bytes_sent    = 0;
 
-            if (!wd_stream_send_cached_tile_locked(server, tile_id, &launched, &send_blocked))
+            uint32_t predicted_bytes = wd_stream_tile_wire_bytes(tile->compressed_size, net->udp_payload_target);
+            if (wd_stream_policy_limited_byte_budget_locked(&net->stream_policy, now) < predicted_bytes)
+            {
+                break;
+            }
+
+            if (!wd_stream_send_cached_tile_locked(server, tile_id, &launched, &send_blocked, &bytes_sent))
             {
                 continue;
             }
@@ -1042,6 +935,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
             if (launched)
             {
                 tiles_sent_this_pass++;
+                wd_stream_policy_consume_limited_bytes_locked(&net->stream_policy, bytes_sent);
             }
 
             if (send_blocked)
@@ -1083,23 +977,74 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
         pthread_mutex_unlock(&net->lock);
 
-        wd_stream_policy_consume_tiles(server, tiles_sent_this_pass);
-
         free(compressed_tile);
         return true;
     }
 
     /*
      * Phase 2:
-     * Normal dirty-tile mode.
-     *
-     * First detect changed tiles and enqueue them once. Then drain the queue
-     * according to the active budget. This avoids top-left scan bias and
-     * avoids repeatedly inserting the same tile while it waits for bandwidth.
+     * Normal mode. Detect new dirty work, then spend the byte budget on
+     * latest-generation repairs before fresh tiles. Repairing already-missing
+     * tiles first avoids priority inversion and lets the remaining byte budget
+     * carry new work.
      */
     wd_detect_dirty_tiles_into_queue_locked(server);
 
-    while (net->dirty_queue_count > 0 && tiles_sent_this_pass < tile_budget)
+    while (net->retransmit_queue_count > 0)
+    {
+            uint16_t tile_id = 0;
+
+            if (!wd_retransmit_queue_pop_random_locked(server, &tile_id))
+            {
+                break;
+            }
+
+            if (tile_id >= server->total_tiles)
+            {
+                continue;
+            }
+
+            if (net->dirty_queued && net->dirty_queued[tile_id])
+            {
+                continue;
+            }
+
+            bool     launched     = false;
+            bool     send_blocked = false;
+            uint32_t bytes_sent    = 0;
+
+            struct wd_cached_tile* cache = &net->tiles[tile_id];
+            uint32_t predicted_bytes = wd_stream_tile_wire_bytes(cache->compressed_size, net->udp_payload_target);
+            if (wd_stream_policy_limited_byte_budget_locked(&net->stream_policy, now) < predicted_bytes)
+            {
+                wd_stream_queue_retransmit_tile_locked(server, tile_id);
+                break;
+            }
+
+            if (!wd_stream_send_cached_tile_locked(server, tile_id, &launched, &send_blocked, &bytes_sent))
+            {
+                continue;
+            }
+
+            if (send_blocked && !launched)
+            {
+                wd_stream_queue_retransmit_tile_locked(server, tile_id);
+                break;
+            }
+
+            if (launched)
+            {
+                retransmits_sent++;
+                wd_stream_policy_consume_limited_bytes_locked(&net->stream_policy, bytes_sent);
+            }
+
+            if (send_blocked)
+            {
+                break;
+            }
+    }
+
+    while (net->dirty_queue_count > 0)
     {
         uint16_t tile_id = 0;
 
@@ -1144,9 +1089,17 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         uint64_t next_generation = tile->generation + 1;
         bool     launched        = false;
         bool     send_blocked    = false;
+        uint32_t bytes_sent       = 0;
+
+        uint32_t predicted_bytes = wd_stream_tile_wire_bytes(compressed_size, net->udp_payload_target);
+        if (wd_stream_policy_limited_byte_budget_locked(&net->stream_policy, now) < predicted_bytes)
+        {
+            wd_dirty_queue_reinsert_locked(net, tile_id, server->total_tiles);
+            break;
+        }
 
         if (!wd_stream_send_tile_payload_locked(server, tile_id, next_generation, now, compressed_tile, compressed_size, &launched,
-                                                &send_blocked))
+                                                &send_blocked, &bytes_sent))
         {
             continue;
         }
@@ -1165,57 +1118,11 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
         net->stats.dirty_tiles++;
         tiles_sent_this_pass++;
+        wd_stream_policy_consume_limited_bytes_locked(&net->stream_policy, bytes_sent);
 
         if (send_blocked)
         {
             break;
-        }
-    }
-
-    if (net->dirty_queue_count == 0)
-    {
-        while (net->retransmit_queue_count > 0 && retransmits_sent < retransmit_budget)
-        {
-            uint16_t tile_id = 0;
-
-            if (!wd_retransmit_queue_pop_random_locked(server, &tile_id))
-            {
-                break;
-            }
-
-            if (tile_id >= server->total_tiles)
-            {
-                continue;
-            }
-
-            if (net->dirty_queued && net->dirty_queued[tile_id])
-            {
-                continue;
-            }
-
-            bool launched     = false;
-            bool send_blocked = false;
-
-            if (!wd_stream_send_cached_tile_locked(server, tile_id, &launched, &send_blocked))
-            {
-                continue;
-            }
-
-            if (send_blocked && !launched)
-            {
-                wd_stream_queue_retransmit_tile_locked(server, tile_id);
-                break;
-            }
-
-            if (launched)
-            {
-                retransmits_sent++;
-            }
-
-            if (send_blocked)
-            {
-                break;
-            }
         }
     }
 
@@ -1227,9 +1134,6 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     server->scene_dirty = net->dirty_queue_count > 0 || net->retransmit_queue_count > 0;
 
     pthread_mutex_unlock(&net->lock);
-
-    wd_stream_policy_consume_tiles(server, tiles_sent_this_pass);
-    wd_stream_policy_consume_retransmit_tiles(server, retransmits_sent);
 
     free(compressed_tile);
     return true;
@@ -1308,10 +1212,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     wd_stream_policy_update_adaptive_locked(&net->stream_policy, &s);
     uint16_t effective_mode = net->stream_policy.mode;
     uint16_t requested_mode = net->stream_policy.requested_mode;
-    uint32_t max_tiles_per_second = net->stream_policy.mode == WD_STREAM_MODE_LIMITED
-                                    ? wd_stream_limited_tile_rate(net->stream_policy.max_tiles_per_second)
-                                    : net->stream_policy.max_tiles_per_second;
-    uint32_t retx_tiles_per_second = net->stream_policy.max_retransmit_tiles_per_second;
+    uint64_t limited_udp_kib_per_second = net->stream_policy.limited_udp_bytes_per_second / 1024ull;
 
     pthread_mutex_unlock(&net->lock);
 
@@ -1330,14 +1231,15 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
         return;
     }
 
-    WD_LOG_DEBUG("WayDisplay stats/s: mode=%s requested_mode=%s max_tiles_per_sec=%u retx_tiles_per_sec=%u "
+    WD_LOG_DEBUG("WayDisplay stats/s: mode=%s requested_mode=%s limited_udp_kib_per_sec=%llu "
                  "dirty_tiles=%llu udp_tiles_sent=%llu udp_pkts=%llu udp_kib=%.1f udp_pressure_drops=%llu "
                  "tcp_hello_rx=%llu tcp_cfg_tx=%llu tcp_summary_tx=%llu retx_req_rx=%llu "
                  "retx_tiles_req=%llu "
                  "key_rx=%llu key_injected=%llu key_dropped=%llu pointer_rx=%llu pointer_injected=%llu "
                  "pointer_dropped=%llu input_net_avg_ms=n/a input_queue_avg_ms=%.2f "
                  "input_to_summary_avg_ms=%.2f",
-                 wd_stream_mode_name(effective_mode), wd_stream_mode_name(requested_mode), max_tiles_per_second, retx_tiles_per_second,
+                 wd_stream_mode_name(effective_mode), wd_stream_mode_name(requested_mode),
+                 (unsigned long long)limited_udp_kib_per_second,
                  (unsigned long long)s.dirty_tiles, (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_packets_sent,
                  (double)s.udp_bytes_sent / 1024.0, (unsigned long long)s.udp_send_pressure_drops,
                  (unsigned long long)s.tcp_hello_rx, (unsigned long long)s.tcp_config_tx,

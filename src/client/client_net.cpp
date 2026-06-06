@@ -232,6 +232,94 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
     return wd_send_tcp_message(state.tcp_fd, WD_MSG_MTU_PROBE_RESULT, &result, sizeof(result));
 }
 
+bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
+    if (payload_size < sizeof(wd_throughput_probe_start_payload))
+    {
+        return false;
+    }
+
+    wd_throughput_probe_start_payload start{};
+    std::memcpy(&start, payload, sizeof(start));
+
+    if (start.probe_count == 0 || start.payload_size == 0)
+    {
+        return false;
+    }
+
+    uint32_t bytes_received = 0;
+    uint16_t packets_received = 0;
+    const uint64_t start_ns = wd_now_ns();
+    const uint64_t deadline_ns = start_ns + (static_cast<uint64_t>(start.duration_ms) + 500ull) * 1000ull * 1000ull;
+
+    std::vector<uint8_t> recvbuf(sizeof(wd_udp_tile_packet_header) + 65535);
+
+    while (wd_now_ns() < deadline_ns && packets_received < start.probe_count)
+    {
+        ssize_t n = ::recv(state.udp_fd, recvbuf.data(), recvbuf.size(), 0);
+
+        if (n < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                usleep(1000);
+                continue;
+            }
+
+            if (errno == EINTR)
+            {
+                continue;
+            }
+
+            break;
+        }
+
+        if (static_cast<size_t>(n) < sizeof(wd_udp_tile_packet_header))
+        {
+            continue;
+        }
+
+        wd_udp_tile_packet_header h{};
+        std::memcpy(&h, recvbuf.data(), sizeof(h));
+
+        if (h.tile_id != WD_UDP_TILE_ID_THROUGHPUT_PROBE)
+        {
+            continue;
+        }
+
+        if (h.tile_generation != start.session_id || h.tile_pkt_count != start.probe_count || h.tile_pkt_id >= start.probe_count)
+        {
+            continue;
+        }
+
+        if (h.payload_size != start.payload_size || h.compressed_tile_size != h.payload_size)
+        {
+            continue;
+        }
+
+        if (static_cast<size_t>(n) != sizeof(wd_udp_tile_packet_header) + h.payload_size)
+        {
+            continue;
+        }
+
+        bytes_received += static_cast<uint32_t>(n);
+        packets_received++;
+    }
+
+    uint16_t duration_ms = start.duration_ms;
+    if (duration_ms == 0)
+    {
+        duration_ms = 1;
+    }
+
+    wd_throughput_probe_result_payload result{};
+    result.session_id      = start.session_id;
+    result.bytes_received = bytes_received;
+    result.packets_received = packets_received;
+    result.duration_ms = duration_ms;
+
+    return wd_send_tcp_message(state.tcp_fd, WD_MSG_THROUGHPUT_PROBE_RESULT, &result, sizeof(result));
+}
+
 bool receive_server_config(ClientState& state) {
     wd_client_hello_payload hello{};
     hello.client_udp_port      = state.client_udp_port;
@@ -239,7 +327,7 @@ bool receive_server_config(ClientState& state) {
     hello.target_fps           = state.stream_config.target_fps;
     hello.desired_width        = state.desired_width;
     hello.desired_height       = state.desired_height;
-    hello.max_tiles_per_second = state.stream_config.max_tiles_per_second;
+    hello.reserved1 = 0;
 
     if (!wd_send_tcp_message(state.tcp_fd, WD_MSG_CLIENT_HELLO, &hello, sizeof(hello)))
     {
@@ -267,6 +355,20 @@ bool receive_server_config(ClientState& state) {
             if (!ok)
             {
                 std::fprintf(stderr, "failed UDP MTU probe\n");
+                return false;
+            }
+
+            continue;
+        }
+
+        if (message_type == WD_MSG_THROUGHPUT_PROBE_START)
+        {
+            const bool ok = handle_throughput_probe_start(state, payload, payload_size);
+            std::free(payload);
+
+            if (!ok)
+            {
+                std::fprintf(stderr, "failed UDP throughput probe\n");
                 return false;
             }
 

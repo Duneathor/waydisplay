@@ -15,7 +15,8 @@ extern "C" {
  * Integer value is compared directly on same-endian Linux peers.
  */
 #define WD_TCP_MAGIC             0x54434457u
-#define WD_UDP_TILE_ID_MTU_PROBE 0xffffu
+#define WD_UDP_TILE_ID_MTU_PROBE        0xffffu
+#define WD_UDP_TILE_ID_THROUGHPUT_PROBE 0xfffeu
 
 enum wd_message_type {
     WD_MSG_CLIENT_HELLO            = 1,
@@ -32,6 +33,8 @@ enum wd_message_type {
     WD_MSG_PRIMARY_REQUEST         = 12,
     WD_MSG_CURSOR_SHAPE            = 13,
     WD_MSG_DISPLAY_RESIZE          = 14,
+    WD_MSG_THROUGHPUT_PROBE_START  = 15,
+    WD_MSG_THROUGHPUT_PROBE_RESULT = 16,
     WD_MSG_ERROR                   = 255,
 };
 
@@ -65,8 +68,7 @@ enum wd_stream_mode {
     WD_STREAM_MODE_PARTIAL = 2,
 
     /*
-     * Send at most max_tiles_per_second.
-     * Tile budget is the bottleneck, not frame rate.
+     * Use the probed byte budget as the bottleneck instead of frame cadence.
      */
     WD_STREAM_MODE_LIMITED = 3,
 
@@ -140,10 +142,10 @@ struct wd_client_hello_payload {
     uint16_t reserved0;
 
     /*
-     * Used by WD_STREAM_MODE_LIMITED.
-     * 0 means server default.
+     * Reserved for future client-selected byte-rate policy.
+     * The server currently derives the byte budget from throughput probing.
      */
-    uint32_t max_tiles_per_second;
+    uint32_t reserved1;
 };
 
 struct wd_server_config_payload {
@@ -285,6 +287,21 @@ struct wd_mtu_probe_result_payload {
     uint16_t reserved;
 };
 
+struct wd_throughput_probe_start_payload {
+    uint32_t session_id;
+    uint16_t probe_count;
+    uint16_t payload_size;
+    uint16_t duration_ms;
+    uint16_t reserved;
+};
+
+struct wd_throughput_probe_result_payload {
+    uint32_t session_id;
+    uint32_t bytes_received;
+    uint16_t packets_received;
+    uint16_t duration_ms;
+};
+
 #define WD_SELECTION_MIME_TEXT_UTF8  1u
 #define WD_SELECTION_MIME_TEXT_PLAIN 2u
 #define WD_SELECTION_MAX_TEXT_BYTES  (1024u * 1024u)
@@ -320,6 +337,8 @@ static_assert(sizeof(struct wd_client_hello_payload) == 16, "unexpected wd_clien
 static_assert(sizeof(struct wd_pointer_event_payload) == 28, "unexpected wd_pointer_event_payload size");
 static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mtu_probe_start_payload size");
 static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8, "unexpected wd_mtu_probe_result_payload size");
+static_assert(sizeof(struct wd_throughput_probe_start_payload) == 12, "unexpected wd_throughput_probe_start_payload size");
+static_assert(sizeof(struct wd_throughput_probe_result_payload) == 12, "unexpected wd_throughput_probe_result_payload size");
 static_assert(sizeof(struct wd_retransmit_entry) == 4, "unexpected wd_retransmit_entry size");
 static_assert(sizeof(struct wd_selection_payload_header) == 12, "unexpected wd_selection_payload_header size");
 static_assert(sizeof(struct wd_cursor_shape_payload) == 8, "unexpected wd_cursor_shape_payload size");
@@ -331,6 +350,8 @@ _Static_assert(sizeof(struct wd_client_hello_payload) == 16, "unexpected wd_clie
 _Static_assert(sizeof(struct wd_pointer_event_payload) == 28, "unexpected wd_pointer_event_payload size");
 _Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mtu_probe_start_payload size");
 _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8, "unexpected wd_mtu_probe_result_payload size");
+_Static_assert(sizeof(struct wd_throughput_probe_start_payload) == 12, "unexpected wd_throughput_probe_start_payload size");
+_Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 12, "unexpected wd_throughput_probe_result_payload size");
 _Static_assert(sizeof(struct wd_retransmit_entry) == 4, "unexpected wd_retransmit_entry size");
 _Static_assert(sizeof(struct wd_selection_payload_header) == 12, "unexpected wd_selection_payload_header size");
 _Static_assert(sizeof(struct wd_cursor_shape_payload) == 8, "unexpected wd_cursor_shape_payload size");

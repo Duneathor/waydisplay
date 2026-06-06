@@ -234,19 +234,15 @@ struct wd_stream_policy {
     uint16_t requested_mode;
     uint16_t mode;
     uint16_t target_fps;
-    uint32_t max_tiles_per_second;
 
     uint32_t throttle_bad_windows;
     uint32_t throttle_good_windows;
 
-    uint32_t max_retransmit_tiles_per_second;
-    double   retransmit_tile_tokens;
-    uint64_t last_retransmit_token_refill_ns;
-
     uint64_t last_frame_send_ns;
 
-    double   tile_tokens;
-    uint64_t last_token_refill_ns;
+    uint64_t limited_udp_bytes_per_second;
+    double   limited_udp_byte_tokens;
+    uint64_t last_limited_udp_byte_refill_ns;
 };
 
 struct wd_queued_key_event {
@@ -502,18 +498,14 @@ bool wd_stream_init(struct wd_server* server);
 void wd_stream_destroy(struct wd_server* server);
 bool wd_stream_send_dirty_tiles(struct wd_server* server);
 bool wd_stream_send_generation_summary_locked(struct wd_server* server);
-bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id, bool* launched, bool* send_blocked);
+bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id, bool* launched, bool* send_blocked, uint32_t* bytes_sent);
 bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id);
 void wd_stream_print_and_reset_stats(struct wd_server* server);
 
 void     wd_stream_policy_set_defaults(struct wd_stream_policy* policy);
 void     wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const struct wd_client_hello_payload* hello);
+void     wd_stream_policy_set_limited_udp_byte_rate(struct wd_stream_policy* policy, uint64_t bytes_per_second);
 bool     wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_ns);
-uint32_t wd_stream_policy_tile_budget(struct wd_server* server, uint64_t now_ns);
-void     wd_stream_policy_consume_tiles(struct wd_server* server, uint32_t count);
-uint32_t wd_stream_policy_retransmit_budget(struct wd_server* server, uint64_t now_ns);
-
-void wd_stream_policy_consume_retransmit_tiles(struct wd_server* server, uint32_t count);
 void wd_server_mark_scene_dirty(struct wd_server* server);
 void wd_server_mark_rect_dirty(struct wd_server* server, int x, int y, int width, int height);
 void wd_server_mark_view_dirty(struct wd_view* view);

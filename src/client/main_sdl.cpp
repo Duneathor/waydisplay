@@ -19,12 +19,11 @@ void usage(const char* argv0) {
                  "  --mode limited              Cap by tile budget, default 120 tiles/sec\n"
                  "  --mode live                 Lossy mode for video\n"
                  "  --fps <N>                   Target FPS for partial mode\n"
-                 "  --max-tiles-per-sec <N>     Tile budget for limited mode\n"
                  "  --size <WxH>                 Request remote display size\n\n"
                  "Examples:\n"
                  "  %s 127.0.0.1 5000 6000 --mode full\n"
                  "  %s 127.0.0.1 5000 6000 --mode partial --fps 30\n"
-                 "  %s 127.0.0.1 5000 6000 --mode limited --max-tiles-per-sec 120\n",
+                 "  %s 127.0.0.1 5000 6000 --mode limited\n",
                  argv0, argv0, argv0, argv0);
 }
 
@@ -43,24 +42,6 @@ bool parse_u16(const char* text, uint16_t& out) {
     }
 
     out = static_cast<uint16_t>(value);
-    return true;
-}
-
-bool parse_u32(const char* text, uint32_t& out) {
-    if (!text || !*text)
-    {
-        return false;
-    }
-
-    char*         end   = nullptr;
-    unsigned long value = std::strtoul(text, &end, 10);
-
-    if (!end || *end != '\0' || value > 0xfffffffful)
-    {
-        return false;
-    }
-
-    out = static_cast<uint32_t>(value);
     return true;
 }
 
@@ -151,16 +132,6 @@ int main(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--fps") == 0)
         {
             if (i + 1 >= argc || !parse_u16(argv[i + 1], stream_config.target_fps) || stream_config.target_fps == 0)
-            {
-                usage(argv[0]);
-                return 1;
-            }
-
-            ++i;
-        }
-        else if (std::strcmp(argv[i], "--max-tiles-per-sec") == 0)
-        {
-            if (i + 1 >= argc || !parse_u32(argv[i + 1], stream_config.max_tiles_per_second) || stream_config.max_tiles_per_second == 0)
             {
                 usage(argv[0]);
                 return 1;
