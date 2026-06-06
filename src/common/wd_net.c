@@ -11,12 +11,18 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+#ifdef MSG_NOSIGNAL
+#define WD_SEND_FLAGS MSG_NOSIGNAL
+#else
+#define WD_SEND_FLAGS 0
+#endif
+
 bool wd_send_all(int fd, const void* data, size_t size) {
     const uint8_t* p = (const uint8_t*)data;
 
     while (size > 0)
     {
-        ssize_t n = send(fd, p, size, 0);
+        ssize_t n = send(fd, p, size, WD_SEND_FLAGS);
 
         if (n < 0)
         {
@@ -72,7 +78,12 @@ bool wd_recv_all(int fd, void* data, size_t size) {
 static bool wd_writev_all(int fd, struct iovec* iov, int iovcnt) {
     while (iovcnt > 0)
     {
-        ssize_t n = writev(fd, iov, iovcnt);
+        struct msghdr msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_iov    = iov;
+        msg.msg_iovlen = iovcnt;
+
+        ssize_t n = sendmsg(fd, &msg, WD_SEND_FLAGS);
 
         if (n < 0)
         {

@@ -497,7 +497,7 @@ bool wd_stream_init(struct wd_server* server);
 void wd_stream_destroy(struct wd_server* server);
 bool wd_stream_send_dirty_tiles(struct wd_server* server);
 bool wd_stream_send_generation_summary_locked(struct wd_server* server);
-bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id);
+bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id, bool* launched, bool* send_blocked);
 bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id);
 void wd_stream_print_and_reset_stats(struct wd_server* server);
 
