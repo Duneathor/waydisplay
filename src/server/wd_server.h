@@ -205,6 +205,7 @@ struct wd_stats {
     uint64_t udp_tiles_sent;
     uint64_t udp_packets_sent;
     uint64_t udp_bytes_sent;
+    uint64_t udp_send_pressure_drops;
 
     uint64_t tcp_hello_rx;
     uint64_t tcp_config_tx;
@@ -230,9 +231,13 @@ struct wd_stats {
 };
 
 struct wd_stream_policy {
+    uint16_t requested_mode;
     uint16_t mode;
     uint16_t target_fps;
     uint32_t max_tiles_per_second;
+
+    uint32_t throttle_bad_windows;
+    uint32_t throttle_good_windows;
 
     uint32_t max_retransmit_tiles_per_second;
     double   retransmit_tile_tokens;

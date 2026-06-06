@@ -12,6 +12,35 @@
 
 #define WD_UDP_SEND_PRESSURE_LOG_INTERVAL_NS 1000000000ull
 
+static const char* wd_stream_mode_name(uint16_t mode) {
+    switch (mode)
+    {
+    case WD_STREAM_MODE_FULL:
+        return "full";
+    case WD_STREAM_MODE_PARTIAL:
+        return "partial";
+    case WD_STREAM_MODE_LIMITED:
+        return "limited";
+    case WD_STREAM_MODE_LIVE:
+        return "live";
+    default:
+        return "unknown";
+    }
+}
+
+static void wd_stream_policy_reset_tokens(struct wd_stream_policy* policy) {
+    if (!policy)
+    {
+        return;
+    }
+
+    policy->retransmit_tile_tokens          = 0.0;
+    policy->last_retransmit_token_refill_ns = 0;
+    policy->last_frame_send_ns              = 0;
+    policy->tile_tokens                     = 0.0;
+    policy->last_token_refill_ns            = 0;
+}
+
 void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     if (!policy)
     {
@@ -20,15 +49,14 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
 
     memset(policy, 0, sizeof(*policy));
 
+    policy->requested_mode                  = WD_STREAM_MODE_PARTIAL;
     policy->mode                            = WD_STREAM_MODE_PARTIAL;
     policy->target_fps                      = WD_DEFAULT_PARTIAL_FPS;
     policy->max_tiles_per_second            = WD_DEFAULT_LIMITED_TILES_PER_SECOND;
+    policy->throttle_bad_windows            = 0;
+    policy->throttle_good_windows           = 0;
     policy->max_retransmit_tiles_per_second = WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND;
-    policy->retransmit_tile_tokens          = 0.0;
-    policy->last_retransmit_token_refill_ns = 0;
-    policy->last_frame_send_ns              = 0;
-    policy->tile_tokens                     = 0.0;
-    policy->last_token_refill_ns            = 0;
+    wd_stream_policy_reset_tokens(policy);
 }
 
 void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const struct wd_client_hello_payload* hello) {
@@ -104,15 +132,139 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
         retx_tiles = WD_MAX_REASONABLE_RETRANSMIT_TILES_PER_SECOND;
     }
 
+    policy->requested_mode                  = mode;
     policy->mode                            = mode;
     policy->target_fps                      = fps;
     policy->max_tiles_per_second            = max_tiles;
+    policy->throttle_bad_windows            = 0;
+    policy->throttle_good_windows           = 0;
     policy->max_retransmit_tiles_per_second = retx_tiles;
-    policy->retransmit_tile_tokens          = 0.0;
-    policy->last_retransmit_token_refill_ns = 0;
-    policy->last_frame_send_ns              = 0;
-    policy->tile_tokens                     = 0.0;
-    policy->last_token_refill_ns            = 0;
+    wd_stream_policy_reset_tokens(policy);
+}
+
+static uint32_t wd_stream_retransmit_rate_for_mode(uint16_t mode, uint32_t max_tiles_per_second) {
+    switch (mode)
+    {
+    case WD_STREAM_MODE_FULL:
+        return WD_FULL_MODE_RETRANSMIT_TILES_PER_SECOND;
+    case WD_STREAM_MODE_PARTIAL:
+        return WD_PARTIAL_MODE_RETRANSMIT_TILES_PER_SECOND;
+    case WD_STREAM_MODE_LIMITED: {
+        uint32_t retx_tiles = max_tiles_per_second / WD_LIMITED_MODE_RETRANSMIT_DIVISOR;
+        if (retx_tiles < WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC)
+        {
+            retx_tiles = WD_LIMITED_MODE_RETRANSMIT_MIN_TILES_PER_SEC;
+        }
+        return retx_tiles;
+    }
+    default:
+        return WD_DEFAULT_RETRANSMIT_TILES_PER_SECOND;
+    }
+}
+
+static void wd_stream_policy_set_effective_mode_locked(struct wd_stream_policy* policy, uint16_t mode) {
+    if (!policy || policy->mode == mode)
+    {
+        return;
+    }
+
+    uint16_t old_mode = policy->mode;
+
+    policy->mode                            = mode;
+    policy->max_retransmit_tiles_per_second = wd_stream_retransmit_rate_for_mode(mode, policy->max_tiles_per_second);
+    if (policy->max_retransmit_tiles_per_second > WD_MAX_REASONABLE_RETRANSMIT_TILES_PER_SECOND)
+    {
+        policy->max_retransmit_tiles_per_second = WD_MAX_REASONABLE_RETRANSMIT_TILES_PER_SECOND;
+    }
+    policy->throttle_bad_windows  = 0;
+    policy->throttle_good_windows = 0;
+    wd_stream_policy_reset_tokens(policy);
+
+    WD_LOG_INFO("WayDisplay: adaptive stream throttle: %s -> %s requested=%s max_tiles_per_sec=%u retx_tiles_per_sec=%u",
+                wd_stream_mode_name(old_mode), wd_stream_mode_name(policy->mode), wd_stream_mode_name(policy->requested_mode),
+                policy->max_tiles_per_second, policy->max_retransmit_tiles_per_second);
+}
+
+static uint16_t wd_stream_next_lower_mode(uint16_t mode) {
+    switch (mode)
+    {
+    case WD_STREAM_MODE_FULL:
+        return WD_STREAM_MODE_PARTIAL;
+    case WD_STREAM_MODE_PARTIAL:
+        return WD_STREAM_MODE_LIMITED;
+    default:
+        return mode;
+    }
+}
+
+static uint16_t wd_stream_next_higher_mode(uint16_t mode, uint16_t requested_mode) {
+    if (mode == WD_STREAM_MODE_LIMITED && requested_mode <= WD_STREAM_MODE_PARTIAL)
+    {
+        return WD_STREAM_MODE_PARTIAL;
+    }
+
+    if (mode == WD_STREAM_MODE_PARTIAL && requested_mode == WD_STREAM_MODE_FULL)
+    {
+        return WD_STREAM_MODE_FULL;
+    }
+
+    return mode;
+}
+
+static void wd_stream_policy_update_adaptive_locked(struct wd_stream_policy* policy, const struct wd_stats* stats) {
+    if (!policy || !stats || policy->requested_mode == WD_STREAM_MODE_LIVE || policy->requested_mode == WD_STREAM_MODE_LIMITED)
+    {
+        return;
+    }
+
+    bool send_pressure = stats->udp_send_pressure_drops != 0;
+
+    uint64_t fresh_tiles_for_ratio = stats->dirty_tiles;
+    if (fresh_tiles_for_ratio < WD_THROTTLE_MIN_FRESH_TILES_FOR_RATIO)
+    {
+        fresh_tiles_for_ratio = WD_THROTTLE_MIN_FRESH_TILES_FOR_RATIO;
+    }
+
+    bool repair_ratio_high =
+        stats->retx_tiles_req * WD_THROTTLE_REPAIR_RATIO_DENOMINATOR >= fresh_tiles_for_ratio * WD_THROTTLE_REPAIR_RATIO_NUMERATOR;
+
+    bool repair_storm = stats->retx_req_rx >= WD_THROTTLE_REPAIR_STORM_REQUESTS_PER_SEC &&
+                        stats->retx_tiles_req >= WD_THROTTLE_REPAIR_STORM_TILES_PER_SECOND;
+
+    bool bad_window = send_pressure || repair_storm || (stats->retx_req_rx != 0 && repair_ratio_high);
+
+    if (bad_window)
+    {
+        policy->throttle_good_windows = 0;
+        policy->throttle_bad_windows++;
+
+        uint32_t downgrade_windows = send_pressure ? WD_THROTTLE_PRESSURE_DOWNGRADE_WINDOWS : WD_THROTTLE_BAD_WINDOWS_TO_DOWNGRADE;
+        if (policy->throttle_bad_windows >= downgrade_windows)
+        {
+            uint16_t lower_mode = wd_stream_next_lower_mode(policy->mode);
+            if (lower_mode != policy->mode)
+            {
+                wd_stream_policy_set_effective_mode_locked(policy, lower_mode);
+            }
+        }
+
+        return;
+    }
+
+    policy->throttle_bad_windows = 0;
+
+    if (policy->mode != policy->requested_mode)
+    {
+        policy->throttle_good_windows++;
+        if (policy->throttle_good_windows >= WD_THROTTLE_GOOD_WINDOWS_TO_UPGRADE)
+        {
+            uint16_t higher_mode = wd_stream_next_higher_mode(policy->mode, policy->requested_mode);
+            if (higher_mode != policy->mode)
+            {
+                wd_stream_policy_set_effective_mode_locked(policy, higher_mode);
+            }
+        }
+    }
 }
 
 bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_ns) {
@@ -384,6 +536,7 @@ static void wd_note_udp_send_pressure_locked(struct wd_net_state* net, int send_
     }
 
     net->udp_send_pressure_drops++;
+    net->stats.udp_send_pressure_drops++;
 
     uint64_t now = wd_now_ns();
     if (net->udp_send_pressure_log_ns != 0 && now - net->udp_send_pressure_log_ns < WD_UDP_SEND_PRESSURE_LOG_INTERVAL_NS)
@@ -1119,6 +1272,11 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
 
     struct wd_stats s = net->stats;
     memset(&net->stats, 0, sizeof(net->stats));
+    wd_stream_policy_update_adaptive_locked(&net->stream_policy, &s);
+    uint16_t effective_mode = net->stream_policy.mode;
+    uint16_t requested_mode = net->stream_policy.requested_mode;
+    uint32_t max_tiles_per_second = net->stream_policy.max_tiles_per_second;
+    uint32_t retx_tiles_per_second = net->stream_policy.max_retransmit_tiles_per_second;
 
     pthread_mutex_unlock(&net->lock);
 
@@ -1128,7 +1286,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
      * enabled without spamming logs.
      */
     bool useful_activity = s.dirty_tiles != 0 || s.udp_tiles_sent != 0 || s.udp_packets_sent != 0 || s.udp_bytes_sent != 0 ||
-                           s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 || s.retx_req_rx != 0 || s.retx_tiles_req != 0 ||
+                           s.udp_send_pressure_drops != 0 || s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 || s.retx_req_rx != 0 || s.retx_tiles_req != 0 ||
                            s.key_events_rx != 0 || s.key_events_injected != 0 || s.key_events_dropped != 0 || s.pointer_events_rx != 0 ||
                            s.pointer_events_injected != 0 || s.pointer_events_dropped != 0;
 
@@ -1137,14 +1295,17 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
         return;
     }
 
-    WD_LOG_DEBUG("WayDisplay stats/s: dirty_tiles=%llu udp_tiles_sent=%llu udp_pkts=%llu udp_kib=%.1f "
+    WD_LOG_DEBUG("WayDisplay stats/s: mode=%s requested_mode=%s max_tiles_per_sec=%u retx_tiles_per_sec=%u "
+                 "dirty_tiles=%llu udp_tiles_sent=%llu udp_pkts=%llu udp_kib=%.1f udp_pressure_drops=%llu "
                  "tcp_hello_rx=%llu tcp_cfg_tx=%llu tcp_summary_tx=%llu retx_req_rx=%llu "
                  "retx_tiles_req=%llu "
                  "key_rx=%llu key_injected=%llu key_dropped=%llu pointer_rx=%llu pointer_injected=%llu "
                  "pointer_dropped=%llu input_net_avg_ms=n/a input_queue_avg_ms=%.2f "
                  "input_to_summary_avg_ms=%.2f",
+                 wd_stream_mode_name(effective_mode), wd_stream_mode_name(requested_mode), max_tiles_per_second, retx_tiles_per_second,
                  (unsigned long long)s.dirty_tiles, (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_packets_sent,
-                 (double)s.udp_bytes_sent / 1024.0, (unsigned long long)s.tcp_hello_rx, (unsigned long long)s.tcp_config_tx,
+                 (double)s.udp_bytes_sent / 1024.0, (unsigned long long)s.udp_send_pressure_drops,
+                 (unsigned long long)s.tcp_hello_rx, (unsigned long long)s.tcp_config_tx,
                  (unsigned long long)s.tcp_summary_tx, (unsigned long long)s.retx_req_rx, (unsigned long long)s.retx_tiles_req,
                  (unsigned long long)s.key_events_rx, (unsigned long long)s.key_events_injected, (unsigned long long)s.key_events_dropped,
                  (unsigned long long)s.pointer_events_rx, (unsigned long long)s.pointer_events_injected,
