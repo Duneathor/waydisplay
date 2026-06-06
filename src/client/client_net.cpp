@@ -150,7 +150,17 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
             continue;
         }
 
-        if (static_cast<size_t>(n) < sizeof(wd_udp_tile_packet_header) + h.payload_size)
+        if (h.tile_generation != start.session_id || h.tile_pkt_count != start.probe_count || h.tile_pkt_id >= start.probe_count)
+        {
+            continue;
+        }
+
+        if (h.compressed_tile_size != h.payload_size)
+        {
+            continue;
+        }
+
+        if (static_cast<size_t>(n) != sizeof(wd_udp_tile_packet_header) + h.payload_size)
         {
             continue;
         }

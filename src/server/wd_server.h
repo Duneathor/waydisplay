@@ -288,6 +288,8 @@ struct wd_net_state {
     struct wd_stats        stats;
     uint64_t               last_input_inject_ns;
     bool                   input_since_last_summary;
+    uint64_t               udp_send_pressure_log_ns;
+    uint64_t               udp_send_pressure_drops;
 
     struct wd_queued_key_event key_queue[WD_KEY_QUEUE_CAP];
     size_t                     key_queue_count;

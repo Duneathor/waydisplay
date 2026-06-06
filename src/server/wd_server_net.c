@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <stdlib.h>
 #include <string.h>
@@ -130,6 +131,60 @@ void wd_net_destroy(struct wd_server* server) {
     pthread_mutex_destroy(&net->lock);
 }
 
+struct wd_udp_mtu_probe_df_state {
+    bool supported;
+    bool have_old_value;
+    int  old_value;
+};
+
+static struct wd_udp_mtu_probe_df_state wd_udp_mtu_probe_enable_df(int udp_fd) {
+    struct wd_udp_mtu_probe_df_state state;
+    memset(&state, 0, sizeof(state));
+
+#if defined(IP_MTU_DISCOVER)
+    socklen_t old_len = sizeof(state.old_value);
+    if (getsockopt(udp_fd, IPPROTO_IP, IP_MTU_DISCOVER, &state.old_value, &old_len) == 0)
+    {
+        state.have_old_value = true;
+    }
+
+#    if defined(IP_PMTUDISC_PROBE)
+    const int mode = IP_PMTUDISC_PROBE;
+#    elif defined(IP_PMTUDISC_DO)
+    const int mode = IP_PMTUDISC_DO;
+#    else
+    const int mode = -1;
+#    endif
+
+    if (mode >= 0 && setsockopt(udp_fd, IPPROTO_IP, IP_MTU_DISCOVER, &mode, sizeof(mode)) == 0)
+    {
+        state.supported = true;
+    }
+#else
+    (void)udp_fd;
+#endif
+
+    return state;
+}
+
+static void wd_udp_mtu_probe_restore_df(int udp_fd, const struct wd_udp_mtu_probe_df_state* state) {
+#if defined(IP_MTU_DISCOVER)
+    if (state && state->have_old_value)
+    {
+        (void)setsockopt(udp_fd, IPPROTO_IP, IP_MTU_DISCOVER, &state->old_value, sizeof(state->old_value));
+        return;
+    }
+
+#    if defined(IP_PMTUDISC_WANT)
+    const int mode = IP_PMTUDISC_WANT;
+    (void)setsockopt(udp_fd, IPPROTO_IP, IP_MTU_DISCOVER, &mode, sizeof(mode));
+#    endif
+#else
+    (void)udp_fd;
+    (void)state;
+#endif
+}
+
 static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const struct sockaddr_in* client_udp_addr) {
     struct wd_net_state* net = &server->net;
 
@@ -167,8 +222,18 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
         return WD_UDP_PAYLOAD_TARGET;
     }
 
+    struct wd_udp_mtu_probe_df_state df_state = wd_udp_mtu_probe_enable_df(net->udp_fd);
+    if (!df_state.supported)
+    {
+        WD_LOG_INFO("WayDisplay: UDP MTU probe could not force DF; using default UDP payload target: %u", WD_UDP_PAYLOAD_TARGET);
+        return WD_UDP_PAYLOAD_TARGET;
+    }
+
     /*
      * Give the client a moment to enter its UDP-probe receive loop.
+     * Probe packets are sent with IPv4 DF set so successful receipt means
+     * the datagram fit the path MTU instead of being IP-fragmented and
+     * reassembled.
      */
     wd_sleep_ms(10);
 
@@ -177,6 +242,7 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
     for (uint16_t i = 0; i < probe_count; ++i)
     {
         uint16_t payload_size = probe_sizes[i];
+        size_t   packet_size  = sizeof(struct wd_udp_tile_packet_header) + payload_size;
 
         memset(packet, 0, sizeof(packet));
 
@@ -191,18 +257,19 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
 
         memset(packet + sizeof(*h), 0xa5, payload_size);
 
-        ssize_t sent =
-            sendto(net->udp_fd, packet, sizeof(*h) + payload_size, 0, (const struct sockaddr*)client_udp_addr, sizeof(*client_udp_addr));
+        ssize_t sent = sendto(net->udp_fd, packet, packet_size, 0, (const struct sockaddr*)client_udp_addr, sizeof(*client_udp_addr));
 
-        if (sent < 0)
+        if (sent < 0 || (size_t)sent != packet_size)
         {
             /*
-             * Expected for jumbo probes on non-jumbo paths. Keep trying
-             * smaller probes.
+             * EMSGSIZE is expected for probes above the path/interface MTU
+             * when DF is set. Keep trying smaller probes.
              */
             continue;
         }
     }
+
+    wd_udp_mtu_probe_restore_df(net->udp_fd, &df_state);
 
     uint16_t type         = 0;
     uint8_t* payload      = NULL;

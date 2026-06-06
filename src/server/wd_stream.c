@@ -10,6 +10,8 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
+#define WD_UDP_SEND_PRESSURE_LOG_INTERVAL_NS 1000000000ull
+
 void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     if (!policy)
     {
@@ -375,17 +377,42 @@ void wd_stream_destroy(struct wd_server* server) {
     server->damage_tile_count = 0;
 }
 
-bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id) {
+static void wd_note_udp_send_pressure_locked(struct wd_net_state* net, int send_errno) {
+    if (!net)
+    {
+        return;
+    }
+
+    net->udp_send_pressure_drops++;
+
+    uint64_t now = wd_now_ns();
+    if (net->udp_send_pressure_log_ns != 0 && now - net->udp_send_pressure_log_ns < WD_UDP_SEND_PRESSURE_LOG_INTERVAL_NS)
+    {
+        return;
+    }
+
+    uint64_t drops = net->udp_send_pressure_drops;
+    net->udp_send_pressure_drops = 0;
+    net->udp_send_pressure_log_ns = now;
+
+    WD_LOG_DEBUG("WayDisplay: dropped %llu UDP tile packets under send pressure: %s", (unsigned long long)drops, strerror(send_errno));
+}
+
+static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_t tile_id, uint64_t generation, uint64_t timestamp_ns,
+                                               const uint8_t* compressed, uint32_t compressed_size, bool* launched) {
     struct wd_net_state* net = &server->net;
+
+    if (launched)
+    {
+        *launched = false;
+    }
 
     if (tile_id >= server->total_tiles)
     {
         return false;
     }
 
-    struct wd_cached_tile* cache = &net->tiles[tile_id];
-
-    if (!net->client_connected || cache->compressed_size == 0 || !cache->compressed)
+    if (!net->client_connected || compressed_size == 0 || !compressed)
     {
         return true;
     }
@@ -407,14 +434,14 @@ bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_i
         udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
 
-    uint16_t packet_count = (uint16_t)((cache->compressed_size + udp_payload_target - 1) / udp_payload_target);
+    uint16_t packet_count = (uint16_t)((compressed_size + udp_payload_target - 1) / udp_payload_target);
 
     for (uint16_t packet_id = 0; packet_id < packet_count; ++packet_id)
     {
         uint32_t offset = (uint32_t)packet_id * udp_payload_target;
 
         uint16_t payload_size =
-            (uint16_t)(((cache->compressed_size - offset) > udp_payload_target) ? udp_payload_target : (cache->compressed_size - offset));
+            (uint16_t)(((compressed_size - offset) > udp_payload_target) ? udp_payload_target : (compressed_size - offset));
 
         struct wd_udp_tile_packet_header h;
         memset(&h, 0, sizeof(h));
@@ -423,15 +450,15 @@ bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_i
         h.tile_pkt_count       = packet_count;
         h.tile_pkt_id          = packet_id;
         h.payload_size         = payload_size;
-        h.tile_generation      = cache->generation;
-        h.compressed_tile_size = cache->compressed_size;
-        h.tile_timestamp_ns    = cache->timestamp_ns;
+        h.tile_generation      = generation;
+        h.compressed_tile_size = compressed_size;
+        h.tile_timestamp_ns    = timestamp_ns;
 
         struct iovec iov[2];
         memset(iov, 0, sizeof(iov));
         iov[0].iov_base = &h;
         iov[0].iov_len  = sizeof(h);
-        iov[1].iov_base = cache->compressed + offset;
+        iov[1].iov_base = (uint8_t*)compressed + offset;
         iov[1].iov_len  = payload_size;
 
         struct msghdr msg;
@@ -447,7 +474,7 @@ bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_i
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS)
             {
-                WD_LOG_DEBUG("WayDisplay: dropping UDP tile packet under send pressure: %s", strerror(errno));
+                wd_note_udp_send_pressure_locked(net, errno);
                 continue;
             }
 
@@ -455,13 +482,35 @@ bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_i
             return false;
         }
 
+        if (launched)
+        {
+            *launched = true;
+        }
+
         net->stats.udp_packets_sent++;
         net->stats.udp_bytes_sent += (uint64_t)sent;
     }
 
-    net->stats.udp_tiles_sent++;
+    if (!launched || *launched)
+    {
+        net->stats.udp_tiles_sent++;
+    }
 
     return true;
+}
+
+bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id) {
+    struct wd_net_state* net = &server->net;
+
+    if (tile_id >= server->total_tiles)
+    {
+        return false;
+    }
+
+    struct wd_cached_tile* cache = &net->tiles[tile_id];
+
+    return wd_stream_send_tile_payload_locked(server, tile_id, cache->generation, cache->timestamp_ns, cache->compressed,
+                                              cache->compressed_size, NULL);
 }
 
 static bool wd_dirty_queue_push_locked(struct wd_net_state* net, uint16_t tile_id, uint16_t total_tiles) {
@@ -509,6 +558,30 @@ static bool wd_dirty_queue_pop_locked(struct wd_net_state* net, uint16_t* out_ti
     }
 
     *out_tile_id = tile_id;
+    return true;
+}
+
+static bool wd_dirty_queue_reinsert_front_locked(struct wd_net_state* net, uint16_t tile_id, uint16_t total_tiles) {
+    if (!net || tile_id >= total_tiles)
+    {
+        return false;
+    }
+
+    if (net->dirty_queued[tile_id])
+    {
+        return true;
+    }
+
+    if (net->dirty_queue_count >= total_tiles)
+    {
+        return false;
+    }
+
+    net->dirty_queue_read = (uint16_t)((net->dirty_queue_read + total_tiles - 1) % total_tiles);
+    net->dirty_queue[net->dirty_queue_read] = tile_id;
+    net->dirty_queue_count++;
+    net->dirty_queued[tile_id] = true;
+
     return true;
 }
 
@@ -591,13 +664,21 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         return true;
     }
 
-    uint8_t tile_bytes[WD_UNCOMPRESSED_TILE_BYTES];
+    uint8_t  tile_bytes[WD_UNCOMPRESSED_TILE_BYTES];
+    size_t   compressed_capacity = wd_zstd_compress_bound(WD_UNCOMPRESSED_TILE_BYTES);
+    uint8_t* compressed_tile     = malloc(compressed_capacity);
+
+    if (!compressed_tile)
+    {
+        return false;
+    }
 
     pthread_mutex_lock(&net->lock);
 
     if (!net->client_connected)
     {
         pthread_mutex_unlock(&net->lock);
+        free(compressed_tile);
         return true;
     }
 
@@ -679,6 +760,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
         wd_stream_policy_consume_tiles(server, tiles_sent_this_pass);
 
+        free(compressed_tile);
         return true;
     }
 
@@ -727,21 +809,34 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
         uint32_t compressed_size = 0;
 
-        if (!wd_zstd_compress(tile_bytes, WD_UNCOMPRESSED_TILE_BYTES, tile->compressed, tile->compressed_capacity, WD_ZSTD_LEVEL,
+        if (!wd_zstd_compress(tile_bytes, WD_UNCOMPRESSED_TILE_BYTES, compressed_tile, (uint32_t)compressed_capacity, WD_ZSTD_LEVEL,
                               &compressed_size))
         {
             WD_LOG_ERROR("WayDisplay: zstd compression failed for dirty tile %u", tile_id);
             continue;
         }
 
-        tile->last_hash = hash;
-        tile->generation++;
+        uint64_t next_generation = tile->generation + 1;
+        bool     launched        = false;
+
+        if (!wd_stream_send_tile_payload_locked(server, tile_id, next_generation, now, compressed_tile, compressed_size, &launched))
+        {
+            continue;
+        }
+
+        if (!launched)
+        {
+            wd_dirty_queue_reinsert_front_locked(net, tile_id, server->total_tiles);
+            break;
+        }
+
+        memcpy(tile->compressed, compressed_tile, compressed_size);
+        tile->last_hash       = hash;
+        tile->generation      = next_generation;
         tile->timestamp_ns    = now;
         tile->compressed_size = compressed_size;
 
         net->stats.dirty_tiles++;
-
-        wd_stream_send_cached_tile_locked(server, tile_id);
         tiles_sent_this_pass++;
     }
 
@@ -755,6 +850,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
     wd_stream_policy_consume_tiles(server, tiles_sent_this_pass);
 
+    free(compressed_tile);
     return true;
 }
 
