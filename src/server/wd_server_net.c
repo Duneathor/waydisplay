@@ -145,23 +145,39 @@ void wd_net_destroy(struct wd_server* server) {
     pthread_mutex_destroy(&net->lock);
 }
 
-struct wd_udp_mtu_probe_df_state {
-    bool supported;
-    bool have_old_value;
-    int  old_value;
-};
-
-static struct wd_udp_mtu_probe_df_state wd_udp_mtu_probe_enable_df(int udp_fd) {
-    struct wd_udp_mtu_probe_df_state state;
-    memset(&state, 0, sizeof(state));
-
+static bool wd_udp_socket_set_pmtu_mode(int udp_fd, int mode) {
 #if defined(IP_MTU_DISCOVER)
-    socklen_t old_len = sizeof(state.old_value);
-    if (getsockopt(udp_fd, IPPROTO_IP, IP_MTU_DISCOVER, &state.old_value, &old_len) == 0)
+    return setsockopt(udp_fd, IPPROTO_IP, IP_MTU_DISCOVER, &mode, sizeof(mode)) == 0;
+#else
+    (void)udp_fd;
+    (void)mode;
+    return false;
+#endif
+}
+
+static void wd_udp_socket_disable_df_best_effort(int udp_fd) {
+#if defined(IP_MTU_DISCOVER) && defined(IP_PMTUDISC_DONT)
+    /*
+     * The MTU probe deliberately forces DF, but the data stream should not
+     * inherit that policy. The payload target is still selected to fit a
+     * normal Ethernet/Wi-Fi MTU, but explicitly allowing fragmentation here
+     * avoids black-holing steady-state tile packets if probe state or host
+     * defaults leave PMTU discovery in a strict DF mode.
+     */
+    (void)wd_udp_socket_set_pmtu_mode(udp_fd, IP_PMTUDISC_DONT);
+#else
+    (void)udp_fd;
+#endif
+}
+
+static int wd_create_udp_mtu_probe_socket(void) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0)
     {
-        state.have_old_value = true;
+        return -1;
     }
 
+#if defined(IP_MTU_DISCOVER)
 #    if defined(IP_PMTUDISC_PROBE)
     const int mode = IP_PMTUDISC_PROBE;
 #    elif defined(IP_PMTUDISC_DO)
@@ -170,33 +186,17 @@ static struct wd_udp_mtu_probe_df_state wd_udp_mtu_probe_enable_df(int udp_fd) {
     const int mode = -1;
 #    endif
 
-    if (mode >= 0 && setsockopt(udp_fd, IPPROTO_IP, IP_MTU_DISCOVER, &mode, sizeof(mode)) == 0)
+    if (mode < 0 || !wd_udp_socket_set_pmtu_mode(fd, mode))
     {
-        state.supported = true;
+        close(fd);
+        return -1;
     }
 #else
-    (void)udp_fd;
+    close(fd);
+    return -1;
 #endif
 
-    return state;
-}
-
-static void wd_udp_mtu_probe_restore_df(int udp_fd, const struct wd_udp_mtu_probe_df_state* state) {
-#if defined(IP_MTU_DISCOVER)
-    if (state && state->have_old_value)
-    {
-        (void)setsockopt(udp_fd, IPPROTO_IP, IP_MTU_DISCOVER, &state->old_value, sizeof(state->old_value));
-        return;
-    }
-
-#    if defined(IP_PMTUDISC_WANT)
-    const int mode = IP_PMTUDISC_WANT;
-    (void)setsockopt(udp_fd, IPPROTO_IP, IP_MTU_DISCOVER, &mode, sizeof(mode));
-#    endif
-#else
-    (void)udp_fd;
-    (void)state;
-#endif
+    return fd;
 }
 
 static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const struct sockaddr_in* client_udp_addr) {
@@ -236,10 +236,11 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
         return WD_UDP_PAYLOAD_TARGET;
     }
 
-    struct wd_udp_mtu_probe_df_state df_state = wd_udp_mtu_probe_enable_df(net->udp_fd);
-    if (!df_state.supported)
+    int probe_udp_fd = wd_create_udp_mtu_probe_socket();
+    if (probe_udp_fd < 0)
     {
         WD_LOG_INFO("WayDisplay: UDP MTU probe could not force DF; using default UDP payload target: %u", WD_UDP_PAYLOAD_TARGET);
+        wd_udp_socket_disable_df_best_effort(net->udp_fd);
         return WD_UDP_PAYLOAD_TARGET;
     }
 
@@ -271,7 +272,7 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
 
         memset(packet + sizeof(*h), 0xa5, payload_size);
 
-        ssize_t sent = sendto(net->udp_fd, packet, packet_size, 0, (const struct sockaddr*)client_udp_addr, sizeof(*client_udp_addr));
+        ssize_t sent = sendto(probe_udp_fd, packet, packet_size, 0, (const struct sockaddr*)client_udp_addr, sizeof(*client_udp_addr));
 
         if (sent < 0 || (size_t)sent != packet_size)
         {
@@ -283,7 +284,9 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
         }
     }
 
-    wd_udp_mtu_probe_restore_df(net->udp_fd, &df_state);
+    close(probe_udp_fd);
+    probe_udp_fd = -1;
+    wd_udp_socket_disable_df_best_effort(net->udp_fd);
 
     uint16_t type         = 0;
     uint8_t* payload      = NULL;
@@ -390,6 +393,8 @@ void* wd_net_thread_main(void* arg) {
     {
         WD_LOG_ERROR("WayDisplay: failed to make UDP socket nonblocking: %s", strerror(errno));
     }
+
+    wd_udp_socket_disable_df_best_effort(net->udp_fd);
 
     WD_LOG_INFO("WayDisplay: network server listening on TCP port %u", net->tcp_port);
 
