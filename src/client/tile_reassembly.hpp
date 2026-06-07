@@ -14,6 +14,8 @@ struct CompletedTile {
     uint64_t             tile_timestamp_ns      = 0;
     uint64_t             first_packet_ns        = 0;
     uint64_t             completed_timestamp_ns = 0;
+    uint32_t             compressed_size        = 0;
+    uint16_t             packet_count           = 0;
     std::vector<uint8_t> tile_bytes;
 };
 
@@ -24,6 +26,8 @@ class TileReassembler {
     void reset();
 
     CompletedTile process_udp_packet(ClientState& state, const uint8_t* packet, size_t packet_size);
+
+    void expire_stale_entries(ClientState& state);
 
   private:
     struct Entry {
@@ -38,6 +42,10 @@ class TileReassembler {
         std::vector<uint8_t> received;
         uint16_t             received_count = 0;
     };
+
+    static uint64_t count_missing_packets(const Entry& entry);
+
+    void expire_entry(ClientState& state, Entry& entry);
 
     std::vector<Entry> entries_;
 };

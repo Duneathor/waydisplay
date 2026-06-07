@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <poll.h>
 #include <unistd.h>
 
 static void wd_close_fd(int* fd) {
@@ -63,26 +64,44 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->running              = true;
     net->tcp_port             = tcp_port;
     net->tcp_fd               = -1;
+    net->input_tcp_fd         = -1;
+    net->selection_tcp_fd     = -1;
     net->listen_fd            = -1;
     net->udp_fd               = -1;
     net->session_id           = 0;
     net->full_frame_needed    = true;
     net->full_frame_next_tile = 0;
+    net->full_frame_start_ns  = 0;
+    net->full_frame_tiles_sent = 0;
     net->dirty_scan_next_tile = 0;
-    net->dirty_queue       = calloc(server->total_tiles, sizeof(*net->dirty_queue));
-    net->dirty_queued      = calloc(server->total_tiles, sizeof(*net->dirty_queued));
-    net->retransmit_queue  = calloc(server->total_tiles, sizeof(*net->retransmit_queue));
-    net->retransmit_queued = calloc(server->total_tiles, sizeof(*net->retransmit_queued));
-    if (!net->dirty_queue || !net->dirty_queued || !net->retransmit_queue || !net->retransmit_queued)
+    net->dirty_queue                 = calloc(server->total_tiles, sizeof(*net->dirty_queue));
+    net->dirty_queued                = calloc(server->total_tiles, sizeof(*net->dirty_queued));
+    net->dirty_queue_enqueued_ns     = calloc(server->total_tiles, sizeof(*net->dirty_queue_enqueued_ns));
+    net->retransmit_queue            = calloc(server->total_tiles, sizeof(*net->retransmit_queue));
+    net->retransmit_queued           = calloc(server->total_tiles, sizeof(*net->retransmit_queued));
+    net->retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*net->retransmit_queue_enqueued_ns));
+    net->retransmit_requested_generation = calloc(server->total_tiles, sizeof(*net->retransmit_requested_generation));
+    net->summary_dirty_tiles         = calloc(server->total_tiles, sizeof(*net->summary_dirty_tiles));
+    if (!net->dirty_queue || !net->dirty_queued || !net->dirty_queue_enqueued_ns || !net->retransmit_queue ||
+        !net->retransmit_queued || !net->retransmit_queue_enqueued_ns || !net->retransmit_requested_generation ||
+        !net->summary_dirty_tiles)
     {
         free(net->dirty_queue);
         free(net->dirty_queued);
+        free(net->dirty_queue_enqueued_ns);
         free(net->retransmit_queue);
         free(net->retransmit_queued);
-        net->dirty_queue        = NULL;
-        net->dirty_queued       = NULL;
-        net->retransmit_queue   = NULL;
-        net->retransmit_queued  = NULL;
+        free(net->retransmit_queue_enqueued_ns);
+        free(net->retransmit_requested_generation);
+        free(net->summary_dirty_tiles);
+        net->dirty_queue                 = NULL;
+        net->dirty_queued                = NULL;
+        net->dirty_queue_enqueued_ns     = NULL;
+        net->retransmit_queue            = NULL;
+        net->retransmit_queued           = NULL;
+        net->retransmit_queue_enqueued_ns = NULL;
+        net->retransmit_requested_generation = NULL;
+        net->summary_dirty_tiles         = NULL;
         pthread_mutex_destroy(&net->lock);
         return false;
     }
@@ -90,8 +109,10 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->dirty_queue_write      = 0;
     net->dirty_queue_count      = 0;
     net->retransmit_queue_count = 0;
-    net->tile_queue_rng_state   = (uint32_t)wd_now_ns() | 1u;
-    net->udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    net->summary_dirty_count    = 0;
+    net->dirty_priority_pop_count      = 0;
+    net->retransmit_priority_pop_count = 0;
+    net->udp_payload_target            = WD_UDP_PAYLOAD_TARGET;
 
     wd_stream_policy_set_defaults(&net->stream_policy);
 
@@ -114,6 +135,16 @@ void wd_net_destroy(struct wd_server* server) {
         close(net->tcp_fd);
         net->tcp_fd = -1;
     }
+    if (net->input_tcp_fd >= 0)
+    {
+        close(net->input_tcp_fd);
+        net->input_tcp_fd = -1;
+    }
+    if (net->selection_tcp_fd >= 0)
+    {
+        close(net->selection_tcp_fd);
+        net->selection_tcp_fd = -1;
+    }
 
     if (net->udp_fd >= 0)
     {
@@ -127,11 +158,24 @@ void wd_net_destroy(struct wd_server* server) {
     free(net->dirty_queued);
     net->dirty_queued = NULL;
 
+    free(net->dirty_queue_enqueued_ns);
+    net->dirty_queue_enqueued_ns = NULL;
+
     free(net->retransmit_queue);
     net->retransmit_queue = NULL;
 
     free(net->retransmit_queued);
     net->retransmit_queued = NULL;
+
+    free(net->retransmit_queue_enqueued_ns);
+    net->retransmit_queue_enqueued_ns = NULL;
+
+    free(net->retransmit_requested_generation);
+    net->retransmit_requested_generation = NULL;
+
+    free(net->summary_dirty_tiles);
+    net->summary_dirty_tiles = NULL;
+    net->summary_dirty_count = 0;
 
     free(net->clipboard_text);
     net->clipboard_text         = NULL;
@@ -452,8 +496,8 @@ static void wd_server_fill_config(struct wd_server* server, uint32_t session_id,
     cfg->session_id         = session_id;
     cfg->width              = (uint16_t)server->display_width;
     cfg->height             = (uint16_t)server->display_height;
-    cfg->tile_width         = WD_TILE_WIDTH;
-    cfg->tile_height        = WD_TILE_HEIGHT;
+    cfg->tile_width         = server->tile_width;
+    cfg->tile_height        = server->tile_height;
     cfg->tiles_x            = server->tiles_x;
     cfg->tiles_y            = server->tiles_y;
     cfg->total_tiles        = server->total_tiles;
@@ -461,6 +505,161 @@ static void wd_server_fill_config(struct wd_server* server, uint32_t session_id,
     cfg->compression_mode   = WD_COMPRESSION_ZSTD;
     cfg->zstd_level         = WD_ZSTD_LEVEL;
     cfg->udp_payload_target = udp_payload_target;
+    cfg->capabilities       = WD_SERVER_CAP_INPUT_CHANNEL | WD_SERVER_CAP_SELECTION_CHANNEL;
+}
+
+static void wd_server_handle_keyboard_message(struct wd_server* server, const struct wd_server_config_payload* cfg,
+                                             const uint8_t* payload, uint32_t payload_size) {
+    struct wd_net_state* net = &server->net;
+
+    if (payload_size < sizeof(struct wd_keyboard_event_payload))
+    {
+        return;
+    }
+
+    struct wd_keyboard_event_payload key;
+    memcpy(&key, payload, sizeof(key));
+
+    if (key.session_id == cfg->session_id && key.evdev_key_code != 0)
+    {
+        pthread_mutex_lock(&net->lock);
+        wd_keyboard_queue_event_locked(net, &key, wd_now_ns());
+        pthread_mutex_unlock(&net->lock);
+    }
+}
+
+static void wd_server_handle_pointer_message(struct wd_server* server, const struct wd_server_config_payload* cfg,
+                                            const uint8_t* payload, uint32_t payload_size) {
+    struct wd_net_state* net = &server->net;
+
+    if (payload_size < sizeof(struct wd_pointer_event_payload))
+    {
+        return;
+    }
+
+    struct wd_pointer_event_payload pointer;
+    memcpy(&pointer, payload, sizeof(pointer));
+
+    if (pointer.session_id == cfg->session_id)
+    {
+        if (pointer.event_type == WD_POINTER_EVENT_BUTTON && pointer.button == 0x111)
+        {
+            WD_LOG_DEBUG("WayDisplay: received right click %s from client "
+                         "x=%u y=%u mods=0x%x timestamp=%" PRIu64,
+                         pointer.button_state == WD_POINTER_BUTTON_PRESSED ? "press" : "release", pointer.x, pointer.y,
+                         pointer.modifiers, pointer.client_timestamp_ns);
+        }
+        pthread_mutex_lock(&net->lock);
+        wd_pointer_queue_event_locked(net, &pointer, wd_now_ns());
+        pthread_mutex_unlock(&net->lock);
+    }
+}
+
+static bool wd_accept_aux_channel_fd(struct wd_server* server, uint32_t session_id, int* input_tcp_fd, int* selection_tcp_fd) {
+    struct wd_net_state* net = &server->net;
+
+    struct sockaddr_in peer_addr;
+    socklen_t          peer_len = sizeof(peer_addr);
+    int                fd       = accept(net->listen_fd, (struct sockaddr*)&peer_addr, &peer_len);
+
+    if (fd < 0)
+    {
+        return false;
+    }
+
+    wd_configure_accepted_tcp_socket(fd);
+
+    uint16_t type         = 0;
+    uint8_t* payload      = NULL;
+    uint32_t payload_size = 0;
+
+    if (!wd_recv_tcp_message(fd, &type, &payload, &payload_size))
+    {
+        free(payload);
+        close(fd);
+        return false;
+    }
+
+    bool accepted = false;
+
+    if (type == WD_MSG_INPUT_CHANNEL_HELLO && payload_size >= sizeof(struct wd_input_channel_hello_payload) && *input_tcp_fd < 0)
+    {
+        struct wd_input_channel_hello_payload hello;
+        memset(&hello, 0, sizeof(hello));
+        memcpy(&hello, payload, sizeof(hello));
+
+        if (hello.session_id == session_id)
+        {
+            *input_tcp_fd = fd;
+            accepted      = true;
+        }
+    }
+    else if (type == WD_MSG_SELECTION_CHANNEL_HELLO && payload_size >= sizeof(struct wd_selection_channel_hello_payload) &&
+             *selection_tcp_fd < 0)
+    {
+        struct wd_selection_channel_hello_payload hello;
+        memset(&hello, 0, sizeof(hello));
+        memcpy(&hello, payload, sizeof(hello));
+
+        if (hello.session_id == session_id)
+        {
+            *selection_tcp_fd = fd;
+            accepted          = true;
+        }
+    }
+
+    free(payload);
+
+    if (!accepted)
+    {
+        close(fd);
+        return false;
+    }
+
+    wd_clear_tcp_receive_timeout(fd);
+    return true;
+}
+
+static void wd_accept_optional_aux_channels(struct wd_server* server, uint32_t session_id, int* input_tcp_fd, int* selection_tcp_fd) {
+    struct wd_net_state* net = &server->net;
+    const uint64_t       deadline_ns = wd_now_ns() + 500ull * 1000ull * 1000ull;
+
+    *input_tcp_fd     = -1;
+    *selection_tcp_fd = -1;
+
+    while ((*input_tcp_fd < 0 || *selection_tcp_fd < 0) && wd_now_ns() < deadline_ns)
+    {
+        uint64_t now_ns = wd_now_ns();
+        if (now_ns >= deadline_ns)
+        {
+            break;
+        }
+
+        uint64_t remaining_ns = deadline_ns - now_ns;
+        int      timeout_ms   = (int)(remaining_ns / (1000ull * 1000ull));
+        if (timeout_ms <= 0)
+        {
+            timeout_ms = 1;
+        }
+
+        struct pollfd pfd;
+        memset(&pfd, 0, sizeof(pfd));
+        pfd.fd     = net->listen_fd;
+        pfd.events = POLLIN;
+
+        int poll_rc;
+        do
+        {
+            poll_rc = poll(&pfd, 1, timeout_ms);
+        } while (poll_rc < 0 && errno == EINTR);
+
+        if (poll_rc <= 0 || !(pfd.revents & POLLIN))
+        {
+            break;
+        }
+
+        (void)wd_accept_aux_channel_fd(server, session_id, input_tcp_fd, selection_tcp_fd);
+    }
 }
 
 void* wd_net_thread_main(void* arg) {
@@ -491,7 +690,7 @@ void* wd_net_thread_main(void* arg) {
         return NULL;
     }
 
-    if (listen(net->listen_fd, 1) < 0)
+    if (listen(net->listen_fd, 3) < 0)
     {
         WD_LOG_ERROR("WayDisplay: listen failed: %s", strerror(errno));
         wd_close_fd(&net->listen_fd);
@@ -631,30 +830,65 @@ void* wd_net_thread_main(void* arg) {
             continue;
         }
 
+        int input_tcp_fd     = -1;
+        int selection_tcp_fd = -1;
+        wd_accept_optional_aux_channels(server, cfg.session_id, &input_tcp_fd, &selection_tcp_fd);
+
         wd_clear_tcp_receive_timeout(tcp_fd);
 
         pthread_mutex_lock(&net->lock);
 
         wd_stream_policy_apply_client_hello(&net->stream_policy, &hello);
 
-        net->tcp_fd               = tcp_fd;
+        net->tcp_fd           = tcp_fd;
+        net->input_tcp_fd     = input_tcp_fd;
+        net->selection_tcp_fd = selection_tcp_fd;
+        if (input_tcp_fd >= 0)
+        {
+            net->stats.tcp_input_channel_accepted++;
+        }
+        if (selection_tcp_fd >= 0)
+        {
+            net->stats.tcp_selection_channel_accepted++;
+        }
         net->client_udp_addr      = client_udp_addr;
         net->client_connected     = true;
         net->full_frame_needed    = true;
         net->full_frame_next_tile = 0;
+        net->full_frame_start_ns  = 0;
+        net->full_frame_tiles_sent = 0;
         net->dirty_scan_next_tile = 0;
         if (net->dirty_queued)
         {
             memset(net->dirty_queued, 0, server->total_tiles * sizeof(*net->dirty_queued));
         }
+        if (net->dirty_queue_enqueued_ns)
+        {
+            memset(net->dirty_queue_enqueued_ns, 0, server->total_tiles * sizeof(*net->dirty_queue_enqueued_ns));
+        }
         if (net->retransmit_queued)
         {
             memset(net->retransmit_queued, 0, server->total_tiles * sizeof(*net->retransmit_queued));
+        }
+        if (net->retransmit_queue_enqueued_ns)
+        {
+            memset(net->retransmit_queue_enqueued_ns, 0, server->total_tiles * sizeof(*net->retransmit_queue_enqueued_ns));
+        }
+        if (net->retransmit_requested_generation)
+        {
+            memset(net->retransmit_requested_generation, 0, server->total_tiles * sizeof(*net->retransmit_requested_generation));
+        }
+        if (net->summary_dirty_tiles)
+        {
+            memset(net->summary_dirty_tiles, 0, server->total_tiles * sizeof(*net->summary_dirty_tiles));
         }
         net->dirty_queue_read       = 0;
         net->dirty_queue_write      = 0;
         net->dirty_queue_count      = 0;
         net->retransmit_queue_count = 0;
+        net->summary_dirty_count    = 0;
+        server->last_summary_ns       = 0;
+        server->last_delta_summary_ns = 0;
 
         net->stats.tcp_hello_rx++;
         net->stats.tcp_config_tx++;
@@ -675,130 +909,265 @@ void* wd_net_thread_main(void* arg) {
 
         pthread_mutex_unlock(&net->lock);
 
-        WD_LOG_INFO("WayDisplay: client connected; UDP port=%u display=%ux%u stream_mode=%u fps=%u limited_udp_kib_per_sec=%llu",
-                    hello.client_udp_port, server->display_width, server->display_height, hello.stream_mode, hello.target_fps,
-                    (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
+        WD_LOG_INFO("WayDisplay: client connected; UDP port=%u input_channel=%s selection_channel=%s display=%ux%u tile=%ux%u stream_mode=%u fps=%u limited_udp_kib_per_sec=%llu",
+                    hello.client_udp_port, input_tcp_fd >= 0 ? "yes" : "no", selection_tcp_fd >= 0 ? "yes" : "no",
+                    server->display_width, server->display_height, server->tile_width, server->tile_height, hello.stream_mode,
+                    hello.target_fps, (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
 
         while (net->running)
         {
-            payload      = NULL;
-            payload_size = 0;
+            struct pollfd pfds[3];
+            nfds_t        nfds            = 0;
+            nfds_t        control_pfd_idx = 0;
+            nfds_t        input_pfd_idx   = 0;
+            nfds_t        select_pfd_idx  = 0;
+            bool          have_input_pfd  = false;
+            bool          have_select_pfd = false;
 
-            if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size))
+            memset(pfds, 0, sizeof(pfds));
+            control_pfd_idx       = nfds;
+            pfds[nfds].fd         = tcp_fd;
+            pfds[nfds].events     = POLLIN;
+            nfds++;
+
+            if (input_tcp_fd >= 0)
+            {
+                input_pfd_idx         = nfds;
+                have_input_pfd        = true;
+                pfds[nfds].fd         = input_tcp_fd;
+                pfds[nfds].events     = POLLIN;
+                nfds++;
+            }
+
+            if (selection_tcp_fd >= 0)
+            {
+                select_pfd_idx        = nfds;
+                have_select_pfd       = true;
+                pfds[nfds].fd         = selection_tcp_fd;
+                pfds[nfds].events     = POLLIN;
+                nfds++;
+            }
+
+            int poll_rc;
+            do
+            {
+                poll_rc = poll(pfds, nfds, -1);
+            } while (poll_rc < 0 && errno == EINTR);
+
+            if (poll_rc <= 0)
             {
                 break;
             }
 
-            if (type == WD_MSG_RETRANSMIT_REQUEST && payload_size >= sizeof(struct wd_retransmit_request_payload_header) &&
-                net->stream_policy.mode != WD_STREAM_MODE_LIVE)
+            if (have_input_pfd && (pfds[input_pfd_idx].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))
             {
-                struct wd_retransmit_request_payload_header rh;
-                memcpy(&rh, payload, sizeof(rh));
+                uint16_t input_type         = 0;
+                uint8_t* input_payload      = NULL;
+                uint32_t input_payload_size = 0;
 
-                size_t needed = sizeof(rh) + (size_t)rh.request_count * sizeof(struct wd_retransmit_entry);
-
-                if (rh.session_id == cfg.session_id && payload_size >= needed)
+                if (!wd_recv_tcp_message(input_tcp_fd, &input_type, &input_payload, &input_payload_size))
                 {
-                    struct wd_retransmit_entry* entries = (struct wd_retransmit_entry*)(payload + sizeof(rh));
+                    close(input_tcp_fd);
+                    input_tcp_fd = -1;
 
                     pthread_mutex_lock(&net->lock);
-
-                    net->stats.retx_req_rx++;
-
-                    uint64_t accepted_retransmits = 0;
-
-                    if (!net->full_frame_needed)
+                    if (net->input_tcp_fd >= 0)
                     {
-                        for (uint16_t i = 0; i < rh.request_count; ++i)
+                        net->input_tcp_fd = -1;
+                        net->stats.tcp_input_channel_closed++;
+                    }
+                    pthread_mutex_unlock(&net->lock);
+                }
+                else
+                {
+                    pthread_mutex_lock(&net->lock);
+                    net->stats.tcp_input_channel_rx++;
+                    pthread_mutex_unlock(&net->lock);
+
+                    if (input_type == WD_MSG_KEYBOARD_KEY)
+                    {
+                        wd_server_handle_keyboard_message(server, &cfg, input_payload, input_payload_size);
+                    }
+                    else if (input_type == WD_MSG_POINTER_EVENT)
+                    {
+                        wd_server_handle_pointer_message(server, &cfg, input_payload, input_payload_size);
+                    }
+
+                    free(input_payload);
+                }
+            }
+
+            if (have_select_pfd && (pfds[select_pfd_idx].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))
+            {
+                uint16_t selection_type         = 0;
+                uint8_t* selection_payload      = NULL;
+                uint32_t selection_payload_size = 0;
+
+                if (!wd_recv_tcp_message(selection_tcp_fd, &selection_type, &selection_payload, &selection_payload_size))
+                {
+                    close(selection_tcp_fd);
+                    selection_tcp_fd = -1;
+
+                    pthread_mutex_lock(&net->lock);
+                    if (net->selection_tcp_fd >= 0)
+                    {
+                        net->selection_tcp_fd = -1;
+                        net->stats.tcp_selection_channel_closed++;
+                    }
+                    pthread_mutex_unlock(&net->lock);
+                }
+                else
+                {
+                    if ((selection_type == WD_MSG_CLIPBOARD_SET || selection_type == WD_MSG_PRIMARY_SET) &&
+                        selection_payload_size >= sizeof(struct wd_selection_payload_header))
+                    {
+                        pthread_mutex_lock(&net->lock);
+                        net->stats.tcp_selection_channel_rx++;
+                        wd_clipboard_queue_client_set_locked(net, cfg.session_id, selection_payload, selection_payload_size,
+                                                             selection_type == WD_MSG_PRIMARY_SET);
+                        pthread_mutex_unlock(&net->lock);
+                    }
+
+                    free(selection_payload);
+                }
+            }
+
+            if (pfds[control_pfd_idx].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))
+            {
+                payload      = NULL;
+                payload_size = 0;
+
+                if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size))
+                {
+                    break;
+                }
+
+                if (type == WD_MSG_RETRANSMIT_REQUEST && payload_size >= sizeof(struct wd_retransmit_request_payload_header) &&
+                    net->stream_policy.mode == WD_STREAM_MODE_LIVE)
+                {
+                    pthread_mutex_lock(&net->lock);
+                    net->stats.retx_req_ignored_live++;
+                    pthread_mutex_unlock(&net->lock);
+                }
+                else if (type == WD_MSG_RETRANSMIT_REQUEST && payload_size >= sizeof(struct wd_retransmit_request_payload_header))
+                {
+                    struct wd_retransmit_request_payload_header rh;
+                    memcpy(&rh, payload, sizeof(rh));
+
+                    size_t needed = sizeof(rh) + (size_t)rh.request_count * sizeof(struct wd_retransmit_entry);
+
+                    if (rh.session_id == cfg.session_id && payload_size >= needed)
+                    {
+                        struct wd_retransmit_entry* entries = (struct wd_retransmit_entry*)(payload + sizeof(rh));
+
+                        pthread_mutex_lock(&net->lock);
+
+                        net->stats.retx_req_rx++;
+
+                        uint64_t accepted_retransmits = 0;
+
+                        if (!net->full_frame_needed)
                         {
-                            if (entries[i].tile_id >= server->total_tiles)
+                            for (uint16_t i = 0; i < rh.request_count; ++i)
                             {
-                                continue;
-                            }
+                                if (entries[i].tile_id >= server->total_tiles)
+                                {
+                                    continue;
+                                }
 
-                            struct wd_cached_tile* tile = &net->tiles[entries[i].tile_id];
+                                struct wd_cached_tile* tile = &net->tiles[entries[i].tile_id];
+                                uint64_t requested_generation = entries[i].requested_generation;
 
-                            if (tile->compressed_size == 0 || !tile->compressed)
-                            {
-                                continue;
-                            }
+                                if (tile->compressed_size == 0 || !tile->compressed)
+                                {
+                                    continue;
+                                }
 
-                            if (wd_stream_queue_retransmit_tile_locked(server, entries[i].tile_id))
-                            {
-                                accepted_retransmits++;
+                                if (requested_generation != 0 && tile->generation < requested_generation)
+                                {
+                                    net->stats.retx_req_waiting_for_generation++;
+                                    continue;
+                                }
+
+                                if (requested_generation != 0 && tile->generation > requested_generation)
+                                {
+                                    net->stats.retx_req_stale_generation++;
+                                }
+
+                                if (wd_stream_queue_retransmit_tile_locked(server, entries[i].tile_id, requested_generation))
+                                {
+                                    accepted_retransmits++;
+                                }
                             }
                         }
+
+                        net->stats.retx_tiles_req += accepted_retransmits;
+
+                        pthread_mutex_unlock(&net->lock);
                     }
+                }
+                else if (type == WD_MSG_CLIENT_STATS && payload_size >= sizeof(struct wd_client_stats_payload))
+                {
+                    struct wd_client_stats_payload cs;
+                    memcpy(&cs, payload, sizeof(cs));
 
-                    net->stats.retx_tiles_req += accepted_retransmits;
-
+                    if (cs.session_id == cfg.session_id)
+                    {
+                        pthread_mutex_lock(&net->lock);
+                        net->stats.client_stats_rx++;
+                        net->stats.client_udp_packets_rx += cs.udp_packets_rx;
+                        net->stats.client_udp_bytes_rx += cs.udp_bytes_rx;
+                        net->stats.client_tiles_completed += cs.udp_tiles_completed;
+                        net->stats.client_completed_packets += cs.udp_completed_packets;
+                        net->stats.client_partial_tiles_timed_out += cs.partial_tiles_timed_out;
+                        net->stats.client_old_generation_tiles += cs.udp_ignored_old_generation;
+                        net->stats.client_retx_requests_tx += cs.retx_requests_tx;
+                        pthread_mutex_unlock(&net->lock);
+                    }
+                }
+                else if ((type == WD_MSG_CLIPBOARD_SET || type == WD_MSG_PRIMARY_SET) &&
+                         payload_size >= sizeof(struct wd_selection_payload_header))
+                {
+                    pthread_mutex_lock(&net->lock);
+                    wd_clipboard_queue_client_set_locked(net, cfg.session_id, payload, payload_size, type == WD_MSG_PRIMARY_SET);
                     pthread_mutex_unlock(&net->lock);
                 }
-            }
-            else if ((type == WD_MSG_CLIPBOARD_SET || type == WD_MSG_PRIMARY_SET) &&
-                     payload_size >= sizeof(struct wd_selection_payload_header))
-            {
-                pthread_mutex_lock(&net->lock);
-                wd_clipboard_queue_client_set_locked(net, cfg.session_id, payload, payload_size, type == WD_MSG_PRIMARY_SET);
-                pthread_mutex_unlock(&net->lock);
-            }
-            else if (type == WD_MSG_DISPLAY_RESIZE && payload_size >= sizeof(struct wd_display_resize_payload))
-            {
-                struct wd_display_resize_payload resize;
-                memcpy(&resize, payload, sizeof(resize));
-
-                if (resize.session_id == cfg.session_id && resize.width != 0 && resize.height != 0)
+                else if (type == WD_MSG_DISPLAY_RESIZE && payload_size >= sizeof(struct wd_display_resize_payload))
                 {
-                    if (wd_server_apply_display_size(server, resize.width, resize.height))
-                    {
-                        wd_server_fill_config(server, cfg.session_id, selected_udp_payload, &cfg);
+                    struct wd_display_resize_payload resize;
+                    memcpy(&resize, payload, sizeof(resize));
 
-                        if (!wd_send_tcp_message(tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg)))
+                    if (resize.session_id == cfg.session_id && resize.width != 0 && resize.height != 0)
+                    {
+                        if (wd_server_apply_display_size(server, resize.width, resize.height))
                         {
-                            break;
+                            wd_server_fill_config(server, cfg.session_id, selected_udp_payload, &cfg);
+
+                            if (!wd_send_tcp_message(tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg)))
+                            {
+                                free(payload);
+                                break;
+                            }
+
+                            WD_LOG_INFO("WayDisplay: client resized display to %ux%u", server->display_width, server->display_height);
                         }
-
-                        WD_LOG_INFO("WayDisplay: client resized display to %ux%u", server->display_width, server->display_height);
-                    }
-                    else
-                    {
-                        WD_LOG_ERROR("WayDisplay: rejected live display resize to %ux%u", resize.width, resize.height);
+                        else
+                        {
+                            WD_LOG_ERROR("WayDisplay: rejected live display resize to %ux%u", resize.width, resize.height);
+                        }
                     }
                 }
-            }
-            else if (type == WD_MSG_KEYBOARD_KEY && payload_size >= sizeof(struct wd_keyboard_event_payload))
-            {
-                struct wd_keyboard_event_payload key;
-                memcpy(&key, payload, sizeof(key));
-
-                if (key.session_id == cfg.session_id && key.evdev_key_code != 0)
+                else if (type == WD_MSG_KEYBOARD_KEY)
                 {
-                    pthread_mutex_lock(&net->lock);
-                    wd_keyboard_queue_event_locked(net, &key, wd_now_ns());
-                    pthread_mutex_unlock(&net->lock);
+                    wd_server_handle_keyboard_message(server, &cfg, payload, payload_size);
                 }
-            }
-            else if (type == WD_MSG_POINTER_EVENT && payload_size >= sizeof(struct wd_pointer_event_payload))
-            {
-                struct wd_pointer_event_payload pointer;
-                memcpy(&pointer, payload, sizeof(pointer));
-
-                if (pointer.session_id == cfg.session_id)
+                else if (type == WD_MSG_POINTER_EVENT)
                 {
-                    if (pointer.event_type == WD_POINTER_EVENT_BUTTON && pointer.button == 0x111)
-                    {
-                        WD_LOG_DEBUG("WayDisplay: received right click %s from client "
-                                     "x=%u y=%u mods=0x%x timestamp=%" PRIu64,
-                                     pointer.button_state == WD_POINTER_BUTTON_PRESSED ? "press" : "release", pointer.x, pointer.y,
-                                     pointer.modifiers, pointer.client_timestamp_ns);
-                    }
-                    pthread_mutex_lock(&net->lock);
-                    wd_pointer_queue_event_locked(net, &pointer, wd_now_ns());
-                    pthread_mutex_unlock(&net->lock);
+                    wd_server_handle_pointer_message(server, &cfg, payload, payload_size);
                 }
-            }
 
-            free(payload);
+                free(payload);
+            }
         }
 
         pthread_mutex_lock(&net->lock);
@@ -806,6 +1175,14 @@ void* wd_net_thread_main(void* arg) {
         if (net->tcp_fd == tcp_fd)
         {
             net->tcp_fd = -1;
+        }
+        if (net->input_tcp_fd == input_tcp_fd)
+        {
+            net->input_tcp_fd = -1;
+        }
+        if (net->selection_tcp_fd == selection_tcp_fd)
+        {
+            net->selection_tcp_fd = -1;
         }
 
         net->client_connected    = false;
@@ -825,11 +1202,23 @@ void* wd_net_thread_main(void* arg) {
         pthread_mutex_unlock(&net->lock);
 
         close(tcp_fd);
+        if (input_tcp_fd >= 0)
+        {
+            close(input_tcp_fd);
+            input_tcp_fd = -1;
+        }
+        if (selection_tcp_fd >= 0)
+        {
+            close(selection_tcp_fd);
+            selection_tcp_fd = -1;
+        }
 
         WD_LOG_INFO("WayDisplay: client disconnected; waiting for reconnect");
     }
 
     wd_close_fd(&net->tcp_fd);
+    wd_close_fd(&net->input_tcp_fd);
+    wd_close_fd(&net->selection_tcp_fd);
     wd_close_fd(&net->udp_fd);
     wd_close_fd(&net->listen_fd);
 

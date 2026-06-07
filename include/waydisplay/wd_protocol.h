@@ -8,11 +8,12 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 1u
+#define WD_PROTOCOL_VERSION 4u
 
 /*
- * Historical value used by the prototype/server.
- * Integer value is compared directly on same-endian Linux peers.
+ * Wire structs are intentionally host-endian for now. WayDisplay targets
+ * same-endian Linux peers and compares integer values directly. Bump the
+ * protocol version before changing struct layout or byte order.
  */
 #define WD_TCP_MAGIC             0x54434457u
 #define WD_UDP_TILE_ID_MTU_PROBE        0xffffu
@@ -35,6 +36,9 @@ enum wd_message_type {
     WD_MSG_DISPLAY_RESIZE          = 14,
     WD_MSG_THROUGHPUT_PROBE_START  = 15,
     WD_MSG_THROUGHPUT_PROBE_RESULT = 16,
+    WD_MSG_INPUT_CHANNEL_HELLO     = 17,
+    WD_MSG_SELECTION_CHANNEL_HELLO = 18,
+    WD_MSG_CLIENT_STATS            = 19,
     WD_MSG_ERROR                   = 255,
 };
 
@@ -72,6 +76,11 @@ enum wd_stream_mode {
      */
     WD_STREAM_MODE_LIMITED = 3,
 
+    /*
+     * Latest-only lossy mode. The server sends dirty tiles at target_fps and
+     * intentionally disables retransmit repair; newer tile generations simply
+     * supersede older/lost generations. This is not a video-codec mode.
+     */
     WD_STREAM_MODE_LIVE = 4,
 };
 
@@ -148,6 +157,11 @@ struct wd_client_hello_payload {
     uint32_t reserved1;
 };
 
+enum wd_server_capability {
+    WD_SERVER_CAP_INPUT_CHANNEL     = 1u << 0,
+    WD_SERVER_CAP_SELECTION_CHANNEL = 1u << 1,
+};
+
 struct wd_server_config_payload {
     uint32_t session_id;
     uint16_t width;
@@ -161,6 +175,7 @@ struct wd_server_config_payload {
     uint16_t compression_mode;
     uint16_t zstd_level;
     uint16_t udp_payload_target;
+    uint32_t capabilities;
 };
 
 struct wd_tile_generation_entry {
@@ -174,6 +189,12 @@ struct wd_tile_summary_payload_header {
     uint32_t session_id;
     uint64_t server_timestamp_ns;
     uint16_t tile_count;
+
+    /*
+     * 0 = full all-tile summary. 1 = delta summary containing only recently
+     * sent tile generations. Older clients may ignore this and still process
+     * tile_count entries correctly.
+     */
     uint16_t reserved;
 };
 
@@ -186,6 +207,33 @@ struct wd_retransmit_request_payload_header {
 struct wd_retransmit_entry {
     uint16_t tile_id;
     uint16_t reserved;
+
+    /* 0 means retransmit the latest cached generation for this tile. */
+    uint64_t requested_generation;
+};
+
+
+struct wd_client_stats_payload {
+    uint32_t session_id;
+    uint32_t reserved;
+
+    uint64_t udp_packets_rx;
+    uint64_t udp_bytes_rx;
+    uint64_t udp_tiles_completed;
+    uint64_t udp_completed_packets;
+    uint64_t partial_tiles_timed_out;
+    uint64_t udp_ignored_old_generation;
+    uint64_t retx_requests_tx;
+};
+
+struct wd_input_channel_hello_payload {
+    uint32_t session_id;
+    uint32_t reserved;
+};
+
+struct wd_selection_channel_hello_payload {
+    uint32_t session_id;
+    uint32_t reserved;
 };
 
 struct wd_keyboard_event_payload {
@@ -339,7 +387,10 @@ static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mtu
 static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8, "unexpected wd_mtu_probe_result_payload size");
 static_assert(sizeof(struct wd_throughput_probe_start_payload) == 12, "unexpected wd_throughput_probe_start_payload size");
 static_assert(sizeof(struct wd_throughput_probe_result_payload) == 12, "unexpected wd_throughput_probe_result_payload size");
-static_assert(sizeof(struct wd_retransmit_entry) == 4, "unexpected wd_retransmit_entry size");
+static_assert(sizeof(struct wd_retransmit_entry) == 12, "unexpected wd_retransmit_entry size");
+static_assert(sizeof(struct wd_client_stats_payload) == 64, "unexpected wd_client_stats_payload size");
+static_assert(sizeof(struct wd_input_channel_hello_payload) == 8, "unexpected wd_input_channel_hello_payload size");
+static_assert(sizeof(struct wd_selection_channel_hello_payload) == 8, "unexpected wd_selection_channel_hello_payload size");
 static_assert(sizeof(struct wd_selection_payload_header) == 12, "unexpected wd_selection_payload_header size");
 static_assert(sizeof(struct wd_cursor_shape_payload) == 8, "unexpected wd_cursor_shape_payload size");
 static_assert(sizeof(struct wd_display_resize_payload) == 8, "unexpected wd_display_resize_payload size");
@@ -352,7 +403,10 @@ _Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mt
 _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8, "unexpected wd_mtu_probe_result_payload size");
 _Static_assert(sizeof(struct wd_throughput_probe_start_payload) == 12, "unexpected wd_throughput_probe_start_payload size");
 _Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 12, "unexpected wd_throughput_probe_result_payload size");
-_Static_assert(sizeof(struct wd_retransmit_entry) == 4, "unexpected wd_retransmit_entry size");
+_Static_assert(sizeof(struct wd_retransmit_entry) == 12, "unexpected wd_retransmit_entry size");
+_Static_assert(sizeof(struct wd_client_stats_payload) == 64, "unexpected wd_client_stats_payload size");
+_Static_assert(sizeof(struct wd_input_channel_hello_payload) == 8, "unexpected wd_input_channel_hello_payload size");
+_Static_assert(sizeof(struct wd_selection_channel_hello_payload) == 8, "unexpected wd_selection_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_selection_payload_header) == 12, "unexpected wd_selection_payload_header size");
 _Static_assert(sizeof(struct wd_cursor_shape_payload) == 8, "unexpected wd_cursor_shape_payload size");
 _Static_assert(sizeof(struct wd_display_resize_payload) == 8, "unexpected wd_display_resize_payload size");

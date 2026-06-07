@@ -9,7 +9,7 @@ static void usage(const char* argv0) {
     fprintf(stderr,
             "Usage:\n"
             "  %s [--port 5000] [--scale 1.0] [--size 1664x1024] [--app <command>] "
-            "[--xwayland|--no-xwayland]\n\n"
+            "[--tile-size 128x64|64x64] [--xwayland|--no-xwayland]\n\n"
             "Examples:\n"
             "  %s --port 5000 --app foot\n"
             "  %s --port 5000 --scale 1.25 --size 1366x768 --app foot\n"
@@ -24,6 +24,8 @@ int main(int argc, char** argv) {
     double      output_scale    = 1.0;
     uint32_t    display_width   = WD_DISPLAY_WIDTH;
     uint32_t    display_height  = WD_DISPLAY_HEIGHT;
+    uint16_t    tile_width      = WD_TILE_WIDTH;
+    uint16_t    tile_height     = WD_TILE_HEIGHT;
     bool        enable_xwayland = true;
 
     for (int i = 1; i < argc; ++i)
@@ -65,8 +67,8 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            const uint32_t tiles_x = (width + WD_TILE_WIDTH - 1u) / WD_TILE_WIDTH;
-            const uint32_t tiles_y = (height + WD_TILE_HEIGHT - 1u) / WD_TILE_HEIGHT;
+            const uint32_t tiles_x = (width + tile_width - 1u) / tile_width;
+            const uint32_t tiles_y = (height + tile_height - 1u) / tile_height;
 
             if (tiles_x == 0 || tiles_y == 0 || tiles_x * tiles_y > UINT16_MAX)
             {
@@ -77,6 +79,52 @@ int main(int argc, char** argv) {
 
             display_width  = width;
             display_height = height;
+        }
+        else if (strcmp(argv[i], "--tile-size") == 0)
+        {
+            if (i + 1 >= argc)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            unsigned int width  = 0;
+            unsigned int height = 0;
+            if (sscanf(argv[++i], "%ux%u", &width, &height) != 2 || width == 0 || height == 0 || width > UINT16_MAX ||
+                height > UINT16_MAX)
+            {
+                fprintf(stderr, "Invalid --tile-size value: %s\n", argv[i]);
+                usage(argv[0]);
+                return 1;
+            }
+
+            uint64_t tile_bytes = (uint64_t)width * (uint64_t)height * WD_BYTES_PER_PIXEL;
+            if (tile_bytes == 0 || tile_bytes > WD_TCP_MAX_PAYLOAD_SIZE)
+            {
+                fprintf(stderr, "Invalid --tile-size value: %s creates too large a tile buffer\n", argv[i]);
+                usage(argv[0]);
+                return 1;
+            }
+
+            const uint32_t tiles_x = (display_width + width - 1u) / width;
+            const uint32_t tiles_y = (display_height + height - 1u) / height;
+            if (tiles_x == 0 || tiles_y == 0 || tiles_x * tiles_y > UINT16_MAX)
+            {
+                fprintf(stderr, "Invalid --tile-size value: %s creates too many tiles for current --size; max is %u tiles\n", argv[i],
+                        UINT16_MAX);
+                usage(argv[0]);
+                return 1;
+            }
+
+            tile_width  = (uint16_t)width;
+            tile_height = (uint16_t)height;
+        }
+        else if (strcmp(argv[i], "--wan-tiles") == 0)
+        {
+            /* Smaller tiles reduce over-send for cursor/text/editor damage on
+             * bandwidth-limited, high-latency links. */
+            tile_width  = 64;
+            tile_height = 64;
         }
         else if (strcmp(argv[i], "--scale") == 0)
         {
@@ -115,9 +163,18 @@ int main(int argc, char** argv) {
         }
     }
 
+    const uint32_t final_tiles_x = (display_width + tile_width - 1u) / tile_width;
+    const uint32_t final_tiles_y = (display_height + tile_height - 1u) / tile_height;
+    if (final_tiles_x == 0 || final_tiles_y == 0 || final_tiles_x * final_tiles_y > UINT16_MAX)
+    {
+        fprintf(stderr, "Invalid size/tile-size combination creates too many tiles; max is %u tiles\n", UINT16_MAX);
+        usage(argv[0]);
+        return 1;
+    }
+
     struct wd_server server;
 
-    if (!wd_server_init(&server, tcp_port, app_cmd, output_scale, display_width, display_height, enable_xwayland))
+    if (!wd_server_init(&server, tcp_port, app_cmd, output_scale, display_width, display_height, tile_width, tile_height, enable_xwayland))
     {
         wd_server_destroy(&server);
         return 1;

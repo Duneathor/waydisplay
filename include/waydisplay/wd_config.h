@@ -36,6 +36,10 @@ extern "C" {
 #define WD_THROUGHPUT_PROBE_TARGET_BYTES (1536u * 1024u)
 #define WD_THROUGHPUT_PROBE_DURATION_MS  250u
 
+/* Tile generation summary cadence. */
+#define WD_GENERATION_SUMMARY_FULL_INTERVAL_NS  2000000000ull
+#define WD_GENERATION_SUMMARY_DELTA_INTERVAL_NS 50000000ull
+
 /* Stream policy defaults. */
 #define WD_DEFAULT_PARTIAL_FPS                     30u
 #define WD_MAX_REASONABLE_FPS                      120u
@@ -44,6 +48,10 @@ extern "C" {
 #define WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND     (25ull * 1024ull)
 #define WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND     (10ull * 1024ull * 1024ull * 1024ull)
 #define WD_LIMITED_MODE_THROUGHPUT_SAFETY_PERCENT    75u
+
+/* Tile send priority. Prefer low wire-cost tiles while periodically
+ * taking the oldest queued tile so large/background tiles still make progress. */
+#define WD_TILE_PRIORITY_FAIRNESS_INTERVAL 8u
 
 /* Adaptive network throttling. */
 #define WD_THROTTLE_BAD_WINDOWS_TO_DOWNGRADE       2u
@@ -54,6 +62,13 @@ extern "C" {
 #define WD_THROTTLE_REPAIR_STORM_REQUESTS_PER_SEC  1u
 #define WD_THROTTLE_MIN_FRESH_TILES_FOR_RATIO      16u
 #define WD_THROTTLE_PRESSURE_DOWNGRADE_WINDOWS     1u
+#define WD_LIMITED_RATE_DECREASE_PERCENT           75u
+#define WD_LIMITED_RATE_PRESSURE_DECREASE_PERCENT  50u
+#define WD_LIMITED_RATE_INCREASE_PERCENT           110u
+#define WD_LIMITED_RATE_INCREASE_MIN_BYTES         (16ull * 1024ull)
+#define WD_LIMITED_RATE_GOOD_WINDOWS_TO_INCREASE   4u
+#define WD_LIMITED_RATE_CLIENT_COMPLETION_MIN_SENT 4u
+#define WD_LIMITED_RATE_CLIENT_COMPLETION_PERCENT  50u
 
 /* Client interaction/render-loop tuning. */
 #define WD_CLIENT_DEFAULT_TARGET_FPS           WD_DEFAULT_PARTIAL_FPS

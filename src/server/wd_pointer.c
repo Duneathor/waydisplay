@@ -117,8 +117,9 @@ static void wd_stats_note_pointer_input_inject_locked(struct wd_net_state* net, 
 
     net->stats.input_queue_latency_samples++;
     net->stats.input_queue_latency_sum_ns += inject_timestamp_ns - server_rx_timestamp_ns;
-    net->last_input_inject_ns     = inject_timestamp_ns;
-    net->input_since_last_summary = true;
+    net->last_input_inject_ns          = inject_timestamp_ns;
+    net->input_since_last_summary      = true;
+    net->input_since_last_fresh_tile   = true;
 }
 
 void wd_pointer_queue_event_locked(struct wd_net_state* net, const struct wd_pointer_event_payload* event,

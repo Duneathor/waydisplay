@@ -724,13 +724,28 @@ void print_client_stats(ClientState& state) {
     const uint64_t invalid                  = take_stat(state.stats.udp_ignored_invalid);
     const uint64_t old_gen                  = take_stat(state.stats.udp_ignored_old_generation);
     const uint64_t completed                = take_stat(state.stats.udp_tiles_completed);
+    const uint64_t completed_compressed     = take_stat(state.stats.udp_completed_compressed_bytes);
+    const uint64_t completed_packets        = take_stat(state.stats.udp_completed_packets);
+    const uint64_t partial_timeouts         = take_stat(state.stats.partial_tiles_timed_out);
+    const uint64_t partial_missing_packets  = take_stat(state.stats.partial_tile_missing_packets);
+    const uint64_t partial_retx_queued      = take_stat(state.stats.partial_tile_retx_queued);
+    const uint64_t retx_response_samples    = take_stat(state.stats.retx_response_samples);
+    const uint64_t retx_response_sum_ns     = take_stat(state.stats.retx_response_sum_ns);
+    const uint64_t timeout_updates          = take_stat(state.stats.tile_reassembly_timeout_updates);
     const uint64_t summaries                = take_stat(state.stats.tcp_summaries_rx);
     const uint64_t retx                     = take_stat(state.stats.tcp_retx_requests_tx);
+    const uint64_t summary_retx_queued      = take_stat(state.stats.summary_retx_tiles_queued);
+    const uint64_t summary_to_retx_samples  = take_stat(state.stats.summary_to_retx_samples);
+    const uint64_t summary_to_retx_sum_ns   = take_stat(state.stats.summary_to_retx_sum_ns);
     const uint64_t keys                     = take_stat(state.stats.tcp_keyboard_tx);
     const uint64_t pointer                  = take_stat(state.stats.tcp_pointer_tx);
     const uint64_t input_events             = take_stat(state.stats.tcp_input_events_tx);
-    take_stat(state.stats.summary_latency_samples);
-    take_stat(state.stats.summary_latency_sum_ns);
+    const uint64_t input_channel_events       = take_stat(state.stats.tcp_input_channel_tx);
+    const uint64_t input_fallback_events      = take_stat(state.stats.tcp_input_channel_fallback_tx);
+    const uint64_t selection_channel_events   = take_stat(state.stats.tcp_selection_channel_tx);
+    const uint64_t selection_fallback_events  = take_stat(state.stats.tcp_selection_channel_fallback_tx);
+    const uint64_t summary_latency_samples  = take_stat(state.stats.summary_latency_samples);
+    const uint64_t summary_latency_sum_ns   = take_stat(state.stats.summary_latency_sum_ns);
     const uint64_t tile_assembly_samples    = take_stat(state.stats.tile_assembly_samples);
     const uint64_t tile_assembly_sum_ns     = take_stat(state.stats.tile_assembly_sum_ns);
     const uint64_t tile_present_samples     = take_stat(state.stats.tile_present_latency_samples);
@@ -743,24 +758,61 @@ void print_client_stats(ClientState& state) {
      * lossy links can eventually repair state. Do not log a stats line when
      * summaries are the only activity.
      */
-    const bool useful_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 || retx != 0 ||
-                                 keys != 0 || pointer != 0 || input_events != 0;
+    const bool useful_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || partial_timeouts != 0 ||
+                                 partial_missing_packets != 0 || partial_retx_queued != 0 || retx_response_samples != 0 ||
+                                 timeout_updates != 0 || invalid != 0 || old_gen != 0 ||
+                                 retx != 0 || summary_retx_queued != 0 || keys != 0 || pointer != 0 || input_events != 0 ||
+                                 input_channel_events != 0 || input_fallback_events != 0 || selection_channel_events != 0 ||
+                                 selection_fallback_events != 0;
 
     if (!useful_activity)
     {
         return;
     }
 
+    wd_client_stats_payload feedback{};
+    {
+        std::lock_guard<std::mutex> lock(state.config_mutex);
+        feedback.session_id = state.config.session_id;
+    }
+    feedback.udp_packets_rx             = udp_packets;
+    feedback.udp_bytes_rx               = udp_bytes;
+    feedback.udp_tiles_completed        = completed;
+    feedback.udp_completed_packets      = completed_packets;
+    feedback.partial_tiles_timed_out    = partial_timeouts;
+    feedback.udp_ignored_old_generation = old_gen;
+    feedback.retx_requests_tx           = retx;
+    if (feedback.session_id != 0)
+    {
+        client_send_stats(state, feedback);
+    }
+
     WD_LOG_DEBUG(
         "[client stats/s] udp_pkts=%llu udp_kib=%.1f completed_tiles=%llu "
-        "invalid=%llu old_gen=%llu summaries=%llu retx_req=%llu keys=%llu "
-        "pointer=%llu input_events=%llu summary_rx_avg_ms=n/a tile_assembly_avg_ms=%.2f "
+        "udp_kib_per_completed_tile=%.2f compressed_kib_per_completed_tile=%.2f pkts_per_completed_tile=%.2f "
+        "partial_timeouts=%llu partial_missing_pkts=%llu partial_retx_queued=%llu "
+        "invalid=%llu old_gen=%llu summaries=%llu retx_req=%llu summary_retx_tiles_queued=%llu keys=%llu "
+        "pointer=%llu input_events=%llu input_channel_events=%llu input_fallback_events=%llu "
+        "selection_channel_events=%llu selection_fallback_events=%llu "
+        "summary_rx_avg_ms=%.2f summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f "
+        "tile_assembly_avg_ms=%.2f tile_reassembly_timeout_ms=%.2f timeout_updates=%llu "
         "tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f",
         static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0, static_cast<unsigned long long>(completed),
-        static_cast<unsigned long long>(invalid), static_cast<unsigned long long>(old_gen), static_cast<unsigned long long>(summaries),
-        static_cast<unsigned long long>(retx), static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
-        static_cast<unsigned long long>(input_events), avg_ms(tile_assembly_sum_ns, tile_assembly_samples),
-        avg_ms(tile_present_sum_ns, tile_present_samples), avg_ms(input_to_present_sum_ns, input_to_present_samples));
+        completed ? (static_cast<double>(udp_bytes) / 1024.0) / static_cast<double>(completed) : 0.0,
+        completed ? (static_cast<double>(completed_compressed) / 1024.0) / static_cast<double>(completed) : 0.0,
+        completed ? static_cast<double>(completed_packets) / static_cast<double>(completed) : 0.0,
+        static_cast<unsigned long long>(partial_timeouts), static_cast<unsigned long long>(partial_missing_packets),
+        static_cast<unsigned long long>(partial_retx_queued), static_cast<unsigned long long>(invalid),
+        static_cast<unsigned long long>(old_gen), static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
+        static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
+        static_cast<unsigned long long>(input_events), static_cast<unsigned long long>(input_channel_events),
+        static_cast<unsigned long long>(input_fallback_events), static_cast<unsigned long long>(selection_channel_events),
+        static_cast<unsigned long long>(selection_fallback_events), avg_ms(summary_latency_sum_ns, summary_latency_samples),
+        avg_ms(summary_to_retx_sum_ns, summary_to_retx_samples), avg_ms(retx_response_sum_ns, retx_response_samples),
+        avg_ms(tile_assembly_sum_ns, tile_assembly_samples),
+        static_cast<double>(state.tile_reassembly_timeout_ns.load(std::memory_order_relaxed)) / 1000000.0,
+        static_cast<unsigned long long>(timeout_updates), avg_ms(tile_present_sum_ns, tile_present_samples),
+        avg_ms(input_to_present_sum_ns, input_to_present_samples));
 }
 
 bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, const std::vector<uint8_t>& tile_bytes) {
@@ -872,6 +924,8 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
             out_present_tile_timestamps.push_back(completed.completed_timestamp_ns);
         }
 
+        state.stats.udp_completed_compressed_bytes.fetch_add(completed.compressed_size, std::memory_order_relaxed);
+        state.stats.udp_completed_packets.fetch_add(completed.packet_count, std::memory_order_relaxed);
         state.stats.udp_tiles_completed.fetch_add(1, std::memory_order_relaxed);
         out_frame_dirty = true;
     }
@@ -1459,6 +1513,8 @@ int run_sdl_viewer(ClientState& state) {
             state.running.store(false, std::memory_order_relaxed);
             break;
         }
+
+        reassembler.expire_stale_entries(state);
 
         if (!client_flush_retransmit_requests(state))
         {

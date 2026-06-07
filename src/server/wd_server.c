@@ -121,13 +121,22 @@ static int server_frame_timer(void* data) {
         }
     }
 
-    if (t - server->last_summary_ns > 2000000000ull)
+    if (server->last_summary_ns == 0 || t - server->last_summary_ns >= WD_GENERATION_SUMMARY_FULL_INTERVAL_NS)
     {
         pthread_mutex_lock(&server->net.lock);
         wd_stream_send_generation_summary_locked(server);
         pthread_mutex_unlock(&server->net.lock);
 
-        server->last_summary_ns = t;
+        server->last_summary_ns       = t;
+        server->last_delta_summary_ns = t;
+    }
+    else if (server->last_delta_summary_ns == 0 || t - server->last_delta_summary_ns >= WD_GENERATION_SUMMARY_DELTA_INTERVAL_NS)
+    {
+        pthread_mutex_lock(&server->net.lock);
+        wd_stream_send_pending_generation_summary_locked(server);
+        pthread_mutex_unlock(&server->net.lock);
+
+        server->last_delta_summary_ns = t;
     }
 
     if (t - server->last_stats_ns > 1000000000ull)
@@ -217,10 +226,10 @@ void wd_server_mark_rect_dirty(struct wd_server* server, int x, int y, int width
         return;
     }
 
-    uint16_t start_tile_x = (uint16_t)((uint32_t)x1 / WD_TILE_WIDTH);
-    uint16_t end_tile_x   = (uint16_t)(((uint32_t)(x2 - 1)) / WD_TILE_WIDTH);
-    uint16_t start_tile_y = (uint16_t)((uint32_t)y1 / WD_TILE_HEIGHT);
-    uint16_t end_tile_y   = (uint16_t)(((uint32_t)(y2 - 1)) / WD_TILE_HEIGHT);
+    uint16_t start_tile_x = (uint16_t)((uint32_t)x1 / server->tile_width);
+    uint16_t end_tile_x   = (uint16_t)(((uint32_t)(x2 - 1)) / server->tile_width);
+    uint16_t start_tile_y = (uint16_t)((uint32_t)y1 / server->tile_height);
+    uint16_t end_tile_y   = (uint16_t)(((uint32_t)(y2 - 1)) / server->tile_height);
 
     if (end_tile_x >= server->tiles_x)
     {
@@ -322,14 +331,42 @@ void wd_server_mark_view_move_dirty(struct wd_view* view, int old_x, int old_y) 
     wd_server_mark_rect_dirty(view->server, x, y, width, height);
 }
 
+bool wd_server_set_tile_size(struct wd_server* server, uint16_t tile_width, uint16_t tile_height) {
+    if (!server || tile_width == 0 || tile_height == 0)
+    {
+        return false;
+    }
+
+    /* Keep tile buffers comfortably within the existing TCP/UDP payload limits and
+     * client framebuffer limits. These are protocol dimensions, not renderer pixels. */
+    uint32_t tile_bytes = (uint32_t)tile_width * (uint32_t)tile_height * WD_BYTES_PER_PIXEL;
+    if (tile_bytes == 0 || tile_bytes > WD_TCP_MAX_PAYLOAD_SIZE)
+    {
+        return false;
+    }
+
+    server->tile_width              = tile_width;
+    server->tile_height             = tile_height;
+    server->uncompressed_tile_bytes = tile_bytes;
+    return true;
+}
+
 bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t height) {
     if (!server || width == 0 || height == 0 || width > UINT16_MAX || height > UINT16_MAX)
     {
         return false;
     }
 
-    const uint16_t tiles_x     = wd_tiles_for_width(width);
-    const uint16_t tiles_y     = wd_tiles_for_height(height);
+    if (server->tile_width == 0 || server->tile_height == 0)
+    {
+        if (!wd_server_set_tile_size(server, WD_TILE_WIDTH, WD_TILE_HEIGHT))
+        {
+            return false;
+        }
+    }
+
+    const uint16_t tiles_x     = wd_tiles_for_width_with_tile(width, server->tile_width);
+    const uint16_t tiles_y     = wd_tiles_for_height_with_tile(height, server->tile_height);
     const uint32_t total_tiles = (uint32_t)tiles_x * (uint32_t)tiles_y;
 
     if (tiles_x == 0 || tiles_y == 0 || total_tiles == 0 || total_tiles > UINT16_MAX)
@@ -407,11 +444,24 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     free(server->net.dirty_queued);
     server->net.dirty_queued = NULL;
 
+    free(server->net.dirty_queue_enqueued_ns);
+    server->net.dirty_queue_enqueued_ns = NULL;
+
     free(server->net.retransmit_queue);
     server->net.retransmit_queue = NULL;
 
     free(server->net.retransmit_queued);
     server->net.retransmit_queued = NULL;
+
+    free(server->net.retransmit_queue_enqueued_ns);
+    server->net.retransmit_queue_enqueued_ns = NULL;
+
+    free(server->net.retransmit_requested_generation);
+    server->net.retransmit_requested_generation = NULL;
+
+    free(server->net.summary_dirty_tiles);
+    server->net.summary_dirty_tiles = NULL;
+    server->net.summary_dirty_count = 0;
 
     free(server->framebuffer_xrgb8888);
     server->framebuffer_xrgb8888 = NULL;
@@ -426,11 +476,17 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 
     if (ok)
     {
-        server->net.dirty_queue       = calloc(server->total_tiles, sizeof(*server->net.dirty_queue));
-        server->net.dirty_queued      = calloc(server->total_tiles, sizeof(*server->net.dirty_queued));
-        server->net.retransmit_queue  = calloc(server->total_tiles, sizeof(*server->net.retransmit_queue));
-        server->net.retransmit_queued = calloc(server->total_tiles, sizeof(*server->net.retransmit_queued));
-        ok = server->net.dirty_queue && server->net.dirty_queued && server->net.retransmit_queue && server->net.retransmit_queued;
+        server->net.dirty_queue                  = calloc(server->total_tiles, sizeof(*server->net.dirty_queue));
+        server->net.dirty_queued                 = calloc(server->total_tiles, sizeof(*server->net.dirty_queued));
+        server->net.dirty_queue_enqueued_ns      = calloc(server->total_tiles, sizeof(*server->net.dirty_queue_enqueued_ns));
+        server->net.retransmit_queue             = calloc(server->total_tiles, sizeof(*server->net.retransmit_queue));
+        server->net.retransmit_queued            = calloc(server->total_tiles, sizeof(*server->net.retransmit_queued));
+        server->net.retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*server->net.retransmit_queue_enqueued_ns));
+        server->net.retransmit_requested_generation = calloc(server->total_tiles, sizeof(*server->net.retransmit_requested_generation));
+        server->net.summary_dirty_tiles          = calloc(server->total_tiles, sizeof(*server->net.summary_dirty_tiles));
+        ok = server->net.dirty_queue && server->net.dirty_queued && server->net.dirty_queue_enqueued_ns &&
+             server->net.retransmit_queue && server->net.retransmit_queued && server->net.retransmit_queue_enqueued_ns &&
+             server->net.retransmit_requested_generation && server->net.summary_dirty_tiles;
     }
 
     if (ok)
@@ -442,12 +498,17 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     {
         server->net.full_frame_needed    = true;
         server->net.full_frame_next_tile = 0;
+        server->net.full_frame_start_ns  = 0;
+        server->net.full_frame_tiles_sent = 0;
         server->net.dirty_scan_next_tile = 0;
         server->net.dirty_queue_read       = 0;
         server->net.dirty_queue_write      = 0;
         server->net.dirty_queue_count      = 0;
         server->net.retransmit_queue_count = 0;
-        server->scene_dirty              = true;
+        server->net.summary_dirty_count    = 0;
+        server->last_summary_ns            = 0;
+        server->last_delta_summary_ns      = 0;
+        server->scene_dirty                = true;
     }
 
     pthread_mutex_unlock(&server->net.lock);
@@ -456,7 +517,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 }
 
 bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale, uint32_t display_width,
-                    uint32_t display_height, bool enable_xwayland) {
+                    uint32_t display_height, uint16_t tile_width, uint16_t tile_height, bool enable_xwayland) {
     memset(server, 0, sizeof(*server));
 
     wl_list_init(&server->views);
@@ -465,7 +526,7 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
     wl_list_init(&server->new_keyboard_shortcuts_inhibitor.link);
     wl_list_init(&server->keyboard_shortcuts_inhibit_manager_destroy.link);
 
-    if (!wd_server_set_geometry(server, display_width, display_height))
+    if (!wd_server_set_tile_size(server, tile_width, tile_height) || !wd_server_set_geometry(server, display_width, display_height))
     {
         return false;
     }

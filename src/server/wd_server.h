@@ -203,6 +203,9 @@ struct wd_cached_tile {
 struct wd_stats {
     uint64_t dirty_tiles;
     uint64_t udp_tiles_sent;
+    uint64_t udp_fresh_tiles_sent;
+    uint64_t udp_retx_tiles_sent;
+    uint64_t udp_compressed_tile_bytes_sent;
     uint64_t udp_packets_sent;
     uint64_t udp_bytes_sent;
     uint64_t udp_send_pressure_drops;
@@ -210,9 +213,25 @@ struct wd_stats {
     uint64_t tcp_hello_rx;
     uint64_t tcp_config_tx;
     uint64_t tcp_summary_tx;
+    uint64_t tcp_input_channel_rx;
+    uint64_t tcp_input_channel_accepted;
+    uint64_t tcp_input_channel_closed;
+    uint64_t tcp_selection_channel_rx;
+    uint64_t tcp_selection_channel_accepted;
+    uint64_t tcp_selection_channel_closed;
+
+    uint64_t client_stats_rx;
+    uint64_t client_udp_packets_rx;
+    uint64_t client_udp_bytes_rx;
+    uint64_t client_tiles_completed;
+    uint64_t client_completed_packets;
+    uint64_t client_partial_tiles_timed_out;
+    uint64_t client_old_generation_tiles;
+    uint64_t client_retx_requests_tx;
 
     uint64_t retx_req_rx;
     uint64_t retx_tiles_req;
+    uint64_t retx_req_ignored_live;
 
     uint64_t key_events_rx;
     uint64_t key_events_injected;
@@ -228,6 +247,29 @@ struct wd_stats {
     uint64_t input_queue_latency_sum_ns;
     uint64_t input_to_summary_samples;
     uint64_t input_to_summary_sum_ns;
+    uint64_t input_to_first_fresh_tile_samples;
+    uint64_t input_to_first_fresh_tile_sum_ns;
+
+    uint64_t tcp_summary_full_tx;
+    uint64_t tcp_summary_delta_tx;
+    uint64_t tcp_summary_delta_tiles;
+
+    uint64_t limited_rate_downshifts;
+    uint64_t limited_rate_upshifts;
+
+    uint64_t dirty_tiles_stale_skipped;
+    uint64_t retx_tiles_superseded_by_fresh;
+    uint64_t dirty_queue_age_samples;
+    uint64_t dirty_queue_age_sum_ns;
+    uint64_t retx_queue_age_samples;
+    uint64_t retx_queue_age_sum_ns;
+    uint64_t retx_req_stale_generation;
+    uint64_t retx_req_waiting_for_generation;
+
+    uint64_t full_frame_catchup_started;
+    uint64_t full_frame_catchup_completed;
+    uint64_t full_frame_catchup_tiles_sent;
+    uint64_t full_frame_catchup_duration_sum_ns;
 };
 
 struct wd_stream_policy {
@@ -241,6 +283,9 @@ struct wd_stream_policy {
     uint64_t last_frame_send_ns;
 
     uint64_t limited_udp_bytes_per_second;
+    uint64_t limited_udp_rate_floor;
+    uint64_t limited_udp_rate_ceiling;
+    uint32_t limited_rate_good_windows;
     double   limited_udp_byte_tokens;
     uint64_t last_limited_udp_byte_refill_ns;
 };
@@ -271,18 +316,27 @@ struct wd_net_state {
 
     uint16_t* dirty_queue;
     bool*     dirty_queued;
+    uint64_t* dirty_queue_enqueued_ns;
     uint16_t  dirty_queue_read;
     uint16_t  dirty_queue_write;
     uint16_t  dirty_queue_count;
 
     uint16_t* retransmit_queue;
     bool*     retransmit_queued;
+    uint64_t* retransmit_queue_enqueued_ns;
+    uint64_t* retransmit_requested_generation;
     uint16_t  retransmit_queue_count;
 
-    uint32_t tile_queue_rng_state;
+    bool*    summary_dirty_tiles;
+    uint16_t summary_dirty_count;
+
+    uint32_t dirty_priority_pop_count;
+    uint32_t retransmit_priority_pop_count;
 
     int listen_fd;
     int tcp_fd;
+    int input_tcp_fd;
+    int selection_tcp_fd;
     int udp_fd;
 
     uint16_t tcp_port;
@@ -295,6 +349,9 @@ struct wd_net_state {
     struct wd_stats        stats;
     uint64_t               last_input_inject_ns;
     bool                   input_since_last_summary;
+    bool                   input_since_last_fresh_tile;
+    uint64_t               full_frame_start_ns;
+    uint64_t               full_frame_tiles_sent;
     uint64_t               udp_send_pressure_log_ns;
     uint64_t               udp_send_pressure_drops;
 
@@ -352,6 +409,9 @@ struct wd_server {
 
     uint32_t display_width;
     uint32_t display_height;
+    uint16_t tile_width;
+    uint16_t tile_height;
+    uint32_t uncompressed_tile_bytes;
     uint16_t tiles_x;
     uint16_t tiles_y;
     uint16_t total_tiles;
@@ -414,6 +474,7 @@ struct wd_server {
     struct wlr_primary_selection_source* remote_primary_source;
 
     uint64_t last_summary_ns;
+    uint64_t last_delta_summary_ns;
     uint64_t last_stats_ns;
 
     uint32_t* framebuffer_xrgb8888;
@@ -426,7 +487,7 @@ struct wd_server {
 
 /* wd_server.c */
 bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale, uint32_t display_width,
-                    uint32_t display_height, bool enable_xwayland);
+                    uint32_t display_height, uint16_t tile_width, uint16_t tile_height, bool enable_xwayland);
 
 void wd_server_destroy(struct wd_server* server);
 
@@ -498,8 +559,9 @@ bool wd_stream_init(struct wd_server* server);
 void wd_stream_destroy(struct wd_server* server);
 bool wd_stream_send_dirty_tiles(struct wd_server* server);
 bool wd_stream_send_generation_summary_locked(struct wd_server* server);
+bool wd_stream_send_pending_generation_summary_locked(struct wd_server* server);
 bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id, bool* launched, bool* send_blocked, uint32_t* bytes_sent);
-bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id);
+bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id, uint64_t requested_generation);
 void wd_stream_print_and_reset_stats(struct wd_server* server);
 
 void     wd_stream_policy_set_defaults(struct wd_stream_policy* policy);
@@ -510,6 +572,7 @@ void wd_server_mark_scene_dirty(struct wd_server* server);
 void wd_server_mark_rect_dirty(struct wd_server* server, int x, int y, int width, int height);
 void wd_server_mark_view_dirty(struct wd_view* view);
 void wd_server_mark_view_move_dirty(struct wd_view* view, int old_x, int old_y);
+bool wd_server_set_tile_size(struct wd_server* server, uint16_t tile_width, uint16_t tile_height);
 bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t height);
 bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint32_t height);
 void wd_server_set_default_geometry(struct wd_server* server);

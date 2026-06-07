@@ -31,11 +31,26 @@ struct ClientStats {
     std::atomic<uint64_t> udp_ignored_invalid{0};
     std::atomic<uint64_t> udp_ignored_old_generation{0};
     std::atomic<uint64_t> udp_tiles_completed{0};
+    std::atomic<uint64_t> udp_completed_compressed_bytes{0};
+    std::atomic<uint64_t> udp_completed_packets{0};
+    std::atomic<uint64_t> partial_tiles_timed_out{0};
+    std::atomic<uint64_t> partial_tile_missing_packets{0};
+    std::atomic<uint64_t> partial_tile_retx_queued{0};
+    std::atomic<uint64_t> retx_response_samples{0};
+    std::atomic<uint64_t> retx_response_sum_ns{0};
+    std::atomic<uint64_t> tile_reassembly_timeout_updates{0};
     std::atomic<uint64_t> tcp_summaries_rx{0};
     std::atomic<uint64_t> tcp_retx_requests_tx{0};
+    std::atomic<uint64_t> summary_retx_tiles_queued{0};
+    std::atomic<uint64_t> summary_to_retx_samples{0};
+    std::atomic<uint64_t> summary_to_retx_sum_ns{0};
     std::atomic<uint64_t> tcp_keyboard_tx{0};
     std::atomic<uint64_t> tcp_pointer_tx{0};
     std::atomic<uint64_t> tcp_input_events_tx{0};
+    std::atomic<uint64_t> tcp_input_channel_tx{0};
+    std::atomic<uint64_t> tcp_input_channel_fallback_tx{0};
+    std::atomic<uint64_t> tcp_selection_channel_tx{0};
+    std::atomic<uint64_t> tcp_selection_channel_fallback_tx{0};
 
     std::atomic<uint64_t> summary_latency_samples{0};
     std::atomic<uint64_t> summary_latency_sum_ns{0};
@@ -51,8 +66,10 @@ struct ClientStats {
 struct ClientState {
     std::atomic<bool> running{false};
 
-    int tcp_fd = -1;
-    int udp_fd = -1;
+    int tcp_fd           = -1;
+    int input_tcp_fd     = -1;
+    int selection_tcp_fd = -1;
+    int udp_fd           = -1;
 
     std::string server_host;
     uint16_t    tcp_port        = 0;
@@ -99,6 +116,11 @@ struct ClientState {
     double                          retx_request_tokens = 0.0;
     uint64_t                        retx_request_last_refill_ns = 0;
     uint64_t                        retx_inflight_grace_ns = 250ull * 1000ull * 1000ull;
+
+    std::mutex            tile_reassembly_timeout_mutex;
+    double                tile_reassembly_ewma_ns       = 0.0;
+    double                tile_reassembly_deviation_ns  = 0.0;
+    std::atomic<uint64_t> tile_reassembly_timeout_ns{750ull * 1000ull * 1000ull};
 
     std::vector<uint8_t> udp_recv_buffer;
 

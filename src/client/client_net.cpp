@@ -89,12 +89,12 @@ bool open_udp_socket(ClientState& state) {
     return true;
 }
 
-bool open_tcp_socket(ClientState& state) {
-    state.tcp_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (state.tcp_fd < 0)
+int connect_tcp_fd(const ClientState& state, const char* label) {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
     {
-        std::perror("socket TCP");
-        return false;
+        std::perror(label);
+        return -1;
     }
 
     sockaddr_in addr{};
@@ -104,15 +104,72 @@ bool open_tcp_socket(ClientState& state) {
     if (::inet_pton(AF_INET, state.server_host.c_str(), &addr.sin_addr) != 1)
     {
         std::fprintf(stderr, "invalid IPv4 address: %s\n", state.server_host.c_str());
-        return false;
+        ::close(fd);
+        return -1;
     }
 
-    if (::connect(state.tcp_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
     {
-        std::perror("connect TCP");
+        std::perror(label);
+        ::close(fd);
+        return -1;
+    }
+
+    return fd;
+}
+
+bool open_tcp_socket(ClientState& state) {
+    state.tcp_fd = connect_tcp_fd(state, "connect TCP");
+    return state.tcp_fd >= 0;
+}
+
+bool open_input_tcp_socket(ClientState& state) {
+    if ((state.config.capabilities & WD_SERVER_CAP_INPUT_CHANNEL) == 0)
+    {
         return false;
     }
 
+    int fd = connect_tcp_fd(state, "connect input TCP");
+    if (fd < 0)
+    {
+        return false;
+    }
+
+    wd_input_channel_hello_payload hello{};
+    hello.session_id = state.config.session_id;
+
+    if (!wd_send_tcp_message(fd, WD_MSG_INPUT_CHANNEL_HELLO, &hello, sizeof(hello)))
+    {
+        ::close(fd);
+        return false;
+    }
+
+    state.input_tcp_fd = fd;
+    return true;
+}
+
+bool open_selection_tcp_socket(ClientState& state) {
+    if ((state.config.capabilities & WD_SERVER_CAP_SELECTION_CHANNEL) == 0)
+    {
+        return false;
+    }
+
+    int fd = connect_tcp_fd(state, "connect selection TCP");
+    if (fd < 0)
+    {
+        return false;
+    }
+
+    wd_selection_channel_hello_payload hello{};
+    hello.session_id = state.config.session_id;
+
+    if (!wd_send_tcp_message(fd, WD_MSG_SELECTION_CHANNEL_HELLO, &hello, sizeof(hello)))
+    {
+        ::close(fd);
+        return false;
+    }
+
+    state.selection_tcp_fd = fd;
     return true;
 }
 
@@ -486,6 +543,8 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             state.retx_inflight_since_ns.assign(total_tiles, 0);
         }
 
+        uint64_t newly_queued_from_summary = 0;
+
         for (uint16_t i = 0; i < summary.tile_count; ++i)
         {
             const wd_tile_generation_entry& entry = entries[i];
@@ -533,11 +592,22 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
                 }
 
                 state.retx_queue.push_back(entry.tile_id);
+                newly_queued_from_summary++;
             }
 
             if (state.retx_queued_generation[entry.tile_id] < entry.tile_generation)
             {
                 state.retx_queued_generation[entry.tile_id] = entry.tile_generation;
+            }
+        }
+
+        if (newly_queued_from_summary != 0)
+        {
+            state.stats.summary_retx_tiles_queued.fetch_add(newly_queued_from_summary, std::memory_order_relaxed);
+            if (summary.server_timestamp_ns != 0 && now_ns >= summary.server_timestamp_ns)
+            {
+                state.stats.summary_to_retx_samples.fetch_add(1, std::memory_order_relaxed);
+                state.stats.summary_to_retx_sum_ns.fetch_add(now_ns - summary.server_timestamp_ns, std::memory_order_relaxed);
             }
         }
     }
@@ -720,6 +790,24 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         return false;
     }
 
+    if (open_input_tcp_socket(state))
+    {
+        std::printf("input TCP channel: enabled\n");
+    }
+    else
+    {
+        std::printf("input TCP channel: unavailable, using control TCP\n");
+    }
+
+    if (open_selection_tcp_socket(state))
+    {
+        std::printf("selection TCP channel: enabled\n");
+    }
+    else
+    {
+        std::printf("selection TCP channel: unavailable, using control TCP\n");
+    }
+
     state.framebuffer.assign(state.framebuffer_pixels(), 0xff202020u);
     state.displayed_generation.assign(state.tile_count(), 0);
 
@@ -752,6 +840,14 @@ void client_disconnect(ClientState& state) {
     {
         ::shutdown(state.tcp_fd, SHUT_RDWR);
     }
+    if (state.input_tcp_fd >= 0)
+    {
+        ::shutdown(state.input_tcp_fd, SHUT_RDWR);
+    }
+    if (state.selection_tcp_fd >= 0)
+    {
+        ::shutdown(state.selection_tcp_fd, SHUT_RDWR);
+    }
 
     if (state.tcp_thread.joinable())
     {
@@ -769,6 +865,16 @@ void client_disconnect(ClientState& state) {
         ::close(state.tcp_fd);
         state.tcp_fd = -1;
     }
+    if (state.input_tcp_fd >= 0)
+    {
+        ::close(state.input_tcp_fd);
+        state.input_tcp_fd = -1;
+    }
+    if (state.selection_tcp_fd >= 0)
+    {
+        ::close(state.selection_tcp_fd);
+        state.selection_tcp_fd = -1;
+    }
 }
 
 bool client_start_tcp_reader(ClientState& state) {
@@ -782,7 +888,8 @@ bool client_start_tcp_reader(ClientState& state) {
 }
 
 bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool pressed) {
-    if (state.tcp_fd < 0 || evdev_key_code == 0)
+    const int fd = state.input_tcp_fd >= 0 ? state.input_tcp_fd : state.tcp_fd;
+    if (fd < 0 || evdev_key_code == 0)
     {
         return false;
     }
@@ -793,12 +900,20 @@ bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool 
     event.evdev_key_code      = evdev_key_code;
     event.pressed             = pressed ? 1 : 0;
 
-    const bool ok = wd_send_tcp_message(state.tcp_fd, WD_MSG_KEYBOARD_KEY, &event, sizeof(event));
+    const bool ok = wd_send_tcp_message(fd, WD_MSG_KEYBOARD_KEY, &event, sizeof(event));
 
     if (ok)
     {
         state.stats.tcp_keyboard_tx.fetch_add(1, std::memory_order_relaxed);
         state.stats.tcp_input_events_tx.fetch_add(1, std::memory_order_relaxed);
+        if (fd == state.input_tcp_fd)
+        {
+            state.stats.tcp_input_channel_tx.fetch_add(1, std::memory_order_relaxed);
+        }
+        else
+        {
+            state.stats.tcp_input_channel_fallback_tx.fetch_add(1, std::memory_order_relaxed);
+        }
         state.stats.latest_input_event_timestamp_ns.store(event.client_timestamp_ns, std::memory_order_relaxed);
     }
 
@@ -806,17 +921,26 @@ bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool 
 }
 
 bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payload& event) {
-    if (state.tcp_fd < 0)
+    const int fd = state.input_tcp_fd >= 0 ? state.input_tcp_fd : state.tcp_fd;
+    if (fd < 0)
     {
         return false;
     }
 
-    const bool ok = wd_send_tcp_message(state.tcp_fd, WD_MSG_POINTER_EVENT, &event, sizeof(event));
+    const bool ok = wd_send_tcp_message(fd, WD_MSG_POINTER_EVENT, &event, sizeof(event));
 
     if (ok)
     {
         state.stats.tcp_pointer_tx.fetch_add(1, std::memory_order_relaxed);
         state.stats.tcp_input_events_tx.fetch_add(1, std::memory_order_relaxed);
+        if (fd == state.input_tcp_fd)
+        {
+            state.stats.tcp_input_channel_tx.fetch_add(1, std::memory_order_relaxed);
+        }
+        else
+        {
+            state.stats.tcp_input_channel_fallback_tx.fetch_add(1, std::memory_order_relaxed);
+        }
 
         if (event.client_timestamp_ns != 0)
         {
@@ -828,7 +952,8 @@ bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payloa
 }
 
 bool client_send_selection_text(ClientState& state, uint16_t message_type, const char* text) {
-    if (state.tcp_fd < 0 || !text)
+    const int fd = state.selection_tcp_fd >= 0 ? state.selection_tcp_fd : state.tcp_fd;
+    if (fd < 0 || !text)
     {
         return false;
     }
@@ -852,7 +977,26 @@ bool client_send_selection_text(ClientState& state, uint16_t message_type, const
         std::memcpy(payload.data() + sizeof(header), text, text_len);
     }
 
-    return wd_send_tcp_message(state.tcp_fd, message_type, payload.data(), static_cast<uint32_t>(payload.size()));
+    bool ok = wd_send_tcp_message(fd, message_type, payload.data(), static_cast<uint32_t>(payload.size()));
+    if (!ok && fd == state.selection_tcp_fd && state.tcp_fd >= 0)
+    {
+        ::close(state.selection_tcp_fd);
+        state.selection_tcp_fd = -1;
+        ok = wd_send_tcp_message(state.tcp_fd, message_type, payload.data(), static_cast<uint32_t>(payload.size()));
+    }
+
+    if (ok)
+    {
+        if (fd == state.selection_tcp_fd)
+        {
+            state.stats.tcp_selection_channel_tx.fetch_add(1, std::memory_order_relaxed);
+        }
+        else
+        {
+            state.stats.tcp_selection_channel_fallback_tx.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    return ok;
 }
 
 bool client_send_clipboard_text(ClientState& state, const char* text) {
@@ -875,6 +1019,16 @@ bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t hei
     resize.height     = height;
 
     return wd_send_tcp_message(state.tcp_fd, WD_MSG_DISPLAY_RESIZE, &resize, sizeof(resize));
+}
+
+
+bool client_send_stats(ClientState& state, const wd_client_stats_payload& stats) {
+    if (state.tcp_fd < 0)
+    {
+        return false;
+    }
+
+    return wd_send_tcp_message(state.tcp_fd, WD_MSG_CLIENT_STATS, &stats, sizeof(stats));
 }
 
 bool client_flush_retransmit_requests(ClientState& state) {
@@ -985,8 +1139,9 @@ bool client_flush_retransmit_requests(ClientState& state) {
             state.retx_last_request_ns[tile_id]          = now_ns;
 
             wd_retransmit_entry request{};
-            request.tile_id  = tile_id;
-            request.reserved = 0;
+            request.tile_id              = tile_id;
+            request.reserved             = 0;
+            request.requested_generation = target_generation;
             entries.push_back(request);
         }
 

@@ -17,7 +17,7 @@ void usage(const char* argv0) {
                  "  --mode full                 Send every dirty compositor tick\n"
                  "  --mode partial              Cap send pass to target FPS, default 30\n"
                  "  --mode limited              Cap by throughput-probed byte budget\n"
-                 "  --mode live                 Lossy mode for video\n"
+                 "  --mode live                 Lossy latest-only mode; disables retransmit repair\n"
                  "  --fps <N>                   Target FPS for partial mode\n"
                  "  --size <WxH>                 Request remote display size\n\n"
                  "Examples:\n"
