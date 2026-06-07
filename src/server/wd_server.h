@@ -72,6 +72,7 @@ extern "C" {
 
 #define WD_KEY_QUEUE_CAP     4096
 #define WD_POINTER_QUEUE_CAP 4096
+#define WD_PRESSED_KEY_CAP   256
 
 struct wd_server;
 
@@ -242,10 +243,17 @@ struct wd_stats {
     uint64_t key_events_rx;
     uint64_t key_events_injected;
     uint64_t key_events_dropped;
+    uint64_t key_state_duplicate_presses;
+    uint64_t key_state_release_without_press;
+    uint64_t keyboard_enter_events;
 
     uint64_t pointer_events_rx;
     uint64_t pointer_events_injected;
     uint64_t pointer_events_dropped;
+    uint64_t pointer_button_grab_started;
+    uint64_t pointer_button_grab_ended;
+    uint64_t pointer_button_grab_cleared;
+    uint64_t pointer_button_grab_surface_destroyed;
 
     uint64_t xdg_move_invalid_serial;
     uint64_t xdg_resize_invalid_serial;
@@ -388,6 +396,7 @@ struct wd_net_state {
 
     struct wd_queued_key_event key_queue[WD_KEY_QUEUE_CAP];
     size_t                     key_queue_count;
+    bool                       key_state_reset_pending;
 
     struct wd_queued_pointer_event pointer_queue[WD_POINTER_QUEUE_CAP];
     size_t                         pointer_queue_count;
@@ -457,6 +466,8 @@ struct wd_server {
     struct wl_list                                    keyboard_shortcuts_inhibitors;
     struct wlr_keyboard_group*                        keyboard_group;
     struct wlr_keyboard*                              keyboard;
+    uint32_t                                          pressed_keycodes[WD_PRESSED_KEY_CAP];
+    size_t                                            pressed_keycode_count;
 
     struct wl_list views;
     struct wl_list popup_commit_trackers;
@@ -471,8 +482,12 @@ struct wd_server {
     bool                pointer_button_grab_active;
     struct wd_view*     pointer_button_grab_view;
     struct wlr_surface* pointer_button_grab_surface;
-    double              pointer_button_grab_surface_lx;
-    double              pointer_button_grab_surface_ly;
+    struct wl_listener  pointer_button_grab_surface_destroy;
+    double              pointer_button_grab_layout_x;
+    double              pointer_button_grab_layout_y;
+    double              pointer_button_grab_surface_sx;
+    double              pointer_button_grab_surface_sy;
+    uint32_t            pointer_button_grab_count;
     uint32_t            pointer_button_grab_buttons;
 
     struct wd_move_grab   move_grab;
@@ -626,11 +641,17 @@ bool wd_keyboard_init(struct wd_server* server);
 void wd_keyboard_queue_event_locked(struct wd_net_state* net, const struct wd_keyboard_event_payload* event,
                                     uint64_t server_rx_timestamp_ns);
 void wd_keyboard_drain_and_inject(struct wd_server* server);
+void wd_keyboard_note_key_state(struct wd_server* server, uint32_t evdev_key_code, bool pressed);
+void wd_keyboard_notify_enter(struct wd_server* server, struct wlr_surface* surface);
+void wd_keyboard_clear_pressed_keys(struct wd_server* server);
 
 void wd_pointer_queue_event_locked(struct wd_net_state* net, const struct wd_pointer_event_payload* event, uint64_t server_rx_timestamp_ns);
 
 void wd_pointer_drain_and_inject(struct wd_server* server);
 void wd_pointer_clear_focus(struct wd_server* server);
+void wd_pointer_clear_button_grab(struct wd_server* server);
+void wd_pointer_clear_button_grab_for_view(struct wd_server* server, struct wd_view* view);
+void wd_pointer_clear_button_grab_for_surface(struct wd_server* server, struct wlr_surface* surface);
 
 struct wd_view* wd_scene_view_at(struct wd_server* server, double lx, double ly, double* sx, double* sy);
 

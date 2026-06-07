@@ -2110,8 +2110,11 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                            s.full_frame_catchup_started != 0 || s.full_frame_catchup_completed != 0 ||
                            s.full_frame_catchup_tiles_sent != 0 ||
                            s.key_events_rx != 0 || s.key_events_injected != 0 ||
-                           s.key_events_dropped != 0 || s.pointer_events_rx != 0 || s.pointer_events_injected != 0 ||
-                           s.pointer_events_dropped != 0 || s.xdg_move_invalid_serial != 0 ||
+                           s.key_events_dropped != 0 || s.key_state_duplicate_presses != 0 ||
+                           s.key_state_release_without_press != 0 || s.keyboard_enter_events != 0 || s.pointer_events_rx != 0 || s.pointer_events_injected != 0 ||
+                           s.pointer_events_dropped != 0 || s.pointer_button_grab_started != 0 ||
+                           s.pointer_button_grab_ended != 0 || s.pointer_button_grab_cleared != 0 ||
+                           s.pointer_button_grab_surface_destroyed != 0 || s.xdg_move_invalid_serial != 0 ||
                            s.xdg_resize_invalid_serial != 0 || s.cursor_shape_requests != 0 ||
                            s.cursor_set_cursor_requests != 0 || s.cursor_set_cursor_rejected != 0 ||
                            s.cursor_set_cursor_hidden != 0 || s.cursor_set_cursor_fallback != 0;
@@ -2138,8 +2141,10 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                  "dirty_pointer_priority_pops=%llu retx_pointer_priority_pops=%llu full_frame_pointer_priority_pops=%llu "
                  "full_frame_started=%llu full_frame_completed=%llu full_frame_tiles_sent=%llu "
                  "full_frame_avg_ms=%.2f "
-                 "key_rx=%llu key_injected=%llu key_dropped=%llu pointer_rx=%llu pointer_injected=%llu "
-                 "pointer_dropped=%llu xdg_move_invalid_serial=%llu xdg_resize_invalid_serial=%llu "
+                 "key_rx=%llu key_injected=%llu key_dropped=%llu key_dup_press=%llu key_release_without_press=%llu keyboard_enter=%llu pointer_rx=%llu pointer_injected=%llu "
+                 "pointer_dropped=%llu pointer_grab_started=%llu pointer_grab_ended=%llu "
+                 "pointer_grab_cleared=%llu pointer_grab_surface_destroyed=%llu "
+                 "xdg_move_invalid_serial=%llu xdg_resize_invalid_serial=%llu "
                  "cursor_shape_req=%llu cursor_set_cursor_req=%llu cursor_set_cursor_rejected=%llu "
                  "cursor_set_cursor_hidden=%llu cursor_set_cursor_fallback=%llu "
                  "input_net_avg_ms=n/a input_queue_avg_ms=%.2f "
@@ -2180,8 +2185,11 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                  (unsigned long long)s.full_frame_catchup_tiles_sent,
                  wd_avg_ms(s.full_frame_catchup_duration_sum_ns, s.full_frame_catchup_completed),
                  (unsigned long long)s.key_events_rx, (unsigned long long)s.key_events_injected, (unsigned long long)s.key_events_dropped,
-                 (unsigned long long)s.pointer_events_rx, (unsigned long long)s.pointer_events_injected,
-                 (unsigned long long)s.pointer_events_dropped, (unsigned long long)s.xdg_move_invalid_serial,
+                 (unsigned long long)s.key_state_duplicate_presses, (unsigned long long)s.key_state_release_without_press,
+                 (unsigned long long)s.keyboard_enter_events, (unsigned long long)s.pointer_events_rx, (unsigned long long)s.pointer_events_injected,
+                 (unsigned long long)s.pointer_events_dropped, (unsigned long long)s.pointer_button_grab_started,
+                 (unsigned long long)s.pointer_button_grab_ended, (unsigned long long)s.pointer_button_grab_cleared,
+                 (unsigned long long)s.pointer_button_grab_surface_destroyed, (unsigned long long)s.xdg_move_invalid_serial,
                  (unsigned long long)s.xdg_resize_invalid_serial,
                  (unsigned long long)s.cursor_shape_requests, (unsigned long long)s.cursor_set_cursor_requests,
                  (unsigned long long)s.cursor_set_cursor_rejected, (unsigned long long)s.cursor_set_cursor_hidden,

@@ -533,6 +533,7 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
     wl_list_init(&server->keyboard_shortcuts_inhibitors);
     wl_list_init(&server->new_keyboard_shortcuts_inhibitor.link);
     wl_list_init(&server->keyboard_shortcuts_inhibit_manager_destroy.link);
+    wl_list_init(&server->pointer_button_grab_surface_destroy.link);
 
     if (!wd_server_set_tile_size(server, tile_width, tile_height) || !wd_server_set_geometry(server, display_width, display_height))
     {

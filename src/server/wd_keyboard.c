@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <xkbcommon/xkbcommon.h>
 
 bool wd_keyboard_init(struct wd_server* server) {
@@ -111,6 +112,85 @@ static uint32_t key_time_msec(const struct wd_queued_key_event* event) {
     return (uint32_t)(wd_now_ns() / 1000000ull);
 }
 
+static ssize_t wd_keyboard_find_pressed_key(const struct wd_server* server, uint32_t evdev_key_code) {
+    if (!server)
+    {
+        return -1;
+    }
+
+    for (size_t i = 0; i < server->pressed_keycode_count; ++i)
+    {
+        if (server->pressed_keycodes[i] == evdev_key_code)
+        {
+            return (ssize_t)i;
+        }
+    }
+
+    return -1;
+}
+
+void wd_keyboard_note_key_state(struct wd_server* server, uint32_t evdev_key_code, bool pressed) {
+    if (!server)
+    {
+        return;
+    }
+
+    const ssize_t index = wd_keyboard_find_pressed_key(server, evdev_key_code);
+
+    if (pressed)
+    {
+        if (index >= 0)
+        {
+            server->net.stats.key_state_duplicate_presses++;
+            return;
+        }
+
+        if (server->pressed_keycode_count >= WD_PRESSED_KEY_CAP)
+        {
+            server->net.stats.key_events_dropped++;
+            return;
+        }
+
+        server->pressed_keycodes[server->pressed_keycode_count++] = evdev_key_code;
+        return;
+    }
+
+    if (index < 0)
+    {
+        server->net.stats.key_state_release_without_press++;
+        return;
+    }
+
+    const size_t remove_index = (size_t)index;
+    if (remove_index + 1 < server->pressed_keycode_count)
+    {
+        memmove(&server->pressed_keycodes[remove_index], &server->pressed_keycodes[remove_index + 1],
+                (server->pressed_keycode_count - remove_index - 1) * sizeof(server->pressed_keycodes[0]));
+    }
+    server->pressed_keycode_count--;
+}
+
+void wd_keyboard_clear_pressed_keys(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    server->pressed_keycode_count = 0;
+}
+
+void wd_keyboard_notify_enter(struct wd_server* server, struct wlr_surface* surface) {
+    if (!server || !server->seat || !server->keyboard || !surface)
+    {
+        return;
+    }
+
+    wlr_seat_set_keyboard(server->seat, server->keyboard);
+    wlr_seat_keyboard_notify_enter(server->seat, surface, server->pressed_keycodes, server->pressed_keycode_count,
+                                   &server->keyboard->modifiers);
+    server->net.stats.keyboard_enter_events++;
+}
+
 static void notify_key_and_modifiers(struct wd_server* server, const struct wd_queued_key_event* event) {
     if (!server || !server->seat || !server->keyboard || !event)
     {
@@ -143,6 +223,8 @@ static void notify_key_and_modifiers(struct wd_server* server, const struct wd_q
         }
     }
 
+    wd_keyboard_note_key_state(server, event->evdev_key_code, event->pressed);
+
     wlr_seat_keyboard_notify_key(server->seat, time_msec, event->evdev_key_code, state);
 }
 
@@ -151,6 +233,12 @@ void wd_keyboard_drain_and_inject(struct wd_server* server) {
     size_t                     count = 0;
 
     pthread_mutex_lock(&server->net.lock);
+
+    const bool reset_key_state = server->net.key_state_reset_pending;
+    if (reset_key_state)
+    {
+        server->net.key_state_reset_pending = false;
+    }
 
     count = server->net.key_queue_count;
     if (count > WD_KEY_QUEUE_CAP)
@@ -165,6 +253,11 @@ void wd_keyboard_drain_and_inject(struct wd_server* server) {
     }
 
     pthread_mutex_unlock(&server->net.lock);
+
+    if (reset_key_state)
+    {
+        wd_keyboard_clear_pressed_keys(server);
+    }
 
     if (count == 0 || !server->seat || !server->keyboard)
     {

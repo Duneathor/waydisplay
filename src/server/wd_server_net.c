@@ -906,6 +906,7 @@ void* wd_net_thread_main(void* arg) {
 
         net->key_queue_count     = 0;
         net->pointer_queue_count = 0;
+        net->key_state_reset_pending = true;
 
         free(net->clipboard_text);
         net->clipboard_text         = NULL;
@@ -1208,6 +1209,7 @@ void* wd_net_thread_main(void* arg) {
         net->client_connected    = false;
         net->key_queue_count     = 0;
         net->pointer_queue_count = 0;
+        net->key_state_reset_pending = true;
 
         free(net->clipboard_text);
         net->clipboard_text         = NULL;

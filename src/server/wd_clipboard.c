@@ -456,6 +456,8 @@ static void synthesize_key(struct wd_server* server, uint32_t evdev_key_code, bo
 
     enum wl_keyboard_key_state state = pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
 
+    wd_keyboard_note_key_state(server, evdev_key_code, pressed);
+
     wlr_seat_keyboard_notify_key(server->seat, time_msec, evdev_key_code, state);
 }
 
@@ -481,9 +483,7 @@ static void synthesize_clipboard_paste_shortcut(struct wd_server* server) {
     const bool     ctrl_already_active  = keyboard_modifier_active(server, XKB_MOD_NAME_CTRL);
     const bool     shift_already_active = keyboard_modifier_active(server, XKB_MOD_NAME_SHIFT);
 
-    wlr_seat_set_keyboard(server->seat, server->keyboard);
-    wlr_seat_keyboard_notify_enter(server->seat, server->focused_surface, server->keyboard->keycodes, server->keyboard->num_keycodes,
-                                   &server->keyboard->modifiers);
+    wd_keyboard_notify_enter(server, server->focused_surface);
 
     if (shift_already_active)
     {

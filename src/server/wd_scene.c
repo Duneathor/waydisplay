@@ -37,22 +37,21 @@ struct wd_popup_unconstrain {
 };
 
 struct wd_popup_commit_tracker {
-    struct wl_list         link;
-    struct wl_listener     commit;
-    struct wl_listener     map;
-    struct wl_listener     unmap;
-    struct wl_listener     destroy;
-    struct wl_listener     view_destroy;
-    struct wlr_xdg_popup*  popup;
-    struct wd_view*        view;
-    struct wlr_scene_tree* scene_tree;
-    int                    have_last_geometry;
-    int                    last_surface_width;
-    int                    last_surface_height;
-    int                    last_geometry_x;
-    int                    last_geometry_y;
-    int                    last_geometry_width;
-    int                    last_geometry_height;
+    struct wl_list        link;
+    struct wl_listener    commit;
+    struct wl_listener    map;
+    struct wl_listener    unmap;
+    struct wl_listener    destroy;
+    struct wl_listener    view_destroy;
+    struct wlr_xdg_popup* popup;
+    struct wd_view*       view;
+    int                   have_last_geometry;
+    int                   last_surface_width;
+    int                   last_surface_height;
+    int                   last_geometry_x;
+    int                   last_geometry_y;
+    int                   last_geometry_width;
+    int                   last_geometry_height;
 };
 
 struct wd_surface_commit_tracker {
@@ -676,10 +675,7 @@ void wd_scene_focus_view(struct wd_view* view) {
 
     if (server->keyboard)
     {
-        wlr_seat_set_keyboard(server->seat, server->keyboard);
-
-        wlr_seat_keyboard_notify_enter(server->seat, server->focused_surface, server->keyboard->keycodes, server->keyboard->num_keycodes,
-                                       &server->keyboard->modifiers);
+        wd_keyboard_notify_enter(server, server->focused_surface);
     }
 
     wd_server_mark_scene_dirty(server);
@@ -1001,6 +997,8 @@ static void view_handle_unmap(struct wl_listener* listener, void* data) {
         }
     }
 
+    wd_pointer_clear_button_grab_for_view(server, view);
+
     if (server->move_grab.view == view)
     {
         server->move_grab.active = false;
@@ -1114,6 +1112,8 @@ static void view_handle_xdg_surface_destroy(struct wl_listener* listener, void* 
             wlr_seat_keyboard_notify_clear_focus(server->seat);
         }
     }
+
+    wd_pointer_clear_button_grab_for_view(server, view);
 
     if (server->move_grab.view == view)
     {
@@ -1308,19 +1308,6 @@ static void popup_commit_tracker_destroy(struct wd_popup_commit_tracker* state) 
     remove_listener_if_linked(&state->destroy);
     remove_listener_if_linked(&state->view_destroy);
 
-    /*
-     * Do not destroy state->scene_tree here.  The tree returned by
-     * wlr_scene_xdg_surface_create() installs wlroots-managed lifetime hooks
-     * on the xdg surface/surface tree.  Destroying it again from the popup
-     * xdg_surface destroy listener can double-destroy the scene node and crash
-     * inside wlroots scene traversal.
-     */
-    if (state->scene_tree)
-    {
-        state->scene_tree->node.data = NULL;
-        state->scene_tree            = NULL;
-    }
-
     free(state);
 }
 
@@ -1346,28 +1333,6 @@ static struct wd_popup_commit_tracker* popup_commit_tracker_for_popup(struct wd_
     return NULL;
 }
 
-static struct wd_popup_commit_tracker* popup_commit_tracker_for_surface(struct wd_server* server, struct wlr_surface* surface) {
-    if (!server || !surface)
-    {
-        return NULL;
-    }
-
-    if (!server->popup_commit_trackers.prev || !server->popup_commit_trackers.next)
-    {
-        return NULL;
-    }
-
-    struct wd_popup_commit_tracker* state;
-    wl_list_for_each(state, &server->popup_commit_trackers, link) {
-        if (state->popup && state->popup->base && state->popup->base->surface == surface)
-        {
-            return state;
-        }
-    }
-
-    return NULL;
-}
-
 static void popup_commit_tracker_mark_dirty(struct wd_popup_commit_tracker* state, const char* reason) {
     if (!state || !state->view || !state->view->server || !state->popup || !state->popup->base)
     {
@@ -1382,12 +1347,6 @@ static void popup_commit_tracker_mark_dirty(struct wd_popup_commit_tracker* stat
     int geometry_y      = state->popup->current.geometry.y;
     int geometry_width  = state->popup->current.geometry.width;
     int geometry_height = state->popup->current.geometry.height;
-
-    if (state->scene_tree)
-    {
-        wlr_scene_node_set_position(&state->scene_tree->node, geometry_x, geometry_y);
-        wlr_scene_node_raise_to_top(&state->scene_tree->node);
-    }
 
     int geometry_changed = !state->have_last_geometry || state->last_surface_width != surface_width ||
                            state->last_surface_height != surface_height || state->last_geometry_x != geometry_x ||
@@ -1521,47 +1480,14 @@ static void view_track_popup_commits(struct wd_view* view, struct wlr_xdg_popup*
     state->popup = popup;
     state->view  = view;
 
-    struct wlr_scene_tree*          parent_tree  = view->scene_tree;
-    struct wd_popup_commit_tracker* parent_popup = NULL;
-    if (popup->parent)
-    {
-        parent_popup = popup_commit_tracker_for_surface(view->server, popup->parent);
-        if (parent_popup && parent_popup->scene_tree)
-        {
-            parent_tree = parent_popup->scene_tree;
-        }
-    }
-
-    if (parent_tree)
-    {
-        state->scene_tree = wlr_scene_xdg_surface_create(parent_tree, popup->base);
-        if (state->scene_tree)
-        {
-            state->scene_tree->node.data = view;
-            wlr_scene_node_set_position(&state->scene_tree->node, popup->current.geometry.x, popup->current.geometry.y);
-            wlr_scene_node_raise_to_top(&state->scene_tree->node);
-            WD_LOG_DEBUG("WayDisplay: created explicit xdg popup scene tree popup=%p "
-                         "scene_tree=%p parent_view=%p parent_popup=%p parent_surface=%p "
-                         "parent_tree=%p",
-                         (void*)popup, (void*)state->scene_tree, (void*)view, parent_popup ? (void*)parent_popup->popup : NULL,
-                         popup->parent ? (void*)popup->parent : NULL, (void*)parent_tree);
-        }
-        else
-        {
-            WD_LOG_ERROR("WayDisplay: failed to create explicit xdg popup scene tree "
-                         "popup=%p parent_view=%p parent_popup=%p parent_surface=%p",
-                         (void*)popup, (void*)view, parent_popup ? (void*)parent_popup->popup : NULL,
-                         popup->parent ? (void*)popup->parent : NULL);
-        }
-    }
-    else
-    {
-        WD_LOG_DEBUG("WayDisplay: not creating explicit popup scene tree popup=%p view=%p because "
-                     "parent scene tree is NULL parent_popup=%p parent_surface=%p",
-                     (void*)popup, (void*)view, parent_popup ? (void*)parent_popup->popup : NULL,
-                     popup->parent ? (void*)popup->parent : NULL);
-    }
-
+    /*
+     * The toplevel scene tree created with wlr_scene_xdg_surface_create() owns
+     * the xdg popup scene subtree.  Do not create a second explicit scene tree
+     * for the same popup here; doing so can render popups twice and can leave
+     * wlroots-managed scene-node lifetime ambiguous.  This tracker only keeps
+     * popup commits mapped to the parent view for dirty-region scheduling and
+     * one-shot unconstrain handling.
+     */
     wl_list_insert(&view->server->popup_commit_trackers, &state->link);
 
     wl_list_init(&state->commit.link);

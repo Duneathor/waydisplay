@@ -301,6 +301,120 @@ void wd_pointer_clear_focus(struct wd_server* server) {
     wlr_seat_pointer_notify_frame(server->seat);
 }
 
+
+static bool listener_is_linked(struct wl_listener* listener) {
+    return listener && listener->link.prev && listener->link.next;
+}
+
+static void remove_listener_if_linked(struct wl_listener* listener) {
+    if (!listener_is_linked(listener))
+    {
+        return;
+    }
+
+    wl_list_remove(&listener->link);
+    wl_list_init(&listener->link);
+}
+
+static void pointer_button_grab_surface_handle_destroy(struct wl_listener* listener, void* data) {
+    (void)data;
+
+    struct wd_server* server = wl_container_of(listener, server, pointer_button_grab_surface_destroy);
+    if (!server)
+    {
+        return;
+    }
+
+    server->net.stats.pointer_button_grab_surface_destroyed++;
+    wd_pointer_clear_button_grab(server);
+}
+
+static void pointer_button_grab_reset(struct wd_server* server, const char* reason, bool completed) {
+    if (!server)
+    {
+        return;
+    }
+
+    const bool had_grab = server->pointer_button_grab_active || server->pointer_button_grab_count > 0 || server->pointer_button_grab_surface;
+
+    if (had_grab)
+    {
+        WD_LOG_DEBUG("WayDisplay: pointer button grab %s surface=%p view=%p count=%u buttons=0x%x", reason ? reason : "clear",
+                     (void*)server->pointer_button_grab_surface, (void*)server->pointer_button_grab_view,
+                     (unsigned)server->pointer_button_grab_count, (unsigned)server->pointer_button_grab_buttons);
+        if (completed)
+        {
+            server->net.stats.pointer_button_grab_ended++;
+        }
+        else
+        {
+            server->net.stats.pointer_button_grab_cleared++;
+        }
+    }
+
+    remove_listener_if_linked(&server->pointer_button_grab_surface_destroy);
+
+    server->pointer_button_grab_active     = false;
+    server->pointer_button_grab_view       = NULL;
+    server->pointer_button_grab_surface    = NULL;
+    server->pointer_button_grab_layout_x   = 0.0;
+    server->pointer_button_grab_layout_y   = 0.0;
+    server->pointer_button_grab_surface_sx = 0.0;
+    server->pointer_button_grab_surface_sy = 0.0;
+    server->pointer_button_grab_count      = 0;
+    server->pointer_button_grab_buttons    = 0;
+}
+
+void wd_pointer_clear_button_grab(struct wd_server* server) {
+    pointer_button_grab_reset(server, "clear", false);
+}
+
+void wd_pointer_clear_button_grab_for_view(struct wd_server* server, struct wd_view* view) {
+    if (!server || !view || server->pointer_button_grab_view != view)
+    {
+        return;
+    }
+
+    pointer_button_grab_reset(server, "view gone", false);
+}
+
+void wd_pointer_clear_button_grab_for_surface(struct wd_server* server, struct wlr_surface* surface) {
+    if (!server || !surface || server->pointer_button_grab_surface != surface)
+    {
+        return;
+    }
+
+    pointer_button_grab_reset(server, "surface gone", false);
+}
+
+static void pointer_button_grab_begin(struct wd_server* server, struct wd_view* view, struct wlr_surface* surface, double lx, double ly,
+                                      double sx, double sy, uint32_t button) {
+    if (!server || !surface)
+    {
+        return;
+    }
+
+    pointer_button_grab_reset(server, "replace", false);
+
+    server->pointer_button_grab_active     = true;
+    server->pointer_button_grab_view       = view;
+    server->pointer_button_grab_surface    = surface;
+    server->pointer_button_grab_layout_x   = lx;
+    server->pointer_button_grab_layout_y   = ly;
+    server->pointer_button_grab_surface_sx = sx;
+    server->pointer_button_grab_surface_sy = sy;
+    server->pointer_button_grab_count      = 0;
+    server->pointer_button_grab_buttons    = button ? (1u << (button & 31u)) : 0;
+
+    server->pointer_button_grab_surface_destroy.notify = pointer_button_grab_surface_handle_destroy;
+    wl_signal_add(&surface->events.destroy, &server->pointer_button_grab_surface_destroy);
+
+    server->net.stats.pointer_button_grab_started++;
+
+    WD_LOG_DEBUG("WayDisplay: pointer button grab begin surface=%p view=%p layout=%.1f %.1f sx=%.1f sy=%.1f button=0x%x",
+                 (void*)surface, (void*)view, lx, ly, sx, sy, button);
+}
+
 void wd_pointer_begin_move(struct wd_server* server, struct wd_view* view) {
     if (!server || !view)
     {
@@ -597,30 +711,8 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
         static int                 last_logged_motion_x       = -1;
         static int                 last_logged_motion_y       = -1;
         static uint64_t            last_motion_log_ns         = 0;
-        static struct wlr_surface* button_grab_surface        = NULL;
-        static struct wd_view*     button_grab_view           = NULL;
-        static uint32_t            button_grab_count          = 0;
-        static double              button_grab_lx             = 0.0;
-        static double              button_grab_ly             = 0.0;
-        static double              button_grab_sx             = 0.0;
-        static double              button_grab_sy             = 0.0;
 
-#define WD_CLEAR_POINTER_BUTTON_GRAB()                                                                                                     \
-    do                                                                                                                                     \
-    {                                                                                                                                      \
-        if (button_grab_count > 0)                                                                                                         \
-        {                                                                                                                                  \
-            WD_LOG_DEBUG("WayDisplay: pointer button grab cancel surface=%p view=%p", (void*)button_grab_surface,                          \
-                         (void*)button_grab_view);                                                                                         \
-        }                                                                                                                                  \
-        button_grab_surface = NULL;                                                                                                        \
-        button_grab_view    = NULL;                                                                                                        \
-        button_grab_count   = 0;                                                                                                           \
-        button_grab_lx      = 0.0;                                                                                                         \
-        button_grab_ly      = 0.0;                                                                                                         \
-        button_grab_sx      = 0.0;                                                                                                         \
-        button_grab_sy      = 0.0;                                                                                                         \
-    } while (0)
+#define WD_CLEAR_POINTER_BUTTON_GRAB() wd_pointer_clear_button_grab(server)
 
         /*
          * If the compositor is currently moving a window, pointer motion updates
@@ -679,12 +771,12 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
 
         bool hit_surface = scene_surface_at(server, lx, ly, &target_view, &target_surface, &sx, &sy);
 
-        if (button_grab_count > 0 && button_grab_surface)
+        if (server->pointer_button_grab_count > 0 && server->pointer_button_grab_surface)
         {
-            target_view    = button_grab_view;
-            target_surface = button_grab_surface;
-            sx             = button_grab_sx + (lx - button_grab_lx);
-            sy             = button_grab_sy + (ly - button_grab_ly);
+            target_view    = server->pointer_button_grab_view;
+            target_surface = server->pointer_button_grab_surface;
+            sx             = server->pointer_button_grab_surface_sx + (lx - server->pointer_button_grab_layout_x);
+            sy             = server->pointer_button_grab_surface_sy + (ly - server->pointer_button_grab_layout_y);
             hit_surface    = true;
         }
 
@@ -851,22 +943,13 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
                  *
                  * Child-surface presses are also forwarded unchanged.
                  */
-                if (button_grab_count == 0)
+                if (server->pointer_button_grab_count == 0)
                 {
-                    button_grab_surface = target_surface;
-                    button_grab_view    = target_view;
-                    button_grab_lx      = lx;
-                    button_grab_ly      = ly;
-                    button_grab_sx      = sx;
-                    button_grab_sy      = sy;
-
-                    WD_LOG_DEBUG("WayDisplay: pointer button grab begin surface=%p view=%p "
-                                 "layout=%.1f %.1f sx=%.1f sy=%.1f",
-                                 (void*)button_grab_surface, (void*)button_grab_view, button_grab_lx, button_grab_ly, button_grab_sx,
-                                 button_grab_sy);
+                    pointer_button_grab_begin(server, target_view, target_surface, lx, ly, sx, sy, event->button);
                 }
 
-                ++button_grab_count;
+                ++server->pointer_button_grab_count;
+                server->pointer_button_grab_buttons |= event->button ? (1u << (event->button & 31u)) : 0;
             }
 
             notify_pointer_enter_if_needed(server, target_surface, sx, sy);
@@ -886,20 +969,17 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
                                                                                             : WL_POINTER_BUTTON_STATE_RELEASED);
             wlr_seat_pointer_notify_frame(server->seat);
 
-            if (event->button_state == WD_POINTER_BUTTON_RELEASED && button_grab_count > 0)
+            if (event->button_state == WD_POINTER_BUTTON_RELEASED && server->pointer_button_grab_count > 0)
             {
-                --button_grab_count;
-
-                if (button_grab_count == 0)
+                --server->pointer_button_grab_count;
+                if (event->button)
                 {
-                    WD_LOG_DEBUG("WayDisplay: pointer button grab end surface=%p view=%p", (void*)button_grab_surface,
-                                 (void*)button_grab_view);
-                    button_grab_surface = NULL;
-                    button_grab_view    = NULL;
-                    button_grab_lx      = 0.0;
-                    button_grab_ly      = 0.0;
-                    button_grab_sx      = 0.0;
-                    button_grab_sy      = 0.0;
+                    server->pointer_button_grab_buttons &= ~(1u << (event->button & 31u));
+                }
+
+                if (server->pointer_button_grab_count == 0)
+                {
+                    pointer_button_grab_reset(server, "end", true);
                 }
             }
 

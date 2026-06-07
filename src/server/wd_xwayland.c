@@ -213,6 +213,8 @@ static void xwayland_view_clear_focus_and_grabs(struct wd_view* view) {
         }
     }
 
+    wd_pointer_clear_button_grab_for_view(server, view);
+
     if (server->move_grab.view == view)
     {
         server->move_grab.active = false;
