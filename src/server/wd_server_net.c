@@ -929,13 +929,15 @@ void* wd_net_thread_main(void* arg) {
 
         while (net->running)
         {
-            struct pollfd pfds[3];
+            struct pollfd pfds[4];
             nfds_t        nfds            = 0;
             nfds_t        control_pfd_idx = 0;
             nfds_t        input_pfd_idx   = 0;
             nfds_t        select_pfd_idx  = 0;
+            nfds_t        listen_pfd_idx  = 0;
             bool          have_input_pfd  = false;
             bool          have_select_pfd = false;
+            bool          have_listen_pfd = false;
 
             memset(pfds, 0, sizeof(pfds));
             control_pfd_idx       = nfds;
@@ -961,6 +963,15 @@ void* wd_net_thread_main(void* arg) {
                 nfds++;
             }
 
+            if (input_tcp_fd < 0 || selection_tcp_fd < 0)
+            {
+                listen_pfd_idx        = nfds;
+                have_listen_pfd       = true;
+                pfds[nfds].fd         = net->listen_fd;
+                pfds[nfds].events     = POLLIN;
+                nfds++;
+            }
+
             int poll_rc;
             do
             {
@@ -970,6 +981,33 @@ void* wd_net_thread_main(void* arg) {
             if (poll_rc <= 0)
             {
                 break;
+            }
+
+
+            if (have_listen_pfd && (pfds[listen_pfd_idx].revents & POLLIN))
+            {
+                int old_input_fd     = input_tcp_fd;
+                int old_selection_fd = selection_tcp_fd;
+
+                (void)wd_accept_aux_channel_fd(server, cfg.session_id, &input_tcp_fd, &selection_tcp_fd);
+
+                if (input_tcp_fd >= 0 && old_input_fd < 0)
+                {
+                    pthread_mutex_lock(&net->lock);
+                    net->input_tcp_fd = input_tcp_fd;
+                    net->stats.tcp_input_channel_accepted++;
+                    pthread_mutex_unlock(&net->lock);
+                    WD_LOG_INFO("WayDisplay: accepted late input TCP channel for current session");
+                }
+
+                if (selection_tcp_fd >= 0 && old_selection_fd < 0)
+                {
+                    pthread_mutex_lock(&net->lock);
+                    net->selection_tcp_fd = selection_tcp_fd;
+                    net->stats.tcp_selection_channel_accepted++;
+                    pthread_mutex_unlock(&net->lock);
+                    WD_LOG_INFO("WayDisplay: accepted late selection TCP channel for current session");
+                }
             }
 
             if (have_input_pfd && (pfds[input_pfd_idx].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))

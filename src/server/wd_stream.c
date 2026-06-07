@@ -2082,123 +2082,146 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     uint64_t limited_udp_kib_per_second = net->stream_policy.limited_udp_bytes_per_second / 1024ull;
     uint16_t target_fps = net->stream_policy.target_fps;
     uint16_t effective_target_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
+    bool input_channel_connected = net->input_tcp_fd >= 0;
+    bool selection_channel_connected = net->selection_tcp_fd >= 0;
 
     pthread_mutex_unlock(&net->lock);
 
-    /*
-     * Keepalive generation summaries are expected while idle. Suppress the
-     * stats line when they are the only activity so lossy-link repair stays
-     * enabled without spamming logs.
-     */
-    bool useful_activity = s.dirty_tiles != 0 || s.udp_tiles_sent != 0 || s.udp_packets_sent != 0 || s.udp_bytes_sent != 0 ||
-                           s.udp_compressed_tile_bytes_sent != 0 || s.udp_send_pressure_drops != 0 ||
-                           s.udp_fresh_tiles_sent != 0 || s.udp_retx_tiles_sent != 0 ||
-                           s.dirty_tiles_stale_skipped != 0 || s.retx_tiles_superseded_by_fresh != 0 ||
-                           s.dirty_queue_age_samples != 0 || s.retx_queue_age_samples != 0 ||
-                           s.limited_rate_downshifts != 0 || s.limited_rate_upshifts != 0 ||
-                           s.frame_rate_downshifts != 0 || s.frame_rate_upshifts != 0 ||
-                           s.dirty_pointer_priority_pops != 0 || s.retx_pointer_priority_pops != 0 ||
-                           s.full_frame_pointer_priority_pops != 0 ||
-                           s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 ||
-                           s.retx_req_ignored_live != 0 || s.input_to_first_fresh_tile_samples != 0 ||
-                           s.tcp_input_channel_rx != 0 || s.tcp_input_channel_accepted != 0 || s.tcp_input_channel_closed != 0 ||
-                           s.tcp_selection_channel_rx != 0 || s.tcp_selection_channel_accepted != 0 ||
-                           s.tcp_selection_channel_closed != 0 || s.client_stats_rx != 0 ||
-                           s.client_tiles_completed != 0 || s.client_partial_tiles_timed_out != 0 ||
-                           s.client_retx_requests_tx != 0 || s.retx_req_rx != 0 || s.retx_tiles_req != 0 ||
-                           s.retx_req_stale_generation != 0 || s.retx_req_waiting_for_generation != 0 ||
-                           s.full_frame_catchup_started != 0 || s.full_frame_catchup_completed != 0 ||
-                           s.full_frame_catchup_tiles_sent != 0 ||
-                           s.key_events_rx != 0 || s.key_events_injected != 0 ||
-                           s.key_events_dropped != 0 || s.key_state_duplicate_presses != 0 ||
-                           s.key_state_release_without_press != 0 || s.keyboard_enter_events != 0 || s.pointer_events_rx != 0 || s.pointer_events_injected != 0 ||
-                           s.pointer_events_dropped != 0 || s.pointer_button_grab_started != 0 ||
-                           s.pointer_button_grab_ended != 0 || s.pointer_button_grab_cleared != 0 ||
-                           s.pointer_button_grab_surface_destroyed != 0 || s.xdg_move_invalid_serial != 0 ||
-                           s.xdg_resize_invalid_serial != 0 || s.popup_explicit_scene_trees != 0 ||
-                           s.popup_explicit_scene_tree_failures != 0 || s.cursor_shape_requests != 0 ||
-                           s.cursor_set_cursor_requests != 0 || s.cursor_set_cursor_rejected != 0 ||
-                           s.cursor_set_cursor_hidden != 0 || s.cursor_set_cursor_fallback != 0;
+    static bool     have_prev_state = false;
+    static uint16_t prev_effective_mode = 0;
+    static uint16_t prev_requested_mode = 0;
+    static uint16_t prev_target_fps = 0;
+    static uint16_t prev_effective_fps = 0;
+    static uint64_t prev_limited_kib = 0;
+    static bool     prev_input_channel = false;
+    static bool     prev_selection_channel = false;
 
-    if (!useful_activity)
+    bool state_changed = !have_prev_state || prev_effective_mode != effective_mode || prev_requested_mode != requested_mode ||
+                         prev_target_fps != target_fps || prev_effective_fps != effective_target_fps ||
+                         prev_limited_kib != limited_udp_kib_per_second || prev_input_channel != input_channel_connected ||
+                         prev_selection_channel != selection_channel_connected;
+
+    if (state_changed)
     {
-        return;
+        WD_LOG_DEBUG("WayDisplay state/s: mode=%s requested=%s target_fps=%u effective_fps=%u limited_udp_kib_per_sec=%llu input_channel=%s selection_channel=%s",
+                     wd_stream_mode_name(effective_mode), wd_stream_mode_name(requested_mode), (unsigned)target_fps,
+                     (unsigned)effective_target_fps, (unsigned long long)limited_udp_kib_per_second,
+                     input_channel_connected ? "yes" : "no", selection_channel_connected ? "yes" : "no");
+
+        have_prev_state = true;
+        prev_effective_mode = effective_mode;
+        prev_requested_mode = requested_mode;
+        prev_target_fps = target_fps;
+        prev_effective_fps = effective_target_fps;
+        prev_limited_kib = limited_udp_kib_per_second;
+        prev_input_channel = input_channel_connected;
+        prev_selection_channel = selection_channel_connected;
     }
 
-    WD_LOG_DEBUG("WayDisplay stats/s: mode=%s requested_mode=%s target_fps=%u effective_fps=%u limited_udp_kib_per_sec=%llu "
-                 "dirty_tiles=%llu dirty_stale_skipped=%llu udp_tiles_sent=%llu udp_fresh_tiles_sent=%llu udp_retx_tiles_sent=%llu "
-                 "udp_pkts=%llu udp_kib=%.1f udp_wire_avg_bytes_per_tile=%.1f udp_compressed_avg_bytes_per_tile=%.1f "
-                 "udp_pressure_drops=%llu retx_superseded_by_fresh=%llu "
-                 "dirty_queue_avg_ms=%.2f retx_queue_avg_ms=%.2f "
-                 "tcp_hello_rx=%llu tcp_cfg_tx=%llu tcp_input_channel_rx=%llu tcp_input_channel_accepted=%llu "
-                 "tcp_input_channel_closed=%llu tcp_selection_channel_rx=%llu tcp_selection_channel_accepted=%llu "
-                 "tcp_selection_channel_closed=%llu tcp_summary_tx=%llu tcp_summary_full_tx=%llu "
-                 "tcp_summary_delta_tx=%llu tcp_summary_delta_tiles=%llu client_stats_rx=%llu "
-                 "client_completed_tiles=%llu client_udp_kib=%.1f client_partial_timeouts=%llu "
-                 "client_udp_interarrival_avg_ms=%.2f client_udp_jitter_avg_ms=%.2f client_udp_interarrival_max_ms=%.2f "
-                 "client_old_gen=%llu client_retx_req_tx=%llu retx_req_rx=%llu retx_tiles_req=%llu "
-                 "retx_req_ignored_live=%llu retx_req_stale_generation=%llu retx_req_waiting_for_generation=%llu "
-                 "limited_rate_down=%llu limited_rate_up=%llu frame_rate_down=%llu frame_rate_up=%llu "
-                 "dirty_pointer_priority_pops=%llu retx_pointer_priority_pops=%llu full_frame_pointer_priority_pops=%llu "
-                 "full_frame_started=%llu full_frame_completed=%llu full_frame_tiles_sent=%llu "
-                 "full_frame_avg_ms=%.2f "
-                 "key_rx=%llu key_injected=%llu key_dropped=%llu key_dup_press=%llu key_release_without_press=%llu keyboard_enter=%llu pointer_rx=%llu pointer_injected=%llu "
-                 "pointer_dropped=%llu pointer_grab_started=%llu pointer_grab_ended=%llu "
-                 "pointer_grab_cleared=%llu pointer_grab_surface_destroyed=%llu "
-                 "xdg_move_invalid_serial=%llu xdg_resize_invalid_serial=%llu "
-                 "popup_explicit_scene_trees=%llu popup_explicit_scene_tree_failures=%llu "
-                 "cursor_shape_req=%llu cursor_set_cursor_req=%llu cursor_set_cursor_rejected=%llu "
-                 "cursor_set_cursor_hidden=%llu cursor_set_cursor_fallback=%llu "
-                 "input_net_avg_ms=n/a input_queue_avg_ms=%.2f "
-                 "input_to_summary_avg_ms=%.2f input_to_first_fresh_tile_avg_ms=%.2f",
-                 wd_stream_mode_name(effective_mode), wd_stream_mode_name(requested_mode),
-                 (unsigned)target_fps, (unsigned)effective_target_fps,
-                 (unsigned long long)limited_udp_kib_per_second,
-                 (unsigned long long)s.dirty_tiles, (unsigned long long)s.dirty_tiles_stale_skipped,
-                 (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_fresh_tiles_sent,
-                 (unsigned long long)s.udp_retx_tiles_sent, (unsigned long long)s.udp_packets_sent,
-                 (double)s.udp_bytes_sent / 1024.0,
-                 s.udp_tiles_sent ? (double)s.udp_bytes_sent / (double)s.udp_tiles_sent : 0.0,
-                 s.udp_tiles_sent ? (double)s.udp_compressed_tile_bytes_sent / (double)s.udp_tiles_sent : 0.0,
-                 (unsigned long long)s.udp_send_pressure_drops, (unsigned long long)s.retx_tiles_superseded_by_fresh,
-                 wd_avg_ms(s.dirty_queue_age_sum_ns, s.dirty_queue_age_samples),
-                 wd_avg_ms(s.retx_queue_age_sum_ns, s.retx_queue_age_samples),
-                 (unsigned long long)s.tcp_hello_rx, (unsigned long long)s.tcp_config_tx,
-                 (unsigned long long)s.tcp_input_channel_rx, (unsigned long long)s.tcp_input_channel_accepted,
-                 (unsigned long long)s.tcp_input_channel_closed, (unsigned long long)s.tcp_selection_channel_rx,
-                 (unsigned long long)s.tcp_selection_channel_accepted, (unsigned long long)s.tcp_selection_channel_closed,
-                 (unsigned long long)s.tcp_summary_tx,
-                 (unsigned long long)s.tcp_summary_full_tx,
-                 (unsigned long long)s.tcp_summary_delta_tx, (unsigned long long)s.tcp_summary_delta_tiles,
-                 (unsigned long long)s.client_stats_rx, (unsigned long long)s.client_tiles_completed,
-                 (double)s.client_udp_bytes_rx / 1024.0, (unsigned long long)s.client_partial_tiles_timed_out,
-                 wd_avg_ms(s.client_udp_interarrival_sum_ns, s.client_udp_interarrival_samples),
-                 wd_avg_ms(s.client_udp_interarrival_jitter_sum_ns, s.client_udp_interarrival_jitter_samples),
-                 (double)s.client_udp_interarrival_max_ns / 1000000.0,
-                 (unsigned long long)s.client_old_generation_tiles, (unsigned long long)s.client_retx_requests_tx,
-                 (unsigned long long)s.retx_req_rx, (unsigned long long)s.retx_tiles_req,
-                 (unsigned long long)s.retx_req_ignored_live, (unsigned long long)s.retx_req_stale_generation,
-                 (unsigned long long)s.retx_req_waiting_for_generation, (unsigned long long)s.limited_rate_downshifts,
-                 (unsigned long long)s.limited_rate_upshifts, (unsigned long long)s.frame_rate_downshifts,
-                 (unsigned long long)s.frame_rate_upshifts,
-                 (unsigned long long)s.dirty_pointer_priority_pops, (unsigned long long)s.retx_pointer_priority_pops,
-                 (unsigned long long)s.full_frame_pointer_priority_pops,
-                 (unsigned long long)s.full_frame_catchup_started, (unsigned long long)s.full_frame_catchup_completed,
-                 (unsigned long long)s.full_frame_catchup_tiles_sent,
-                 wd_avg_ms(s.full_frame_catchup_duration_sum_ns, s.full_frame_catchup_completed),
-                 (unsigned long long)s.key_events_rx, (unsigned long long)s.key_events_injected, (unsigned long long)s.key_events_dropped,
-                 (unsigned long long)s.key_state_duplicate_presses, (unsigned long long)s.key_state_release_without_press,
-                 (unsigned long long)s.keyboard_enter_events, (unsigned long long)s.pointer_events_rx, (unsigned long long)s.pointer_events_injected,
-                 (unsigned long long)s.pointer_events_dropped, (unsigned long long)s.pointer_button_grab_started,
-                 (unsigned long long)s.pointer_button_grab_ended, (unsigned long long)s.pointer_button_grab_cleared,
-                 (unsigned long long)s.pointer_button_grab_surface_destroyed, (unsigned long long)s.xdg_move_invalid_serial,
-                 (unsigned long long)s.xdg_resize_invalid_serial,
-                 (unsigned long long)s.popup_explicit_scene_trees,
-                 (unsigned long long)s.popup_explicit_scene_tree_failures,
-                 (unsigned long long)s.cursor_shape_requests, (unsigned long long)s.cursor_set_cursor_requests,
-                 (unsigned long long)s.cursor_set_cursor_rejected, (unsigned long long)s.cursor_set_cursor_hidden,
-                 (unsigned long long)s.cursor_set_cursor_fallback,
-                 wd_avg_ms(s.input_queue_latency_sum_ns, s.input_queue_latency_samples),
-                 wd_avg_ms(s.input_to_summary_sum_ns, s.input_to_summary_samples),
-                 wd_avg_ms(s.input_to_first_fresh_tile_sum_ns, s.input_to_first_fresh_tile_samples));
+    bool video_activity = s.dirty_tiles != 0 || s.dirty_tiles_stale_skipped != 0 || s.udp_tiles_sent != 0 ||
+                          s.udp_fresh_tiles_sent != 0 || s.udp_retx_tiles_sent != 0 || s.udp_packets_sent != 0 ||
+                          s.udp_bytes_sent != 0 || s.udp_send_pressure_drops != 0 ||
+                          s.dirty_queue_age_samples != 0 || s.retx_queue_age_samples != 0 ||
+                          s.dirty_pointer_priority_pops != 0 || s.retx_pointer_priority_pops != 0;
+    if (video_activity)
+    {
+        WD_LOG_DEBUG("WayDisplay video/s: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f compressed_avg_B=%.1f pressure_drops=%llu dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f pointer_prio_dirty=%llu pointer_prio_retx=%llu",
+                     (unsigned long long)s.dirty_tiles, (unsigned long long)s.dirty_tiles_stale_skipped,
+                     (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_fresh_tiles_sent,
+                     (unsigned long long)s.udp_retx_tiles_sent, (unsigned long long)s.udp_packets_sent,
+                     (double)s.udp_bytes_sent / 1024.0,
+                     s.udp_tiles_sent ? (double)s.udp_bytes_sent / (double)s.udp_tiles_sent : 0.0,
+                     s.udp_tiles_sent ? (double)s.udp_compressed_tile_bytes_sent / (double)s.udp_tiles_sent : 0.0,
+                     (unsigned long long)s.udp_send_pressure_drops,
+                     wd_avg_ms(s.dirty_queue_age_sum_ns, s.dirty_queue_age_samples),
+                     wd_avg_ms(s.retx_queue_age_sum_ns, s.retx_queue_age_samples),
+                     (unsigned long long)s.dirty_pointer_priority_pops, (unsigned long long)s.retx_pointer_priority_pops);
+    }
+
+    bool repair_activity = s.retx_req_rx != 0 || s.retx_tiles_req != 0 || s.retx_req_ignored_live != 0 ||
+                           s.retx_req_stale_generation != 0 || s.retx_req_waiting_for_generation != 0 ||
+                           s.retx_tiles_superseded_by_fresh != 0 || s.tcp_summary_tx != 0 || s.tcp_summary_delta_tx != 0 ||
+                           s.tcp_summary_delta_tiles != 0 || s.limited_rate_downshifts != 0 || s.limited_rate_upshifts != 0 ||
+                           s.frame_rate_downshifts != 0 || s.frame_rate_upshifts != 0;
+    if (repair_activity)
+    {
+        WD_LOG_DEBUG("WayDisplay repair/s: summaries=%llu full=%llu delta=%llu delta_tiles=%llu retx_req=%llu retx_tiles=%llu stale_gen=%llu waiting_gen=%llu ignored_live=%llu superseded=%llu limited_down=%llu limited_up=%llu fps_down=%llu fps_up=%llu",
+                     (unsigned long long)s.tcp_summary_tx, (unsigned long long)s.tcp_summary_full_tx,
+                     (unsigned long long)s.tcp_summary_delta_tx, (unsigned long long)s.tcp_summary_delta_tiles,
+                     (unsigned long long)s.retx_req_rx, (unsigned long long)s.retx_tiles_req,
+                     (unsigned long long)s.retx_req_stale_generation, (unsigned long long)s.retx_req_waiting_for_generation,
+                     (unsigned long long)s.retx_req_ignored_live, (unsigned long long)s.retx_tiles_superseded_by_fresh,
+                     (unsigned long long)s.limited_rate_downshifts, (unsigned long long)s.limited_rate_upshifts,
+                     (unsigned long long)s.frame_rate_downshifts, (unsigned long long)s.frame_rate_upshifts);
+    }
+
+    bool client_activity = s.client_tiles_completed != 0 || s.client_udp_bytes_rx != 0 || s.client_partial_tiles_timed_out != 0 ||
+                           s.client_old_generation_tiles != 0 || s.client_retx_requests_tx != 0 ||
+                           s.client_udp_interarrival_samples != 0;
+    if (client_activity)
+    {
+        WD_LOG_DEBUG("WayDisplay client/s: reports=%llu completed=%llu udp_kib=%.1f partial_timeouts=%llu old_gen=%llu retx_req_tx=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f",
+                     (unsigned long long)s.client_stats_rx, (unsigned long long)s.client_tiles_completed,
+                     (double)s.client_udp_bytes_rx / 1024.0, (unsigned long long)s.client_partial_tiles_timed_out,
+                     (unsigned long long)s.client_old_generation_tiles, (unsigned long long)s.client_retx_requests_tx,
+                     wd_avg_ms(s.client_udp_interarrival_sum_ns, s.client_udp_interarrival_samples),
+                     wd_avg_ms(s.client_udp_interarrival_jitter_sum_ns, s.client_udp_interarrival_jitter_samples),
+                     (double)s.client_udp_interarrival_max_ns / 1000000.0);
+    }
+
+    bool control_activity = s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 || s.tcp_input_channel_rx != 0 ||
+                            s.tcp_input_channel_accepted != 0 || s.tcp_input_channel_closed != 0 ||
+                            s.tcp_selection_channel_rx != 0 || s.tcp_selection_channel_accepted != 0 ||
+                            s.tcp_selection_channel_closed != 0;
+    if (control_activity)
+    {
+        WD_LOG_DEBUG("WayDisplay control/s: hello=%llu config=%llu input_rx=%llu input_accepted=%llu input_closed=%llu selection_rx=%llu selection_accepted=%llu selection_closed=%llu",
+                     (unsigned long long)s.tcp_hello_rx, (unsigned long long)s.tcp_config_tx,
+                     (unsigned long long)s.tcp_input_channel_rx, (unsigned long long)s.tcp_input_channel_accepted,
+                     (unsigned long long)s.tcp_input_channel_closed, (unsigned long long)s.tcp_selection_channel_rx,
+                     (unsigned long long)s.tcp_selection_channel_accepted, (unsigned long long)s.tcp_selection_channel_closed);
+    }
+
+    bool input_activity = s.key_events_rx != 0 || s.key_events_injected != 0 || s.key_events_dropped != 0 ||
+                          s.key_state_duplicate_presses != 0 || s.key_state_release_without_press != 0 ||
+                          s.keyboard_enter_events != 0 || s.pointer_events_rx != 0 || s.pointer_events_injected != 0 ||
+                          s.pointer_events_dropped != 0 || s.pointer_button_grab_started != 0 ||
+                          s.pointer_button_grab_ended != 0 || s.pointer_button_grab_cleared != 0 ||
+                          s.pointer_button_grab_surface_destroyed != 0 || s.input_queue_latency_samples != 0 ||
+                          s.input_to_summary_samples != 0 || s.input_to_first_fresh_tile_samples != 0;
+    if (input_activity)
+    {
+        WD_LOG_DEBUG("WayDisplay input/s: key_rx=%llu key_injected=%llu key_dropped=%llu dup_press=%llu release_without_press=%llu keyboard_enter=%llu pointer_rx=%llu pointer_injected=%llu pointer_dropped=%llu grabs_start=%llu grabs_end=%llu grabs_clear=%llu grab_surface_destroyed=%llu queue_avg_ms=%.2f input_to_summary_avg_ms=%.2f input_to_first_tile_avg_ms=%.2f",
+                     (unsigned long long)s.key_events_rx, (unsigned long long)s.key_events_injected,
+                     (unsigned long long)s.key_events_dropped, (unsigned long long)s.key_state_duplicate_presses,
+                     (unsigned long long)s.key_state_release_without_press, (unsigned long long)s.keyboard_enter_events,
+                     (unsigned long long)s.pointer_events_rx, (unsigned long long)s.pointer_events_injected,
+                     (unsigned long long)s.pointer_events_dropped, (unsigned long long)s.pointer_button_grab_started,
+                     (unsigned long long)s.pointer_button_grab_ended, (unsigned long long)s.pointer_button_grab_cleared,
+                     (unsigned long long)s.pointer_button_grab_surface_destroyed,
+                     wd_avg_ms(s.input_queue_latency_sum_ns, s.input_queue_latency_samples),
+                     wd_avg_ms(s.input_to_summary_sum_ns, s.input_to_summary_samples),
+                     wd_avg_ms(s.input_to_first_fresh_tile_sum_ns, s.input_to_first_fresh_tile_samples));
+    }
+
+    bool compositor_activity = s.full_frame_catchup_started != 0 || s.full_frame_catchup_completed != 0 ||
+                               s.full_frame_catchup_tiles_sent != 0 || s.full_frame_pointer_priority_pops != 0 ||
+                               s.xdg_move_invalid_serial != 0 || s.xdg_resize_invalid_serial != 0 ||
+                               s.popup_explicit_scene_trees != 0 || s.popup_explicit_scene_tree_failures != 0 ||
+                               s.cursor_shape_requests != 0 || s.cursor_set_cursor_requests != 0 ||
+                               s.cursor_set_cursor_rejected != 0 || s.cursor_set_cursor_hidden != 0 ||
+                               s.cursor_set_cursor_fallback != 0;
+    if (compositor_activity)
+    {
+        WD_LOG_DEBUG("WayDisplay compositor/s: full_frame_started=%llu completed=%llu tiles=%llu avg_ms=%.2f pointer_prio=%llu xdg_move_bad_serial=%llu xdg_resize_bad_serial=%llu popup_scene=%llu popup_scene_fail=%llu cursor_shape=%llu cursor_set=%llu cursor_reject=%llu cursor_hidden=%llu cursor_fallback=%llu",
+                     (unsigned long long)s.full_frame_catchup_started, (unsigned long long)s.full_frame_catchup_completed,
+                     (unsigned long long)s.full_frame_catchup_tiles_sent,
+                     wd_avg_ms(s.full_frame_catchup_duration_sum_ns, s.full_frame_catchup_completed),
+                     (unsigned long long)s.full_frame_pointer_priority_pops,
+                     (unsigned long long)s.xdg_move_invalid_serial, (unsigned long long)s.xdg_resize_invalid_serial,
+                     (unsigned long long)s.popup_explicit_scene_trees, (unsigned long long)s.popup_explicit_scene_tree_failures,
+                     (unsigned long long)s.cursor_shape_requests, (unsigned long long)s.cursor_set_cursor_requests,
+                     (unsigned long long)s.cursor_set_cursor_rejected, (unsigned long long)s.cursor_set_cursor_hidden,
+                     (unsigned long long)s.cursor_set_cursor_fallback);
+    }
 }

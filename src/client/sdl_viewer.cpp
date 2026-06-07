@@ -783,10 +783,10 @@ void print_client_stats(ClientState& state) {
     const uint64_t keys                     = take_stat(state.stats.tcp_keyboard_tx);
     const uint64_t pointer                  = take_stat(state.stats.tcp_pointer_tx);
     const uint64_t input_events             = take_stat(state.stats.tcp_input_events_tx);
-    const uint64_t input_channel_events       = take_stat(state.stats.tcp_input_channel_tx);
-    const uint64_t input_fallback_events      = take_stat(state.stats.tcp_input_channel_fallback_tx);
-    const uint64_t selection_channel_events   = take_stat(state.stats.tcp_selection_channel_tx);
-    const uint64_t selection_fallback_events  = take_stat(state.stats.tcp_selection_channel_fallback_tx);
+    const uint64_t input_channel_events     = take_stat(state.stats.tcp_input_channel_tx);
+    const uint64_t input_fallback_events    = take_stat(state.stats.tcp_input_channel_fallback_tx);
+    const uint64_t selection_channel_events = take_stat(state.stats.tcp_selection_channel_tx);
+    const uint64_t selection_fallback_events = take_stat(state.stats.tcp_selection_channel_fallback_tx);
     const uint64_t summary_latency_samples  = take_stat(state.stats.summary_latency_samples);
     const uint64_t summary_latency_sum_ns   = take_stat(state.stats.summary_latency_sum_ns);
     const uint64_t tile_assembly_samples    = take_stat(state.stats.tile_assembly_samples);
@@ -798,74 +798,83 @@ void print_client_stats(ClientState& state) {
     const uint64_t input_seq_present_samples = take_stat(state.stats.input_sequence_present_latency_samples);
     const uint64_t input_seq_present_sum_ns  = take_stat(state.stats.input_sequence_present_latency_sum_ns);
 
-    /*
-     * Periodic generation summaries are intentionally sent even while idle so
-     * lossy links can eventually repair state. Do not log a stats line when
-     * summaries are the only activity.
-     */
-    const bool useful_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || partial_timeouts != 0 ||
-                                 partial_missing_packets != 0 || partial_retx_queued != 0 || retx_response_samples != 0 ||
-                                 timeout_updates != 0 || invalid != 0 || old_gen != 0 ||
-                                 retx != 0 || summary_retx_queued != 0 || keys != 0 || pointer != 0 || input_events != 0 ||
-                                 input_channel_events != 0 || input_fallback_events != 0 || selection_channel_events != 0 ||
-                                 selection_fallback_events != 0;
+    const bool feedback_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || partial_timeouts != 0 ||
+                                   invalid != 0 || old_gen != 0 || retx != 0 || udp_interarrival_samples != 0;
 
-    if (!useful_activity)
+    if (feedback_activity)
     {
-        return;
+        wd_client_stats_payload feedback{};
+        {
+            std::lock_guard<std::mutex> lock(state.config_mutex);
+            feedback.session_id = state.config.session_id;
+        }
+        feedback.udp_packets_rx             = udp_packets;
+        feedback.udp_bytes_rx               = udp_bytes;
+        feedback.udp_tiles_completed        = completed;
+        feedback.udp_completed_packets      = completed_packets;
+        feedback.partial_tiles_timed_out    = partial_timeouts;
+        feedback.udp_ignored_old_generation = old_gen;
+        feedback.retx_requests_tx           = retx;
+        feedback.udp_interarrival_samples   = udp_interarrival_samples;
+        feedback.udp_interarrival_sum_ns    = udp_interarrival_sum_ns;
+        feedback.udp_interarrival_jitter_samples = udp_jitter_samples;
+        feedback.udp_interarrival_jitter_sum_ns  = udp_jitter_sum_ns;
+        feedback.udp_interarrival_max_ns    = udp_interarrival_max_ns;
+        if (feedback.session_id != 0)
+        {
+            client_send_stats(state, feedback);
+        }
     }
 
-    wd_client_stats_payload feedback{};
+    const bool udp_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0;
+    if (udp_activity)
     {
-        std::lock_guard<std::mutex> lock(state.config_mutex);
-        feedback.session_id = state.config.session_id;
-    }
-    feedback.udp_packets_rx             = udp_packets;
-    feedback.udp_bytes_rx               = udp_bytes;
-    feedback.udp_tiles_completed        = completed;
-    feedback.udp_completed_packets      = completed_packets;
-    feedback.partial_tiles_timed_out    = partial_timeouts;
-    feedback.udp_ignored_old_generation = old_gen;
-    feedback.retx_requests_tx           = retx;
-    feedback.udp_interarrival_samples   = udp_interarrival_samples;
-    feedback.udp_interarrival_sum_ns    = udp_interarrival_sum_ns;
-    feedback.udp_interarrival_jitter_samples = udp_jitter_samples;
-    feedback.udp_interarrival_jitter_sum_ns  = udp_jitter_sum_ns;
-    feedback.udp_interarrival_max_ns    = udp_interarrival_max_ns;
-    if (feedback.session_id != 0)
-    {
-        client_send_stats(state, feedback);
+        WD_LOG_DEBUG("[client udp/s] pkts=%llu kib=%.1f completed=%llu invalid=%llu old_gen=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f kib_per_tile=%.2f compressed_kib_per_tile=%.2f pkts_per_tile=%.2f",
+                     static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0,
+                     static_cast<unsigned long long>(completed), static_cast<unsigned long long>(invalid),
+                     static_cast<unsigned long long>(old_gen), avg_ms(udp_interarrival_sum_ns, udp_interarrival_samples),
+                     avg_ms(udp_jitter_sum_ns, udp_jitter_samples), static_cast<double>(udp_interarrival_max_ns) / 1000000.0,
+                     completed ? (static_cast<double>(udp_bytes) / 1024.0) / static_cast<double>(completed) : 0.0,
+                     completed ? (static_cast<double>(completed_compressed) / 1024.0) / static_cast<double>(completed) : 0.0,
+                     completed ? static_cast<double>(completed_packets) / static_cast<double>(completed) : 0.0);
     }
 
-    WD_LOG_DEBUG(
-        "[client stats/s] udp_pkts=%llu udp_kib=%.1f completed_tiles=%llu "
-        "udp_interarrival_avg_ms=%.2f udp_jitter_avg_ms=%.2f udp_interarrival_max_ms=%.2f "
-        "udp_kib_per_completed_tile=%.2f compressed_kib_per_completed_tile=%.2f pkts_per_completed_tile=%.2f "
-        "partial_timeouts=%llu partial_missing_pkts=%llu partial_retx_queued=%llu "
-        "invalid=%llu old_gen=%llu summaries=%llu retx_req=%llu summary_retx_tiles_queued=%llu keys=%llu "
-        "pointer=%llu input_events=%llu input_channel_events=%llu input_fallback_events=%llu "
-        "selection_channel_events=%llu selection_fallback_events=%llu "
-        "summary_rx_avg_ms=%.2f summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f "
-        "tile_assembly_avg_ms=%.2f tile_reassembly_timeout_ms=%.2f timeout_updates=%llu "
-        "tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f input_seq_to_present_avg_ms=%.2f",
-        static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0, static_cast<unsigned long long>(completed),
-        avg_ms(udp_interarrival_sum_ns, udp_interarrival_samples), avg_ms(udp_jitter_sum_ns, udp_jitter_samples),
-        static_cast<double>(udp_interarrival_max_ns) / 1000000.0,
-        completed ? (static_cast<double>(udp_bytes) / 1024.0) / static_cast<double>(completed) : 0.0,
-        completed ? (static_cast<double>(completed_compressed) / 1024.0) / static_cast<double>(completed) : 0.0,
-        completed ? static_cast<double>(completed_packets) / static_cast<double>(completed) : 0.0,
-        static_cast<unsigned long long>(partial_timeouts), static_cast<unsigned long long>(partial_missing_packets),
-        static_cast<unsigned long long>(partial_retx_queued), static_cast<unsigned long long>(invalid),
-        static_cast<unsigned long long>(old_gen), static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
-        static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
-        static_cast<unsigned long long>(input_events), static_cast<unsigned long long>(input_channel_events),
-        static_cast<unsigned long long>(input_fallback_events), static_cast<unsigned long long>(selection_channel_events),
-        static_cast<unsigned long long>(selection_fallback_events), avg_ms(summary_latency_sum_ns, summary_latency_samples),
-        avg_ms(summary_to_retx_sum_ns, summary_to_retx_samples), avg_ms(retx_response_sum_ns, retx_response_samples),
-        avg_ms(tile_assembly_sum_ns, tile_assembly_samples),
-        static_cast<double>(state.tile_reassembly_timeout_ns.load(std::memory_order_relaxed)) / 1000000.0,
-        static_cast<unsigned long long>(timeout_updates), avg_ms(tile_present_sum_ns, tile_present_samples),
-        avg_ms(input_to_present_sum_ns, input_to_present_samples), avg_ms(input_seq_present_sum_ns, input_seq_present_samples));
+    const bool repair_activity = partial_timeouts != 0 || partial_missing_packets != 0 || partial_retx_queued != 0 ||
+                                 summaries != 0 || retx != 0 || summary_retx_queued != 0 || summary_to_retx_samples != 0 ||
+                                 retx_response_samples != 0;
+    if (repair_activity)
+    {
+        WD_LOG_DEBUG("[client repair/s] summaries=%llu retx_req=%llu summary_retx_tiles=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_rx_avg_ms=%.2f summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
+                     static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
+                     static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(partial_timeouts),
+                     static_cast<unsigned long long>(partial_missing_packets), static_cast<unsigned long long>(partial_retx_queued),
+                     avg_ms(summary_latency_sum_ns, summary_latency_samples), avg_ms(summary_to_retx_sum_ns, summary_to_retx_samples),
+                     avg_ms(retx_response_sum_ns, retx_response_samples));
+    }
+
+    const bool input_activity = keys != 0 || pointer != 0 || input_events != 0 || input_channel_events != 0 ||
+                                input_fallback_events != 0 || selection_channel_events != 0 || selection_fallback_events != 0;
+    if (input_activity)
+    {
+        WD_LOG_DEBUG("[client input/s] keys=%llu pointer=%llu input_events=%llu input_channel=%llu input_fallback=%llu selection_channel=%llu selection_fallback=%llu",
+                     static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
+                     static_cast<unsigned long long>(input_events), static_cast<unsigned long long>(input_channel_events),
+                     static_cast<unsigned long long>(input_fallback_events), static_cast<unsigned long long>(selection_channel_events),
+                     static_cast<unsigned long long>(selection_fallback_events));
+    }
+
+    static uint64_t prev_timeout_ms = 0;
+    uint64_t timeout_ms = state.tile_reassembly_timeout_ns.load(std::memory_order_relaxed) / 1000000ull;
+    const bool latency_activity = timeout_updates != 0 || timeout_ms != prev_timeout_ms || tile_assembly_samples != 0 ||
+                                  tile_present_samples != 0 || input_to_present_samples != 0 || input_seq_present_samples != 0;
+    if (latency_activity)
+    {
+        WD_LOG_DEBUG("[client latency/s] tile_assembly_avg_ms=%.2f reassembly_timeout_ms=%llu timeout_updates=%llu tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f input_seq_to_present_avg_ms=%.2f",
+                     avg_ms(tile_assembly_sum_ns, tile_assembly_samples), static_cast<unsigned long long>(timeout_ms),
+                     static_cast<unsigned long long>(timeout_updates), avg_ms(tile_present_sum_ns, tile_present_samples),
+                     avg_ms(input_to_present_sum_ns, input_to_present_samples), avg_ms(input_seq_present_sum_ns, input_seq_present_samples));
+        prev_timeout_ms = timeout_ms;
+    }
 }
 
 bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, const std::vector<uint8_t>& tile_bytes) {
