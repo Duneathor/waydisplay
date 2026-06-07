@@ -415,6 +415,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
     completed.tile_id                = entry.tile_id;
     completed.generation             = entry.generation;
     completed.tile_timestamp_ns      = entry.tile_timestamp_ns;
+    completed.input_sequence         = entry.input_sequence;
     completed.first_packet_ns        = entry.first_packet_ns;
     completed.completed_timestamp_ns = wd_now_ns();
     completed.compressed_size        = entry.compressed_size;

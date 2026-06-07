@@ -10,10 +10,12 @@
 #include "waydisplay/wd_time.h"
 
 #include <SDL2/SDL.h>
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
 #include <errno.h>
+#include <iterator>
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -718,9 +720,43 @@ double avg_ms(uint64_t sum_ns, uint64_t samples) {
     return static_cast<double>(sum_ns) / static_cast<double>(samples) / 1000000.0;
 }
 
+void record_atomic_max(std::atomic<uint64_t>& value, uint64_t sample) {
+    uint64_t current = value.load(std::memory_order_relaxed);
+
+    while (sample > current && !value.compare_exchange_weak(current, sample, std::memory_order_relaxed, std::memory_order_relaxed))
+    {
+    }
+}
+
+bool take_input_timestamp(ClientState& state, uint64_t sequence, uint64_t& timestamp_ns) {
+    if (sequence == 0)
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(state.input_timestamp_mutex);
+
+    for (auto it = state.recent_input_timestamps.begin(); it != state.recent_input_timestamps.end(); ++it)
+    {
+        if (it->sequence == sequence)
+        {
+            timestamp_ns = it->timestamp_ns;
+            state.recent_input_timestamps.erase(state.recent_input_timestamps.begin(), std::next(it));
+            return timestamp_ns != 0;
+        }
+    }
+
+    return false;
+}
+
 void print_client_stats(ClientState& state) {
     const uint64_t udp_packets              = take_stat(state.stats.udp_packets_rx);
     const uint64_t udp_bytes                = take_stat(state.stats.udp_bytes_rx);
+    const uint64_t udp_interarrival_samples = take_stat(state.stats.udp_interarrival_samples);
+    const uint64_t udp_interarrival_sum_ns  = take_stat(state.stats.udp_interarrival_sum_ns);
+    const uint64_t udp_jitter_samples       = take_stat(state.stats.udp_interarrival_jitter_samples);
+    const uint64_t udp_jitter_sum_ns        = take_stat(state.stats.udp_interarrival_jitter_sum_ns);
+    const uint64_t udp_interarrival_max_ns  = take_stat(state.stats.udp_interarrival_max_ns);
     const uint64_t invalid                  = take_stat(state.stats.udp_ignored_invalid);
     const uint64_t old_gen                  = take_stat(state.stats.udp_ignored_old_generation);
     const uint64_t completed                = take_stat(state.stats.udp_tiles_completed);
@@ -752,6 +788,8 @@ void print_client_stats(ClientState& state) {
     const uint64_t tile_present_sum_ns      = take_stat(state.stats.tile_present_latency_sum_ns);
     const uint64_t input_to_present_samples = take_stat(state.stats.input_to_present_latency_samples);
     const uint64_t input_to_present_sum_ns  = take_stat(state.stats.input_to_present_latency_sum_ns);
+    const uint64_t input_seq_present_samples = take_stat(state.stats.input_sequence_present_latency_samples);
+    const uint64_t input_seq_present_sum_ns  = take_stat(state.stats.input_sequence_present_latency_sum_ns);
 
     /*
      * Periodic generation summaries are intentionally sent even while idle so
@@ -782,6 +820,11 @@ void print_client_stats(ClientState& state) {
     feedback.partial_tiles_timed_out    = partial_timeouts;
     feedback.udp_ignored_old_generation = old_gen;
     feedback.retx_requests_tx           = retx;
+    feedback.udp_interarrival_samples   = udp_interarrival_samples;
+    feedback.udp_interarrival_sum_ns    = udp_interarrival_sum_ns;
+    feedback.udp_interarrival_jitter_samples = udp_jitter_samples;
+    feedback.udp_interarrival_jitter_sum_ns  = udp_jitter_sum_ns;
+    feedback.udp_interarrival_max_ns    = udp_interarrival_max_ns;
     if (feedback.session_id != 0)
     {
         client_send_stats(state, feedback);
@@ -789,6 +832,7 @@ void print_client_stats(ClientState& state) {
 
     WD_LOG_DEBUG(
         "[client stats/s] udp_pkts=%llu udp_kib=%.1f completed_tiles=%llu "
+        "udp_interarrival_avg_ms=%.2f udp_jitter_avg_ms=%.2f udp_interarrival_max_ms=%.2f "
         "udp_kib_per_completed_tile=%.2f compressed_kib_per_completed_tile=%.2f pkts_per_completed_tile=%.2f "
         "partial_timeouts=%llu partial_missing_pkts=%llu partial_retx_queued=%llu "
         "invalid=%llu old_gen=%llu summaries=%llu retx_req=%llu summary_retx_tiles_queued=%llu keys=%llu "
@@ -796,8 +840,10 @@ void print_client_stats(ClientState& state) {
         "selection_channel_events=%llu selection_fallback_events=%llu "
         "summary_rx_avg_ms=%.2f summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f "
         "tile_assembly_avg_ms=%.2f tile_reassembly_timeout_ms=%.2f timeout_updates=%llu "
-        "tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f",
+        "tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f input_seq_to_present_avg_ms=%.2f",
         static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0, static_cast<unsigned long long>(completed),
+        avg_ms(udp_interarrival_sum_ns, udp_interarrival_samples), avg_ms(udp_jitter_sum_ns, udp_jitter_samples),
+        static_cast<double>(udp_interarrival_max_ns) / 1000000.0,
         completed ? (static_cast<double>(udp_bytes) / 1024.0) / static_cast<double>(completed) : 0.0,
         completed ? (static_cast<double>(completed_compressed) / 1024.0) / static_cast<double>(completed) : 0.0,
         completed ? static_cast<double>(completed_packets) / static_cast<double>(completed) : 0.0,
@@ -812,7 +858,7 @@ void print_client_stats(ClientState& state) {
         avg_ms(tile_assembly_sum_ns, tile_assembly_samples),
         static_cast<double>(state.tile_reassembly_timeout_ns.load(std::memory_order_relaxed)) / 1000000.0,
         static_cast<unsigned long long>(timeout_updates), avg_ms(tile_present_sum_ns, tile_present_samples),
-        avg_ms(input_to_present_sum_ns, input_to_present_samples));
+        avg_ms(input_to_present_sum_ns, input_to_present_samples), avg_ms(input_seq_present_sum_ns, input_seq_present_samples));
 }
 
 bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, const std::vector<uint8_t>& tile_bytes) {
@@ -848,7 +894,7 @@ bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, const std::vector<
 }
 
 bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame_dirty,
-               std::vector<uint64_t>& out_present_tile_timestamps) {
+               std::vector<uint64_t>& out_present_tile_timestamps, std::vector<uint64_t>& out_present_input_sequences) {
     uint16_t udp_payload_target = state.config.udp_payload_target;
     if (udp_payload_target == 0)
     {
@@ -887,6 +933,26 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
             return true;
         }
 
+        const uint64_t packet_rx_ns = wd_now_ns();
+        const uint64_t prev_rx_ns = state.stats.last_udp_packet_rx_ns.exchange(packet_rx_ns, std::memory_order_relaxed);
+        if (prev_rx_ns != 0 && packet_rx_ns >= prev_rx_ns)
+        {
+            const uint64_t interarrival_ns = packet_rx_ns - prev_rx_ns;
+            state.stats.udp_interarrival_samples.fetch_add(1, std::memory_order_relaxed);
+            state.stats.udp_interarrival_sum_ns.fetch_add(interarrival_ns, std::memory_order_relaxed);
+            record_atomic_max(state.stats.udp_interarrival_max_ns, interarrival_ns);
+
+            const uint64_t prev_interarrival_ns =
+                state.stats.last_udp_interarrival_ns.exchange(interarrival_ns, std::memory_order_relaxed);
+            if (prev_interarrival_ns != 0)
+            {
+                const uint64_t jitter_ns = interarrival_ns > prev_interarrival_ns ? interarrival_ns - prev_interarrival_ns
+                                                                                  : prev_interarrival_ns - interarrival_ns;
+                state.stats.udp_interarrival_jitter_samples.fetch_add(1, std::memory_order_relaxed);
+                state.stats.udp_interarrival_jitter_sum_ns.fetch_add(jitter_ns, std::memory_order_relaxed);
+            }
+        }
+
         state.stats.udp_packets_rx.fetch_add(1, std::memory_order_relaxed);
         state.stats.udp_bytes_rx.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
 
@@ -922,6 +988,7 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
         if (completed.completed_timestamp_ns != 0)
         {
             out_present_tile_timestamps.push_back(completed.completed_timestamp_ns);
+            out_present_input_sequences.push_back(completed.input_sequence);
         }
 
         state.stats.udp_completed_compressed_bytes.fetch_add(completed.compressed_size, std::memory_order_relaxed);
@@ -1431,6 +1498,7 @@ int run_sdl_viewer(ClientState& state) {
     uint64_t              pending_resize_since_ns = 0;
     ContextMenu           context_menu;
     std::vector<uint64_t> present_tile_timestamps;
+    std::vector<uint64_t> present_input_sequences;
 
     while (state.running.load(std::memory_order_relaxed))
     {
@@ -1508,7 +1576,7 @@ int run_sdl_viewer(ClientState& state) {
             }
         }
 
-        if (!drain_udp(state, reassembler, frame_dirty, present_tile_timestamps))
+        if (!drain_udp(state, reassembler, frame_dirty, present_tile_timestamps, present_input_sequences))
         {
             state.running.store(false, std::memory_order_relaxed);
             break;
@@ -1551,7 +1619,17 @@ int run_sdl_viewer(ClientState& state) {
                     state.stats.tile_present_latency_sum_ns.fetch_add(present_ns - tile_timestamp_ns, std::memory_order_relaxed);
                 }
             }
+            for (uint64_t sequence : present_input_sequences)
+            {
+                uint64_t input_timestamp_ns = 0;
+                if (take_input_timestamp(state, sequence, input_timestamp_ns) && present_ns >= input_timestamp_ns)
+                {
+                    state.stats.input_sequence_present_latency_samples.fetch_add(1, std::memory_order_relaxed);
+                    state.stats.input_sequence_present_latency_sum_ns.fetch_add(present_ns - input_timestamp_ns, std::memory_order_relaxed);
+                }
+            }
             present_tile_timestamps.clear();
+            present_input_sequences.clear();
 
             const uint64_t input_timestamp_ns = state.stats.latest_input_event_timestamp_ns.exchange(0, std::memory_order_relaxed);
             if (input_timestamp_ns != 0 && present_ns >= input_timestamp_ns)

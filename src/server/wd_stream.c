@@ -115,6 +115,21 @@ static uint64_t wd_stream_clamp_limited_udp_byte_rate(uint64_t bytes_per_second)
     return bytes_per_second;
 }
 
+static uint64_t wd_stream_limited_rate_from_kib(uint32_t kib_per_second) {
+    if (kib_per_second == 0)
+    {
+        return 0;
+    }
+
+    uint64_t bytes_per_second = (uint64_t)kib_per_second * 1024ull;
+    if (bytes_per_second / 1024ull != (uint64_t)kib_per_second)
+    {
+        bytes_per_second = WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND;
+    }
+
+    return wd_stream_clamp_limited_udp_byte_rate(bytes_per_second);
+}
+
 static void wd_stream_policy_reset_tokens(struct wd_stream_policy* policy) {
     if (!policy)
     {
@@ -137,7 +152,9 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->requested_mode               = WD_STREAM_MODE_PARTIAL;
     policy->mode                         = WD_STREAM_MODE_PARTIAL;
     policy->target_fps                   = WD_DEFAULT_PARTIAL_FPS;
+    policy->effective_target_fps         = WD_DEFAULT_PARTIAL_FPS;
     policy->throttle_bad_windows         = 0;
+    policy->frame_rate_good_windows      = 0;
     policy->throttle_good_windows        = 0;
     policy->limited_udp_bytes_per_second = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
     policy->limited_udp_rate_floor        = WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND;
@@ -174,7 +191,9 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->requested_mode       = mode;
     policy->mode                 = mode;
     policy->target_fps           = fps;
+    policy->effective_target_fps = fps;
     policy->throttle_bad_windows     = 0;
+    policy->frame_rate_good_windows  = 0;
     policy->throttle_good_windows    = 0;
     policy->limited_rate_good_windows = 0;
     if (policy->limited_udp_bytes_per_second == 0)
@@ -189,6 +208,25 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     {
         policy->limited_udp_rate_ceiling = WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND;
     }
+
+    uint64_t requested_limited_rate = wd_stream_limited_rate_from_kib(hello->limited_udp_kib_per_second);
+    if (requested_limited_rate != 0)
+    {
+        uint64_t ceiling = wd_stream_clamp_limited_udp_byte_rate(policy->limited_udp_rate_ceiling);
+        if (requested_limited_rate > ceiling)
+        {
+            requested_limited_rate = ceiling;
+        }
+
+        policy->limited_udp_bytes_per_second = requested_limited_rate;
+        policy->limited_udp_rate_ceiling     = requested_limited_rate;
+        if (policy->limited_udp_rate_floor > requested_limited_rate)
+        {
+            policy->limited_udp_rate_floor = requested_limited_rate;
+        }
+        policy->limited_rate_good_windows = 0;
+    }
+
     wd_stream_policy_reset_tokens(policy);
 }
 
@@ -219,6 +257,7 @@ static void wd_stream_policy_set_effective_mode_locked(struct wd_stream_policy* 
     policy->mode                  = mode;
     policy->throttle_bad_windows  = 0;
     policy->throttle_good_windows = 0;
+    policy->frame_rate_good_windows = 0;
     wd_stream_policy_reset_tokens(policy);
 
     WD_LOG_INFO("WayDisplay: adaptive stream throttle: %s -> %s requested=%s limited_udp_kib_per_sec=%llu",
@@ -297,6 +336,111 @@ static void wd_stream_policy_set_limited_rate_adaptive_locked(struct wd_stream_p
     policy->limited_udp_bytes_per_second    = rate;
     policy->limited_udp_byte_tokens         = 0.0;
     policy->last_limited_udp_byte_refill_ns = 0;
+}
+
+
+static uint16_t wd_stream_policy_effective_fps_locked(const struct wd_stream_policy* policy) {
+    uint16_t fps = policy ? policy->effective_target_fps : 0;
+    if (fps == 0 && policy)
+    {
+        fps = policy->target_fps;
+    }
+    if (fps == 0)
+    {
+        fps = WD_DEFAULT_PARTIAL_FPS;
+    }
+    if (fps < WD_ADAPTIVE_FPS_MIN)
+    {
+        fps = WD_ADAPTIVE_FPS_MIN;
+    }
+    if (fps > WD_MAX_REASONABLE_FPS)
+    {
+        fps = WD_MAX_REASONABLE_FPS;
+    }
+    return fps;
+}
+
+static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool bad_window,
+                                                       bool send_pressure, bool client_completion_low) {
+    if (!policy || !stats)
+    {
+        return;
+    }
+
+    if (policy->target_fps == 0)
+    {
+        policy->target_fps = WD_DEFAULT_PARTIAL_FPS;
+    }
+    if (policy->effective_target_fps == 0)
+    {
+        policy->effective_target_fps = policy->target_fps;
+    }
+
+    uint16_t old_fps = wd_stream_policy_effective_fps_locked(policy);
+
+    if (bad_window)
+    {
+        policy->frame_rate_good_windows = 0;
+
+        uint32_t decrease_percent = send_pressure ? WD_ADAPTIVE_FPS_PRESSURE_DECREASE_PERCENT : WD_ADAPTIVE_FPS_DECREASE_PERCENT;
+        uint32_t new_fps = ((uint32_t)old_fps * decrease_percent) / 100u;
+        if (new_fps >= old_fps && old_fps > WD_ADAPTIVE_FPS_MIN)
+        {
+            new_fps = old_fps - 1u;
+        }
+        if (new_fps < WD_ADAPTIVE_FPS_MIN)
+        {
+            new_fps = WD_ADAPTIVE_FPS_MIN;
+        }
+
+        if ((uint16_t)new_fps != old_fps)
+        {
+            policy->effective_target_fps = (uint16_t)new_fps;
+            policy->last_frame_send_ns = 0;
+            stats->frame_rate_downshifts++;
+            WD_LOG_INFO("WayDisplay: adaptive frame rate down: %u -> %u fps%s", old_fps, (unsigned)new_fps,
+                        send_pressure ? " due to UDP send pressure" :
+                        (client_completion_low ? " due to low client completion" : " due to repair pressure"));
+        }
+        return;
+    }
+
+    bool useful_activity = stats->udp_tiles_sent != 0 || stats->dirty_tiles != 0 || stats->client_tiles_completed != 0;
+    if (!useful_activity)
+    {
+        policy->frame_rate_good_windows = 0;
+        return;
+    }
+
+    if (old_fps >= policy->target_fps)
+    {
+        policy->effective_target_fps = policy->target_fps;
+        policy->frame_rate_good_windows = 0;
+        return;
+    }
+
+    policy->frame_rate_good_windows++;
+    if (policy->frame_rate_good_windows < WD_ADAPTIVE_FPS_GOOD_WINDOWS_TO_INCREASE)
+    {
+        return;
+    }
+
+    policy->frame_rate_good_windows = 0;
+
+    uint32_t percent_fps = ((uint32_t)old_fps * WD_ADAPTIVE_FPS_INCREASE_PERCENT) / 100u;
+    uint32_t new_fps = percent_fps > (uint32_t)old_fps ? percent_fps : (uint32_t)old_fps + 1u;
+    if (new_fps > policy->target_fps)
+    {
+        new_fps = policy->target_fps;
+    }
+
+    if ((uint16_t)new_fps != old_fps)
+    {
+        policy->effective_target_fps = (uint16_t)new_fps;
+        policy->last_frame_send_ns = 0;
+        stats->frame_rate_upshifts++;
+        WD_LOG_INFO("WayDisplay: adaptive frame rate up: %u -> %u fps", old_fps, (unsigned)new_fps);
+    }
 }
 
 static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool bad_window,
@@ -397,6 +541,8 @@ static void wd_stream_policy_update_adaptive_locked(struct wd_stream_policy* pol
     bool bad_window = send_pressure || repair_storm || client_completion_low || client_repair_pressure ||
                       (stats->retx_req_rx != 0 && repair_ratio_high);
 
+    wd_stream_policy_update_frame_rate_locked(policy, stats, bad_window, send_pressure, client_completion_low);
+
     if (policy->mode == WD_STREAM_MODE_LIMITED)
     {
         wd_stream_policy_update_limited_rate_locked(policy, stats, bad_window, send_pressure, client_completion_low);
@@ -481,7 +627,7 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
 
     case WD_STREAM_MODE_PARTIAL:
     case WD_STREAM_MODE_LIVE: {
-        uint16_t fps = policy->target_fps ? policy->target_fps : WD_DEFAULT_PARTIAL_FPS;
+        uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
 
         uint64_t interval_ns = 1000000000ull / fps;
 
@@ -502,7 +648,8 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
      * Use a 30fps discovery cadence by default.
      */
     default: {
-        uint64_t interval_ns = 1000000000ull / WD_DEFAULT_PARTIAL_FPS;
+        uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
+        uint64_t interval_ns = 1000000000ull / fps;
 
         if (policy->last_frame_send_ns == 0 || now_ns - policy->last_frame_send_ns >= interval_ns || full_frame_needed)
         {
@@ -696,7 +843,7 @@ static void wd_stream_policy_consume_limited_bytes_locked(struct wd_stream_polic
 }
 
 static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_t tile_id, uint64_t generation, uint64_t timestamp_ns,
-                                               const uint8_t* compressed, uint32_t compressed_size, bool* launched,
+                                               uint64_t input_sequence, const uint8_t* compressed, uint32_t compressed_size, bool* launched,
                                                bool* send_blocked, uint32_t* bytes_sent) {
     struct wd_net_state* net = &server->net;
 
@@ -761,6 +908,7 @@ static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_
         h.tile_generation      = generation;
         h.compressed_tile_size = compressed_size;
         h.tile_timestamp_ns    = timestamp_ns;
+        h.input_sequence       = input_sequence;
 
         struct iovec iov[2];
         memset(iov, 0, sizeof(iov));
@@ -827,8 +975,8 @@ bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_i
 
     struct wd_cached_tile* cache = &net->tiles[tile_id];
 
-    return wd_stream_send_tile_payload_locked(server, tile_id, cache->generation, cache->timestamp_ns, cache->compressed,
-                                              cache->compressed_size, launched, send_blocked, bytes_sent);
+    return wd_stream_send_tile_payload_locked(server, tile_id, cache->generation, cache->timestamp_ns, cache->input_sequence,
+                                              cache->compressed, cache->compressed_size, launched, send_blocked, bytes_sent);
 }
 
 static uint32_t wd_stream_cached_tile_priority_cost_locked(const struct wd_server* server, uint16_t tile_id) {
@@ -847,6 +995,71 @@ static uint32_t wd_stream_cached_tile_priority_cost_locked(const struct wd_serve
 
     uint32_t wire_bytes = wd_stream_tile_wire_bytes(tile->compressed_size, net->udp_payload_target);
     return wire_bytes ? wire_bytes : (UINT32_MAX / 2u);
+}
+
+static bool wd_stream_pointer_priority_active_locked(const struct wd_server* server, uint64_t now_ns) {
+    if (!server || !server->net.pointer_priority_valid || server->net.pointer_priority_ns == 0)
+    {
+        return false;
+    }
+
+    if (now_ns < server->net.pointer_priority_ns)
+    {
+        return false;
+    }
+
+    return now_ns - server->net.pointer_priority_ns <= WD_TILE_PRIORITY_POINTER_ACTIVE_NS;
+}
+
+static uint32_t wd_stream_tile_pointer_distance_penalty_locked(const struct wd_server* server, uint16_t tile_id) {
+    if (!server || tile_id >= server->total_tiles || server->tile_width == 0 || server->tile_height == 0)
+    {
+        return 0;
+    }
+
+    const uint32_t start_x = wd_tile_start_x_for_tile(tile_id, server->tiles_x, server->tile_width);
+    const uint32_t start_y = wd_tile_start_y_for_tile(tile_id, server->tiles_x, server->tile_height);
+    const uint32_t width   = wd_tile_visible_width_for_tile(server->display_width, tile_id, server->tiles_x, server->tile_width);
+    const uint32_t height  = wd_tile_visible_height_for_tile(server->display_height, tile_id, server->tiles_x, server->tile_height);
+
+    const uint32_t center_x = start_x + width / 2u;
+    const uint32_t center_y = start_y + height / 2u;
+    const uint32_t pointer_x = server->net.pointer_priority_x;
+    const uint32_t pointer_y = server->net.pointer_priority_y;
+
+    const uint32_t dx = center_x > pointer_x ? center_x - pointer_x : pointer_x - center_x;
+    const uint32_t dy = center_y > pointer_y ? center_y - pointer_y : pointer_y - center_y;
+
+    const uint32_t tile_dx = dx / server->tile_width;
+    const uint32_t tile_dy = dy / server->tile_height;
+    const uint64_t distance_tiles = (uint64_t)tile_dx + (uint64_t)tile_dy;
+    const uint64_t penalty = distance_tiles * (uint64_t)WD_TILE_PRIORITY_POINTER_DISTANCE_WEIGHT_BYTES;
+
+    return penalty > (uint64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)penalty;
+}
+
+static uint32_t wd_stream_cached_tile_priority_score_locked(const struct wd_server* server, uint16_t tile_id, uint64_t now_ns,
+                                                            bool* pointer_priority_active) {
+    uint32_t score = wd_stream_cached_tile_priority_cost_locked(server, tile_id);
+
+    bool active = wd_stream_pointer_priority_active_locked(server, now_ns);
+    if (pointer_priority_active)
+    {
+        *pointer_priority_active = active;
+    }
+
+    if (!active || score == UINT32_MAX)
+    {
+        return score;
+    }
+
+    const uint32_t penalty = wd_stream_tile_pointer_distance_penalty_locked(server, tile_id);
+    if (UINT32_MAX - score < penalty)
+    {
+        return UINT32_MAX;
+    }
+
+    return score + penalty;
 }
 
 static void wd_stream_note_queue_age_locked(uint64_t enqueued_ns, uint64_t* samples, uint64_t* sum_ns) {
@@ -937,7 +1150,9 @@ static bool wd_dirty_queue_pop_priority_locked(struct wd_server* server, uint16_
     {
         bool     found      = false;
         uint16_t best_index = 0;
-        uint32_t best_cost  = UINT32_MAX;
+        uint32_t best_score = UINT32_MAX;
+        bool     used_pointer_priority = false;
+        uint64_t now_ns = wd_now_ns();
 
         net->dirty_priority_pop_count++;
         bool take_oldest = (WD_TILE_PRIORITY_FAIRNESS_INTERVAL != 0u) &&
@@ -958,12 +1173,14 @@ static bool wd_dirty_queue_pop_priority_locked(struct wd_server* server, uint16_
                 break;
             }
 
-            uint32_t cost = wd_stream_cached_tile_priority_cost_locked(server, tile_id);
-            if (!found || cost < best_cost)
+            bool pointer_priority_active = false;
+            uint32_t score = wd_stream_cached_tile_priority_score_locked(server, tile_id, now_ns, &pointer_priority_active);
+            if (!found || score < best_score)
             {
                 best_index = index;
-                best_cost  = cost;
+                best_score = score;
                 found      = true;
+                used_pointer_priority = pointer_priority_active;
             }
         }
 
@@ -986,6 +1203,10 @@ static bool wd_dirty_queue_pop_priority_locked(struct wd_server* server, uint16_
         }
 
         net->dirty_queued[tile_id] = false;
+        if (used_pointer_priority && !take_oldest)
+        {
+            net->stats.dirty_pointer_priority_pops++;
+        }
         if (net->dirty_queue_enqueued_ns)
         {
             wd_stream_note_queue_age_locked(net->dirty_queue_enqueued_ns[tile_id], &net->stats.dirty_queue_age_samples,
@@ -1085,7 +1306,9 @@ static bool wd_retransmit_queue_pop_priority_locked(struct wd_server* server, ui
     {
         bool     found      = false;
         uint16_t best_index = 0;
-        uint32_t best_cost  = UINT32_MAX;
+        uint32_t best_score = UINT32_MAX;
+        bool     used_pointer_priority = false;
+        uint64_t now_ns = wd_now_ns();
 
         net->retransmit_priority_pop_count++;
         bool take_oldest = (WD_TILE_PRIORITY_FAIRNESS_INTERVAL != 0u) &&
@@ -1111,12 +1334,14 @@ static bool wd_retransmit_queue_pop_priority_locked(struct wd_server* server, ui
                 break;
             }
 
-            uint32_t cost = wd_stream_cached_tile_priority_cost_locked(server, tile_id);
-            if (!found || cost < best_cost)
+            bool pointer_priority_active = false;
+            uint32_t score = wd_stream_cached_tile_priority_score_locked(server, tile_id, now_ns, &pointer_priority_active);
+            if (!found || score < best_score)
             {
                 best_index = index;
-                best_cost  = cost;
+                best_score = score;
                 found      = true;
+                used_pointer_priority = pointer_priority_active;
             }
         }
 
@@ -1150,6 +1375,10 @@ static bool wd_retransmit_queue_pop_priority_locked(struct wd_server* server, ui
         }
 
         net->retransmit_queued[tile_id] = false;
+        if (used_pointer_priority && !take_oldest)
+        {
+            net->stats.retx_pointer_priority_pops++;
+        }
         if (net->retransmit_queue_enqueued_ns)
         {
             wd_stream_note_queue_age_locked(net->retransmit_queue_enqueued_ns[tile_id], &net->stats.retx_queue_age_samples,
@@ -1176,6 +1405,102 @@ static bool wd_retransmit_queue_pop_priority_locked(struct wd_server* server, ui
     }
 
     return false;
+}
+
+
+static bool wd_full_frame_pick_tile_locked(struct wd_server* server, uint64_t now_ns, uint16_t* out_tile_id, bool* out_pointer_priority) {
+    if (!server || !out_tile_id)
+    {
+        return false;
+    }
+
+    struct wd_net_state* net = &server->net;
+
+    if (out_pointer_priority)
+    {
+        *out_pointer_priority = false;
+    }
+
+    if (net->full_frame_next_tile >= server->total_tiles)
+    {
+        return false;
+    }
+
+    if (!net->full_frame_sent_tiles)
+    {
+        *out_tile_id = net->full_frame_next_tile;
+        return *out_tile_id < server->total_tiles;
+    }
+
+    net->full_frame_priority_pop_count++;
+    bool take_oldest = (WD_TILE_PRIORITY_FAIRNESS_INTERVAL != 0u) &&
+                       (net->full_frame_priority_pop_count % WD_TILE_PRIORITY_FAIRNESS_INTERVAL == 0u);
+
+    bool     found      = false;
+    uint16_t best_tile  = 0;
+    uint32_t best_score = UINT32_MAX;
+    bool     used_pointer_priority = false;
+
+    for (uint16_t tile_id = 0; tile_id < server->total_tiles; ++tile_id)
+    {
+        if (net->full_frame_sent_tiles[tile_id])
+        {
+            continue;
+        }
+
+        if (take_oldest)
+        {
+            best_tile = tile_id;
+            found     = true;
+            break;
+        }
+
+        bool pointer_priority_active = false;
+        uint32_t score = wd_stream_cached_tile_priority_score_locked(server, tile_id, now_ns, &pointer_priority_active);
+        if (!found || score < best_score)
+        {
+            best_tile = tile_id;
+            best_score = score;
+            found = true;
+            used_pointer_priority = pointer_priority_active;
+        }
+    }
+
+    if (!found)
+    {
+        net->full_frame_next_tile = server->total_tiles;
+        return false;
+    }
+
+    *out_tile_id = best_tile;
+    if (out_pointer_priority)
+    {
+        *out_pointer_priority = used_pointer_priority && !take_oldest;
+    }
+    return true;
+}
+
+static void wd_full_frame_mark_tile_sent_locked(struct wd_server* server, uint16_t tile_id) {
+    if (!server || tile_id >= server->total_tiles)
+    {
+        return;
+    }
+
+    struct wd_net_state* net = &server->net;
+
+    if (net->full_frame_sent_tiles)
+    {
+        if (net->full_frame_sent_tiles[tile_id])
+        {
+            return;
+        }
+        net->full_frame_sent_tiles[tile_id] = true;
+    }
+
+    if (net->full_frame_next_tile < server->total_tiles)
+    {
+        net->full_frame_next_tile++;
+    }
 }
 
 static void wd_clear_damage_tiles(struct wd_server* server) {
@@ -1302,8 +1627,9 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
      * Phase 1:
      * Progressive full-frame catch-up for new/reconnected clients.
      *
-     * This sends each tile once, advancing full_frame_next_tile across
-     * multiple limited-mode passes. It does not restart at tile 0.
+     * This sends each tile once across multiple limited-mode passes. The
+     * picker is priority-aware, so reconnect catch-up can paint pointer-adjacent
+     * or already-cheap cached tiles before less useful background tiles.
      */
     if (net->full_frame_needed)
     {
@@ -1311,8 +1637,14 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
         while (net->full_frame_next_tile < server->total_tiles)
         {
-            uint16_t               tile_id = net->full_frame_next_tile;
-            struct wd_cached_tile* tile    = &net->tiles[tile_id];
+            uint16_t tile_id = 0;
+            bool used_pointer_priority = false;
+            if (!wd_full_frame_pick_tile_locked(server, now, &tile_id, &used_pointer_priority))
+            {
+                break;
+            }
+
+            struct wd_cached_tile* tile = &net->tiles[tile_id];
 
             uint32_t hash = wd_fnv1a_tile_hash_xrgb8888_for_tile(server->framebuffer_xrgb8888, server->display_width, server->display_height,
                                                            server->tiles_x, server->total_tiles, tile_id, server->tile_width, server->tile_height);
@@ -1364,10 +1696,13 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
                 break;
             }
 
-            net->full_frame_next_tile++;
-
             if (launched)
             {
+                wd_full_frame_mark_tile_sent_locked(server, tile_id);
+                if (used_pointer_priority)
+                {
+                    net->stats.full_frame_pointer_priority_pops++;
+                }
                 net->stats.udp_fresh_tiles_sent++;
                 wd_stream_note_full_frame_tile_sent_locked(net);
                 wd_stream_note_input_to_first_fresh_tile_locked(net, now);
@@ -1386,6 +1721,10 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
             net->full_frame_needed    = false;
             net->full_frame_next_tile = 0;
+            if (net->full_frame_sent_tiles)
+            {
+                memset(net->full_frame_sent_tiles, 0, server->total_tiles * sizeof(*net->full_frame_sent_tiles));
+            }
             net->dirty_scan_next_tile = 0;
 
             /*
@@ -1562,8 +1901,10 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
             break;
         }
 
-        if (!wd_stream_send_tile_payload_locked(server, tile_id, next_generation, now, compressed_tile, compressed_size, &launched,
-                                                &send_blocked, &bytes_sent))
+        const uint64_t tile_input_sequence = net->input_since_last_fresh_tile ? net->last_input_sequence : 0;
+
+        if (!wd_stream_send_tile_payload_locked(server, tile_id, next_generation, now, tile_input_sequence, compressed_tile, compressed_size,
+                                                &launched, &send_blocked, &bytes_sent))
         {
             continue;
         }
@@ -1578,6 +1919,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         tile->last_hash       = hash;
         tile->generation      = next_generation;
         tile->timestamp_ns    = now;
+        tile->input_sequence  = tile_input_sequence;
         tile->compressed_size = compressed_size;
 
         net->stats.dirty_tiles++;
@@ -1738,6 +2080,8 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     uint16_t effective_mode = net->stream_policy.mode;
     uint16_t requested_mode = net->stream_policy.requested_mode;
     uint64_t limited_udp_kib_per_second = net->stream_policy.limited_udp_bytes_per_second / 1024ull;
+    uint16_t target_fps = net->stream_policy.target_fps;
+    uint16_t effective_target_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
 
     pthread_mutex_unlock(&net->lock);
 
@@ -1751,7 +2095,11 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                            s.udp_fresh_tiles_sent != 0 || s.udp_retx_tiles_sent != 0 ||
                            s.dirty_tiles_stale_skipped != 0 || s.retx_tiles_superseded_by_fresh != 0 ||
                            s.dirty_queue_age_samples != 0 || s.retx_queue_age_samples != 0 ||
-                           s.limited_rate_downshifts != 0 || s.limited_rate_upshifts != 0 || s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 ||
+                           s.limited_rate_downshifts != 0 || s.limited_rate_upshifts != 0 ||
+                           s.frame_rate_downshifts != 0 || s.frame_rate_upshifts != 0 ||
+                           s.dirty_pointer_priority_pops != 0 || s.retx_pointer_priority_pops != 0 ||
+                           s.full_frame_pointer_priority_pops != 0 ||
+                           s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 ||
                            s.retx_req_ignored_live != 0 || s.input_to_first_fresh_tile_samples != 0 ||
                            s.tcp_input_channel_rx != 0 || s.tcp_input_channel_accepted != 0 || s.tcp_input_channel_closed != 0 ||
                            s.tcp_selection_channel_rx != 0 || s.tcp_selection_channel_accepted != 0 ||
@@ -1770,7 +2118,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
         return;
     }
 
-    WD_LOG_DEBUG("WayDisplay stats/s: mode=%s requested_mode=%s limited_udp_kib_per_sec=%llu "
+    WD_LOG_DEBUG("WayDisplay stats/s: mode=%s requested_mode=%s target_fps=%u effective_fps=%u limited_udp_kib_per_sec=%llu "
                  "dirty_tiles=%llu dirty_stale_skipped=%llu udp_tiles_sent=%llu udp_fresh_tiles_sent=%llu udp_retx_tiles_sent=%llu "
                  "udp_pkts=%llu udp_kib=%.1f udp_wire_avg_bytes_per_tile=%.1f udp_compressed_avg_bytes_per_tile=%.1f "
                  "udp_pressure_drops=%llu retx_superseded_by_fresh=%llu "
@@ -1780,15 +2128,18 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                  "tcp_selection_channel_closed=%llu tcp_summary_tx=%llu tcp_summary_full_tx=%llu "
                  "tcp_summary_delta_tx=%llu tcp_summary_delta_tiles=%llu client_stats_rx=%llu "
                  "client_completed_tiles=%llu client_udp_kib=%.1f client_partial_timeouts=%llu "
+                 "client_udp_interarrival_avg_ms=%.2f client_udp_jitter_avg_ms=%.2f client_udp_interarrival_max_ms=%.2f "
                  "client_old_gen=%llu client_retx_req_tx=%llu retx_req_rx=%llu retx_tiles_req=%llu "
                  "retx_req_ignored_live=%llu retx_req_stale_generation=%llu retx_req_waiting_for_generation=%llu "
-                 "limited_rate_down=%llu limited_rate_up=%llu "
+                 "limited_rate_down=%llu limited_rate_up=%llu frame_rate_down=%llu frame_rate_up=%llu "
+                 "dirty_pointer_priority_pops=%llu retx_pointer_priority_pops=%llu full_frame_pointer_priority_pops=%llu "
                  "full_frame_started=%llu full_frame_completed=%llu full_frame_tiles_sent=%llu "
                  "full_frame_avg_ms=%.2f "
                  "key_rx=%llu key_injected=%llu key_dropped=%llu pointer_rx=%llu pointer_injected=%llu "
                  "pointer_dropped=%llu input_net_avg_ms=n/a input_queue_avg_ms=%.2f "
                  "input_to_summary_avg_ms=%.2f input_to_first_fresh_tile_avg_ms=%.2f",
                  wd_stream_mode_name(effective_mode), wd_stream_mode_name(requested_mode),
+                 (unsigned)target_fps, (unsigned)effective_target_fps,
                  (unsigned long long)limited_udp_kib_per_second,
                  (unsigned long long)s.dirty_tiles, (unsigned long long)s.dirty_tiles_stale_skipped,
                  (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_fresh_tiles_sent,
@@ -1808,11 +2159,17 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                  (unsigned long long)s.tcp_summary_delta_tx, (unsigned long long)s.tcp_summary_delta_tiles,
                  (unsigned long long)s.client_stats_rx, (unsigned long long)s.client_tiles_completed,
                  (double)s.client_udp_bytes_rx / 1024.0, (unsigned long long)s.client_partial_tiles_timed_out,
+                 wd_avg_ms(s.client_udp_interarrival_sum_ns, s.client_udp_interarrival_samples),
+                 wd_avg_ms(s.client_udp_interarrival_jitter_sum_ns, s.client_udp_interarrival_jitter_samples),
+                 (double)s.client_udp_interarrival_max_ns / 1000000.0,
                  (unsigned long long)s.client_old_generation_tiles, (unsigned long long)s.client_retx_requests_tx,
                  (unsigned long long)s.retx_req_rx, (unsigned long long)s.retx_tiles_req,
                  (unsigned long long)s.retx_req_ignored_live, (unsigned long long)s.retx_req_stale_generation,
                  (unsigned long long)s.retx_req_waiting_for_generation, (unsigned long long)s.limited_rate_downshifts,
-                 (unsigned long long)s.limited_rate_upshifts,
+                 (unsigned long long)s.limited_rate_upshifts, (unsigned long long)s.frame_rate_downshifts,
+                 (unsigned long long)s.frame_rate_upshifts,
+                 (unsigned long long)s.dirty_pointer_priority_pops, (unsigned long long)s.retx_pointer_priority_pops,
+                 (unsigned long long)s.full_frame_pointer_priority_pops,
                  (unsigned long long)s.full_frame_catchup_started, (unsigned long long)s.full_frame_catchup_completed,
                  (unsigned long long)s.full_frame_catchup_tiles_sent,
                  wd_avg_ms(s.full_frame_catchup_duration_sum_ns, s.full_frame_catchup_completed),

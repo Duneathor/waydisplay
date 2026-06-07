@@ -12,6 +12,7 @@ struct CompletedTile {
     uint16_t             tile_id           = 0;
     uint64_t             generation        = 0;
     uint64_t             tile_timestamp_ns      = 0;
+    uint64_t             input_sequence         = 0;
     uint64_t             first_packet_ns        = 0;
     uint64_t             completed_timestamp_ns = 0;
     uint32_t             compressed_size        = 0;
@@ -35,6 +36,7 @@ class TileReassembler {
         uint16_t             tile_id           = 0;
         uint64_t             generation        = 0;
         uint64_t             tile_timestamp_ns = 0;
+        uint64_t             input_sequence    = 0;
         uint16_t             packet_count      = 0;
         uint32_t             compressed_size   = 0;
         uint64_t             first_packet_ns   = 0;

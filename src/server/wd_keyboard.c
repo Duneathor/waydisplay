@@ -78,9 +78,9 @@ static void wd_stats_note_input_inject_locked(struct wd_net_state* net, uint64_t
 
     net->stats.input_queue_latency_samples++;
     net->stats.input_queue_latency_sum_ns += inject_timestamp_ns - server_rx_timestamp_ns;
-    net->last_input_inject_ns          = inject_timestamp_ns;
-    net->input_since_last_summary      = true;
-    net->input_since_last_fresh_tile   = true;
+    net->last_input_inject_ns        = inject_timestamp_ns;
+    net->input_since_last_summary    = true;
+    net->input_since_last_fresh_tile = true;
 }
 
 void wd_keyboard_queue_event_locked(struct wd_net_state* net, const struct wd_keyboard_event_payload* event,
@@ -96,6 +96,7 @@ void wd_keyboard_queue_event_locked(struct wd_net_state* net, const struct wd_ke
     dst->evdev_key_code         = event->evdev_key_code;
     dst->pressed                = event->pressed != 0;
     dst->client_timestamp_ns    = event->client_timestamp_ns;
+    dst->input_sequence         = event->input_sequence;
     dst->server_rx_timestamp_ns = server_rx_timestamp_ns;
 
     net->stats.key_events_rx++;
@@ -183,6 +184,7 @@ void wd_keyboard_drain_and_inject(struct wd_server* server) {
         notify_key_and_modifiers(server, &local[i]);
 
         pthread_mutex_lock(&server->net.lock);
+        server->net.last_input_sequence = local[i].input_sequence;
         wd_stats_note_input_inject_locked(&server->net, local[i].server_rx_timestamp_ns, wd_now_ns());
         server->net.stats.key_events_injected++;
         pthread_mutex_unlock(&server->net.lock);

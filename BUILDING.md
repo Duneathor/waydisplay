@@ -27,3 +27,18 @@ waydisplay-server --tile-size 64x64
 
 Smaller tiles can reduce over-send for small UI changes, at the cost of more tile
 metadata and packetization overhead.
+
+## WAN client budget
+
+For bandwidth-limited links, the client can request a limited-mode UDP tile
+budget below the server's throughput-probe estimate:
+
+```sh
+waydisplay-client <server> 5000 6000 --mode limited --limited-rate-kib 256
+# shorthand:
+waydisplay-client <server> 5000 6000 --wan
+```
+
+The requested budget is a cap: the server will not raise its throughput-probed
+safe ceiling to satisfy it. This is useful when the link is shared or when the
+startup probe overestimates sustainable long-haul throughput.

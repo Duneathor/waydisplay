@@ -82,9 +82,10 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*net->retransmit_queue_enqueued_ns));
     net->retransmit_requested_generation = calloc(server->total_tiles, sizeof(*net->retransmit_requested_generation));
     net->summary_dirty_tiles         = calloc(server->total_tiles, sizeof(*net->summary_dirty_tiles));
+    net->full_frame_sent_tiles       = calloc(server->total_tiles, sizeof(*net->full_frame_sent_tiles));
     if (!net->dirty_queue || !net->dirty_queued || !net->dirty_queue_enqueued_ns || !net->retransmit_queue ||
         !net->retransmit_queued || !net->retransmit_queue_enqueued_ns || !net->retransmit_requested_generation ||
-        !net->summary_dirty_tiles)
+        !net->summary_dirty_tiles || !net->full_frame_sent_tiles)
     {
         free(net->dirty_queue);
         free(net->dirty_queued);
@@ -94,6 +95,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         free(net->retransmit_queue_enqueued_ns);
         free(net->retransmit_requested_generation);
         free(net->summary_dirty_tiles);
+        free(net->full_frame_sent_tiles);
         net->dirty_queue                 = NULL;
         net->dirty_queued                = NULL;
         net->dirty_queue_enqueued_ns     = NULL;
@@ -102,6 +104,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         net->retransmit_queue_enqueued_ns = NULL;
         net->retransmit_requested_generation = NULL;
         net->summary_dirty_tiles         = NULL;
+        net->full_frame_sent_tiles       = NULL;
         pthread_mutex_destroy(&net->lock);
         return false;
     }
@@ -112,6 +115,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->summary_dirty_count    = 0;
     net->dirty_priority_pop_count      = 0;
     net->retransmit_priority_pop_count = 0;
+    net->full_frame_priority_pop_count = 0;
     net->udp_payload_target            = WD_UDP_PAYLOAD_TARGET;
 
     wd_stream_policy_set_defaults(&net->stream_policy);
@@ -176,6 +180,9 @@ void wd_net_destroy(struct wd_server* server) {
     free(net->summary_dirty_tiles);
     net->summary_dirty_tiles = NULL;
     net->summary_dirty_count = 0;
+
+    free(net->full_frame_sent_tiles);
+    net->full_frame_sent_tiles = NULL;
 
     free(net->clipboard_text);
     net->clipboard_text         = NULL;
@@ -855,6 +862,10 @@ void* wd_net_thread_main(void* arg) {
         net->client_connected     = true;
         net->full_frame_needed    = true;
         net->full_frame_next_tile = 0;
+        if (net->full_frame_sent_tiles)
+        {
+            memset(net->full_frame_sent_tiles, 0, server->total_tiles * sizeof(*net->full_frame_sent_tiles));
+        }
         net->full_frame_start_ns  = 0;
         net->full_frame_tiles_sent = 0;
         net->dirty_scan_next_tile = 0;
@@ -909,10 +920,11 @@ void* wd_net_thread_main(void* arg) {
 
         pthread_mutex_unlock(&net->lock);
 
-        WD_LOG_INFO("WayDisplay: client connected; UDP port=%u input_channel=%s selection_channel=%s display=%ux%u tile=%ux%u stream_mode=%u fps=%u limited_udp_kib_per_sec=%llu",
+        WD_LOG_INFO("WayDisplay: client connected; UDP port=%u input_channel=%s selection_channel=%s display=%ux%u tile=%ux%u stream_mode=%u fps=%u requested_limited_udp_kib_per_sec=%u limited_udp_kib_per_sec=%llu",
                     hello.client_udp_port, input_tcp_fd >= 0 ? "yes" : "no", selection_tcp_fd >= 0 ? "yes" : "no",
                     server->display_width, server->display_height, server->tile_width, server->tile_height, hello.stream_mode,
-                    hello.target_fps, (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
+                    hello.target_fps, hello.limited_udp_kib_per_second,
+                    (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
 
         while (net->running)
         {
@@ -1122,6 +1134,14 @@ void* wd_net_thread_main(void* arg) {
                         net->stats.client_partial_tiles_timed_out += cs.partial_tiles_timed_out;
                         net->stats.client_old_generation_tiles += cs.udp_ignored_old_generation;
                         net->stats.client_retx_requests_tx += cs.retx_requests_tx;
+                        net->stats.client_udp_interarrival_samples += cs.udp_interarrival_samples;
+                        net->stats.client_udp_interarrival_sum_ns += cs.udp_interarrival_sum_ns;
+                        net->stats.client_udp_interarrival_jitter_samples += cs.udp_interarrival_jitter_samples;
+                        net->stats.client_udp_interarrival_jitter_sum_ns += cs.udp_interarrival_jitter_sum_ns;
+                        if (cs.udp_interarrival_max_ns > net->stats.client_udp_interarrival_max_ns)
+                        {
+                            net->stats.client_udp_interarrival_max_ns = cs.udp_interarrival_max_ns;
+                        }
                         pthread_mutex_unlock(&net->lock);
                     }
                 }

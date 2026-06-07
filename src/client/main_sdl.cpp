@@ -18,13 +18,16 @@ void usage(const char* argv0) {
                  "  --mode partial              Cap send pass to target FPS, default 30\n"
                  "  --mode limited              Cap by throughput-probed byte budget\n"
                  "  --mode live                 Lossy latest-only mode; disables retransmit repair\n"
-                 "  --fps <N>                   Target FPS for partial mode\n"
-                 "  --size <WxH>                 Request remote display size\n\n"
+                 "  --fps <N>                   Target FPS for partial/live mode\n"
+                 "  --size <WxH>                 Request remote display size\n"
+                 "  --limited-rate-kib <N>       Cap limited-mode UDP tile budget in KiB/s\n"
+                 "  --wan                        Shorthand for --mode limited --limited-rate-kib 256\n\n"
                  "Examples:\n"
                  "  %s 127.0.0.1 5000 6000 --mode full\n"
                  "  %s 127.0.0.1 5000 6000 --mode partial --fps 30\n"
-                 "  %s 127.0.0.1 5000 6000 --mode limited\n",
-                 argv0, argv0, argv0, argv0);
+                 "  %s 127.0.0.1 5000 6000 --mode limited\n"
+                 "  %s 127.0.0.1 5000 6000 --wan\n",
+                 argv0, argv0, argv0, argv0, argv0);
 }
 
 bool parse_u16(const char* text, uint16_t& out) {
@@ -42,6 +45,24 @@ bool parse_u16(const char* text, uint16_t& out) {
     }
 
     out = static_cast<uint16_t>(value);
+    return true;
+}
+
+bool parse_u32(const char* text, uint32_t& out) {
+    if (!text || !*text)
+    {
+        return false;
+    }
+
+    char*              end   = nullptr;
+    unsigned long long value = std::strtoull(text, &end, 10);
+
+    if (!end || *end != '\0' || value > 0xffffffffull)
+    {
+        return false;
+    }
+
+    out = static_cast<uint32_t>(value);
     return true;
 }
 
@@ -148,6 +169,22 @@ int main(int argc, char** argv) {
             }
 
             ++i;
+        }
+        else if (std::strcmp(argv[i], "--limited-rate-kib") == 0)
+        {
+            if (i + 1 >= argc || !parse_u32(argv[i + 1], stream_config.limited_udp_kib_per_second) ||
+                stream_config.limited_udp_kib_per_second == 0)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            ++i;
+        }
+        else if (std::strcmp(argv[i], "--wan") == 0)
+        {
+            stream_config.mode                       = waydisplay::ClientStreamMode::Limited;
+            stream_config.limited_udp_kib_per_second = 256;
         }
         else
         {

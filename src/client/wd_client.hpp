@@ -21,13 +21,21 @@ enum class ClientStreamMode : uint16_t {
 };
 
 struct ClientStreamConfig {
-    ClientStreamMode mode       = ClientStreamMode::Partial;
-    uint16_t         target_fps = WD_CLIENT_DEFAULT_TARGET_FPS;
+    ClientStreamMode mode                       = ClientStreamMode::Partial;
+    uint16_t         target_fps                 = WD_CLIENT_DEFAULT_TARGET_FPS;
+    uint32_t         limited_udp_kib_per_second = 0;
 };
 
 struct ClientStats {
     std::atomic<uint64_t> udp_packets_rx{0};
     std::atomic<uint64_t> udp_bytes_rx{0};
+    std::atomic<uint64_t> udp_interarrival_samples{0};
+    std::atomic<uint64_t> udp_interarrival_sum_ns{0};
+    std::atomic<uint64_t> udp_interarrival_jitter_samples{0};
+    std::atomic<uint64_t> udp_interarrival_jitter_sum_ns{0};
+    std::atomic<uint64_t> udp_interarrival_max_ns{0};
+    std::atomic<uint64_t> last_udp_packet_rx_ns{0};
+    std::atomic<uint64_t> last_udp_interarrival_ns{0};
     std::atomic<uint64_t> udp_ignored_invalid{0};
     std::atomic<uint64_t> udp_ignored_old_generation{0};
     std::atomic<uint64_t> udp_tiles_completed{0};
@@ -60,7 +68,14 @@ struct ClientStats {
     std::atomic<uint64_t> tile_present_latency_sum_ns{0};
     std::atomic<uint64_t> input_to_present_latency_samples{0};
     std::atomic<uint64_t> input_to_present_latency_sum_ns{0};
+    std::atomic<uint64_t> input_sequence_present_latency_samples{0};
+    std::atomic<uint64_t> input_sequence_present_latency_sum_ns{0};
     std::atomic<uint64_t> latest_input_event_timestamp_ns{0};
+};
+
+struct ClientInputEventStamp {
+    uint64_t sequence     = 0;
+    uint64_t timestamp_ns = 0;
 };
 
 struct ClientState {
@@ -132,6 +147,10 @@ struct ClientState {
 
     std::atomic<uint16_t> pending_cursor_shape{WD_CURSOR_SHAPE_DEFAULT};
     std::atomic<bool>     pending_cursor_shape_dirty{true};
+
+    std::atomic<uint64_t>          next_input_sequence{1};
+    std::mutex                    input_timestamp_mutex;
+    std::deque<ClientInputEventStamp> recent_input_timestamps;
 
     ClientStats stats;
     std::thread tcp_thread;

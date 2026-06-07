@@ -36,6 +36,30 @@ uint64_t clamp_retransmit_grace_ns(uint64_t ns) {
     return std::max(RETRANSMIT_GRACE_MIN_NS, std::min(RETRANSMIT_GRACE_MAX_NS, ns));
 }
 
+
+uint64_t next_input_sequence(ClientState& state) {
+    uint64_t seq = state.next_input_sequence.fetch_add(1, std::memory_order_relaxed);
+    if (seq == 0)
+    {
+        seq = state.next_input_sequence.fetch_add(1, std::memory_order_relaxed);
+    }
+    return seq;
+}
+
+void remember_input_timestamp(ClientState& state, uint64_t sequence, uint64_t timestamp_ns) {
+    if (sequence == 0 || timestamp_ns == 0)
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(state.input_timestamp_mutex);
+    state.recent_input_timestamps.push_back({sequence, timestamp_ns});
+    while (state.recent_input_timestamps.size() > 256)
+    {
+        state.recent_input_timestamps.pop_front();
+    }
+}
+
 bool set_socket_rcvbuf(int fd, int requested_bytes) {
     if (fd < 0)
     {
@@ -381,10 +405,10 @@ bool receive_server_config(ClientState& state) {
     wd_client_hello_payload hello{};
     hello.client_udp_port      = state.client_udp_port;
     hello.stream_mode          = static_cast<uint16_t>(state.stream_config.mode);
-    hello.target_fps           = state.stream_config.target_fps;
-    hello.desired_width        = state.desired_width;
-    hello.desired_height       = state.desired_height;
-    hello.reserved1 = 0;
+    hello.target_fps                  = state.stream_config.target_fps;
+    hello.desired_width               = state.desired_width;
+    hello.desired_height              = state.desired_height;
+    hello.limited_udp_kib_per_second  = state.stream_config.limited_udp_kib_per_second;
 
     if (!wd_send_tcp_message(state.tcp_fd, WD_MSG_CLIENT_HELLO, &hello, sizeof(hello)))
     {
@@ -897,6 +921,7 @@ bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool 
     wd_keyboard_event_payload event{};
     event.session_id          = state.config.session_id;
     event.client_timestamp_ns = wd_now_ns();
+    event.input_sequence      = next_input_sequence(state);
     event.evdev_key_code      = evdev_key_code;
     event.pressed             = pressed ? 1 : 0;
 
@@ -914,6 +939,7 @@ bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool 
         {
             state.stats.tcp_input_channel_fallback_tx.fetch_add(1, std::memory_order_relaxed);
         }
+        remember_input_timestamp(state, event.input_sequence, event.client_timestamp_ns);
         state.stats.latest_input_event_timestamp_ns.store(event.client_timestamp_ns, std::memory_order_relaxed);
     }
 
@@ -921,13 +947,20 @@ bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool 
 }
 
 bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payload& event) {
+    wd_pointer_event_payload outbound = event;
+    if (outbound.client_timestamp_ns == 0)
+    {
+        outbound.client_timestamp_ns = wd_now_ns();
+    }
+    outbound.input_sequence = next_input_sequence(state);
+
     const int fd = state.input_tcp_fd >= 0 ? state.input_tcp_fd : state.tcp_fd;
     if (fd < 0)
     {
         return false;
     }
 
-    const bool ok = wd_send_tcp_message(fd, WD_MSG_POINTER_EVENT, &event, sizeof(event));
+    const bool ok = wd_send_tcp_message(fd, WD_MSG_POINTER_EVENT, &outbound, sizeof(outbound));
 
     if (ok)
     {
@@ -942,9 +975,10 @@ bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payloa
             state.stats.tcp_input_channel_fallback_tx.fetch_add(1, std::memory_order_relaxed);
         }
 
-        if (event.client_timestamp_ns != 0)
+        remember_input_timestamp(state, outbound.input_sequence, outbound.client_timestamp_ns);
+        if (outbound.client_timestamp_ns != 0)
         {
-            state.stats.latest_input_event_timestamp_ns.store(event.client_timestamp_ns, std::memory_order_relaxed);
+            state.stats.latest_input_event_timestamp_ns.store(outbound.client_timestamp_ns, std::memory_order_relaxed);
         }
     }
 

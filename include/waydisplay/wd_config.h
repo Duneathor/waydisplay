@@ -52,6 +52,8 @@ extern "C" {
 /* Tile send priority. Prefer low wire-cost tiles while periodically
  * taking the oldest queued tile so large/background tiles still make progress. */
 #define WD_TILE_PRIORITY_FAIRNESS_INTERVAL 8u
+#define WD_TILE_PRIORITY_POINTER_ACTIVE_NS 250000000ull
+#define WD_TILE_PRIORITY_POINTER_DISTANCE_WEIGHT_BYTES 4096u
 
 /* Adaptive network throttling. */
 #define WD_THROTTLE_BAD_WINDOWS_TO_DOWNGRADE       2u
@@ -69,6 +71,11 @@ extern "C" {
 #define WD_LIMITED_RATE_GOOD_WINDOWS_TO_INCREASE   4u
 #define WD_LIMITED_RATE_CLIENT_COMPLETION_MIN_SENT 4u
 #define WD_LIMITED_RATE_CLIENT_COMPLETION_PERCENT  50u
+#define WD_ADAPTIVE_FPS_MIN                         5u
+#define WD_ADAPTIVE_FPS_DECREASE_PERCENT            75u
+#define WD_ADAPTIVE_FPS_PRESSURE_DECREASE_PERCENT   50u
+#define WD_ADAPTIVE_FPS_INCREASE_PERCENT            110u
+#define WD_ADAPTIVE_FPS_GOOD_WINDOWS_TO_INCREASE    4u
 
 /* Client interaction/render-loop tuning. */
 #define WD_CLIENT_DEFAULT_TARGET_FPS           WD_DEFAULT_PARTIAL_FPS

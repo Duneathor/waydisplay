@@ -196,6 +196,7 @@ struct wd_cached_tile {
 
     uint64_t generation;
     uint64_t timestamp_ns;
+    uint64_t input_sequence;
 
     uint32_t last_hash;
 };
@@ -228,6 +229,11 @@ struct wd_stats {
     uint64_t client_partial_tiles_timed_out;
     uint64_t client_old_generation_tiles;
     uint64_t client_retx_requests_tx;
+    uint64_t client_udp_interarrival_samples;
+    uint64_t client_udp_interarrival_sum_ns;
+    uint64_t client_udp_interarrival_jitter_samples;
+    uint64_t client_udp_interarrival_jitter_sum_ns;
+    uint64_t client_udp_interarrival_max_ns;
 
     uint64_t retx_req_rx;
     uint64_t retx_tiles_req;
@@ -256,6 +262,11 @@ struct wd_stats {
 
     uint64_t limited_rate_downshifts;
     uint64_t limited_rate_upshifts;
+    uint64_t frame_rate_downshifts;
+    uint64_t frame_rate_upshifts;
+    uint64_t dirty_pointer_priority_pops;
+    uint64_t retx_pointer_priority_pops;
+    uint64_t full_frame_pointer_priority_pops;
 
     uint64_t dirty_tiles_stale_skipped;
     uint64_t retx_tiles_superseded_by_fresh;
@@ -276,8 +287,10 @@ struct wd_stream_policy {
     uint16_t requested_mode;
     uint16_t mode;
     uint16_t target_fps;
+    uint16_t effective_target_fps;
 
     uint32_t throttle_bad_windows;
+    uint32_t frame_rate_good_windows;
     uint32_t throttle_good_windows;
 
     uint64_t last_frame_send_ns;
@@ -294,6 +307,7 @@ struct wd_queued_key_event {
     uint16_t evdev_key_code;
     bool     pressed;
     uint64_t client_timestamp_ns;
+    uint64_t input_sequence;
     uint64_t server_rx_timestamp_ns;
 };
 
@@ -312,6 +326,7 @@ struct wd_net_state {
     uint16_t udp_payload_target;
 
     uint16_t full_frame_next_tile;
+    bool*    full_frame_sent_tiles;
     uint16_t dirty_scan_next_tile;
 
     uint16_t* dirty_queue;
@@ -332,6 +347,12 @@ struct wd_net_state {
 
     uint32_t dirty_priority_pop_count;
     uint32_t retransmit_priority_pop_count;
+    uint32_t full_frame_priority_pop_count;
+
+    bool     pointer_priority_valid;
+    uint32_t pointer_priority_x;
+    uint32_t pointer_priority_y;
+    uint64_t pointer_priority_ns;
 
     int listen_fd;
     int tcp_fd;
@@ -350,6 +371,7 @@ struct wd_net_state {
     uint64_t               last_input_inject_ns;
     bool                   input_since_last_summary;
     bool                   input_since_last_fresh_tile;
+    uint64_t               last_input_sequence;
     uint64_t               full_frame_start_ns;
     uint64_t               full_frame_tiles_sent;
     uint64_t               udp_send_pressure_log_ns;

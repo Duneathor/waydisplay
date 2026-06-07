@@ -117,9 +117,9 @@ static void wd_stats_note_pointer_input_inject_locked(struct wd_net_state* net, 
 
     net->stats.input_queue_latency_samples++;
     net->stats.input_queue_latency_sum_ns += inject_timestamp_ns - server_rx_timestamp_ns;
-    net->last_input_inject_ns          = inject_timestamp_ns;
-    net->input_since_last_summary      = true;
-    net->input_since_last_fresh_tile   = true;
+    net->last_input_inject_ns        = inject_timestamp_ns;
+    net->input_since_last_summary    = true;
+    net->input_since_last_fresh_tile = true;
 }
 
 void wd_pointer_queue_event_locked(struct wd_net_state* net, const struct wd_pointer_event_payload* event,
@@ -572,16 +572,22 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
     {
         const struct wd_pointer_event_payload* event = &local[i].event;
 
+        const uint64_t inject_ns = wd_now_ns();
+        const double lx = clamp_layout_x(server, event->x);
+        const double ly = clamp_layout_y(server, event->y);
+
         pthread_mutex_lock(&server->net.lock);
-        wd_stats_note_pointer_input_inject_locked(&server->net, local[i].server_rx_timestamp_ns, wd_now_ns());
+        server->net.last_input_sequence = event->input_sequence;
+        wd_stats_note_pointer_input_inject_locked(&server->net, local[i].server_rx_timestamp_ns, inject_ns);
+        server->net.pointer_priority_valid = true;
+        server->net.pointer_priority_x = (uint32_t)lx;
+        server->net.pointer_priority_y = (uint32_t)ly;
+        server->net.pointer_priority_ns = inject_ns;
         server->net.stats.pointer_events_injected++;
         pthread_mutex_unlock(&server->net.lock);
 
         const uint32_t time_msec =
-            local[i].server_rx_timestamp_ns ? (uint32_t)(local[i].server_rx_timestamp_ns / 1000000ull) : (uint32_t)(wd_now_ns() / 1000000ull);
-
-        const double lx = clamp_layout_x(server, event->x);
-        const double ly = clamp_layout_y(server, event->y);
+            local[i].server_rx_timestamp_ns ? (uint32_t)(local[i].server_rx_timestamp_ns / 1000000ull) : (uint32_t)(inject_ns / 1000000ull);
 
         server->pointer_x = lx;
         server->pointer_y = ly;

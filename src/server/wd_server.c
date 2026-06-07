@@ -463,6 +463,9 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     server->net.summary_dirty_tiles = NULL;
     server->net.summary_dirty_count = 0;
 
+    free(server->net.full_frame_sent_tiles);
+    server->net.full_frame_sent_tiles = NULL;
+
     free(server->framebuffer_xrgb8888);
     server->framebuffer_xrgb8888 = NULL;
 
@@ -484,9 +487,10 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
         server->net.retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*server->net.retransmit_queue_enqueued_ns));
         server->net.retransmit_requested_generation = calloc(server->total_tiles, sizeof(*server->net.retransmit_requested_generation));
         server->net.summary_dirty_tiles          = calloc(server->total_tiles, sizeof(*server->net.summary_dirty_tiles));
+        server->net.full_frame_sent_tiles        = calloc(server->total_tiles, sizeof(*server->net.full_frame_sent_tiles));
         ok = server->net.dirty_queue && server->net.dirty_queued && server->net.dirty_queue_enqueued_ns &&
              server->net.retransmit_queue && server->net.retransmit_queued && server->net.retransmit_queue_enqueued_ns &&
-             server->net.retransmit_requested_generation && server->net.summary_dirty_tiles;
+             server->net.retransmit_requested_generation && server->net.summary_dirty_tiles && server->net.full_frame_sent_tiles;
     }
 
     if (ok)
@@ -498,6 +502,10 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     {
         server->net.full_frame_needed    = true;
         server->net.full_frame_next_tile = 0;
+        if (server->net.full_frame_sent_tiles)
+        {
+            memset(server->net.full_frame_sent_tiles, 0, server->total_tiles * sizeof(*server->net.full_frame_sent_tiles));
+        }
         server->net.full_frame_start_ns  = 0;
         server->net.full_frame_tiles_sent = 0;
         server->net.dirty_scan_next_tile = 0;
