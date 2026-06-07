@@ -135,7 +135,7 @@ struct ClientState {
     std::mutex            tile_reassembly_timeout_mutex;
     double                tile_reassembly_ewma_ns       = 0.0;
     double                tile_reassembly_deviation_ns  = 0.0;
-    std::atomic<uint64_t> tile_reassembly_timeout_ns{750ull * 1000ull * 1000ull};
+    std::atomic<uint64_t> tile_reassembly_timeout_ns{250ull * 1000ull * 1000ull};
 
     std::vector<uint8_t> udp_recv_buffer;
 

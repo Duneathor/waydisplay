@@ -34,11 +34,13 @@ For bandwidth-limited links, the client can request a limited-mode UDP tile
 budget below the server's throughput-probe estimate:
 
 ```sh
-waydisplay-client <server> 5000 6000 --mode limited --limited-rate-kib 256
-# shorthand:
+waydisplay-client <server> 5000 6000 --mode limited --limited-rate-kib 4096
+# or a more conservative shared-link cap:
+waydisplay-client <server> 5000 6000 --mode limited --limited-rate-kib 2048
+# shorthand for very constrained links:
 waydisplay-client <server> 5000 6000 --wan
 ```
 
 The requested budget is a cap: the server will not raise its throughput-probed
 safe ceiling to satisfy it. This is useful when the link is shared or when the
-startup probe overestimates sustainable long-haul throughput.
+startup probe overestimates sustainable long-haul throughput. On a clean Wi-Fi link, start with 2048-4096 KiB/s and raise it after checking client completion and retransmit telemetry.

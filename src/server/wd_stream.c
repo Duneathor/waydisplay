@@ -159,7 +159,8 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->limited_udp_bytes_per_second = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
     policy->limited_udp_rate_floor        = WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND;
     policy->limited_udp_rate_ceiling      = WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND;
-    policy->limited_rate_good_windows     = 0;
+    policy->limited_rate_good_windows      = 0;
+    policy->client_completion_low_windows  = 0;
     wd_stream_policy_reset_tokens(policy);
 }
 
@@ -455,7 +456,8 @@ static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy*
 
     if (bad_window)
     {
-        policy->limited_rate_good_windows = 0;
+        policy->limited_rate_good_windows     = 0;
+        policy->client_completion_low_windows = 0;
         policy->throttle_bad_windows++;
 
         uint32_t decrease_percent = send_pressure ? WD_LIMITED_RATE_PRESSURE_DECREASE_PERCENT : WD_LIMITED_RATE_DECREASE_PERCENT;
@@ -529,14 +531,29 @@ static void wd_stream_policy_update_adaptive_locked(struct wd_stream_policy* pol
     bool repair_storm = stats->retx_req_rx >= WD_THROTTLE_REPAIR_STORM_REQUESTS_PER_SEC &&
                         stats->retx_tiles_req >= WD_THROTTLE_REPAIR_STORM_TILES_PER_SECOND;
 
-    bool client_completion_low = false;
+    bool client_completion_low_sample = false;
     if (stats->client_stats_rx != 0 && stats->udp_tiles_sent >= WD_LIMITED_RATE_CLIENT_COMPLETION_MIN_SENT)
     {
-        client_completion_low = stats->client_tiles_completed * 100ull <
-                                stats->udp_tiles_sent * (uint64_t)WD_LIMITED_RATE_CLIENT_COMPLETION_PERCENT;
+        client_completion_low_sample = stats->client_tiles_completed * 100ull <
+                                       stats->udp_tiles_sent * (uint64_t)WD_LIMITED_RATE_CLIENT_COMPLETION_PERCENT;
     }
 
-    bool client_repair_pressure = stats->client_partial_tiles_timed_out != 0 || stats->client_retx_requests_tx != 0;
+    if (client_completion_low_sample)
+    {
+        if (policy->client_completion_low_windows < UINT32_MAX)
+        {
+            policy->client_completion_low_windows++;
+        }
+    }
+    else
+    {
+        policy->client_completion_low_windows = 0;
+    }
+
+    bool client_completion_low = policy->client_completion_low_windows >= WD_LIMITED_RATE_CLIENT_COMPLETION_BAD_WINDOWS;
+
+    bool client_repair_pressure = stats->client_partial_tiles_timed_out != 0 ||
+                                  stats->client_retx_requests_tx >= WD_THROTTLE_CLIENT_RETX_REQUESTS_PER_SEC;
 
     bool bad_window = send_pressure || repair_storm || client_completion_low || client_repair_pressure ||
                       (stats->retx_req_rx != 0 && repair_ratio_high);

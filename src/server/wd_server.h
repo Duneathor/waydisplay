@@ -319,6 +319,7 @@ struct wd_stream_policy {
     uint64_t limited_udp_rate_floor;
     uint64_t limited_udp_rate_ceiling;
     uint32_t limited_rate_good_windows;
+    uint32_t client_completion_low_windows;
     double   limited_udp_byte_tokens;
     uint64_t last_limited_udp_byte_refill_ns;
 };

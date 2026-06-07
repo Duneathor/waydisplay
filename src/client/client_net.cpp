@@ -22,11 +22,11 @@
 namespace waydisplay {
 namespace {
 
-constexpr size_t   MAX_RETRANSMIT_ENTRIES_PER_MESSAGE = 16;
-constexpr size_t   MAX_RETRANSMIT_QUEUE_DEPTH         = 256;
-constexpr double   RETRANSMIT_REQUEST_TILES_PER_SECOND = 16.0;
-constexpr double   RETRANSMIT_REQUEST_BURST_TILES      = 16.0;
-constexpr uint64_t RETRANSMIT_REREQUEST_INTERVAL_NS   = 500ull * 1000ull * 1000ull;
+constexpr size_t   MAX_RETRANSMIT_ENTRIES_PER_MESSAGE = 32;
+constexpr size_t   MAX_RETRANSMIT_QUEUE_DEPTH         = 512;
+constexpr double   RETRANSMIT_REQUEST_TILES_PER_SECOND = 64.0;
+constexpr double   RETRANSMIT_REQUEST_BURST_TILES      = 64.0;
+constexpr uint64_t RETRANSMIT_REREQUEST_INTERVAL_NS   = 250ull * 1000ull * 1000ull;
 constexpr uint64_t RETRANSMIT_GRACE_MIN_NS            = 50ull * 1000ull * 1000ull;
 constexpr uint64_t RETRANSMIT_GRACE_DEFAULT_NS        = 250ull * 1000ull * 1000ull;
 constexpr uint64_t RETRANSMIT_GRACE_MAX_NS            = 500ull * 1000ull * 1000ull;

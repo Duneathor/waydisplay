@@ -16,9 +16,10 @@
 namespace waydisplay {
 namespace {
 
-constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MIN_NS     = 150ull * 1000ull * 1000ull;
-constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS = 750ull * 1000ull * 1000ull;
-constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MAX_NS     = 1500ull * 1000ull * 1000ull;
+constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MIN_NS     = 100ull * 1000ull * 1000ull;
+constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS = 250ull * 1000ull * 1000ull;
+constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MAX_NS     = 450ull * 1000ull * 1000ull;
+constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_SLACK_NS   = 50ull * 1000ull * 1000ull;
 constexpr size_t   MAX_REASSEMBLY_RETRANSMIT_QUEUE_DEPTH = 256;
 
 uint64_t clamp_tile_reassembly_timeout_ns(uint64_t ns) {
@@ -36,15 +37,9 @@ uint64_t current_tile_reassembly_timeout_ns(const ClientState& state) {
 }
 
 void update_tile_reassembly_timeout(ClientState& state, uint64_t sample_ns, bool response_sample) {
-    if (sample_ns == 0)
+    if (sample_ns == 0 || response_sample)
     {
         return;
-    }
-
-    uint64_t grace_ns = 250ull * 1000ull * 1000ull;
-    {
-        std::lock_guard<std::mutex> lock(state.retx_mutex);
-        grace_ns = state.retx_inflight_grace_ns;
     }
 
     std::lock_guard<std::mutex> lock(state.tile_reassembly_timeout_mutex);
@@ -62,11 +57,38 @@ void update_tile_reassembly_timeout(ClientState& state, uint64_t sample_ns, bool
         state.tile_reassembly_deviation_ns += 0.25 * (std::abs(delta) - state.tile_reassembly_deviation_ns);
     }
 
-    const double jittered_tile_ns = state.tile_reassembly_ewma_ns + 4.0 * state.tile_reassembly_deviation_ns;
-    const double grace_based_ns   = static_cast<double>(grace_ns) * (response_sample ? 2.0 : 3.0);
-    const uint64_t target_ns = clamp_tile_reassembly_timeout_ns(static_cast<uint64_t>(std::max(jittered_tile_ns, grace_based_ns)));
+    const double jittered_tile_ns = state.tile_reassembly_ewma_ns + 2.0 * state.tile_reassembly_deviation_ns +
+                                    static_cast<double>(TILE_REASSEMBLY_TIMEOUT_SLACK_NS);
+    const uint64_t target_ns = clamp_tile_reassembly_timeout_ns(static_cast<uint64_t>(jittered_tile_ns));
 
     const uint64_t old_ns = current_tile_reassembly_timeout_ns(state);
+    if (old_ns != target_ns)
+    {
+        state.tile_reassembly_timeout_ns.store(target_ns, std::memory_order_relaxed);
+        state.stats.tile_reassembly_timeout_updates.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void reduce_tile_reassembly_timeout_after_loss(ClientState& state) {
+    std::lock_guard<std::mutex> lock(state.tile_reassembly_timeout_mutex);
+
+    const uint64_t old_ns = current_tile_reassembly_timeout_ns(state);
+    uint64_t target_ns = old_ns * 3ull / 4ull;
+    if (old_ns > TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS && target_ns > TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS)
+    {
+        target_ns = TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS;
+    }
+    target_ns = clamp_tile_reassembly_timeout_ns(target_ns);
+
+    if (state.tile_reassembly_ewma_ns > static_cast<double>(target_ns))
+    {
+        state.tile_reassembly_ewma_ns = static_cast<double>(target_ns);
+    }
+    if (state.tile_reassembly_deviation_ns > static_cast<double>(target_ns) / 2.0)
+    {
+        state.tile_reassembly_deviation_ns = static_cast<double>(target_ns) / 2.0;
+    }
+
     if (old_ns != target_ns)
     {
         state.tile_reassembly_timeout_ns.store(target_ns, std::memory_order_relaxed);
@@ -238,6 +260,7 @@ void TileReassembler::expire_entry(ClientState& state, Entry& entry) {
 
     state.stats.partial_tiles_timed_out.fetch_add(1, std::memory_order_relaxed);
     state.stats.partial_tile_missing_packets.fetch_add(missing_packets, std::memory_order_relaxed);
+    reduce_tile_reassembly_timeout_after_loss(state);
 
     if (enqueue_retx_for_partial_timeout(state, entry.tile_id, entry.generation))
     {
