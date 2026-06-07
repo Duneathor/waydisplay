@@ -515,27 +515,18 @@ static void wd_stream_policy_update_adaptive_locked(struct wd_stream_policy* pol
 
     bool send_pressure = stats->udp_send_pressure_drops != 0;
 
-    uint64_t fresh_tiles_for_ratio = stats->udp_fresh_tiles_sent;
-    if (fresh_tiles_for_ratio < stats->dirty_tiles)
-    {
-        fresh_tiles_for_ratio = stats->dirty_tiles;
-    }
-    if (fresh_tiles_for_ratio < WD_THROTTLE_MIN_FRESH_TILES_FOR_RATIO)
-    {
-        fresh_tiles_for_ratio = WD_THROTTLE_MIN_FRESH_TILES_FOR_RATIO;
-    }
-
-    bool repair_ratio_high =
-        stats->udp_retx_tiles_sent * WD_THROTTLE_REPAIR_RATIO_DENOMINATOR >= fresh_tiles_for_ratio * WD_THROTTLE_REPAIR_RATIO_NUMERATOR;
-
-    bool repair_storm = stats->retx_req_rx >= WD_THROTTLE_REPAIR_STORM_REQUESTS_PER_SEC &&
-                        stats->retx_tiles_req >= WD_THROTTLE_REPAIR_STORM_TILES_PER_SECOND;
-
     bool client_completion_low_sample = false;
-    if (stats->client_stats_rx != 0 && stats->udp_tiles_sent >= WD_LIMITED_RATE_CLIENT_COMPLETION_MIN_SENT)
+    if (stats->client_stats_rx != 0 && stats->client_udp_packets_rx >= WD_LIMITED_RATE_CLIENT_COMPLETION_MIN_SENT)
     {
-        client_completion_low_sample = stats->client_tiles_completed * 100ull <
-                                       stats->udp_tiles_sent * (uint64_t)WD_LIMITED_RATE_CLIENT_COMPLETION_PERCENT;
+        /*
+         * Compare client-side completed packet contribution with client-side
+         * packets received. Server and client stats windows are not phase
+         * locked; comparing server-sent tiles in this second against
+         * client-completed tiles reported for a slightly different second can
+         * falsely look like congestion and ratchet the stream down.
+         */
+        client_completion_low_sample = stats->client_completed_packets * 100ull <
+                                       stats->client_udp_packets_rx * (uint64_t)WD_LIMITED_RATE_CLIENT_COMPLETION_PERCENT;
     }
 
     if (client_completion_low_sample)
@@ -552,11 +543,17 @@ static void wd_stream_policy_update_adaptive_locked(struct wd_stream_policy* pol
 
     bool client_completion_low = policy->client_completion_low_windows >= WD_LIMITED_RATE_CLIENT_COMPLETION_BAD_WINDOWS;
 
-    bool client_repair_pressure = stats->client_partial_tiles_timed_out != 0 ||
-                                  stats->client_retx_requests_tx >= WD_THROTTLE_CLIENT_RETX_REQUESTS_PER_SEC;
+    bool client_repair_pressure = stats->client_partial_tiles_timed_out != 0;
 
-    bool bad_window = send_pressure || repair_storm || client_completion_low || client_repair_pressure ||
-                      (stats->retx_req_rx != 0 && repair_ratio_high);
+    /*
+     * Retransmit requests and repair ratio are demand signals, not congestion
+     * signals by themselves. With fast summaries, TCP often advertises a tile
+     * generation before the corresponding UDP packets arrive; treating those
+     * requests as congestion causes a downward ratchet even on a stable link.
+     * Only throttle on actual UDP send pressure or client-observed completion
+     * problems such as partial tile timeouts / low completed-packet ratio.
+     */
+    bool bad_window = send_pressure || client_completion_low || client_repair_pressure;
 
     wd_stream_policy_update_frame_rate_locked(policy, stats, bad_window, send_pressure, client_completion_low);
 
@@ -1795,11 +1792,11 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
     /*
      * Phase 2:
-     * Normal mode. Detect new dirty work, then spend the byte budget on
-     * latest-generation repairs before fresh tiles. Repairing already-missing
-     * tiles first avoids priority inversion and lets the remaining byte budget
-     * carry new work. Live mode is intentionally lossy/latest-only: do not
-     * queue or send repairs there.
+     * Normal mode. Detect new dirty work and send fresh/latest tiles before
+     * repair traffic. Retransmits are useful, but letting them consume the
+     * whole limited-mode budget turns transient summary races into a priority
+     * inversion where current UI updates stall behind stale repairs. Live mode
+     * remains lossy/latest-only and drops queued repairs.
      */
     wd_detect_dirty_tiles_into_queue_locked(server);
 
@@ -1807,61 +1804,6 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     if (live_mode)
     {
         wd_stream_drop_retransmit_queue_locked(server);
-    }
-
-    while (!live_mode && net->retransmit_queue_count > 0)
-    {
-            uint16_t tile_id              = 0;
-            uint64_t requested_generation = 0;
-
-            if (!wd_retransmit_queue_pop_priority_locked(server, &tile_id, &requested_generation))
-            {
-                break;
-            }
-
-            if (tile_id >= server->total_tiles)
-            {
-                continue;
-            }
-
-            if (net->dirty_queued && net->dirty_queued[tile_id])
-            {
-                continue;
-            }
-
-            bool     launched     = false;
-            bool     send_blocked = false;
-            uint32_t bytes_sent    = 0;
-
-            struct wd_cached_tile* cache = &net->tiles[tile_id];
-            uint32_t predicted_bytes = wd_stream_tile_wire_bytes(cache->compressed_size, net->udp_payload_target);
-            if (wd_stream_policy_limited_byte_budget_locked(&net->stream_policy, now) < predicted_bytes)
-            {
-                wd_stream_queue_retransmit_tile_locked(server, tile_id, requested_generation);
-                break;
-            }
-
-            if (!wd_stream_send_cached_tile_locked(server, tile_id, &launched, &send_blocked, &bytes_sent))
-            {
-                continue;
-            }
-
-            if (send_blocked && !launched)
-            {
-                wd_stream_queue_retransmit_tile_locked(server, tile_id, requested_generation);
-                break;
-            }
-
-            if (launched)
-            {
-                net->stats.udp_retx_tiles_sent++;
-                wd_stream_policy_consume_limited_bytes_locked(&net->stream_policy, bytes_sent);
-            }
-
-            if (send_blocked)
-            {
-                break;
-            }
     }
 
     while (net->dirty_queue_count > 0)
@@ -1951,11 +1893,63 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         }
     }
 
-    /*
-     * Keep scene_dirty true if there are queued fresh or repair tiles.
-     * Repairs are drained before fresh work so missing visible tiles do not get
-     * starved behind newly dirtied tiles.
-     */
+
+    while (!live_mode && net->retransmit_queue_count > 0)
+    {
+        uint16_t tile_id              = 0;
+        uint64_t requested_generation = 0;
+
+        if (!wd_retransmit_queue_pop_priority_locked(server, &tile_id, &requested_generation))
+        {
+            break;
+        }
+
+        if (tile_id >= server->total_tiles)
+        {
+            continue;
+        }
+
+        if (net->dirty_queued && net->dirty_queued[tile_id])
+        {
+            continue;
+        }
+
+        bool     launched     = false;
+        bool     send_blocked = false;
+        uint32_t bytes_sent    = 0;
+
+        struct wd_cached_tile* cache = &net->tiles[tile_id];
+        uint32_t predicted_bytes = wd_stream_tile_wire_bytes(cache->compressed_size, net->udp_payload_target);
+        if (wd_stream_policy_limited_byte_budget_locked(&net->stream_policy, now) < predicted_bytes)
+        {
+            wd_stream_queue_retransmit_tile_locked(server, tile_id, requested_generation);
+            break;
+        }
+
+        if (!wd_stream_send_cached_tile_locked(server, tile_id, &launched, &send_blocked, &bytes_sent))
+        {
+            continue;
+        }
+
+        if (send_blocked && !launched)
+        {
+            wd_stream_queue_retransmit_tile_locked(server, tile_id, requested_generation);
+            break;
+        }
+
+        if (launched)
+        {
+            net->stats.udp_retx_tiles_sent++;
+            wd_stream_policy_consume_limited_bytes_locked(&net->stream_policy, bytes_sent);
+        }
+
+        if (send_blocked)
+        {
+            break;
+        }
+    }
+
+    /* Keep scene_dirty true if there are queued fresh or repair tiles. */
     server->scene_dirty = net->dirty_queue_count > 0 || net->retransmit_queue_count > 0;
 
     pthread_mutex_unlock(&net->lock);

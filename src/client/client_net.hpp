@@ -19,6 +19,7 @@ bool client_send_clipboard_text(ClientState& state, const char* text);
 bool client_send_primary_text(ClientState& state, const char* text);
 bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t height);
 
+void client_promote_deferred_summary_retransmits(ClientState& state);
 bool client_flush_retransmit_requests(ClientState& state);
 bool client_send_stats(ClientState& state, const wd_client_stats_payload& stats);
 

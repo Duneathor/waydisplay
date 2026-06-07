@@ -780,6 +780,7 @@ void print_client_stats(ClientState& state) {
     const uint64_t summaries                = take_stat(state.stats.tcp_summaries_rx);
     const uint64_t retx                     = take_stat(state.stats.tcp_retx_requests_tx);
     const uint64_t summary_retx_queued      = take_stat(state.stats.summary_retx_tiles_queued);
+    const uint64_t summary_retx_deferred    = take_stat(state.stats.summary_retx_tiles_deferred);
     const uint64_t summary_to_retx_samples  = take_stat(state.stats.summary_to_retx_samples);
     const uint64_t summary_to_retx_sum_ns   = take_stat(state.stats.summary_to_retx_sum_ns);
     const uint64_t keys                     = take_stat(state.stats.tcp_keyboard_tx);
@@ -844,13 +845,14 @@ void print_client_stats(ClientState& state) {
     }
 
     const bool repair_activity = partial_timeouts != 0 || partial_missing_packets != 0 || partial_retx_queued != 0 ||
-                                 summaries != 0 || retx != 0 || summary_retx_queued != 0 || summary_to_retx_samples != 0 ||
-                                 retx_response_samples != 0;
+                                 summaries != 0 || retx != 0 || summary_retx_queued != 0 || summary_retx_deferred != 0 ||
+                                 summary_to_retx_samples != 0 || retx_response_samples != 0;
     if (repair_activity)
     {
-        WD_LOG_DEBUG("[client repair/s] summaries=%llu retx_req=%llu summary_retx_tiles=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_rx_avg_ms=%.2f summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
+        WD_LOG_DEBUG("[client repair/s] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_rx_avg_ms=%.2f summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
                      static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
-                     static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(partial_timeouts),
+                     static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(summary_retx_deferred),
+                     static_cast<unsigned long long>(partial_timeouts),
                      static_cast<unsigned long long>(partial_missing_packets), static_cast<unsigned long long>(partial_retx_queued),
                      avg_ms(summary_latency_sum_ns, summary_latency_samples), avg_ms(summary_to_retx_sum_ns, summary_to_retx_samples),
                      avg_ms(retx_response_sum_ns, retx_response_samples));
@@ -1228,6 +1230,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     std::vector<uint64_t> new_retx_last_request_ns(config.total_tiles, 0);
     std::vector<uint64_t> new_retx_inflight_generation(config.total_tiles, 0);
     std::vector<uint64_t> new_retx_inflight_since_ns(config.total_tiles, 0);
+    std::vector<uint64_t> new_retx_summary_pending_generation(config.total_tiles, 0);
+    std::vector<uint64_t> new_retx_summary_pending_since_ns(config.total_tiles, 0);
     std::vector<uint8_t>  new_udp_recv_buffer(sizeof(wd_udp_tile_packet_header) + config.udp_payload_target + 512, 0);
 
     SDL_Texture* new_texture =
@@ -1254,6 +1258,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         state.retx_last_request_ns           = std::move(new_retx_last_request_ns);
         state.retx_inflight_generation       = std::move(new_retx_inflight_generation);
         state.retx_inflight_since_ns         = std::move(new_retx_inflight_since_ns);
+        state.retx_summary_pending_generation = std::move(new_retx_summary_pending_generation);
+        state.retx_summary_pending_since_ns   = std::move(new_retx_summary_pending_since_ns);
         state.retx_request_tokens            = 0.0;
         state.retx_request_last_refill_ns    = 0;
         state.udp_recv_buffer                = std::move(new_udp_recv_buffer);
@@ -1630,6 +1636,7 @@ int run_sdl_viewer(ClientState& state) {
         }
 
         reassembler.expire_stale_entries(state);
+        client_promote_deferred_summary_retransmits(state);
 
         if (!client_flush_retransmit_requests(state))
         {

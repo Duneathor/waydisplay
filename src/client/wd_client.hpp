@@ -52,6 +52,7 @@ struct ClientStats {
     std::atomic<uint64_t> tcp_summaries_rx{0};
     std::atomic<uint64_t> tcp_retx_requests_tx{0};
     std::atomic<uint64_t> summary_retx_tiles_queued{0};
+    std::atomic<uint64_t> summary_retx_tiles_deferred{0};
     std::atomic<uint64_t> summary_to_retx_samples{0};
     std::atomic<uint64_t> summary_to_retx_sum_ns{0};
     std::atomic<uint64_t> tcp_keyboard_tx{0};
@@ -130,6 +131,8 @@ struct ClientState {
     std::vector<uint64_t>           retx_last_request_ns;
     std::vector<uint64_t>           retx_inflight_generation;
     std::vector<uint64_t>           retx_inflight_since_ns;
+    std::vector<uint64_t>           retx_summary_pending_generation;
+    std::vector<uint64_t>           retx_summary_pending_since_ns;
     double                          retx_request_tokens = 0.0;
     uint64_t                        retx_request_last_refill_ns = 0;
     uint64_t                        retx_inflight_grace_ns = 250ull * 1000ull * 1000ull;

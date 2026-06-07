@@ -27,6 +27,7 @@ constexpr size_t   MAX_RETRANSMIT_QUEUE_DEPTH         = 512;
 constexpr double   RETRANSMIT_REQUEST_TILES_PER_SECOND = 64.0;
 constexpr double   RETRANSMIT_REQUEST_BURST_TILES      = 64.0;
 constexpr uint64_t RETRANSMIT_REREQUEST_INTERVAL_NS   = 250ull * 1000ull * 1000ull;
+constexpr uint64_t SUMMARY_RETRANSMIT_GRACE_NS         = 150ull * 1000ull * 1000ull;
 constexpr uint64_t RETRANSMIT_GRACE_MIN_NS            = 50ull * 1000ull * 1000ull;
 constexpr uint64_t RETRANSMIT_GRACE_DEFAULT_NS        = 250ull * 1000ull * 1000ull;
 constexpr uint64_t RETRANSMIT_GRACE_MAX_NS            = 500ull * 1000ull * 1000ull;
@@ -493,6 +494,70 @@ bool receive_server_config(ClientState& state) {
     return true;
 }
 
+
+void ensure_retransmit_tracking_locked(ClientState& state, uint16_t total_tiles) {
+    if (state.retx_queued_generation.size() != total_tiles)
+    {
+        state.retx_queued_generation.assign(total_tiles, 0);
+    }
+    if (state.retx_last_requested_generation.size() != total_tiles)
+    {
+        state.retx_last_requested_generation.assign(total_tiles, 0);
+    }
+    if (state.retx_last_request_ns.size() != total_tiles)
+    {
+        state.retx_last_request_ns.assign(total_tiles, 0);
+    }
+    if (state.retx_inflight_generation.size() != total_tiles)
+    {
+        state.retx_inflight_generation.assign(total_tiles, 0);
+    }
+    if (state.retx_inflight_since_ns.size() != total_tiles)
+    {
+        state.retx_inflight_since_ns.assign(total_tiles, 0);
+    }
+    if (state.retx_summary_pending_generation.size() != total_tiles)
+    {
+        state.retx_summary_pending_generation.assign(total_tiles, 0);
+    }
+    if (state.retx_summary_pending_since_ns.size() != total_tiles)
+    {
+        state.retx_summary_pending_since_ns.assign(total_tiles, 0);
+    }
+}
+
+bool queue_retransmit_tile_locked(ClientState& state, uint16_t tile_id, uint64_t generation, uint16_t total_tiles) {
+    if (tile_id >= total_tiles || generation == 0)
+    {
+        return false;
+    }
+
+    ensure_retransmit_tracking_locked(state, total_tiles);
+
+    if (state.retx_queued_generation[tile_id] == 0)
+    {
+        while (state.retx_queue.size() >= MAX_RETRANSMIT_QUEUE_DEPTH)
+        {
+            const uint16_t dropped_tile_id = state.retx_queue.front();
+            state.retx_queue.pop_front();
+
+            if (dropped_tile_id < state.retx_queued_generation.size())
+            {
+                state.retx_queued_generation[dropped_tile_id] = 0;
+            }
+        }
+
+        state.retx_queue.push_back(tile_id);
+    }
+
+    if (state.retx_queued_generation[tile_id] < generation)
+    {
+        state.retx_queued_generation[tile_id] = generation;
+    }
+
+    return true;
+}
+
 void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
     if (payload_size < sizeof(wd_tile_summary_payload_header))
     {
@@ -542,32 +607,10 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             return;
         }
 
-        if (state.retx_queued_generation.size() != total_tiles)
-        {
-            state.retx_queued_generation.assign(total_tiles, 0);
-        }
-
-        if (state.retx_last_requested_generation.size() != total_tiles)
-        {
-            state.retx_last_requested_generation.assign(total_tiles, 0);
-        }
-
-        if (state.retx_last_request_ns.size() != total_tiles)
-        {
-            state.retx_last_request_ns.assign(total_tiles, 0);
-        }
-
-        if (state.retx_inflight_generation.size() != total_tiles)
-        {
-            state.retx_inflight_generation.assign(total_tiles, 0);
-        }
-
-        if (state.retx_inflight_since_ns.size() != total_tiles)
-        {
-            state.retx_inflight_since_ns.assign(total_tiles, 0);
-        }
+        ensure_retransmit_tracking_locked(state, total_tiles);
 
         uint64_t newly_queued_from_summary = 0;
+        uint64_t newly_deferred_from_summary = 0;
 
         for (uint16_t i = 0; i < summary.tile_count; ++i)
         {
@@ -580,6 +623,8 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
             if (entry.tile_generation <= state.displayed_generation[entry.tile_id])
             {
+                state.retx_summary_pending_generation[entry.tile_id] = 0;
+                state.retx_summary_pending_since_ns[entry.tile_id]  = 0;
                 continue;
             }
 
@@ -598,31 +643,37 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             }
 
             /*
-             * The wire request is tile-id-only. Keep the generation only as
-             * local suppression metadata so a newer summary can promote an
-             * already-queued tile without allocating another queue entry.
+             * Summaries are sent immediately after tile sends, and TCP can
+             * easily beat the corresponding UDP tile packets to the client.
+             * Treat the first sighting of a newer generation as an in-flight
+             * hint, not proof of loss. Queue repair only after a short local
+             * grace period or from a partial-tile timeout.
              */
-            if (state.retx_queued_generation[entry.tile_id] == 0)
+            if (state.retx_summary_pending_generation[entry.tile_id] < entry.tile_generation)
             {
-                while (state.retx_queue.size() >= MAX_RETRANSMIT_QUEUE_DEPTH)
-                {
-                    const uint16_t dropped_tile_id = state.retx_queue.front();
-                    state.retx_queue.pop_front();
+                state.retx_summary_pending_generation[entry.tile_id] = entry.tile_generation;
+                state.retx_summary_pending_since_ns[entry.tile_id]  = now_ns;
+                newly_deferred_from_summary++;
+                continue;
+            }
 
-                    if (dropped_tile_id < state.retx_queued_generation.size())
-                    {
-                        state.retx_queued_generation[dropped_tile_id] = 0;
-                    }
-                }
+            if (state.retx_summary_pending_since_ns[entry.tile_id] != 0 &&
+                now_ns - state.retx_summary_pending_since_ns[entry.tile_id] < SUMMARY_RETRANSMIT_GRACE_NS)
+            {
+                continue;
+            }
 
-                state.retx_queue.push_back(entry.tile_id);
+            if (queue_retransmit_tile_locked(state, entry.tile_id, entry.tile_generation, total_tiles))
+            {
+                state.retx_summary_pending_generation[entry.tile_id] = 0;
+                state.retx_summary_pending_since_ns[entry.tile_id]  = 0;
                 newly_queued_from_summary++;
             }
+        }
 
-            if (state.retx_queued_generation[entry.tile_id] < entry.tile_generation)
-            {
-                state.retx_queued_generation[entry.tile_id] = entry.tile_generation;
-            }
+        if (newly_deferred_from_summary != 0)
+        {
+            state.stats.summary_retx_tiles_deferred.fetch_add(newly_deferred_from_summary, std::memory_order_relaxed);
         }
 
         if (newly_queued_from_summary != 0)
@@ -634,6 +685,76 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
                 state.stats.summary_to_retx_sum_ns.fetch_add(now_ns - summary.server_timestamp_ns, std::memory_order_relaxed);
             }
         }
+    }
+}
+
+
+void promote_deferred_summary_retransmits_locked(ClientState& state) {
+    if (state.stream_config.mode == ClientStreamMode::Live)
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> config_lock(state.config_mutex);
+    std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
+    std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+
+    const uint16_t total_tiles = state.config.total_tiles;
+    if (total_tiles == 0 || state.displayed_generation.size() != total_tiles)
+    {
+        return;
+    }
+
+    ensure_retransmit_tracking_locked(state, total_tiles);
+
+    const uint64_t now_ns = wd_now_ns();
+    uint64_t newly_queued = 0;
+
+    for (uint16_t tile_id = 0; tile_id < total_tiles; ++tile_id)
+    {
+        const uint64_t generation = state.retx_summary_pending_generation[tile_id];
+        const uint64_t since_ns   = state.retx_summary_pending_since_ns[tile_id];
+
+        if (generation == 0 || since_ns == 0)
+        {
+            continue;
+        }
+
+        if (state.displayed_generation[tile_id] >= generation)
+        {
+            state.retx_summary_pending_generation[tile_id] = 0;
+            state.retx_summary_pending_since_ns[tile_id]  = 0;
+            continue;
+        }
+
+        if (now_ns - since_ns < SUMMARY_RETRANSMIT_GRACE_NS)
+        {
+            continue;
+        }
+
+        if (state.retx_inflight_generation[tile_id] >= generation && state.retx_inflight_since_ns[tile_id] != 0 &&
+            now_ns - state.retx_inflight_since_ns[tile_id] < state.retx_inflight_grace_ns)
+        {
+            continue;
+        }
+
+        if (state.retx_last_requested_generation[tile_id] >= generation && state.retx_last_request_ns[tile_id] != 0 &&
+            now_ns - state.retx_last_request_ns[tile_id] < RETRANSMIT_REREQUEST_INTERVAL_NS)
+        {
+            continue;
+        }
+
+        if (queue_retransmit_tile_locked(state, tile_id, generation, total_tiles))
+        {
+            state.retx_summary_pending_generation[tile_id] = 0;
+            state.retx_summary_pending_since_ns[tile_id]  = 0;
+            newly_queued++;
+        }
+    }
+
+    if (newly_queued != 0)
+    {
+        state.stats.summary_retx_tiles_queued.fetch_add(newly_queued, std::memory_order_relaxed);
     }
 }
 
@@ -787,6 +908,10 @@ void tcp_reader_main(ClientState* state) {
 
 } // namespace
 
+void client_promote_deferred_summary_retransmits(ClientState& state) {
+    promote_deferred_summary_retransmits_locked(state);
+}
+
 bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_port, uint16_t client_udp_port,
                     const ClientStreamConfig& stream_config, uint16_t desired_width, uint16_t desired_height) {
     state.server_host     = server_host ? server_host : "";
@@ -843,6 +968,8 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         state.retx_last_request_ns.assign(state.tile_count(), 0);
         state.retx_inflight_generation.assign(state.tile_count(), 0);
         state.retx_inflight_since_ns.assign(state.tile_count(), 0);
+        state.retx_summary_pending_generation.assign(state.tile_count(), 0);
+        state.retx_summary_pending_since_ns.assign(state.tile_count(), 0);
         state.retx_request_tokens = RETRANSMIT_REQUEST_BURST_TILES;
         state.retx_request_last_refill_ns = wd_now_ns();
     }
@@ -1109,25 +1236,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
 
         const size_t max_entries_this_flush = std::min(MAX_RETRANSMIT_ENTRIES_PER_MESSAGE, request_budget);
 
-        if (state.retx_last_requested_generation.size() != state.config.total_tiles)
-        {
-            state.retx_last_requested_generation.assign(state.config.total_tiles, 0);
-        }
-
-        if (state.retx_last_request_ns.size() != state.config.total_tiles)
-        {
-            state.retx_last_request_ns.assign(state.config.total_tiles, 0);
-        }
-
-        if (state.retx_inflight_generation.size() != state.config.total_tiles)
-        {
-            state.retx_inflight_generation.assign(state.config.total_tiles, 0);
-        }
-
-        if (state.retx_inflight_since_ns.size() != state.config.total_tiles)
-        {
-            state.retx_inflight_since_ns.assign(state.config.total_tiles, 0);
-        }
+        ensure_retransmit_tracking_locked(state, state.config.total_tiles);
 
         size_t pending_to_scan = state.retx_queue.size();
         while (!state.retx_queue.empty() && pending_to_scan > 0 && entries.size() < max_entries_this_flush)
