@@ -258,6 +258,9 @@ struct wd_stats {
     uint64_t xdg_move_invalid_serial;
     uint64_t xdg_resize_invalid_serial;
 
+    uint64_t popup_explicit_scene_trees;
+    uint64_t popup_explicit_scene_tree_failures;
+
     uint64_t cursor_shape_requests;
     uint64_t cursor_set_cursor_requests;
     uint64_t cursor_set_cursor_rejected;

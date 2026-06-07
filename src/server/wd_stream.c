@@ -2115,7 +2115,8 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                            s.pointer_events_dropped != 0 || s.pointer_button_grab_started != 0 ||
                            s.pointer_button_grab_ended != 0 || s.pointer_button_grab_cleared != 0 ||
                            s.pointer_button_grab_surface_destroyed != 0 || s.xdg_move_invalid_serial != 0 ||
-                           s.xdg_resize_invalid_serial != 0 || s.cursor_shape_requests != 0 ||
+                           s.xdg_resize_invalid_serial != 0 || s.popup_explicit_scene_trees != 0 ||
+                           s.popup_explicit_scene_tree_failures != 0 || s.cursor_shape_requests != 0 ||
                            s.cursor_set_cursor_requests != 0 || s.cursor_set_cursor_rejected != 0 ||
                            s.cursor_set_cursor_hidden != 0 || s.cursor_set_cursor_fallback != 0;
 
@@ -2145,6 +2146,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                  "pointer_dropped=%llu pointer_grab_started=%llu pointer_grab_ended=%llu "
                  "pointer_grab_cleared=%llu pointer_grab_surface_destroyed=%llu "
                  "xdg_move_invalid_serial=%llu xdg_resize_invalid_serial=%llu "
+                 "popup_explicit_scene_trees=%llu popup_explicit_scene_tree_failures=%llu "
                  "cursor_shape_req=%llu cursor_set_cursor_req=%llu cursor_set_cursor_rejected=%llu "
                  "cursor_set_cursor_hidden=%llu cursor_set_cursor_fallback=%llu "
                  "input_net_avg_ms=n/a input_queue_avg_ms=%.2f "
@@ -2191,6 +2193,8 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                  (unsigned long long)s.pointer_button_grab_ended, (unsigned long long)s.pointer_button_grab_cleared,
                  (unsigned long long)s.pointer_button_grab_surface_destroyed, (unsigned long long)s.xdg_move_invalid_serial,
                  (unsigned long long)s.xdg_resize_invalid_serial,
+                 (unsigned long long)s.popup_explicit_scene_trees,
+                 (unsigned long long)s.popup_explicit_scene_tree_failures,
                  (unsigned long long)s.cursor_shape_requests, (unsigned long long)s.cursor_set_cursor_requests,
                  (unsigned long long)s.cursor_set_cursor_rejected, (unsigned long long)s.cursor_set_cursor_hidden,
                  (unsigned long long)s.cursor_set_cursor_fallback,
