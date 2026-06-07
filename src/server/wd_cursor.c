@@ -169,6 +169,8 @@ static void handle_cursor_shape_request(struct wl_listener* listener, void* data
      * WayDisplay, relay the semantic cursor shape to the SDL viewer so the
      * user's host cursor changes.
      */
+    server->net.stats.cursor_shape_requests++;
+
     uint16_t shape     = wd_shape_from_wp_shape(event->shape);
     bool     changed   = server->cursor_shape != shape;
     wd_cursor_set_shape(server, shape);
@@ -179,8 +181,56 @@ static void handle_cursor_shape_request(struct wl_listener* listener, void* data
     }
 }
 
+
+static bool wd_cursor_request_client_has_pointer_focus(struct wd_server* server, struct wlr_seat_client* seat_client) {
+    if (!server || !server->seat || !seat_client)
+    {
+        return false;
+    }
+
+    struct wlr_seat_client* focused_client = server->seat->pointer_state.focused_client;
+    return focused_client && focused_client->client == seat_client->client;
+}
+
+static void handle_request_set_cursor(struct wl_listener* listener, void* data) {
+    struct wd_server*                                server = wl_container_of(listener, server, request_set_cursor);
+    struct wlr_seat_pointer_request_set_cursor_event* event = data;
+
+    if (!server || !event)
+    {
+        return;
+    }
+
+    server->net.stats.cursor_set_cursor_requests++;
+
+    if (!wd_cursor_request_client_has_pointer_focus(server, event->seat_client))
+    {
+        server->net.stats.cursor_set_cursor_rejected++;
+        WD_LOG_DEBUG("WayDisplay: rejected wl_pointer.set_cursor from unfocused client");
+        return;
+    }
+
+    if (!event->surface)
+    {
+        server->net.stats.cursor_set_cursor_hidden++;
+        wd_cursor_set_shape(server, WD_CURSOR_SHAPE_HIDDEN);
+        return;
+    }
+
+    /*
+     * Classic wl_pointer.set_cursor carries an arbitrary client-supplied
+     * surface. WayDisplay does not yet transport cursor-surface pixels to the
+     * SDL viewer, so accept the request for focus/serial correctness and use a
+     * neutral host cursor instead of leaving a stale compositor-chosen shape.
+     * A later cursor-image protocol can replace this fallback with the actual
+     * surface contents and hotspot.
+     */
+    server->net.stats.cursor_set_cursor_fallback++;
+    wd_cursor_set_shape(server, WD_CURSOR_SHAPE_DEFAULT);
+}
+
 bool wd_cursor_init(struct wd_server* server) {
-    if (!server || !server->display)
+    if (!server || !server->display || !server->seat)
     {
         return false;
     }
@@ -198,7 +248,11 @@ bool wd_cursor_init(struct wd_server* server) {
     server->request_cursor_shape.notify = handle_cursor_shape_request;
     wl_signal_add(&server->cursor_shape_manager->events.request_set_shape, &server->request_cursor_shape);
 
-    WD_LOG_DEBUG("WayDisplay: cursor-shape enabled");
+    wl_list_init(&server->request_set_cursor.link);
+    server->request_set_cursor.notify = handle_request_set_cursor;
+    wl_signal_add(&server->seat->events.request_set_cursor, &server->request_set_cursor);
+
+    WD_LOG_DEBUG("WayDisplay: cursor-shape and wl_pointer.set_cursor enabled");
     return true;
 }
 
@@ -209,5 +263,6 @@ void wd_cursor_destroy(struct wd_server* server) {
     }
 
     remove_listener_if_linked(&server->request_cursor_shape);
+    remove_listener_if_linked(&server->request_set_cursor);
     server->cursor_shape_manager = NULL;
 }

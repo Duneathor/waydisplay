@@ -685,6 +685,13 @@ void apply_pending_cursor_shape(ClientState& state) {
         return;
     }
 
+    if (shape == WD_CURSOR_SHAPE_HIDDEN)
+    {
+        SDL_ShowCursor(SDL_DISABLE);
+        current_shape = shape;
+        return;
+    }
+
     if (!cursors[shape])
     {
         cursors[shape] = SDL_CreateSystemCursor(sdl_cursor_for_wd_shape(shape));

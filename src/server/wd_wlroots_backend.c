@@ -140,11 +140,6 @@ bool wd_wlroots_init(struct wd_server* server) {
         return false;
     }
 
-    if (!wd_cursor_init(server))
-    {
-        return false;
-    }
-
     if (!wd_xdg_decoration_init(server))
     {
         return false;
@@ -157,6 +152,11 @@ bool wd_wlroots_init(struct wd_server* server) {
     }
 
     wlr_seat_set_capabilities(server->seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
+
+    if (!wd_cursor_init(server))
+    {
+        return false;
+    }
 
     if (!wd_keyboard_shortcuts_inhibit_init(server))
     {

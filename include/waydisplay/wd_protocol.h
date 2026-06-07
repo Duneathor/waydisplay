@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 7u
+#define WD_PROTOCOL_VERSION 8u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -103,6 +103,7 @@ enum wd_cursor_shape {
     WD_CURSOR_SHAPE_NESW_RESIZE = 7,
     WD_CURSOR_SHAPE_WAIT        = 8,
     WD_CURSOR_SHAPE_NOT_ALLOWED = 9,
+    WD_CURSOR_SHAPE_HIDDEN      = 10,
 
     WD_CURSOR_SHAPE_COUNT,
 };

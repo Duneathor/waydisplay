@@ -1647,13 +1647,39 @@ static void view_handle_set_title(struct wl_listener* listener, void* data) {
     WD_LOG_DEBUG("WayDisplay: toplevel metadata app_id=%s title=%s", view_app_id(view), view_title(view));
 }
 
-static void view_handle_request_move(struct wl_listener* listener, void* data) {
-    (void)data;
-
-    struct wd_view* view = wl_container_of(listener, view, request_move);
-
-    if (!view || !view->mapped)
+static bool view_request_has_valid_pointer_grab(struct wd_view* view, struct wlr_seat_client* seat_client, uint32_t serial) {
+    if (!view || !view->server || !view->server->seat || !seat_client || !view->mapped)
     {
+        return false;
+    }
+
+    if (seat_client->seat != view->server->seat)
+    {
+        return false;
+    }
+
+    struct wlr_surface* surface = view_root_surface(view);
+    if (!surface)
+    {
+        return false;
+    }
+
+    return wlr_seat_validate_pointer_grab_serial(view->server->seat, surface, serial);
+}
+
+static void view_handle_request_move(struct wl_listener* listener, void* data) {
+    struct wd_view*                     view  = wl_container_of(listener, view, request_move);
+    struct wlr_xdg_toplevel_move_event* event = data;
+
+    if (!view || !view->mapped || !event)
+    {
+        return;
+    }
+
+    if (!view_request_has_valid_pointer_grab(view, event->seat, event->serial))
+    {
+        WD_LOG_DEBUG("WayDisplay: ignoring xdg_toplevel.request_move with invalid pointer grab serial=%u", event->serial);
+        view->server->net.stats.xdg_move_invalid_serial++;
         return;
     }
 
@@ -1667,6 +1693,13 @@ static void view_handle_request_resize(struct wl_listener* listener, void* data)
 
     if (!view || !view->mapped || !event || event->edges == WLR_EDGE_NONE)
     {
+        return;
+    }
+
+    if (!view_request_has_valid_pointer_grab(view, event->seat, event->serial))
+    {
+        WD_LOG_DEBUG("WayDisplay: ignoring xdg_toplevel.request_resize with invalid pointer grab serial=%u edges=%u", event->serial, event->edges);
+        view->server->net.stats.xdg_resize_invalid_serial++;
         return;
     }
 

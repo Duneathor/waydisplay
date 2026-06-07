@@ -2111,7 +2111,10 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                            s.full_frame_catchup_tiles_sent != 0 ||
                            s.key_events_rx != 0 || s.key_events_injected != 0 ||
                            s.key_events_dropped != 0 || s.pointer_events_rx != 0 || s.pointer_events_injected != 0 ||
-                           s.pointer_events_dropped != 0;
+                           s.pointer_events_dropped != 0 || s.xdg_move_invalid_serial != 0 ||
+                           s.xdg_resize_invalid_serial != 0 || s.cursor_shape_requests != 0 ||
+                           s.cursor_set_cursor_requests != 0 || s.cursor_set_cursor_rejected != 0 ||
+                           s.cursor_set_cursor_hidden != 0 || s.cursor_set_cursor_fallback != 0;
 
     if (!useful_activity)
     {
@@ -2136,7 +2139,10 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                  "full_frame_started=%llu full_frame_completed=%llu full_frame_tiles_sent=%llu "
                  "full_frame_avg_ms=%.2f "
                  "key_rx=%llu key_injected=%llu key_dropped=%llu pointer_rx=%llu pointer_injected=%llu "
-                 "pointer_dropped=%llu input_net_avg_ms=n/a input_queue_avg_ms=%.2f "
+                 "pointer_dropped=%llu xdg_move_invalid_serial=%llu xdg_resize_invalid_serial=%llu "
+                 "cursor_shape_req=%llu cursor_set_cursor_req=%llu cursor_set_cursor_rejected=%llu "
+                 "cursor_set_cursor_hidden=%llu cursor_set_cursor_fallback=%llu "
+                 "input_net_avg_ms=n/a input_queue_avg_ms=%.2f "
                  "input_to_summary_avg_ms=%.2f input_to_first_fresh_tile_avg_ms=%.2f",
                  wd_stream_mode_name(effective_mode), wd_stream_mode_name(requested_mode),
                  (unsigned)target_fps, (unsigned)effective_target_fps,
@@ -2175,7 +2181,12 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                  wd_avg_ms(s.full_frame_catchup_duration_sum_ns, s.full_frame_catchup_completed),
                  (unsigned long long)s.key_events_rx, (unsigned long long)s.key_events_injected, (unsigned long long)s.key_events_dropped,
                  (unsigned long long)s.pointer_events_rx, (unsigned long long)s.pointer_events_injected,
-                 (unsigned long long)s.pointer_events_dropped, wd_avg_ms(s.input_queue_latency_sum_ns, s.input_queue_latency_samples),
+                 (unsigned long long)s.pointer_events_dropped, (unsigned long long)s.xdg_move_invalid_serial,
+                 (unsigned long long)s.xdg_resize_invalid_serial,
+                 (unsigned long long)s.cursor_shape_requests, (unsigned long long)s.cursor_set_cursor_requests,
+                 (unsigned long long)s.cursor_set_cursor_rejected, (unsigned long long)s.cursor_set_cursor_hidden,
+                 (unsigned long long)s.cursor_set_cursor_fallback,
+                 wd_avg_ms(s.input_queue_latency_sum_ns, s.input_queue_latency_samples),
                  wd_avg_ms(s.input_to_summary_sum_ns, s.input_to_summary_samples),
                  wd_avg_ms(s.input_to_first_fresh_tile_sum_ns, s.input_to_first_fresh_tile_samples));
 }

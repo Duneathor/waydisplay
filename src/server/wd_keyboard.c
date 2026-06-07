@@ -171,13 +171,14 @@ void wd_keyboard_drain_and_inject(struct wd_server* server) {
         return;
     }
 
+    /*
+     * Keyboard enter is a focus-transition event. Re-sending it before every
+     * input batch can create duplicate enter/leave traffic and can expose stale
+     * held-key state if focus changes while keys are down. wd_scene_focus_view()
+     * owns keyboard-enter delivery; normal batches only update modifiers and
+     * keys for the already-focused surface.
+     */
     wlr_seat_set_keyboard(server->seat, server->keyboard);
-
-    if (server->focused_surface)
-    {
-        wlr_seat_keyboard_notify_enter(server->seat, server->focused_surface, server->keyboard->keycodes, server->keyboard->num_keycodes,
-                                       &server->keyboard->modifiers);
-    }
 
     for (size_t i = 0; i < count; ++i)
     {

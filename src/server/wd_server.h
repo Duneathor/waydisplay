@@ -247,6 +247,15 @@ struct wd_stats {
     uint64_t pointer_events_injected;
     uint64_t pointer_events_dropped;
 
+    uint64_t xdg_move_invalid_serial;
+    uint64_t xdg_resize_invalid_serial;
+
+    uint64_t cursor_shape_requests;
+    uint64_t cursor_set_cursor_requests;
+    uint64_t cursor_set_cursor_rejected;
+    uint64_t cursor_set_cursor_hidden;
+    uint64_t cursor_set_cursor_fallback;
+
     uint64_t input_net_latency_samples;
     uint64_t input_net_latency_sum_ns;
     uint64_t input_queue_latency_samples;
@@ -478,6 +487,7 @@ struct wd_server {
     struct wl_listener request_activate;
     struct wl_listener set_xdg_toplevel_icon;
     struct wl_listener request_cursor_shape;
+    struct wl_listener request_set_cursor;
     struct wl_listener new_keyboard_shortcuts_inhibitor;
     struct wl_listener keyboard_shortcuts_inhibit_manager_destroy;
     struct wl_listener output_frame;
