@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 8u
+#define WD_PROTOCOL_VERSION 9u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -302,6 +302,7 @@ struct wd_pointer_event_payload {
 };
 
 struct wd_udp_tile_packet_header {
+    uint32_t session_id;
     uint16_t tile_id;
     uint16_t tile_pkt_count;
     uint16_t tile_pkt_id;
@@ -397,7 +398,7 @@ WD_PACKED_END
 
 #if defined(__cplusplus)
 static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
-static_assert(sizeof(struct wd_udp_tile_packet_header) == 36, "unexpected wd_udp_tile_packet_header size");
+static_assert(sizeof(struct wd_udp_tile_packet_header) == 40, "unexpected wd_udp_tile_packet_header size");
 static_assert(sizeof(struct wd_client_hello_payload) == 16, "unexpected wd_client_hello_payload size");
 static_assert(sizeof(struct wd_pointer_event_payload) == 36, "unexpected wd_pointer_event_payload size");
 static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mtu_probe_start_payload size");
@@ -413,7 +414,7 @@ static_assert(sizeof(struct wd_cursor_shape_payload) == 8, "unexpected wd_cursor
 static_assert(sizeof(struct wd_display_resize_payload) == 8, "unexpected wd_display_resize_payload size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
-_Static_assert(sizeof(struct wd_udp_tile_packet_header) == 36, "unexpected wd_udp_tile_packet_header size");
+_Static_assert(sizeof(struct wd_udp_tile_packet_header) == 40, "unexpected wd_udp_tile_packet_header size");
 _Static_assert(sizeof(struct wd_client_hello_payload) == 16, "unexpected wd_client_hello_payload size");
 _Static_assert(sizeof(struct wd_pointer_event_payload) == 36, "unexpected wd_pointer_event_payload size");
 _Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mtu_probe_start_payload size");

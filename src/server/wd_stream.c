@@ -918,6 +918,7 @@ static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_
         struct wd_udp_tile_packet_header h;
         memset(&h, 0, sizeof(h));
 
+        h.session_id           = net->session_id;
         h.tile_id              = tile_id;
         h.tile_pkt_count       = packet_count;
         h.tile_pkt_id          = packet_id;

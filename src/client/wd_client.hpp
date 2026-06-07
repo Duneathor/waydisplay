@@ -37,6 +37,8 @@ struct ClientStats {
     std::atomic<uint64_t> last_udp_packet_rx_ns{0};
     std::atomic<uint64_t> last_udp_interarrival_ns{0};
     std::atomic<uint64_t> udp_ignored_invalid{0};
+    std::atomic<uint64_t> udp_ignored_probe{0};
+    std::atomic<uint64_t> udp_ignored_stale_session{0};
     std::atomic<uint64_t> udp_ignored_old_generation{0};
     std::atomic<uint64_t> udp_tiles_completed{0};
     std::atomic<uint64_t> udp_completed_compressed_bytes{0};

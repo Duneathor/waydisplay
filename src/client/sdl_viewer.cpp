@@ -765,6 +765,8 @@ void print_client_stats(ClientState& state) {
     const uint64_t udp_jitter_sum_ns        = take_stat(state.stats.udp_interarrival_jitter_sum_ns);
     const uint64_t udp_interarrival_max_ns  = take_stat(state.stats.udp_interarrival_max_ns);
     const uint64_t invalid                  = take_stat(state.stats.udp_ignored_invalid);
+    const uint64_t ignored_probe            = take_stat(state.stats.udp_ignored_probe);
+    const uint64_t stale_session            = take_stat(state.stats.udp_ignored_stale_session);
     const uint64_t old_gen                  = take_stat(state.stats.udp_ignored_old_generation);
     const uint64_t completed                = take_stat(state.stats.udp_tiles_completed);
     const uint64_t completed_compressed     = take_stat(state.stats.udp_completed_compressed_bytes);
@@ -826,12 +828,14 @@ void print_client_stats(ClientState& state) {
         }
     }
 
-    const bool udp_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0;
+    const bool udp_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 ||
+                              ignored_probe != 0 || stale_session != 0;
     if (udp_activity)
     {
-        WD_LOG_DEBUG("[client udp/s] pkts=%llu kib=%.1f completed=%llu invalid=%llu old_gen=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f kib_per_tile=%.2f compressed_kib_per_tile=%.2f pkts_per_tile=%.2f",
+        WD_LOG_DEBUG("[client udp/s] pkts=%llu kib=%.1f completed=%llu invalid=%llu probe=%llu stale_session=%llu old_gen=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f kib_per_tile=%.2f compressed_kib_per_tile=%.2f pkts_per_tile=%.2f",
                      static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0,
                      static_cast<unsigned long long>(completed), static_cast<unsigned long long>(invalid),
+                     static_cast<unsigned long long>(ignored_probe), static_cast<unsigned long long>(stale_session),
                      static_cast<unsigned long long>(old_gen), avg_ms(udp_interarrival_sum_ns, udp_interarrival_samples),
                      avg_ms(udp_jitter_sum_ns, udp_jitter_samples), static_cast<double>(udp_interarrival_max_ns) / 1000000.0,
                      completed ? (static_cast<double>(udp_bytes) / 1024.0) / static_cast<double>(completed) : 0.0,
@@ -947,6 +951,33 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
         if (n == 0)
         {
             return true;
+        }
+
+        if (static_cast<size_t>(n) < sizeof(wd_udp_tile_packet_header))
+        {
+            state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+
+        wd_udp_tile_packet_header udp_header{};
+        std::memcpy(&udp_header, state.udp_recv_buffer.data(), sizeof(udp_header));
+
+        if (udp_header.tile_id == WD_UDP_TILE_ID_MTU_PROBE || udp_header.tile_id == WD_UDP_TILE_ID_THROUGHPUT_PROBE)
+        {
+            state.stats.udp_ignored_probe.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+
+        uint32_t session_id = 0;
+        {
+            std::lock_guard<std::mutex> lock(state.config_mutex);
+            session_id = state.config.session_id;
+        }
+
+        if (session_id == 0 || udp_header.session_id != session_id)
+        {
+            state.stats.udp_ignored_stale_session.fetch_add(1, std::memory_order_relaxed);
+            continue;
         }
 
         const uint64_t packet_rx_ns = wd_now_ns();

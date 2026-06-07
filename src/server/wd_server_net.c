@@ -315,6 +315,7 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
 
         struct wd_udp_tile_packet_header* h = (struct wd_udp_tile_packet_header*)packet;
 
+        h->session_id           = net->session_id;
         h->tile_id              = WD_UDP_TILE_ID_MTU_PROBE;
         h->tile_pkt_count       = probe_count;
         h->tile_pkt_id          = i;
@@ -430,6 +431,7 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
 
     memset(packet, 0, packet_size);
     struct wd_udp_tile_packet_header* h = (struct wd_udp_tile_packet_header*)packet;
+    h->session_id           = net->session_id;
     h->tile_id              = WD_UDP_TILE_ID_THROUGHPUT_PROBE;
     h->tile_pkt_count       = (uint16_t)target_packets;
     h->payload_size         = udp_payload_target;

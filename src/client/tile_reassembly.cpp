@@ -185,6 +185,11 @@ bool enqueue_retx_for_partial_timeout(ClientState& state, uint16_t tile_id, uint
 
 bool packet_header_valid(const wd_udp_tile_packet_header& header, size_t packet_size, uint16_t udp_payload_target,
                          const wd_server_config_payload& config) {
+    if (header.session_id != config.session_id)
+    {
+        return false;
+    }
+
     if (header.tile_id >= config.total_tiles)
     {
         return false;

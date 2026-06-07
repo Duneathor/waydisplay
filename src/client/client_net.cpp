@@ -247,7 +247,7 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
             continue;
         }
 
-        if (h.tile_generation != start.session_id || h.tile_pkt_count != start.probe_count || h.tile_pkt_id >= start.probe_count)
+        if (h.session_id != start.session_id || h.tile_pkt_count != start.probe_count || h.tile_pkt_id >= start.probe_count)
         {
             continue;
         }
@@ -367,7 +367,7 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
             continue;
         }
 
-        if (h.tile_generation != start.session_id || h.tile_pkt_count != start.probe_count || h.tile_pkt_id >= start.probe_count)
+        if (h.session_id != start.session_id || h.tile_pkt_count != start.probe_count || h.tile_pkt_id >= start.probe_count)
         {
             continue;
         }
