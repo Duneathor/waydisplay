@@ -493,7 +493,7 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
 
     free(payload);
 
-    WD_LOG_INFO("WayDisplay: limited-mode UDP byte budget selected by throughput probe: %llu KiB/s", (unsigned long long)(limited_rate / 1024ull));
+    WD_LOG_INFO("WayDisplay: adaptive UDP byte budget selected by throughput probe: %llu KiB/s", (unsigned long long)(limited_rate / 1024ull));
 
     return limited_rate;
 }
@@ -923,11 +923,12 @@ void* wd_net_thread_main(void* arg) {
 
         pthread_mutex_unlock(&net->lock);
 
-        WD_LOG_INFO("WayDisplay: client connected; UDP port=%u input_channel=%s selection_channel=%s display=%ux%u tile=%ux%u stream_mode=%u fps=%u requested_limited_udp_kib_per_sec=%u limited_udp_kib_per_sec=%llu",
+        WD_LOG_INFO("WayDisplay: client connected; UDP port=%u input_channel=%s selection_channel=%s display=%ux%u tile=%ux%u fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
                     hello.client_udp_port, input_tcp_fd >= 0 ? "yes" : "no", selection_tcp_fd >= 0 ? "yes" : "no",
-                    server->display_width, server->display_height, server->tile_width, server->tile_height, hello.stream_mode,
+                    server->display_width, server->display_height, server->tile_width, server->tile_height,
                     hello.target_fps, hello.limited_udp_kib_per_second,
                     (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
+
 
         while (net->running)
         {
@@ -1095,14 +1096,7 @@ void* wd_net_thread_main(void* arg) {
                     break;
                 }
 
-                if (type == WD_MSG_RETRANSMIT_REQUEST && payload_size >= sizeof(struct wd_retransmit_request_payload_header) &&
-                    net->stream_policy.mode == WD_STREAM_MODE_LIVE)
-                {
-                    pthread_mutex_lock(&net->lock);
-                    net->stats.retx_req_ignored_live++;
-                    pthread_mutex_unlock(&net->lock);
-                }
-                else if (type == WD_MSG_RETRANSMIT_REQUEST && payload_size >= sizeof(struct wd_retransmit_request_payload_header))
+                if (type == WD_MSG_RETRANSMIT_REQUEST && payload_size >= sizeof(struct wd_retransmit_request_payload_header))
                 {
                     struct wd_retransmit_request_payload_header rh;
                     memcpy(&rh, payload, sizeof(rh));
@@ -1214,7 +1208,7 @@ void* wd_net_thread_main(void* arg) {
                         }
                         else
                         {
-                            WD_LOG_ERROR("WayDisplay: rejected live display resize to %ux%u", resize.width, resize.height);
+                            WD_LOG_ERROR("WayDisplay: rejected display resize to %ux%u", resize.width, resize.height);
                         }
                     }
                 }

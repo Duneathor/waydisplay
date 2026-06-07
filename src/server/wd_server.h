@@ -304,8 +304,6 @@ struct wd_stats {
 };
 
 struct wd_stream_policy {
-    uint16_t requested_mode;
-    uint16_t mode;
     uint16_t target_fps;
     uint16_t effective_target_fps;
 

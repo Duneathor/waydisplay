@@ -13,17 +13,9 @@
 
 namespace waydisplay {
 
-enum class ClientStreamMode : uint16_t {
-    Full    = WD_STREAM_MODE_FULL,
-    Partial = WD_STREAM_MODE_PARTIAL,
-    Limited = WD_STREAM_MODE_LIMITED,
-    Live    = WD_STREAM_MODE_LIVE,
-};
-
 struct ClientStreamConfig {
-    ClientStreamMode mode                       = ClientStreamMode::Partial;
-    uint16_t         target_fps                 = WD_CLIENT_DEFAULT_TARGET_FPS;
-    uint32_t         limited_udp_kib_per_second = 0;
+    uint16_t target_fps                 = WD_CLIENT_DEFAULT_TARGET_FPS;
+    uint32_t limited_udp_kib_per_second = 0;
 };
 
 struct ClientStats {

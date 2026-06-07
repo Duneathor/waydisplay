@@ -15,24 +15,6 @@
 
 #define WD_UDP_SEND_PRESSURE_LOG_INTERVAL_NS 1000000000ull
 
-static const char* wd_stream_mode_name(uint16_t mode) {
-    switch (mode)
-    {
-    case WD_STREAM_MODE_FULL:
-        return "full";
-    case WD_STREAM_MODE_PARTIAL:
-        return "partial";
-    case WD_STREAM_MODE_LIMITED:
-        return "limited";
-    case WD_STREAM_MODE_LIVE:
-        return "live";
-    default:
-        return "unknown";
-    }
-}
-
-
-
 static void wd_stream_note_input_to_first_fresh_tile_locked(struct wd_net_state* net, uint64_t tile_send_ns) {
     if (!net || !net->input_since_last_fresh_tile || net->last_input_inject_ns == 0 || tile_send_ns < net->last_input_inject_ns)
     {
@@ -149,8 +131,6 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
 
     memset(policy, 0, sizeof(*policy));
 
-    policy->requested_mode               = WD_STREAM_MODE_PARTIAL;
-    policy->mode                         = WD_STREAM_MODE_PARTIAL;
     policy->target_fps                   = WD_DEFAULT_PARTIAL_FPS;
     policy->effective_target_fps         = WD_DEFAULT_PARTIAL_FPS;
     policy->throttle_bad_windows         = 0;
@@ -170,14 +150,6 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
         return;
     }
 
-    uint16_t mode = hello->stream_mode;
-
-    if (mode != WD_STREAM_MODE_FULL && mode != WD_STREAM_MODE_PARTIAL && mode != WD_STREAM_MODE_LIMITED &&
-        mode != WD_STREAM_MODE_LIVE)
-    {
-        mode = WD_STREAM_MODE_PARTIAL;
-    }
-
     uint16_t fps = hello->target_fps;
     if (fps == 0)
     {
@@ -189,14 +161,13 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
         fps = WD_MAX_REASONABLE_FPS;
     }
 
-    policy->requested_mode       = mode;
-    policy->mode                 = mode;
     policy->target_fps           = fps;
     policy->effective_target_fps = fps;
     policy->throttle_bad_windows     = 0;
     policy->frame_rate_good_windows  = 0;
     policy->throttle_good_windows    = 0;
     policy->limited_rate_good_windows = 0;
+    policy->client_completion_low_windows = 0;
     if (policy->limited_udp_bytes_per_second == 0)
     {
         policy->limited_udp_bytes_per_second = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
@@ -231,6 +202,7 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     wd_stream_policy_reset_tokens(policy);
 }
 
+
 void wd_stream_policy_set_limited_udp_byte_rate(struct wd_stream_policy* policy, uint64_t bytes_per_second) {
     if (!policy)
     {
@@ -245,51 +217,6 @@ void wd_stream_policy_set_limited_udp_byte_rate(struct wd_stream_policy* policy,
     policy->limited_rate_good_windows       = 0;
     policy->limited_udp_byte_tokens         = 0.0;
     policy->last_limited_udp_byte_refill_ns = 0;
-}
-
-static void wd_stream_policy_set_effective_mode_locked(struct wd_stream_policy* policy, uint16_t mode) {
-    if (!policy || policy->mode == mode)
-    {
-        return;
-    }
-
-    uint16_t old_mode = policy->mode;
-
-    policy->mode                  = mode;
-    policy->throttle_bad_windows  = 0;
-    policy->throttle_good_windows = 0;
-    policy->frame_rate_good_windows = 0;
-    wd_stream_policy_reset_tokens(policy);
-
-    WD_LOG_INFO("WayDisplay: adaptive stream throttle: %s -> %s requested=%s limited_udp_kib_per_sec=%llu",
-                wd_stream_mode_name(old_mode), wd_stream_mode_name(policy->mode), wd_stream_mode_name(policy->requested_mode),
-                (unsigned long long)(policy->limited_udp_bytes_per_second / 1024ull));
-}
-
-static uint16_t wd_stream_next_lower_mode(uint16_t mode) {
-    switch (mode)
-    {
-    case WD_STREAM_MODE_FULL:
-        return WD_STREAM_MODE_PARTIAL;
-    case WD_STREAM_MODE_PARTIAL:
-        return WD_STREAM_MODE_LIMITED;
-    default:
-        return mode;
-    }
-}
-
-static uint16_t wd_stream_next_higher_mode(uint16_t mode, uint16_t requested_mode) {
-    if (mode == WD_STREAM_MODE_LIMITED && requested_mode <= WD_STREAM_MODE_PARTIAL)
-    {
-        return WD_STREAM_MODE_PARTIAL;
-    }
-
-    if (mode == WD_STREAM_MODE_PARTIAL && requested_mode == WD_STREAM_MODE_FULL)
-    {
-        return WD_STREAM_MODE_FULL;
-    }
-
-    return mode;
 }
 
 static uint64_t wd_stream_policy_limited_floor(const struct wd_stream_policy* policy) {
@@ -446,7 +373,7 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
 
 static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool bad_window,
                                                         bool send_pressure, bool client_completion_low) {
-    if (!policy || !stats || policy->mode != WD_STREAM_MODE_LIMITED)
+    if (!policy || !stats)
     {
         return;
     }
@@ -508,7 +435,7 @@ static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy*
 }
 
 static void wd_stream_policy_update_adaptive_locked(struct wd_stream_policy* policy, struct wd_stats* stats) {
-    if (!policy || !stats || policy->requested_mode == WD_STREAM_MODE_LIVE)
+    if (!policy || !stats)
     {
         return;
     }
@@ -542,68 +469,19 @@ static void wd_stream_policy_update_adaptive_locked(struct wd_stream_policy* pol
     }
 
     bool client_completion_low = policy->client_completion_low_windows >= WD_LIMITED_RATE_CLIENT_COMPLETION_BAD_WINDOWS;
-
     bool client_repair_pressure = stats->client_partial_tiles_timed_out != 0;
-
-    /*
-     * Retransmit requests and repair ratio are demand signals, not congestion
-     * signals by themselves. With fast summaries, TCP often advertises a tile
-     * generation before the corresponding UDP packets arrive; treating those
-     * requests as congestion causes a downward ratchet even on a stable link.
-     * Only throttle on actual UDP send pressure or client-observed completion
-     * problems such as partial tile timeouts / low completed-packet ratio.
-     */
     bool bad_window = send_pressure || client_completion_low || client_repair_pressure;
 
+    /*
+     * Stream modes were removed: every session now runs a single adaptive
+     * max-rate policy. Start at the probed/capped byte ceiling and adjust the
+     * byte budget plus render cadence from real pressure/completion feedback;
+     * never downgrade into a separate partial/limited/live state.
+     */
     wd_stream_policy_update_frame_rate_locked(policy, stats, bad_window, send_pressure, client_completion_low);
-
-    if (policy->mode == WD_STREAM_MODE_LIMITED)
-    {
-        wd_stream_policy_update_limited_rate_locked(policy, stats, bad_window, send_pressure, client_completion_low);
-        if (policy->requested_mode == WD_STREAM_MODE_LIMITED)
-        {
-            return;
-        }
-        if (bad_window)
-        {
-            return;
-        }
-    }
-    else if (bad_window)
-    {
-        policy->limited_rate_good_windows = 0;
-        policy->throttle_bad_windows++;
-
-        uint32_t downgrade_windows = send_pressure ? WD_THROTTLE_PRESSURE_DOWNGRADE_WINDOWS : WD_THROTTLE_BAD_WINDOWS_TO_DOWNGRADE;
-        if (policy->throttle_bad_windows >= downgrade_windows)
-        {
-            uint16_t lower_mode = wd_stream_next_lower_mode(policy->mode);
-            if (lower_mode != policy->mode)
-            {
-                wd_stream_policy_set_effective_mode_locked(policy, lower_mode);
-            }
-        }
-
-        return;
-    }
-    else
-    {
-        policy->throttle_bad_windows = 0;
-    }
-
-    if (policy->mode != policy->requested_mode)
-    {
-        policy->throttle_good_windows++;
-        if (policy->throttle_good_windows >= WD_THROTTLE_GOOD_WINDOWS_TO_UPGRADE)
-        {
-            uint16_t higher_mode = wd_stream_next_higher_mode(policy->mode, policy->requested_mode);
-            if (higher_mode != policy->mode)
-            {
-                wd_stream_policy_set_effective_mode_locked(policy, higher_mode);
-            }
-        }
-    }
+    wd_stream_policy_update_limited_rate_locked(policy, stats, bad_window, send_pressure, client_completion_low);
 }
+
 
 bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_ns) {
     if (!server)
@@ -633,47 +511,15 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
 
     bool should = false;
 
-    switch (policy->mode)
+    uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
+    uint64_t interval_ns = 1000000000ull / fps;
+
+    if (policy->last_frame_send_ns == 0 || now_ns - policy->last_frame_send_ns >= interval_ns || full_frame_needed)
     {
-    case WD_STREAM_MODE_FULL:
-        should = true;
-        break;
-
-    case WD_STREAM_MODE_PARTIAL:
-    case WD_STREAM_MODE_LIVE: {
-        uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
-
-        uint64_t interval_ns = 1000000000ull / fps;
-
-        if (policy->last_frame_send_ns == 0 || now_ns - policy->last_frame_send_ns >= interval_ns || full_frame_needed)
-        {
-            policy->last_frame_send_ns = now_ns;
-            should                     = true;
-        }
-
-        break;
+        policy->last_frame_send_ns = now_ns;
+        should                     = true;
     }
 
-    case WD_STREAM_MODE_LIMITED:
-    /*
-     * Limited mode is byte-budget based, but we still need to render
-     * periodically so we can discover changed tiles.
-     *
-     * Use a 30fps discovery cadence by default.
-     */
-    default: {
-        uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
-        uint64_t interval_ns = 1000000000ull / fps;
-
-        if (policy->last_frame_send_ns == 0 || now_ns - policy->last_frame_send_ns >= interval_ns || full_frame_needed)
-        {
-            policy->last_frame_send_ns = now_ns;
-            should                     = true;
-        }
-
-        break;
-    }
-    }
 
     pthread_mutex_unlock(&net->lock);
 
@@ -809,7 +655,7 @@ static uint32_t wd_stream_tile_wire_bytes(uint32_t compressed_size, uint16_t udp
 }
 
 static uint64_t wd_stream_policy_limited_byte_budget_locked(struct wd_stream_policy* policy, uint64_t now_ns) {
-    if (!policy || policy->mode != WD_STREAM_MODE_LIMITED)
+    if (!policy)
     {
         return UINT64_MAX;
     }
@@ -841,7 +687,7 @@ static uint64_t wd_stream_policy_limited_byte_budget_locked(struct wd_stream_pol
 }
 
 static void wd_stream_policy_consume_limited_bytes_locked(struct wd_stream_policy* policy, uint32_t bytes) {
-    if (!policy || policy->mode != WD_STREAM_MODE_LIMITED || bytes == 0)
+    if (!policy || bytes == 0)
     {
         return;
     }
@@ -1580,29 +1426,6 @@ static void wd_detect_dirty_tiles_into_queue_locked(struct wd_server* server) {
     wd_clear_damage_tiles(server);
 }
 
-static void wd_stream_drop_retransmit_queue_locked(struct wd_server* server) {
-    if (!server)
-    {
-        return;
-    }
-
-    struct wd_net_state* net = &server->net;
-
-    if (net->retransmit_queued)
-    {
-        memset(net->retransmit_queued, 0, server->total_tiles * sizeof(*net->retransmit_queued));
-    }
-    if (net->retransmit_queue_enqueued_ns)
-    {
-        memset(net->retransmit_queue_enqueued_ns, 0, server->total_tiles * sizeof(*net->retransmit_queue_enqueued_ns));
-    }
-    if (net->retransmit_requested_generation)
-    {
-        memset(net->retransmit_requested_generation, 0, server->total_tiles * sizeof(*net->retransmit_requested_generation));
-    }
-    net->retransmit_queue_count = 0;
-}
-
 bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     struct wd_net_state* net = &server->net;
 
@@ -1642,7 +1465,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
      * Phase 1:
      * Progressive full-frame catch-up for new/reconnected clients.
      *
-     * This sends each tile once across multiple limited-mode passes. The
+     * This sends each tile once across multiple adaptive-rate passes. The
      * picker is priority-aware, so reconnect catch-up can paint pointer-adjacent
      * or already-cheap cached tiles before less useful background tiles.
      */
@@ -1792,19 +1615,13 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
     /*
      * Phase 2:
-     * Normal mode. Detect new dirty work and send fresh/latest tiles before
-     * repair traffic. Retransmits are useful, but letting them consume the
-     * whole limited-mode budget turns transient summary races into a priority
-     * inversion where current UI updates stall behind stale repairs. Live mode
-     * remains lossy/latest-only and drops queued repairs.
+     * Normal adaptive pass. Detect new dirty work and send fresh/latest tiles
+     * before repair traffic. Retransmits are useful, but letting them consume
+     * the whole adaptive byte budget turns transient summary races into a
+     * priority inversion where current UI updates stall behind stale repairs.
      */
     wd_detect_dirty_tiles_into_queue_locked(server);
 
-    bool live_mode = net->stream_policy.mode == WD_STREAM_MODE_LIVE;
-    if (live_mode)
-    {
-        wd_stream_drop_retransmit_queue_locked(server);
-    }
 
     while (net->dirty_queue_count > 0)
     {
@@ -1894,7 +1711,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     }
 
 
-    while (!live_mode && net->retransmit_queue_count > 0)
+    while (net->retransmit_queue_count > 0)
     {
         uint16_t tile_id              = 0;
         uint64_t requested_generation = 0;
@@ -2089,8 +1906,6 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     struct wd_stats s = net->stats;
     memset(&net->stats, 0, sizeof(net->stats));
     wd_stream_policy_update_adaptive_locked(&net->stream_policy, &s);
-    uint16_t effective_mode = net->stream_policy.mode;
-    uint16_t requested_mode = net->stream_policy.requested_mode;
     uint64_t limited_udp_kib_per_second = net->stream_policy.limited_udp_bytes_per_second / 1024ull;
     uint16_t target_fps = net->stream_policy.target_fps;
     uint16_t effective_target_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
@@ -2100,29 +1915,25 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     pthread_mutex_unlock(&net->lock);
 
     static bool     have_prev_state = false;
-    static uint16_t prev_effective_mode = 0;
-    static uint16_t prev_requested_mode = 0;
     static uint16_t prev_target_fps = 0;
     static uint16_t prev_effective_fps = 0;
     static uint64_t prev_limited_kib = 0;
     static bool     prev_input_channel = false;
     static bool     prev_selection_channel = false;
 
-    bool state_changed = !have_prev_state || prev_effective_mode != effective_mode || prev_requested_mode != requested_mode ||
+    bool state_changed = !have_prev_state ||
                          prev_target_fps != target_fps || prev_effective_fps != effective_target_fps ||
                          prev_limited_kib != limited_udp_kib_per_second || prev_input_channel != input_channel_connected ||
                          prev_selection_channel != selection_channel_connected;
 
     if (state_changed)
     {
-        WD_LOG_DEBUG("WayDisplay state/s: mode=%s requested=%s target_fps=%u effective_fps=%u limited_udp_kib_per_sec=%llu input_channel=%s selection_channel=%s",
-                     wd_stream_mode_name(effective_mode), wd_stream_mode_name(requested_mode), (unsigned)target_fps,
-                     (unsigned)effective_target_fps, (unsigned long long)limited_udp_kib_per_second,
+        WD_LOG_DEBUG("WayDisplay state/s: transport=adaptive target_fps=%u effective_fps=%u adaptive_udp_kib_per_sec=%llu input_channel=%s selection_channel=%s",
+                     (unsigned)target_fps, (unsigned)effective_target_fps,
+                     (unsigned long long)limited_udp_kib_per_second,
                      input_channel_connected ? "yes" : "no", selection_channel_connected ? "yes" : "no");
 
         have_prev_state = true;
-        prev_effective_mode = effective_mode;
-        prev_requested_mode = requested_mode;
         prev_target_fps = target_fps;
         prev_effective_fps = effective_target_fps;
         prev_limited_kib = limited_udp_kib_per_second;

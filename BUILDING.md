@@ -30,14 +30,16 @@ metadata and packetization overhead.
 
 ## WAN client budget
 
-For bandwidth-limited links, the client can request a limited-mode UDP tile
-budget below the server's throughput-probe estimate:
+WayDisplay now uses one adaptive max-rate transport instead of full/partial/
+limited/live stream modes. The server starts at the throughput-probed UDP tile
+budget and adapts that byte rate and render cadence from feedback. For shared
+or known-constrained links, the client can request a cap below the probe:
 
 ```sh
-waydisplay-client <server> 5000 6000 --mode limited --limited-rate-kib 4096
+waydisplay-client <server> 5000 6000 --rate-kib 4096
 # or a more conservative shared-link cap:
-waydisplay-client <server> 5000 6000 --mode limited --limited-rate-kib 2048
-# shorthand for very constrained links:
+waydisplay-client <server> 5000 6000 --rate-kib 2048
+# shorthand for a constrained Wi-Fi/WAN link:
 waydisplay-client <server> 5000 6000 --wan
 ```
 

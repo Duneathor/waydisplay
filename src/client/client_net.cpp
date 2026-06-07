@@ -405,7 +405,7 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
 bool receive_server_config(ClientState& state) {
     wd_client_hello_payload hello{};
     hello.client_udp_port      = state.client_udp_port;
-    hello.stream_mode          = static_cast<uint16_t>(state.stream_config.mode);
+    hello.reserved_stream_mode = 0;
     hello.target_fps                  = state.stream_config.target_fps;
     hello.desired_width               = state.desired_width;
     hello.desired_height              = state.desired_height;
@@ -565,11 +565,6 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
         return;
     }
 
-    if (state.stream_config.mode == ClientStreamMode::Live)
-    {
-        return;
-    }
-
     wd_tile_summary_payload_header summary{};
     std::memcpy(&summary, payload, sizeof(summary));
 
@@ -690,11 +685,6 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
 
 void promote_deferred_summary_retransmits_locked(ClientState& state) {
-    if (state.stream_config.mode == ClientStreamMode::Live)
-    {
-        return;
-    }
-
     std::lock_guard<std::mutex> config_lock(state.config_mutex);
     std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
     std::lock_guard<std::mutex> retx_lock(state.retx_mutex);

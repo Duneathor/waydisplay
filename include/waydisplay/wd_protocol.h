@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 9u
+#define WD_PROTOCOL_VERSION 10u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -58,32 +58,6 @@ enum wd_pointer_axis {
     WD_POINTER_AXIS_HORIZONTAL = 1,
 };
 
-enum wd_stream_mode {
-    /*
-     * Send all dirty tiles whenever the compositor reports activity.
-     * Best quality, worst bandwidth.
-     */
-    WD_STREAM_MODE_FULL = 1,
-
-    /*
-     * Send dirty tiles at a capped frame cadence.
-     * Example: target_fps = 30.
-     */
-    WD_STREAM_MODE_PARTIAL = 2,
-
-    /*
-     * Use the probed byte budget as the bottleneck instead of frame cadence.
-     */
-    WD_STREAM_MODE_LIMITED = 3,
-
-    /*
-     * Latest-only lossy mode. The server sends dirty tiles at target_fps and
-     * intentionally disables retransmit repair; newer tile generations simply
-     * supersede older/lost generations. This is not a video-codec mode.
-     */
-    WD_STREAM_MODE_LIVE = 4,
-};
-
 enum wd_pixel_format {
     WD_PIXEL_FORMAT_XRGB8888 = 1,
 };
@@ -129,13 +103,14 @@ struct wd_client_hello_payload {
     uint16_t client_udp_port;
 
     /*
-     * enum wd_stream_mode
+     * Reserved; stream modes were removed in protocol v10. The server always
+     * starts at the probed maximum adaptive rate and adjusts rate/FPS from
+     * feedback.
      */
-    uint16_t stream_mode;
+    uint16_t reserved_stream_mode;
 
     /*
-     * Used by WD_STREAM_MODE_PARTIAL.
-     * 0 means server default.
+     * Target dirty-discovery/render cadence. 0 means server default.
      */
     uint16_t target_fps;
 
@@ -152,7 +127,7 @@ struct wd_client_hello_payload {
     uint16_t reserved0;
 
     /*
-     * Optional client-selected limited-mode UDP budget in KiB/s.
+     * Optional client-selected maximum UDP tile budget in KiB/s.
      * 0 means use the server throughput probe. Nonzero values act as a cap
      * and do not raise the server-selected throughput-probe ceiling.
      */

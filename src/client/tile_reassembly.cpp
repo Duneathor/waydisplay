@@ -109,11 +109,6 @@ void clear_retx_inflight(ClientState& state, uint16_t tile_id, uint64_t generati
 }
 
 bool enqueue_retx_for_partial_timeout(ClientState& state, uint16_t tile_id, uint64_t generation) {
-    if (state.stream_config.mode == ClientStreamMode::Live)
-    {
-        return false;
-    }
-
     std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
     std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
 

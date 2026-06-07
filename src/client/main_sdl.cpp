@@ -14,20 +14,16 @@ void usage(const char* argv0) {
                  "Usage:\n"
                  "  %s <server_ipv4> <tcp_port> <client_udp_port> [options]\n\n"
                  "Options:\n"
-                 "  --mode full                 Send every dirty compositor tick\n"
-                 "  --mode partial              Cap send pass to target FPS, default 30\n"
-                 "  --mode limited              Cap by throughput-probed byte budget\n"
-                 "  --mode live                 Lossy latest-only mode; disables retransmit repair\n"
-                 "  --fps <N>                   Target FPS for partial/live mode\n"
+                 "  --fps <N>                   Target adaptive render/discovery FPS, default 30\n"
                  "  --size <WxH>                 Request remote display size\n"
-                 "  --limited-rate-kib <N>       Cap limited-mode UDP tile budget in KiB/s\n"
-                 "  --wan                        Shorthand for --mode limited --limited-rate-kib 256\n\n"
+                 "  --rate-kib <N>               Cap adaptive UDP tile budget in KiB/s\n"
+                 "  --limited-rate-kib <N>       Deprecated alias for --rate-kib\n"
+                 "  --wan                        Shorthand for --rate-kib 4096\n\n"
                  "Examples:\n"
-                 "  %s 127.0.0.1 5000 6000 --mode full\n"
-                 "  %s 127.0.0.1 5000 6000 --mode partial --fps 30\n"
-                 "  %s 127.0.0.1 5000 6000 --mode limited\n"
-                 "  %s 127.0.0.1 5000 6000 --wan\n",
-                 argv0, argv0, argv0, argv0, argv0);
+                 "  %s 127.0.0.1 5000 6000\n"
+                 "  %s 127.0.0.1 5000 6000 --fps 30\n"
+                 "  %s 127.0.0.1 5000 6000 --rate-kib 4096\n",
+                 argv0, argv0, argv0, argv0);
 }
 
 bool parse_u16(const char* text, uint16_t& out) {
@@ -86,33 +82,6 @@ bool parse_size(const char* text, uint16_t& width, uint16_t& height) {
     return true;
 }
 
-bool parse_mode(const char* text, waydisplay::ClientStreamMode& out) {
-    if (std::strcmp(text, "full") == 0)
-    {
-        out = waydisplay::ClientStreamMode::Full;
-        return true;
-    }
-
-    if (std::strcmp(text, "partial") == 0)
-    {
-        out = waydisplay::ClientStreamMode::Partial;
-        return true;
-    }
-
-    if (std::strcmp(text, "limited") == 0)
-    {
-        out = waydisplay::ClientStreamMode::Limited;
-        return true;
-    }
-
-    if (std::strcmp(text, "live") == 0)
-    {
-        out = waydisplay::ClientStreamMode::Live;
-        return true;
-    }
-
-    return false;
-}
 
 } // namespace
 
@@ -142,13 +111,8 @@ int main(int argc, char** argv) {
     {
         if (std::strcmp(argv[i], "--mode") == 0)
         {
-            if (i + 1 >= argc || !parse_mode(argv[i + 1], stream_config.mode))
-            {
-                usage(argv[0]);
-                return 1;
-            }
-
-            ++i;
+            std::fprintf(stderr, "--mode was removed; WayDisplay always uses adaptive max-rate streaming now.\n");
+            return 1;
         }
         else if (std::strcmp(argv[i], "--fps") == 0)
         {
@@ -170,7 +134,7 @@ int main(int argc, char** argv) {
 
             ++i;
         }
-        else if (std::strcmp(argv[i], "--limited-rate-kib") == 0)
+        else if (std::strcmp(argv[i], "--rate-kib") == 0 || std::strcmp(argv[i], "--limited-rate-kib") == 0)
         {
             if (i + 1 >= argc || !parse_u32(argv[i + 1], stream_config.limited_udp_kib_per_second) ||
                 stream_config.limited_udp_kib_per_second == 0)
@@ -183,8 +147,7 @@ int main(int argc, char** argv) {
         }
         else if (std::strcmp(argv[i], "--wan") == 0)
         {
-            stream_config.mode                       = waydisplay::ClientStreamMode::Limited;
-            stream_config.limited_udp_kib_per_second = 256;
+            stream_config.limited_udp_kib_per_second = 4096;
         }
         else
         {
