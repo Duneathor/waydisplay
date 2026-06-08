@@ -380,7 +380,7 @@ struct wd_net_state {
     int udp_fd;
 
     uint16_t tcp_port;
-    uint32_t session_id;
+    uint8_t session_id;
 
     struct sockaddr_in      client_udp_addr;
     struct wd_stream_policy stream_policy;
@@ -629,7 +629,7 @@ void wd_server_set_default_geometry(struct wd_server* server);
 /* wd_clipboard.c */
 bool wd_clipboard_init(struct wd_server* server);
 void wd_clipboard_destroy(struct wd_server* server);
-void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint32_t expected_session_id, const uint8_t* payload,
+void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expected_session_id, const uint8_t* payload,
                                           uint32_t payload_size, bool primary);
 void wd_clipboard_drain_and_apply(struct wd_server* server);
 

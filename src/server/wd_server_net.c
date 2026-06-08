@@ -8,12 +8,73 @@
 #include <stdint.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <poll.h>
 #include <unistd.h>
+
+
+static void wd_format_sockaddr_in(const struct sockaddr_in* addr, char* buf, size_t buf_size) {
+    char ip[INET_ADDRSTRLEN];
+
+    if (!addr || !buf || buf_size == 0)
+    {
+        return;
+    }
+
+    if (!inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip)))
+    {
+        snprintf(buf, buf_size, "<invalid>:%u", (unsigned)ntohs(addr->sin_port));
+        return;
+    }
+
+    snprintf(buf, buf_size, "%s:%u", ip, (unsigned)ntohs(addr->sin_port));
+}
+
+static void wd_format_socket_endpoint(int fd, bool peer, char* buf, size_t buf_size) {
+    struct sockaddr_in addr;
+    socklen_t          addr_len = sizeof(addr);
+
+    if (!buf || buf_size == 0)
+    {
+        return;
+    }
+
+    snprintf(buf, buf_size, "unavailable");
+
+    if (fd < 0)
+    {
+        snprintf(buf, buf_size, "closed");
+        return;
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    if ((peer ? getpeername(fd, (struct sockaddr*)&addr, &addr_len) : getsockname(fd, (struct sockaddr*)&addr, &addr_len)) != 0)
+    {
+        snprintf(buf, buf_size, "unavailable:%s", strerror(errno));
+        return;
+    }
+
+    if (addr.sin_family != AF_INET)
+    {
+        snprintf(buf, buf_size, "non-ipv4");
+        return;
+    }
+
+    wd_format_sockaddr_in(&addr, buf, buf_size);
+}
+
+static void wd_log_tcp_channel_endpoint(const char* channel, int fd) {
+    char local[64];
+    char remote[64];
+
+    wd_format_socket_endpoint(fd, false, local, sizeof(local));
+    wd_format_socket_endpoint(fd, true, remote, sizeof(remote));
+    WD_LOG_INFO("WayDisplay: %s TCP channel connected local=%s remote=%s", channel, local, remote);
+}
 
 static void wd_close_fd(int* fd) {
     if (fd && *fd >= 0)
@@ -304,21 +365,24 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
      */
     wd_sleep_ms(10);
 
-    uint8_t packet[sizeof(struct wd_udp_tile_packet_header) + WD_UDP_TILE_PAYLOAD_MAX];
+    uint8_t packet[WD_UDP_TILE_HEADER_MAX_SIZE + WD_UDP_TILE_PAYLOAD_MAX];
 
     for (uint16_t i = 0; i < probe_count; ++i)
     {
         uint16_t payload_size = probe_sizes[i];
-        size_t   packet_size  = sizeof(struct wd_udp_tile_packet_header) + payload_size;
+        size_t   packet_size  = sizeof(struct wd_udp_tile_packet_header_compressed_multi) + payload_size;
 
         memset(packet, 0, sizeof(packet));
 
-        struct wd_udp_tile_packet_header* h = (struct wd_udp_tile_packet_header*)packet;
+        struct wd_udp_tile_packet_header_compressed_multi* h = (struct wd_udp_tile_packet_header_compressed_multi*)packet;
 
         h->session_id           = net->session_id;
+        h->tile_protocol        = WD_TILE_COMPRESSED_MULTI;
+        h->tile_flags           = WD_TILE_NORMAL;
+        h->tile_size            = wd_tile_size_code_for_dimensions(server->tile_width, server->tile_height);
         h->tile_id              = WD_UDP_TILE_ID_MTU_PROBE;
-        h->tile_pkt_count       = probe_count;
-        h->tile_pkt_id          = i;
+        h->tile_pkt_count       = probe_count > UINT8_MAX ? UINT8_MAX : (uint8_t)probe_count;
+        h->tile_pkt_id          = i > UINT8_MAX ? UINT8_MAX : (uint8_t)i;
         h->payload_size         = payload_size;
         h->tile_generation      = net->session_id;
         h->compressed_tile_size = payload_size;
@@ -395,15 +459,15 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
         udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
 
-    size_t packet_size = sizeof(struct wd_udp_tile_packet_header) + udp_payload_target;
+    size_t packet_size = sizeof(struct wd_udp_tile_packet_header_compressed_multi) + udp_payload_target;
     uint32_t target_packets = WD_THROUGHPUT_PROBE_TARGET_BYTES / (uint32_t)packet_size;
     if (target_packets == 0)
     {
         target_packets = 1;
     }
-    if (target_packets > UINT16_MAX)
+    if (target_packets > UINT8_MAX)
     {
-        target_packets = UINT16_MAX;
+        target_packets = UINT8_MAX;
     }
 
     struct wd_throughput_probe_start_payload start;
@@ -430,10 +494,13 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
     }
 
     memset(packet, 0, packet_size);
-    struct wd_udp_tile_packet_header* h = (struct wd_udp_tile_packet_header*)packet;
+    struct wd_udp_tile_packet_header_compressed_multi* h = (struct wd_udp_tile_packet_header_compressed_multi*)packet;
     h->session_id           = net->session_id;
+    h->tile_protocol        = WD_TILE_COMPRESSED_MULTI;
+    h->tile_flags           = WD_TILE_NORMAL;
+    h->tile_size            = wd_tile_size_code_for_dimensions(server->tile_width, server->tile_height);
     h->tile_id              = WD_UDP_TILE_ID_THROUGHPUT_PROBE;
-    h->tile_pkt_count       = (uint16_t)target_packets;
+    h->tile_pkt_count       = (uint8_t)target_packets;
     h->payload_size         = udp_payload_target;
     h->tile_generation      = net->session_id;
     h->compressed_tile_size = udp_payload_target;
@@ -444,7 +511,7 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
 
     for (uint32_t i = 0; i < target_packets; ++i)
     {
-        h->tile_pkt_id = (uint16_t)i;
+        h->tile_pkt_id = (uint8_t)i;
         (void)sendto(net->udp_fd, packet, packet_size, 0, (const struct sockaddr*)client_udp_addr, sizeof(*client_udp_addr));
 
         uint64_t next_ns = start_ns + ((uint64_t)(i + 1) * duration_ns) / target_packets;
@@ -498,7 +565,7 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
     return limited_rate;
 }
 
-static void wd_server_fill_config(struct wd_server* server, uint32_t session_id, uint16_t udp_payload_target,
+static void wd_server_fill_config(struct wd_server* server, uint8_t session_id, uint16_t udp_payload_target,
                                   struct wd_server_config_payload* cfg) {
     memset(cfg, 0, sizeof(*cfg));
 
@@ -564,7 +631,7 @@ static void wd_server_handle_pointer_message(struct wd_server* server, const str
     }
 }
 
-static bool wd_accept_aux_channel_fd(struct wd_server* server, uint32_t session_id, int* input_tcp_fd, int* selection_tcp_fd) {
+static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_id, int* input_tcp_fd, int* selection_tcp_fd) {
     struct wd_net_state* net = &server->net;
 
     struct sockaddr_in peer_addr;
@@ -629,7 +696,7 @@ static bool wd_accept_aux_channel_fd(struct wd_server* server, uint32_t session_
     return true;
 }
 
-static void wd_accept_optional_aux_channels(struct wd_server* server, uint32_t session_id, int* input_tcp_fd, int* selection_tcp_fd) {
+static void wd_accept_optional_aux_channels(struct wd_server* server, uint8_t session_id, int* input_tcp_fd, int* selection_tcp_fd) {
     struct wd_net_state* net = &server->net;
     const uint64_t       deadline_ns = wd_now_ns() + 500ull * 1000ull * 1000ull;
 
@@ -714,6 +781,16 @@ void* wd_net_thread_main(void* arg) {
         return NULL;
     }
 
+    struct sockaddr_in udp_bind_addr;
+    memset(&udp_bind_addr, 0, sizeof(udp_bind_addr));
+    udp_bind_addr.sin_family      = AF_INET;
+    udp_bind_addr.sin_addr.s_addr = INADDR_ANY;
+    udp_bind_addr.sin_port        = htons(0);
+    if (bind(net->udp_fd, (struct sockaddr*)&udp_bind_addr, sizeof(udp_bind_addr)) < 0)
+    {
+        WD_LOG_ERROR("WayDisplay: bind UDP sender failed: %s", strerror(errno));
+    }
+
     if (wd_set_nonblocking(net->udp_fd) < 0)
     {
         WD_LOG_ERROR("WayDisplay: failed to make UDP socket nonblocking: %s", strerror(errno));
@@ -721,7 +798,15 @@ void* wd_net_thread_main(void* arg) {
 
     wd_udp_socket_disable_df_best_effort(net->udp_fd);
 
-    WD_LOG_INFO("WayDisplay: network server listening on TCP port %u", net->tcp_port);
+    {
+        char tcp_local[64];
+        char udp_local[64];
+
+        wd_format_socket_endpoint(net->listen_fd, false, tcp_local, sizeof(tcp_local));
+        wd_format_socket_endpoint(net->udp_fd, false, udp_local, sizeof(udp_local));
+        WD_LOG_INFO("WayDisplay: network listening tcp=%s udp_sender=%s tcp_fd=%d udp_fd=%d", tcp_local, udp_local,
+                    net->listen_fd, net->udp_fd);
+    }
 
     int sndbuf = WD_UDP_SOCKET_BUFFER_BYTES;
     if (setsockopt(net->udp_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0)
@@ -802,13 +887,17 @@ void* wd_net_thread_main(void* arg) {
         }
 
         struct wd_server_config_payload cfg;
-        uint32_t                        session_id = 0;
+        uint8_t                         session_id = 0;
 
         pthread_mutex_lock(&net->lock);
 
         if (net->session_id == 0)
         {
-            net->session_id = (uint32_t)(wd_now_ns() ^ 0x9e3779b9u);
+            net->session_id = (uint8_t)(wd_now_ns() ^ 0x9e3779b9u);
+            if (net->session_id == 0)
+            {
+                net->session_id = 1;
+            }
         }
 
         session_id = net->session_id;
@@ -923,11 +1012,32 @@ void* wd_net_thread_main(void* arg) {
 
         pthread_mutex_unlock(&net->lock);
 
-        WD_LOG_INFO("WayDisplay: client connected; UDP port=%u input_channel=%s selection_channel=%s display=%ux%u tile=%ux%u fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
-                    hello.client_udp_port, input_tcp_fd >= 0 ? "yes" : "no", selection_tcp_fd >= 0 ? "yes" : "no",
-                    server->display_width, server->display_height, server->tile_width, server->tile_height,
-                    hello.target_fps, hello.limited_udp_kib_per_second,
-                    (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
+        {
+            char control_local[64];
+            char control_remote[64];
+            char udp_local[64];
+            char udp_remote[64];
+
+            wd_format_socket_endpoint(tcp_fd, false, control_local, sizeof(control_local));
+            wd_format_socket_endpoint(tcp_fd, true, control_remote, sizeof(control_remote));
+            wd_format_socket_endpoint(net->udp_fd, false, udp_local, sizeof(udp_local));
+            wd_format_sockaddr_in(&client_udp_addr, udp_remote, sizeof(udp_remote));
+
+            WD_LOG_INFO("WayDisplay: client connected; control_tcp=%s<->%s udp=%s->%s input_channel=%s selection_channel=%s display=%ux%u tile=%ux%u fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
+                        control_local, control_remote, udp_local, udp_remote, input_tcp_fd >= 0 ? "yes" : "no",
+                        selection_tcp_fd >= 0 ? "yes" : "no", server->display_width, server->display_height,
+                        server->tile_width, server->tile_height, hello.target_fps, hello.limited_udp_kib_per_second,
+                        (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
+
+            if (input_tcp_fd >= 0)
+            {
+                wd_log_tcp_channel_endpoint("input", input_tcp_fd);
+            }
+            if (selection_tcp_fd >= 0)
+            {
+                wd_log_tcp_channel_endpoint("selection", selection_tcp_fd);
+            }
+        }
 
 
         while (net->running)
@@ -1000,7 +1110,7 @@ void* wd_net_thread_main(void* arg) {
                     net->input_tcp_fd = input_tcp_fd;
                     net->stats.tcp_input_channel_accepted++;
                     pthread_mutex_unlock(&net->lock);
-                    WD_LOG_INFO("WayDisplay: accepted late input TCP channel for current session");
+                    wd_log_tcp_channel_endpoint("late input", input_tcp_fd);
                 }
 
                 if (selection_tcp_fd >= 0 && old_selection_fd < 0)
@@ -1009,7 +1119,7 @@ void* wd_net_thread_main(void* arg) {
                     net->selection_tcp_fd = selection_tcp_fd;
                     net->stats.tcp_selection_channel_accepted++;
                     pthread_mutex_unlock(&net->lock);
-                    WD_LOG_INFO("WayDisplay: accepted late selection TCP channel for current session");
+                    wd_log_tcp_channel_endpoint("late selection", selection_tcp_fd);
                 }
             }
 

@@ -178,7 +178,7 @@ bool enqueue_retx_for_partial_timeout(ClientState& state, uint16_t tile_id, uint
     return true;
 }
 
-bool packet_header_valid(const wd_udp_tile_packet_header& header, size_t packet_size, uint16_t udp_payload_target,
+bool packet_header_valid(const wd_udp_tile_packet_decoded& header, size_t packet_size, uint16_t udp_payload_target,
                          const wd_server_config_payload& config) {
     if (header.session_id != config.session_id)
     {
@@ -205,7 +205,7 @@ bool packet_header_valid(const wd_udp_tile_packet_header& header, size_t packet_
         return false;
     }
 
-    if (sizeof(wd_udp_tile_packet_header) + header.payload_size > packet_size)
+    if ((size_t)header.header_size + header.payload_size > packet_size)
     {
         return false;
     }
@@ -294,14 +294,18 @@ void TileReassembler::expire_stale_entries(ClientState& state) {
 CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint8_t* packet, size_t packet_size) {
     CompletedTile completed{};
 
-    if (!packet || packet_size < sizeof(wd_udp_tile_packet_header))
+    if (!packet || packet_size < WD_UDP_TILE_HEADER_MIN_SIZE)
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         return completed;
     }
 
-    wd_udp_tile_packet_header header{};
-    std::memcpy(&header, packet, sizeof(header));
+    wd_udp_tile_packet_decoded header{};
+    if (!wd_udp_tile_packet_decode(packet, packet_size, &header))
+    {
+        state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+        return completed;
+    }
 
     uint16_t udp_payload_target = state.config.udp_payload_target;
     if (udp_payload_target == 0)
@@ -400,7 +404,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
 
     const uint32_t offset = static_cast<uint32_t>(header.tile_pkt_id) * udp_payload_target;
 
-    const uint8_t* payload = packet + sizeof(wd_udp_tile_packet_header);
+    const uint8_t* payload = packet + header.header_size;
 
     if (!entry.received[header.tile_pkt_id])
     {

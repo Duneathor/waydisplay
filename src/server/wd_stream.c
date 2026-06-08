@@ -629,6 +629,15 @@ static void wd_stream_mark_summary_dirty_locked(struct wd_server* server, uint16
     }
 }
 
+static uint8_t wd_stream_tile_protocol_for_packet(uint16_t packet_count, uint64_t input_sequence) {
+    if (packet_count <= 1)
+    {
+        return input_sequence ? WD_TILE_COMPRESSED_SINGLE_LATENCY : WD_TILE_COMPRESSED_SINGLE;
+    }
+
+    return input_sequence ? WD_TILE_COMPRESSED_MULTI_LATENCY : WD_TILE_COMPRESSED_MULTI;
+}
+
 static uint32_t wd_stream_tile_wire_bytes(uint32_t compressed_size, uint16_t udp_payload_target) {
     if (compressed_size == 0)
     {
@@ -651,7 +660,9 @@ static uint32_t wd_stream_tile_wire_bytes(uint32_t compressed_size, uint16_t udp
     }
 
     uint32_t packet_count = (compressed_size + udp_payload_target - 1u) / udp_payload_target;
-    return compressed_size + packet_count * (uint32_t)sizeof(struct wd_udp_tile_packet_header);
+    uint8_t protocol = wd_stream_tile_protocol_for_packet((uint16_t)packet_count, 0);
+    uint16_t header_size = wd_udp_tile_header_size_for_protocol(protocol);
+    return compressed_size + packet_count * (uint32_t)header_size;
 }
 
 static uint64_t wd_stream_policy_limited_byte_budget_locked(struct wd_stream_policy* policy, uint64_t now_ns) {
@@ -758,23 +769,89 @@ static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_
         uint16_t payload_size =
             (uint16_t)(((compressed_size - offset) > udp_payload_target) ? udp_payload_target : (compressed_size - offset));
 
-        struct wd_udp_tile_packet_header h;
-        memset(&h, 0, sizeof(h));
+        uint8_t header_buf[WD_UDP_TILE_HEADER_MAX_SIZE];
+        memset(header_buf, 0, sizeof(header_buf));
 
-        h.session_id           = net->session_id;
-        h.tile_id              = tile_id;
-        h.tile_pkt_count       = packet_count;
-        h.tile_pkt_id          = packet_id;
-        h.payload_size         = payload_size;
-        h.tile_generation      = generation;
-        h.compressed_tile_size = compressed_size;
-        h.tile_timestamp_ns    = timestamp_ns;
-        h.input_sequence       = input_sequence;
+        uint8_t protocol = wd_stream_tile_protocol_for_packet(packet_count, input_sequence);
+        uint16_t header_size = wd_udp_tile_header_size_for_protocol(protocol);
+        uint8_t tile_size = wd_tile_size_code_for_dimensions(server->tile_width, server->tile_height);
+
+        switch (protocol)
+        {
+            case WD_TILE_COMPRESSED_SINGLE: {
+                struct wd_udp_tile_packet_header_compressed_single h;
+                memset(&h, 0, sizeof(h));
+                h.session_id = net->session_id;
+                h.tile_protocol = protocol;
+                h.tile_flags = WD_TILE_NORMAL;
+                h.tile_size = tile_size;
+                h.tile_id = tile_id;
+                h.payload_size = payload_size;
+                h.tile_generation = generation;
+                h.compressed_tile_size = (uint16_t)compressed_size;
+                h.tile_timestamp_ns = timestamp_ns;
+                memcpy(header_buf, &h, sizeof(h));
+                break;
+            }
+            case WD_TILE_COMPRESSED_SINGLE_LATENCY: {
+                struct wd_udp_tile_packet_header_compressed_single_latency h;
+                memset(&h, 0, sizeof(h));
+                h.session_id = net->session_id;
+                h.tile_protocol = protocol;
+                h.tile_flags = WD_TILE_NORMAL;
+                h.tile_size = tile_size;
+                h.tile_id = tile_id;
+                h.payload_size = payload_size;
+                h.tile_generation = generation;
+                h.compressed_tile_size = (uint16_t)compressed_size;
+                h.tile_timestamp_ns = timestamp_ns;
+                h.input_sequence = input_sequence;
+                memcpy(header_buf, &h, sizeof(h));
+                break;
+            }
+            case WD_TILE_COMPRESSED_MULTI: {
+                struct wd_udp_tile_packet_header_compressed_multi h;
+                memset(&h, 0, sizeof(h));
+                h.session_id = net->session_id;
+                h.tile_protocol = protocol;
+                h.tile_flags = WD_TILE_NORMAL;
+                h.tile_size = tile_size;
+                h.tile_id = tile_id;
+                h.tile_pkt_count = (uint8_t)packet_count;
+                h.tile_pkt_id = (uint8_t)packet_id;
+                h.payload_size = payload_size;
+                h.tile_generation = generation;
+                h.compressed_tile_size = (uint16_t)compressed_size;
+                h.tile_timestamp_ns = timestamp_ns;
+                memcpy(header_buf, &h, sizeof(h));
+                break;
+            }
+            case WD_TILE_COMPRESSED_MULTI_LATENCY: {
+                struct wd_udp_tile_packet_header_compressed_multi_latency h;
+                memset(&h, 0, sizeof(h));
+                h.session_id = net->session_id;
+                h.tile_protocol = protocol;
+                h.tile_flags = WD_TILE_NORMAL;
+                h.tile_size = tile_size;
+                h.tile_id = tile_id;
+                h.tile_pkt_count = (uint8_t)packet_count;
+                h.tile_pkt_id = (uint8_t)packet_id;
+                h.payload_size = payload_size;
+                h.tile_generation = generation;
+                h.compressed_tile_size = (uint16_t)compressed_size;
+                h.tile_timestamp_ns = timestamp_ns;
+                h.input_sequence = input_sequence;
+                memcpy(header_buf, &h, sizeof(h));
+                break;
+            }
+            default:
+                return false;
+        }
 
         struct iovec iov[2];
         memset(iov, 0, sizeof(iov));
-        iov[0].iov_base = &h;
-        iov[0].iov_len  = sizeof(h);
+        iov[0].iov_base = header_buf;
+        iov[0].iov_len  = header_size;
         iov[1].iov_base = (uint8_t*)compressed + offset;
         iov[1].iov_len  = payload_size;
 

@@ -923,7 +923,7 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
         udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
 
-    const size_t recvbuf_size = sizeof(wd_udp_tile_packet_header) + udp_payload_target + 512;
+    const size_t recvbuf_size = WD_UDP_TILE_HEADER_MAX_SIZE + udp_payload_target + 512;
 
     if (state.udp_recv_buffer.size() < recvbuf_size)
     {
@@ -955,14 +955,18 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
             return true;
         }
 
-        if (static_cast<size_t>(n) < sizeof(wd_udp_tile_packet_header))
+        if (static_cast<size_t>(n) < WD_UDP_TILE_HEADER_MIN_SIZE)
         {
             state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
 
-        wd_udp_tile_packet_header udp_header{};
-        std::memcpy(&udp_header, state.udp_recv_buffer.data(), sizeof(udp_header));
+        wd_udp_tile_packet_decoded udp_header{};
+        if (!wd_udp_tile_packet_decode(state.udp_recv_buffer.data(), static_cast<size_t>(n), &udp_header))
+        {
+            state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
 
         if (udp_header.tile_id == WD_UDP_TILE_ID_MTU_PROBE || udp_header.tile_id == WD_UDP_TILE_ID_THROUGHPUT_PROBE)
         {
@@ -970,7 +974,7 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
             continue;
         }
 
-        uint32_t session_id = 0;
+        uint8_t session_id = 0;
         {
             std::lock_guard<std::mutex> lock(state.config_mutex);
             session_id = state.config.session_id;
@@ -1232,7 +1236,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     std::vector<uint64_t> new_retx_inflight_since_ns(config.total_tiles, 0);
     std::vector<uint64_t> new_retx_summary_pending_generation(config.total_tiles, 0);
     std::vector<uint64_t> new_retx_summary_pending_since_ns(config.total_tiles, 0);
-    std::vector<uint8_t>  new_udp_recv_buffer(sizeof(wd_udp_tile_packet_header) + config.udp_payload_target + 512, 0);
+    std::vector<uint8_t>  new_udp_recv_buffer(WD_UDP_TILE_HEADER_MAX_SIZE + config.udp_payload_target + 512, 0);
 
     SDL_Texture* new_texture =
         SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, config.width, config.height);

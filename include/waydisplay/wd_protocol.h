@@ -2,13 +2,16 @@
 
 #include "waydisplay/wd_config.h"
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 10u
+#define WD_PROTOCOL_VERSION 11u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -140,7 +143,7 @@ enum wd_server_capability {
 };
 
 struct wd_server_config_payload {
-    uint32_t session_id;
+    uint8_t session_id;
     uint16_t width;
     uint16_t height;
     uint16_t tile_width;
@@ -163,7 +166,7 @@ struct wd_tile_generation_entry {
 };
 
 struct wd_tile_summary_payload_header {
-    uint32_t session_id;
+    uint8_t session_id;
     uint64_t server_timestamp_ns;
     uint16_t tile_count;
 
@@ -176,7 +179,7 @@ struct wd_tile_summary_payload_header {
 };
 
 struct wd_retransmit_request_payload_header {
-    uint32_t session_id;
+    uint8_t session_id;
     uint16_t request_count;
     uint16_t reserved;
 };
@@ -191,7 +194,7 @@ struct wd_retransmit_entry {
 
 
 struct wd_client_stats_payload {
-    uint32_t session_id;
+    uint8_t session_id;
     uint32_t reserved;
 
     uint64_t udp_packets_rx;
@@ -211,17 +214,17 @@ struct wd_client_stats_payload {
 };
 
 struct wd_input_channel_hello_payload {
-    uint32_t session_id;
+    uint8_t session_id;
     uint32_t reserved;
 };
 
 struct wd_selection_channel_hello_payload {
-    uint32_t session_id;
+    uint8_t session_id;
     uint32_t reserved;
 };
 
 struct wd_keyboard_event_payload {
-    uint32_t session_id;
+    uint8_t session_id;
     uint64_t client_timestamp_ns;
     uint64_t input_sequence;
     uint16_t evdev_key_code;
@@ -230,7 +233,7 @@ struct wd_keyboard_event_payload {
 };
 
 struct wd_pointer_event_payload {
-    uint32_t session_id;
+    uint8_t session_id;
     uint64_t client_timestamp_ns;
     uint64_t input_sequence;
 
@@ -276,52 +279,368 @@ struct wd_pointer_event_payload {
     uint16_t modifiers;
 };
 
-struct wd_udp_tile_packet_header {
-    uint32_t session_id;
+enum wd_tile_protocol {
+    WD_TILE_UNCOMPRESSED_SINGLE         = 0,
+    WD_TILE_UNCOMPRESSED_SINGLE_LATENCY = 1,
+    WD_TILE_COMPRESSED_SINGLE           = 2,
+    WD_TILE_COMPRESSED_SINGLE_LATENCY   = 3,
+    WD_TILE_UNCOMPRESSED_MULTI          = 4,
+    WD_TILE_UNCOMPRESSED_MULTI_LATENCY  = 5,
+    WD_TILE_COMPRESSED_MULTI            = 6,
+    WD_TILE_COMPRESSED_MULTI_LATENCY    = 7,
+};
+
+enum wd_tile_size {
+    WD_TILE_128x64 = 0,
+    WD_TILE_64x64  = 1,
+    WD_TILE_32x32  = 2,
+    WD_TILE_16x16  = 3,
+};
+
+enum wd_tile_flags {
+    WD_TILE_NORMAL             = 0,
+    WD_TILE_SUBTILE            = 1,
+    WD_TILE_RETRANSMIT         = 2,
+    WD_TILE_RETRANSMIT_SUBTILE = 3,
+};
+
+struct wd_udp_tile_packet_header_uncompressed_single {
+    uint8_t  session_id;
+    uint8_t  tile_protocol;
+    uint8_t  tile_flags;
+    uint8_t  tile_size;
     uint16_t tile_id;
-    uint16_t tile_pkt_count;
-    uint16_t tile_pkt_id;
     uint16_t payload_size;
     uint64_t tile_generation;
-    uint32_t compressed_tile_size;
-
-    /*
-     * Server monotonic timestamp for when this tile generation was produced.
-     * Used for best-effort same-host latency telemetry.
-     */
     uint64_t tile_timestamp_ns;
+};
 
-    /*
-     * Client input sequence that caused this first fresh tile, or 0 when this
-     * tile was not selected as an input-response telemetry sample.
-     */
+struct wd_udp_tile_packet_header_uncompressed_single_latency {
+    uint8_t  session_id;
+    uint8_t  tile_protocol;
+    uint8_t  tile_flags;
+    uint8_t  tile_size;
+    uint16_t tile_id;
+    uint16_t payload_size;
+    uint64_t tile_generation;
+    uint64_t tile_timestamp_ns;
     uint64_t input_sequence;
 };
+
+struct wd_udp_tile_packet_header_compressed_single {
+    uint8_t  session_id;
+    uint8_t  tile_protocol;
+    uint8_t  tile_flags;
+    uint8_t  tile_size;
+    uint16_t tile_id;
+    uint16_t payload_size;
+    uint64_t tile_generation;
+    uint16_t compressed_tile_size;
+    uint64_t tile_timestamp_ns;
+};
+
+struct wd_udp_tile_packet_header_compressed_single_latency {
+    uint8_t  session_id;
+    uint8_t  tile_protocol;
+    uint8_t  tile_flags;
+    uint8_t  tile_size;
+    uint16_t tile_id;
+    uint16_t payload_size;
+    uint64_t tile_generation;
+    uint16_t compressed_tile_size;
+    uint64_t tile_timestamp_ns;
+    uint64_t input_sequence;
+};
+
+struct wd_udp_tile_packet_header_uncompressed_multi {
+    uint8_t  session_id;
+    uint8_t  tile_protocol;
+    uint8_t  tile_flags;
+    uint8_t  tile_size;
+    uint16_t tile_id;
+    uint8_t  tile_pkt_count;
+    uint8_t  tile_pkt_id;
+    uint16_t payload_size;
+    uint64_t tile_generation;
+    uint64_t tile_timestamp_ns;
+};
+
+struct wd_udp_tile_packet_header_uncompressed_multi_latency {
+    uint8_t  session_id;
+    uint8_t  tile_protocol;
+    uint8_t  tile_flags;
+    uint8_t  tile_size;
+    uint16_t tile_id;
+    uint8_t  tile_pkt_count;
+    uint8_t  tile_pkt_id;
+    uint16_t payload_size;
+    uint64_t tile_generation;
+    uint64_t tile_timestamp_ns;
+    uint64_t input_sequence;
+};
+
+struct wd_udp_tile_packet_header_compressed_multi {
+    uint8_t  session_id;
+    uint8_t  tile_protocol;
+    uint8_t  tile_flags;
+    uint8_t  tile_size;
+    uint16_t tile_id;
+    uint8_t  tile_pkt_count;
+    uint8_t  tile_pkt_id;
+    uint16_t payload_size;
+    uint64_t tile_generation;
+    uint16_t compressed_tile_size;
+    uint64_t tile_timestamp_ns;
+};
+
+struct wd_udp_tile_packet_header_compressed_multi_latency {
+    uint8_t  session_id;
+    uint8_t  tile_protocol;
+    uint8_t  tile_flags;
+    uint8_t  tile_size;
+    uint16_t tile_id;
+    uint8_t  tile_pkt_count;
+    uint8_t  tile_pkt_id;
+    uint16_t payload_size;
+    uint64_t tile_generation;
+    uint16_t compressed_tile_size;
+    uint64_t tile_timestamp_ns;
+    uint64_t input_sequence;
+};
+
+struct wd_udp_tile_packet_decoded {
+    uint8_t  session_id;
+    uint8_t  tile_protocol;
+    uint8_t  tile_flags;
+    uint8_t  tile_size;
+    uint16_t tile_id;
+    uint8_t  tile_pkt_count;
+    uint8_t  tile_pkt_id;
+    uint16_t payload_size;
+    uint64_t tile_generation;
+    uint16_t compressed_tile_size;
+    uint64_t tile_timestamp_ns;
+    uint64_t input_sequence;
+    uint16_t header_size;
+};
+
+
+#define WD_UDP_TILE_HEADER_MAX_SIZE ((uint16_t)sizeof(struct wd_udp_tile_packet_header_compressed_multi_latency))
+#define WD_UDP_TILE_HEADER_MIN_SIZE ((uint16_t)sizeof(struct wd_udp_tile_packet_header_uncompressed_single))
+
+static inline uint16_t wd_udp_tile_header_size_for_protocol(uint8_t tile_protocol) {
+    switch (tile_protocol)
+    {
+        case WD_TILE_UNCOMPRESSED_SINGLE:
+            return (uint16_t)sizeof(struct wd_udp_tile_packet_header_uncompressed_single);
+        case WD_TILE_UNCOMPRESSED_SINGLE_LATENCY:
+            return (uint16_t)sizeof(struct wd_udp_tile_packet_header_uncompressed_single_latency);
+        case WD_TILE_COMPRESSED_SINGLE:
+            return (uint16_t)sizeof(struct wd_udp_tile_packet_header_compressed_single);
+        case WD_TILE_COMPRESSED_SINGLE_LATENCY:
+            return (uint16_t)sizeof(struct wd_udp_tile_packet_header_compressed_single_latency);
+        case WD_TILE_UNCOMPRESSED_MULTI:
+            return (uint16_t)sizeof(struct wd_udp_tile_packet_header_uncompressed_multi);
+        case WD_TILE_UNCOMPRESSED_MULTI_LATENCY:
+            return (uint16_t)sizeof(struct wd_udp_tile_packet_header_uncompressed_multi_latency);
+        case WD_TILE_COMPRESSED_MULTI:
+            return (uint16_t)sizeof(struct wd_udp_tile_packet_header_compressed_multi);
+        case WD_TILE_COMPRESSED_MULTI_LATENCY:
+            return (uint16_t)sizeof(struct wd_udp_tile_packet_header_compressed_multi_latency);
+        default:
+            return 0;
+    }
+}
+
+static inline bool wd_tile_protocol_is_multi(uint8_t tile_protocol) {
+    return tile_protocol == WD_TILE_UNCOMPRESSED_MULTI || tile_protocol == WD_TILE_UNCOMPRESSED_MULTI_LATENCY ||
+           tile_protocol == WD_TILE_COMPRESSED_MULTI || tile_protocol == WD_TILE_COMPRESSED_MULTI_LATENCY;
+}
+
+static inline bool wd_tile_protocol_is_compressed(uint8_t tile_protocol) {
+    return tile_protocol == WD_TILE_COMPRESSED_SINGLE || tile_protocol == WD_TILE_COMPRESSED_SINGLE_LATENCY ||
+           tile_protocol == WD_TILE_COMPRESSED_MULTI || tile_protocol == WD_TILE_COMPRESSED_MULTI_LATENCY;
+}
+
+static inline bool wd_tile_protocol_has_latency(uint8_t tile_protocol) {
+    return tile_protocol == WD_TILE_UNCOMPRESSED_SINGLE_LATENCY || tile_protocol == WD_TILE_COMPRESSED_SINGLE_LATENCY ||
+           tile_protocol == WD_TILE_UNCOMPRESSED_MULTI_LATENCY || tile_protocol == WD_TILE_COMPRESSED_MULTI_LATENCY;
+}
+
+static inline uint8_t wd_tile_size_code_for_dimensions(uint16_t width, uint16_t height) {
+    if (width == 128 && height == 64)
+    {
+        return WD_TILE_128x64;
+    }
+    if (width == 64 && height == 64)
+    {
+        return WD_TILE_64x64;
+    }
+    if (width == 32 && height == 32)
+    {
+        return WD_TILE_32x32;
+    }
+    if (width == 16 && height == 16)
+    {
+        return WD_TILE_16x16;
+    }
+    return WD_TILE_128x64;
+}
+
+static inline bool wd_udp_tile_packet_decode(const void* packet, size_t packet_size, struct wd_udp_tile_packet_decoded* out) {
+    if (!packet || !out || packet_size < 4)
+    {
+        return false;
+    }
+
+    const uint8_t* bytes = (const uint8_t*)packet;
+    uint8_t tile_protocol = bytes[1];
+    uint16_t header_size = wd_udp_tile_header_size_for_protocol(tile_protocol);
+    if (header_size == 0 || packet_size < header_size)
+    {
+        return false;
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->session_id = bytes[0];
+    out->tile_protocol = tile_protocol;
+    out->tile_flags = bytes[2];
+    out->tile_size = bytes[3];
+    out->header_size = header_size;
+
+    switch (tile_protocol)
+    {
+        case WD_TILE_UNCOMPRESSED_SINGLE: {
+            struct wd_udp_tile_packet_header_uncompressed_single h;
+            memcpy(&h, packet, sizeof(h));
+            out->tile_id = h.tile_id;
+            out->tile_pkt_count = 1;
+            out->tile_pkt_id = 0;
+            out->payload_size = h.payload_size;
+            out->tile_generation = h.tile_generation;
+            out->compressed_tile_size = h.payload_size;
+            out->tile_timestamp_ns = h.tile_timestamp_ns;
+            break;
+        }
+        case WD_TILE_UNCOMPRESSED_SINGLE_LATENCY: {
+            struct wd_udp_tile_packet_header_uncompressed_single_latency h;
+            memcpy(&h, packet, sizeof(h));
+            out->tile_id = h.tile_id;
+            out->tile_pkt_count = 1;
+            out->tile_pkt_id = 0;
+            out->payload_size = h.payload_size;
+            out->tile_generation = h.tile_generation;
+            out->compressed_tile_size = h.payload_size;
+            out->tile_timestamp_ns = h.tile_timestamp_ns;
+            out->input_sequence = h.input_sequence;
+            break;
+        }
+        case WD_TILE_COMPRESSED_SINGLE: {
+            struct wd_udp_tile_packet_header_compressed_single h;
+            memcpy(&h, packet, sizeof(h));
+            out->tile_id = h.tile_id;
+            out->tile_pkt_count = 1;
+            out->tile_pkt_id = 0;
+            out->payload_size = h.payload_size;
+            out->tile_generation = h.tile_generation;
+            out->compressed_tile_size = h.compressed_tile_size;
+            out->tile_timestamp_ns = h.tile_timestamp_ns;
+            break;
+        }
+        case WD_TILE_COMPRESSED_SINGLE_LATENCY: {
+            struct wd_udp_tile_packet_header_compressed_single_latency h;
+            memcpy(&h, packet, sizeof(h));
+            out->tile_id = h.tile_id;
+            out->tile_pkt_count = 1;
+            out->tile_pkt_id = 0;
+            out->payload_size = h.payload_size;
+            out->tile_generation = h.tile_generation;
+            out->compressed_tile_size = h.compressed_tile_size;
+            out->tile_timestamp_ns = h.tile_timestamp_ns;
+            out->input_sequence = h.input_sequence;
+            break;
+        }
+        case WD_TILE_UNCOMPRESSED_MULTI: {
+            struct wd_udp_tile_packet_header_uncompressed_multi h;
+            memcpy(&h, packet, sizeof(h));
+            out->tile_id = h.tile_id;
+            out->tile_pkt_count = h.tile_pkt_count;
+            out->tile_pkt_id = h.tile_pkt_id;
+            out->payload_size = h.payload_size;
+            out->tile_generation = h.tile_generation;
+            out->compressed_tile_size = h.payload_size;
+            out->tile_timestamp_ns = h.tile_timestamp_ns;
+            break;
+        }
+        case WD_TILE_UNCOMPRESSED_MULTI_LATENCY: {
+            struct wd_udp_tile_packet_header_uncompressed_multi_latency h;
+            memcpy(&h, packet, sizeof(h));
+            out->tile_id = h.tile_id;
+            out->tile_pkt_count = h.tile_pkt_count;
+            out->tile_pkt_id = h.tile_pkt_id;
+            out->payload_size = h.payload_size;
+            out->tile_generation = h.tile_generation;
+            out->compressed_tile_size = h.payload_size;
+            out->tile_timestamp_ns = h.tile_timestamp_ns;
+            out->input_sequence = h.input_sequence;
+            break;
+        }
+        case WD_TILE_COMPRESSED_MULTI: {
+            struct wd_udp_tile_packet_header_compressed_multi h;
+            memcpy(&h, packet, sizeof(h));
+            out->tile_id = h.tile_id;
+            out->tile_pkt_count = h.tile_pkt_count;
+            out->tile_pkt_id = h.tile_pkt_id;
+            out->payload_size = h.payload_size;
+            out->tile_generation = h.tile_generation;
+            out->compressed_tile_size = h.compressed_tile_size;
+            out->tile_timestamp_ns = h.tile_timestamp_ns;
+            break;
+        }
+        case WD_TILE_COMPRESSED_MULTI_LATENCY: {
+            struct wd_udp_tile_packet_header_compressed_multi_latency h;
+            memcpy(&h, packet, sizeof(h));
+            out->tile_id = h.tile_id;
+            out->tile_pkt_count = h.tile_pkt_count;
+            out->tile_pkt_id = h.tile_pkt_id;
+            out->payload_size = h.payload_size;
+            out->tile_generation = h.tile_generation;
+            out->compressed_tile_size = h.compressed_tile_size;
+            out->tile_timestamp_ns = h.tile_timestamp_ns;
+            out->input_sequence = h.input_sequence;
+            break;
+        }
+        default:
+            return false;
+    }
+
+    return (size_t)out->header_size + (size_t)out->payload_size <= packet_size;
+}
 
 /*
  * Maximum IPv4 UDP payload is 65507 bytes. WayDisplay stores its
  * own tile packet header inside that UDP payload, so the tile data
- * budget must subtract sizeof(struct wd_udp_tile_packet_header) too.
+ * budget must subtract WD_UDP_TILE_HEADER_MAX_SIZE too.
  */
 #define WD_IPV4_HEADER_BYTES    20u
 #define WD_UDP_HEADER_BYTES     8u
 #define WD_IPV4_UDP_PAYLOAD_MAX 65507u
-#define WD_UDP_TILE_PAYLOAD_MAX ((uint16_t)(WD_IPV4_UDP_PAYLOAD_MAX - sizeof(struct wd_udp_tile_packet_header)))
+#define WD_UDP_TILE_PAYLOAD_MAX ((uint16_t)(WD_IPV4_UDP_PAYLOAD_MAX - WD_UDP_TILE_HEADER_MAX_SIZE))
 #define WD_IPV4_MTU_TO_TILE_PAYLOAD(mtu)                                                                                                   \
-    ((uint16_t)((mtu) - WD_IPV4_HEADER_BYTES - WD_UDP_HEADER_BYTES - sizeof(struct wd_udp_tile_packet_header)))
+    ((uint16_t)((mtu) - WD_IPV4_HEADER_BYTES - WD_UDP_HEADER_BYTES - WD_UDP_TILE_HEADER_MAX_SIZE))
 
 struct wd_mtu_probe_start_payload {
-    uint32_t session_id;
+    uint8_t session_id;
     uint16_t probe_count;
     uint16_t reserved;
 };
 
 struct wd_mtu_probe_result_payload {
-    uint32_t session_id;
+    uint8_t session_id;
 
     /*
      * Largest tile payload size received, excluding
-     * struct wd_udp_tile_packet_header.
+     * the largest WayDisplay UDP tile packet header.
      */
     uint16_t max_udp_payload_received;
 
@@ -329,7 +648,7 @@ struct wd_mtu_probe_result_payload {
 };
 
 struct wd_throughput_probe_start_payload {
-    uint32_t session_id;
+    uint8_t session_id;
     uint16_t probe_count;
     uint16_t payload_size;
     uint16_t duration_ms;
@@ -337,7 +656,7 @@ struct wd_throughput_probe_start_payload {
 };
 
 struct wd_throughput_probe_result_payload {
-    uint32_t session_id;
+    uint8_t session_id;
     uint32_t bytes_received;
     uint16_t packets_received;
     uint16_t duration_ms;
@@ -348,20 +667,20 @@ struct wd_throughput_probe_result_payload {
 #define WD_SELECTION_MAX_TEXT_BYTES  (1024u * 1024u)
 
 struct wd_selection_payload_header {
-    uint32_t session_id;
+    uint8_t session_id;
     uint16_t mime_type;
     uint16_t reserved;
     uint32_t data_size;
 };
 
 struct wd_cursor_shape_payload {
-    uint32_t session_id;
+    uint8_t session_id;
     uint16_t shape;
     uint16_t reserved;
 };
 
 struct wd_display_resize_payload {
-    uint32_t session_id;
+    uint8_t session_id;
     uint16_t width;
     uint16_t height;
 };
@@ -373,36 +692,36 @@ WD_PACKED_END
 
 #if defined(__cplusplus)
 static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
-static_assert(sizeof(struct wd_udp_tile_packet_header) == 40, "unexpected wd_udp_tile_packet_header size");
+static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 36, "unexpected wd_udp_tile_packet_header size");
 static_assert(sizeof(struct wd_client_hello_payload) == 16, "unexpected wd_client_hello_payload size");
-static_assert(sizeof(struct wd_pointer_event_payload) == 36, "unexpected wd_pointer_event_payload size");
-static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mtu_probe_start_payload size");
-static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8, "unexpected wd_mtu_probe_result_payload size");
-static_assert(sizeof(struct wd_throughput_probe_start_payload) == 12, "unexpected wd_throughput_probe_start_payload size");
-static_assert(sizeof(struct wd_throughput_probe_result_payload) == 12, "unexpected wd_throughput_probe_result_payload size");
+static_assert(sizeof(struct wd_pointer_event_payload) == 33, "unexpected wd_pointer_event_payload size");
+static_assert(sizeof(struct wd_mtu_probe_start_payload) == 5, "unexpected wd_mtu_probe_start_payload size");
+static_assert(sizeof(struct wd_mtu_probe_result_payload) == 5, "unexpected wd_mtu_probe_result_payload size");
+static_assert(sizeof(struct wd_throughput_probe_start_payload) == 9, "unexpected wd_throughput_probe_start_payload size");
+static_assert(sizeof(struct wd_throughput_probe_result_payload) == 9, "unexpected wd_throughput_probe_result_payload size");
 static_assert(sizeof(struct wd_retransmit_entry) == 12, "unexpected wd_retransmit_entry size");
-static_assert(sizeof(struct wd_client_stats_payload) == 104, "unexpected wd_client_stats_payload size");
-static_assert(sizeof(struct wd_input_channel_hello_payload) == 8, "unexpected wd_input_channel_hello_payload size");
-static_assert(sizeof(struct wd_selection_channel_hello_payload) == 8, "unexpected wd_selection_channel_hello_payload size");
-static_assert(sizeof(struct wd_selection_payload_header) == 12, "unexpected wd_selection_payload_header size");
-static_assert(sizeof(struct wd_cursor_shape_payload) == 8, "unexpected wd_cursor_shape_payload size");
-static_assert(sizeof(struct wd_display_resize_payload) == 8, "unexpected wd_display_resize_payload size");
+static_assert(sizeof(struct wd_client_stats_payload) == 101, "unexpected wd_client_stats_payload size");
+static_assert(sizeof(struct wd_input_channel_hello_payload) == 5, "unexpected wd_input_channel_hello_payload size");
+static_assert(sizeof(struct wd_selection_channel_hello_payload) == 5, "unexpected wd_selection_channel_hello_payload size");
+static_assert(sizeof(struct wd_selection_payload_header) == 9, "unexpected wd_selection_payload_header size");
+static_assert(sizeof(struct wd_cursor_shape_payload) == 5, "unexpected wd_cursor_shape_payload size");
+static_assert(sizeof(struct wd_display_resize_payload) == 5, "unexpected wd_display_resize_payload size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
-_Static_assert(sizeof(struct wd_udp_tile_packet_header) == 40, "unexpected wd_udp_tile_packet_header size");
+_Static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 36, "unexpected wd_udp_tile_packet_header size");
 _Static_assert(sizeof(struct wd_client_hello_payload) == 16, "unexpected wd_client_hello_payload size");
-_Static_assert(sizeof(struct wd_pointer_event_payload) == 36, "unexpected wd_pointer_event_payload size");
-_Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 8, "unexpected wd_mtu_probe_start_payload size");
-_Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 8, "unexpected wd_mtu_probe_result_payload size");
-_Static_assert(sizeof(struct wd_throughput_probe_start_payload) == 12, "unexpected wd_throughput_probe_start_payload size");
-_Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 12, "unexpected wd_throughput_probe_result_payload size");
+_Static_assert(sizeof(struct wd_pointer_event_payload) == 33, "unexpected wd_pointer_event_payload size");
+_Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 5, "unexpected wd_mtu_probe_start_payload size");
+_Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 5, "unexpected wd_mtu_probe_result_payload size");
+_Static_assert(sizeof(struct wd_throughput_probe_start_payload) == 9, "unexpected wd_throughput_probe_start_payload size");
+_Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 9, "unexpected wd_throughput_probe_result_payload size");
 _Static_assert(sizeof(struct wd_retransmit_entry) == 12, "unexpected wd_retransmit_entry size");
-_Static_assert(sizeof(struct wd_client_stats_payload) == 104, "unexpected wd_client_stats_payload size");
-_Static_assert(sizeof(struct wd_input_channel_hello_payload) == 8, "unexpected wd_input_channel_hello_payload size");
-_Static_assert(sizeof(struct wd_selection_channel_hello_payload) == 8, "unexpected wd_selection_channel_hello_payload size");
-_Static_assert(sizeof(struct wd_selection_payload_header) == 12, "unexpected wd_selection_payload_header size");
-_Static_assert(sizeof(struct wd_cursor_shape_payload) == 8, "unexpected wd_cursor_shape_payload size");
-_Static_assert(sizeof(struct wd_display_resize_payload) == 8, "unexpected wd_display_resize_payload size");
+_Static_assert(sizeof(struct wd_client_stats_payload) == 101, "unexpected wd_client_stats_payload size");
+_Static_assert(sizeof(struct wd_input_channel_hello_payload) == 5, "unexpected wd_input_channel_hello_payload size");
+_Static_assert(sizeof(struct wd_selection_channel_hello_payload) == 5, "unexpected wd_selection_channel_hello_payload size");
+_Static_assert(sizeof(struct wd_selection_payload_header) == 9, "unexpected wd_selection_payload_header size");
+_Static_assert(sizeof(struct wd_cursor_shape_payload) == 5, "unexpected wd_cursor_shape_payload size");
+_Static_assert(sizeof(struct wd_display_resize_payload) == 5, "unexpected wd_display_resize_payload size");
 #endif
 
 #ifdef __cplusplus

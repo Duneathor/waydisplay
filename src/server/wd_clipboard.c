@@ -234,7 +234,7 @@ void wd_clipboard_destroy(struct wd_server* server) {
     server->remote_primary_text_size = 0;
 }
 
-static bool payload_to_text_copy(uint32_t expected_session_id, const uint8_t* payload, uint32_t payload_size, uint8_t** out_text,
+static bool payload_to_text_copy(uint8_t expected_session_id, const uint8_t* payload, uint32_t payload_size, uint8_t** out_text,
                                  uint32_t* out_text_size) {
     if (out_text)
     {
@@ -283,7 +283,7 @@ static bool payload_to_text_copy(uint32_t expected_session_id, const uint8_t* pa
     return true;
 }
 
-void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint32_t expected_session_id, const uint8_t* payload,
+void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expected_session_id, const uint8_t* payload,
                                           uint32_t payload_size, bool primary) {
     if (!net)
     {

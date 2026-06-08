@@ -61,6 +61,73 @@ void remember_input_timestamp(ClientState& state, uint64_t sequence, uint64_t ti
     }
 }
 
+void format_sockaddr_in(const sockaddr_in& addr, char* buf, size_t buf_size) {
+    char ip[INET_ADDRSTRLEN]{};
+
+    if (!buf || buf_size == 0)
+    {
+        return;
+    }
+
+    if (::inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip)) == nullptr)
+    {
+        std::snprintf(buf, buf_size, "<invalid>:%u", static_cast<unsigned>(ntohs(addr.sin_port)));
+        return;
+    }
+
+    std::snprintf(buf, buf_size, "%s:%u", ip, static_cast<unsigned>(ntohs(addr.sin_port)));
+}
+
+void format_socket_endpoint(int fd, bool peer, char* buf, size_t buf_size) {
+    sockaddr_in addr{};
+    socklen_t   addr_len = sizeof(addr);
+
+    if (!buf || buf_size == 0)
+    {
+        return;
+    }
+
+    std::snprintf(buf, buf_size, "unavailable");
+
+    if (fd < 0)
+    {
+        std::snprintf(buf, buf_size, "closed");
+        return;
+    }
+
+    if ((peer ? ::getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &addr_len)
+              : ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &addr_len)) != 0)
+    {
+        std::snprintf(buf, buf_size, "unavailable:%s", std::strerror(errno));
+        return;
+    }
+
+    if (addr.sin_family != AF_INET)
+    {
+        std::snprintf(buf, buf_size, "non-ipv4");
+        return;
+    }
+
+    format_sockaddr_in(addr, buf, buf_size);
+}
+
+void log_tcp_channel_endpoint(const char* channel, int fd) {
+    char local[64]{};
+    char remote[64]{};
+
+    format_socket_endpoint(fd, false, local, sizeof(local));
+    format_socket_endpoint(fd, true, remote, sizeof(remote));
+    std::printf("WayDisplay [info]: %s TCP channel connected local=%s remote=%s\n", channel, local, remote);
+}
+
+void log_udp_endpoint(const ClientState& state) {
+    char local[64]{};
+
+    format_socket_endpoint(state.udp_fd, false, local, sizeof(local));
+    std::printf("WayDisplay [info]: UDP receive endpoint local=%s requested_port=%u fd=%d\n", local,
+                state.client_udp_port, state.udp_fd);
+}
+
 bool set_socket_rcvbuf(int fd, int requested_bytes) {
     if (fd < 0)
     {
@@ -110,6 +177,7 @@ bool open_udp_socket(ClientState& state) {
     }
 
     set_socket_rcvbuf(state.udp_fd, WD_UDP_SOCKET_BUFFER_BYTES);
+    log_udp_endpoint(state);
 
     return true;
 }
@@ -145,6 +213,10 @@ int connect_tcp_fd(const ClientState& state, const char* label) {
 
 bool open_tcp_socket(ClientState& state) {
     state.tcp_fd = connect_tcp_fd(state, "connect TCP");
+    if (state.tcp_fd >= 0)
+    {
+        log_tcp_channel_endpoint("control", state.tcp_fd);
+    }
     return state.tcp_fd >= 0;
 }
 
@@ -170,6 +242,7 @@ bool open_input_tcp_socket(ClientState& state) {
     }
 
     state.input_tcp_fd = fd;
+    log_tcp_channel_endpoint("input", state.input_tcp_fd);
     return true;
 }
 
@@ -195,6 +268,7 @@ bool open_selection_tcp_socket(ClientState& state) {
     }
 
     state.selection_tcp_fd = fd;
+    log_tcp_channel_endpoint("selection", state.selection_tcp_fd);
     return true;
 }
 
@@ -213,7 +287,7 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
     std::vector<uint64_t> probe_offsets_ns;
     probe_offsets_ns.reserve(start.probe_count);
 
-    std::vector<uint8_t> recvbuf(sizeof(wd_udp_tile_packet_header) + 65535);
+    std::vector<uint8_t> recvbuf(WD_UDP_TILE_HEADER_MAX_SIZE + 65535);
 
     while (wd_now_ns() < deadline_ns)
     {
@@ -235,13 +309,16 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
             break;
         }
 
-        if (static_cast<size_t>(n) < sizeof(wd_udp_tile_packet_header))
+        if (static_cast<size_t>(n) < WD_UDP_TILE_HEADER_MIN_SIZE)
         {
             continue;
         }
 
-        wd_udp_tile_packet_header h{};
-        std::memcpy(&h, recvbuf.data(), sizeof(h));
+        wd_udp_tile_packet_decoded h{};
+        if (!wd_udp_tile_packet_decode(recvbuf.data(), static_cast<size_t>(n), &h))
+        {
+            continue;
+        }
 
         if (h.tile_id != WD_UDP_TILE_ID_MTU_PROBE)
         {
@@ -258,7 +335,7 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
             continue;
         }
 
-        if (static_cast<size_t>(n) != sizeof(wd_udp_tile_packet_header) + h.payload_size)
+        if (static_cast<size_t>(n) != (size_t)h.header_size + h.payload_size)
         {
             continue;
         }
@@ -333,7 +410,7 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
     const uint64_t start_ns = wd_now_ns();
     const uint64_t deadline_ns = start_ns + (static_cast<uint64_t>(start.duration_ms) + 500ull) * 1000ull * 1000ull;
 
-    std::vector<uint8_t> recvbuf(sizeof(wd_udp_tile_packet_header) + 65535);
+    std::vector<uint8_t> recvbuf(WD_UDP_TILE_HEADER_MAX_SIZE + 65535);
 
     while (wd_now_ns() < deadline_ns && packets_received < start.probe_count)
     {
@@ -355,13 +432,16 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
             break;
         }
 
-        if (static_cast<size_t>(n) < sizeof(wd_udp_tile_packet_header))
+        if (static_cast<size_t>(n) < WD_UDP_TILE_HEADER_MIN_SIZE)
         {
             continue;
         }
 
-        wd_udp_tile_packet_header h{};
-        std::memcpy(&h, recvbuf.data(), sizeof(h));
+        wd_udp_tile_packet_decoded h{};
+        if (!wd_udp_tile_packet_decode(recvbuf.data(), static_cast<size_t>(n), &h))
+        {
+            continue;
+        }
 
         if (h.tile_id != WD_UDP_TILE_ID_THROUGHPUT_PROBE)
         {
@@ -378,7 +458,7 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
             continue;
         }
 
-        if (static_cast<size_t>(n) != sizeof(wd_udp_tile_packet_header) + h.payload_size)
+        if (static_cast<size_t>(n) != (size_t)h.header_size + h.payload_size)
         {
             continue;
         }
@@ -748,7 +828,7 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
     }
 }
 
-bool selection_payload_to_string(const uint8_t* payload, uint32_t payload_size, uint32_t expected_session_id, std::string& out) {
+bool selection_payload_to_string(const uint8_t* payload, uint32_t payload_size, uint8_t expected_session_id, std::string& out) {
     if (!payload || payload_size < sizeof(wd_selection_payload_header))
     {
         return false;
@@ -775,7 +855,7 @@ bool selection_payload_to_string(const uint8_t* payload, uint32_t payload_size, 
 }
 
 void store_selection_text(ClientState& state, const uint8_t* payload, uint32_t payload_size, bool primary) {
-    uint32_t session_id = 0;
+    uint8_t session_id = 0;
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
         session_id = state.config.session_id;
@@ -809,7 +889,7 @@ void store_cursor_shape(ClientState& state, const uint8_t* payload, uint32_t pay
     wd_cursor_shape_payload cursor{};
     std::memcpy(&cursor, payload, sizeof(cursor));
 
-    uint32_t session_id = 0;
+    uint8_t session_id = 0;
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
         session_id = state.config.session_id;
@@ -833,7 +913,7 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
 
     const uint32_t expected_tiles = static_cast<uint32_t>(config.tiles_x) * static_cast<uint32_t>(config.tiles_y);
 
-    uint32_t session_id = 0;
+    uint8_t session_id = 0;
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
         session_id = state.config.session_id;
@@ -964,7 +1044,7 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         state.retx_request_last_refill_ns = wd_now_ns();
     }
 
-    state.udp_recv_buffer.assign(sizeof(wd_udp_tile_packet_header) + state.config.udp_payload_target + 512, 0);
+    state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + state.config.udp_payload_target + 512, 0);
 
     state.running.store(true, std::memory_order_relaxed);
 
@@ -1191,7 +1271,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
     std::vector<wd_retransmit_entry> entries;
     entries.reserve(MAX_RETRANSMIT_ENTRIES_PER_MESSAGE);
 
-    uint32_t session_id = 0;
+    uint8_t session_id = 0;
 
     {
         std::lock_guard<std::mutex> config_lock(state.config_mutex);
