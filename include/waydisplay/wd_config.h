@@ -80,19 +80,20 @@ extern "C" {
 /* Adaptive wire tile sizing.  Damage is tracked at 16x16; these are
  * protocol tile sizes selected at runtime based on packetization and
  * client completion feedback. */
-#define WD_ADAPTIVE_TILE_MIN_WIDTH                  16u
 #define WD_ADAPTIVE_TILE_MIN_HEIGHT                 16u
 #define WD_ADAPTIVE_TILE_MAX_WIDTH                  128u
 #define WD_ADAPTIVE_TILE_MAX_HEIGHT                 64u
-#define WD_ADAPTIVE_TILE_GOOD_WINDOWS_TO_UPSCALE    2u
-#define WD_ADAPTIVE_TILE_BAD_WINDOWS_TO_DOWNSCALE   1u
+#define WD_ADAPTIVE_TILE_GOOD_WINDOWS_TO_UPSCALE    4u
+#define WD_ADAPTIVE_TILE_BAD_WINDOWS_TO_DOWNSCALE   2u
+#define WD_ADAPTIVE_TILE_CHANGE_COOLDOWN_WINDOWS    2u
+#define WD_ADAPTIVE_TILE_DIRECT_JUMP_GOOD_WINDOWS   6u
 #define WD_ADAPTIVE_TILE_COMPLETION_GOOD_PERCENT    95u
 #define WD_ADAPTIVE_TILE_COMPLETION_BAD_PERCENT     75u
-#define WD_ADAPTIVE_TILE_MIN_CLIENT_PACKETS         32u
+#define WD_ADAPTIVE_TILE_MIN_CLIENT_PACKETS         128u
 #define WD_ADAPTIVE_TILE_FIT_SLACK_PERCENT          90u
-#define WD_ADAPTIVE_TILE_DIRECT_JUMP_MIN_COMPLETION_PERCENT 98u
+#define WD_ADAPTIVE_TILE_DIRECT_JUMP_MIN_COMPLETION_PERCENT 99u
 
-#define WD_ADAPTIVE_FPS_MIN                         3u
+#define WD_ADAPTIVE_FPS_MIN                         5u
 #define WD_ADAPTIVE_FPS_DECREASE_PERCENT            85u
 #define WD_ADAPTIVE_FPS_PRESSURE_DECREASE_PERCENT   70u
 #define WD_ADAPTIVE_FPS_INCREASE_PERCENT            110u

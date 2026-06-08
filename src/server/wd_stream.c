@@ -143,6 +143,7 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->client_completion_low_windows  = 0;
     policy->tile_size_good_windows         = 0;
     policy->tile_size_bad_windows          = 0;
+    policy->tile_size_change_cooldown_windows = 0;
     wd_stream_policy_reset_tokens(policy);
 }
 
@@ -172,6 +173,7 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->client_completion_low_windows = 0;
     policy->tile_size_good_windows = 0;
     policy->tile_size_bad_windows = 0;
+    policy->tile_size_change_cooldown_windows = 0;
     if (policy->limited_udp_bytes_per_second == 0)
     {
         policy->limited_udp_bytes_per_second = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
@@ -205,6 +207,7 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
 
     policy->tile_size_good_windows = 0;
     policy->tile_size_bad_windows = 0;
+    policy->tile_size_change_cooldown_windows = 0;
 
     wd_stream_policy_reset_tokens(policy);
 }
@@ -518,7 +521,15 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
     {
         policy->tile_size_good_windows = 0;
         policy->tile_size_bad_windows  = 0;
+        policy->tile_size_change_cooldown_windows = 0;
         return;
+    }
+
+    bool tile_change_cooling_down = false;
+    if (policy->tile_size_change_cooldown_windows != 0)
+    {
+        policy->tile_size_change_cooldown_windows--;
+        tile_change_cooling_down = true;
     }
 
     const bool one_packet_tiles = wd_stream_tile_payloads_fit_one_packet(stats, server->net.udp_payload_target);
@@ -553,6 +564,7 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
         const uint16_t old_height = server->tile_height;
         if (wd_server_reconfigure_tile_size_locked(server, new_width, new_height))
         {
+            policy->tile_size_change_cooldown_windows = WD_ADAPTIVE_TILE_CHANGE_COOLDOWN_WINDOWS;
             stats->tile_size_downshifts++;
             WD_LOG_INFO("WayDisplay: adaptive tile size down: %ux%u -> %ux%u%s",
                         old_width, old_height, new_width, new_height,
@@ -564,17 +576,26 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
 
     policy->tile_size_bad_windows = 0;
 
-    if (!should_upscale)
+    if (!should_upscale || tile_change_cooling_down)
     {
         policy->tile_size_good_windows = 0;
         return;
     }
 
-    if (completion_excellent)
+    if (policy->tile_size_good_windows < UINT32_MAX)
+    {
+        policy->tile_size_good_windows++;
+    }
+
+    const bool sustained_excellent_completion = completion_excellent &&
+                                               policy->tile_size_good_windows >=
+                                                   WD_ADAPTIVE_TILE_DIRECT_JUMP_GOOD_WINDOWS;
+
+    if (sustained_excellent_completion)
     {
         new_width = WD_ADAPTIVE_TILE_MAX_WIDTH;
         new_height = WD_ADAPTIVE_TILE_MAX_HEIGHT;
-        upscale_reason = " because client completion is lossless";
+        upscale_reason = " because client completion stayed lossless";
     }
     else if (wd_stream_largest_fitting_tile_size(stats, server->tile_width, server->tile_height, server->net.udp_payload_target,
                                                  &new_width, &new_height))
@@ -598,10 +619,6 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
         return;
     }
 
-    if (policy->tile_size_good_windows < UINT32_MAX)
-    {
-        policy->tile_size_good_windows++;
-    }
     if (policy->tile_size_good_windows < WD_ADAPTIVE_TILE_GOOD_WINDOWS_TO_UPSCALE)
     {
         return;
@@ -612,6 +629,7 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
     const uint16_t old_height = server->tile_height;
     if (wd_server_reconfigure_tile_size_locked(server, new_width, new_height))
     {
+        policy->tile_size_change_cooldown_windows = WD_ADAPTIVE_TILE_CHANGE_COOLDOWN_WINDOWS;
         stats->tile_size_upshifts++;
         WD_LOG_INFO("WayDisplay: adaptive tile size up: %ux%u -> %ux%u%s",
                     old_width, old_height, new_width, new_height,

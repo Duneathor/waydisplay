@@ -336,6 +336,7 @@ struct wd_stream_policy {
     uint32_t client_completion_low_windows;
     uint32_t tile_size_good_windows;
     uint32_t tile_size_bad_windows;
+    uint32_t tile_size_change_cooldown_windows;
     double   limited_udp_byte_tokens;
     uint64_t last_limited_udp_byte_refill_ns;
 };
