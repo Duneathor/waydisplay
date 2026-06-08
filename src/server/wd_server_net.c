@@ -122,6 +122,12 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         return false;
     }
 
+    if (pthread_cond_init(&net->display_resize_cond, NULL) != 0)
+    {
+        pthread_mutex_destroy(&net->lock);
+        return false;
+    }
+
     net->running              = true;
     net->tcp_port             = tcp_port;
     net->tcp_fd               = -1;
@@ -166,6 +172,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         net->retransmit_requested_generation = NULL;
         net->summary_dirty_tiles         = NULL;
         net->full_frame_sent_tiles       = NULL;
+        pthread_cond_destroy(&net->display_resize_cond);
         pthread_mutex_destroy(&net->lock);
         return false;
     }
@@ -255,6 +262,7 @@ void wd_net_destroy(struct wd_server* server) {
     net->primary_text_size    = 0;
     net->primary_text_pending = false;
 
+    pthread_cond_destroy(&net->display_resize_cond);
     pthread_mutex_destroy(&net->lock);
 }
 
@@ -460,20 +468,19 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
     }
 
     size_t packet_size = sizeof(struct wd_udp_tile_packet_header_compressed_multi) + udp_payload_target;
-    uint32_t target_packets = WD_THROUGHPUT_PROBE_TARGET_BYTES / (uint32_t)packet_size;
-    if (target_packets == 0)
-    {
-        target_packets = 1;
-    }
-    if (target_packets > UINT8_MAX)
-    {
-        target_packets = UINT8_MAX;
-    }
 
     struct wd_throughput_probe_start_payload start;
     memset(&start, 0, sizeof(start));
     start.session_id  = net->session_id;
-    start.probe_count = (uint16_t)target_packets;
+    /*
+     * UINT8_MAX means the probe is duration-limited. Earlier code sent a
+     * fixed WD_THROUGHPUT_PROBE_TARGET_BYTES budget paced across the probe
+     * window, which capped the best possible localhost result to roughly
+     * 8 MiB / 750 ms * safety ~= 9 MiB/s. Keep the UDP tile probe header in
+     * its normal uint8_t packet-count shape, but repeat packet ids and let the
+     * client count every received probe datagram until the deadline.
+     */
+    start.probe_count = UINT8_MAX;
     start.payload_size = udp_payload_target;
     start.duration_ms = WD_THROUGHPUT_PROBE_DURATION_MS;
 
@@ -500,25 +507,42 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
     h->tile_flags           = WD_TILE_NORMAL;
     h->tile_size            = wd_tile_size_code_for_dimensions(server->tile_width, server->tile_height);
     h->tile_id              = WD_UDP_TILE_ID_THROUGHPUT_PROBE;
-    h->tile_pkt_count       = (uint8_t)target_packets;
+    h->tile_pkt_count       = (uint8_t)start.probe_count;
     h->payload_size         = udp_payload_target;
     h->tile_generation      = net->session_id;
     h->compressed_tile_size = udp_payload_target;
     memset(packet + sizeof(*h), 0x5a, udp_payload_target);
 
-    const uint64_t start_ns = wd_now_ns();
+    const uint64_t start_ns    = wd_now_ns();
     const uint64_t duration_ns = (uint64_t)WD_THROUGHPUT_PROBE_DURATION_MS * 1000000ull;
+    const uint64_t deadline_ns = start_ns + duration_ns;
 
-    for (uint32_t i = 0; i < target_packets; ++i)
+    uint32_t packets_sent = 0;
+    while (wd_now_ns() < deadline_ns)
     {
-        h->tile_pkt_id = (uint8_t)i;
-        (void)sendto(net->udp_fd, packet, packet_size, 0, (const struct sockaddr*)client_udp_addr, sizeof(*client_udp_addr));
+        h->tile_pkt_id = (uint8_t)(packets_sent % UINT8_MAX);
 
-        uint64_t next_ns = start_ns + ((uint64_t)(i + 1) * duration_ns) / target_packets;
-        while (wd_now_ns() < next_ns)
+        ssize_t sent = sendto(net->udp_fd, packet, packet_size, 0, (const struct sockaddr*)client_udp_addr, sizeof(*client_udp_addr));
+        if (sent == (ssize_t)packet_size)
+        {
+            packets_sent++;
+            continue;
+        }
+
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS))
         {
             wd_sleep_ms(1);
+            continue;
         }
+
+        if (sent < 0 && errno == EINTR)
+        {
+            continue;
+        }
+
+        /* Other errors are unexpected during the throughput probe; stop
+         * sending and use whatever the client received. */
+        break;
     }
 
     free(packet);
@@ -534,11 +558,13 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
     }
 
     uint64_t limited_rate = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
+    uint32_t packets_received = 0;
 
     if (type == WD_MSG_THROUGHPUT_PROBE_RESULT && payload_size_rx >= sizeof(struct wd_throughput_probe_result_payload))
     {
         struct wd_throughput_probe_result_payload result;
         memcpy(&result, payload, sizeof(result));
+        packets_received = result.packets_received;
 
         if (result.session_id == net->session_id && result.bytes_received > 0 && result.duration_ms > 0)
         {
@@ -560,7 +586,8 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
 
     free(payload);
 
-    WD_LOG_INFO("WayDisplay: adaptive UDP byte budget selected by throughput probe: %llu KiB/s", (unsigned long long)(limited_rate / 1024ull));
+    WD_LOG_INFO("WayDisplay: adaptive UDP byte budget selected by throughput probe: %llu KiB/s sent=%u recv=%u",
+                (unsigned long long)(limited_rate / 1024ull), packets_sent, packets_received);
 
     return limited_rate;
 }
@@ -582,6 +609,31 @@ static void wd_server_fill_config(struct wd_server* server, uint8_t session_id, 
     cfg->zstd_level         = WD_ZSTD_LEVEL;
     cfg->udp_payload_target = udp_payload_target;
     cfg->capabilities       = WD_SERVER_CAP_INPUT_CHANNEL | WD_SERVER_CAP_SELECTION_CHANNEL;
+}
+
+
+bool wd_server_send_current_config_locked(struct wd_server* server) {
+    if (!server)
+    {
+        return false;
+    }
+
+    struct wd_net_state* net = &server->net;
+    if (!net->client_connected || net->tcp_fd < 0 || net->session_id == 0)
+    {
+        return false;
+    }
+
+    struct wd_server_config_payload cfg;
+    wd_server_fill_config(server, net->session_id, net->udp_payload_target, &cfg);
+
+    if (!wd_send_tcp_message(net->tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg)))
+    {
+        return false;
+    }
+
+    net->stats.tcp_config_tx++;
+    return true;
 }
 
 static void wd_server_handle_keyboard_message(struct wd_server* server, const struct wd_server_config_payload* cfg,
@@ -1304,7 +1356,7 @@ void* wd_net_thread_main(void* arg) {
 
                     if (resize.session_id == cfg.session_id && resize.width != 0 && resize.height != 0)
                     {
-                        if (wd_server_apply_display_size(server, resize.width, resize.height))
+                        if (wd_server_request_display_size(server, resize.width, resize.height))
                         {
                             wd_server_fill_config(server, cfg.session_id, selected_udp_payload, &cfg);
 

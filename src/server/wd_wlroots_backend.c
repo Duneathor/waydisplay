@@ -285,11 +285,12 @@ bool wd_wlroots_resize_headless_output(struct wd_server* server) {
         return false;
     }
 
-    if (server->output_layout)
-    {
-        wlr_output_layout_add(server->output_layout, server->output, 0, 0);
-    }
-
+    /*
+     * The output is already present in the layout from creation. Re-adding it
+     * during a live mode change is unnecessary and can duplicate wlroots
+     * layout bookkeeping on some versions. The layout observes the output's
+     * committed size; keep the scene-output origin pinned instead.
+     */
     if (server->scene_output)
     {
         wlr_scene_output_set_position(server->scene_output, 0, 0);

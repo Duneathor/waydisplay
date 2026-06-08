@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 11u
+#define WD_PROTOCOL_VERSION 12u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -657,8 +657,8 @@ struct wd_throughput_probe_start_payload {
 
 struct wd_throughput_probe_result_payload {
     uint8_t session_id;
-    uint32_t bytes_received;
-    uint16_t packets_received;
+    uint64_t bytes_received;
+    uint32_t packets_received;
     uint16_t duration_ms;
 };
 
@@ -698,7 +698,7 @@ static_assert(sizeof(struct wd_pointer_event_payload) == 33, "unexpected wd_poin
 static_assert(sizeof(struct wd_mtu_probe_start_payload) == 5, "unexpected wd_mtu_probe_start_payload size");
 static_assert(sizeof(struct wd_mtu_probe_result_payload) == 5, "unexpected wd_mtu_probe_result_payload size");
 static_assert(sizeof(struct wd_throughput_probe_start_payload) == 9, "unexpected wd_throughput_probe_start_payload size");
-static_assert(sizeof(struct wd_throughput_probe_result_payload) == 9, "unexpected wd_throughput_probe_result_payload size");
+static_assert(sizeof(struct wd_throughput_probe_result_payload) == 15, "unexpected wd_throughput_probe_result_payload size");
 static_assert(sizeof(struct wd_retransmit_entry) == 12, "unexpected wd_retransmit_entry size");
 static_assert(sizeof(struct wd_client_stats_payload) == 101, "unexpected wd_client_stats_payload size");
 static_assert(sizeof(struct wd_input_channel_hello_payload) == 5, "unexpected wd_input_channel_hello_payload size");
@@ -714,7 +714,7 @@ _Static_assert(sizeof(struct wd_pointer_event_payload) == 33, "unexpected wd_poi
 _Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 5, "unexpected wd_mtu_probe_start_payload size");
 _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 5, "unexpected wd_mtu_probe_result_payload size");
 _Static_assert(sizeof(struct wd_throughput_probe_start_payload) == 9, "unexpected wd_throughput_probe_start_payload size");
-_Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 9, "unexpected wd_throughput_probe_result_payload size");
+_Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 15, "unexpected wd_throughput_probe_result_payload size");
 _Static_assert(sizeof(struct wd_retransmit_entry) == 12, "unexpected wd_retransmit_entry size");
 _Static_assert(sizeof(struct wd_client_stats_payload) == 101, "unexpected wd_client_stats_payload size");
 _Static_assert(sizeof(struct wd_input_channel_hello_payload) == 5, "unexpected wd_input_channel_hello_payload size");

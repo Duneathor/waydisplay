@@ -9,7 +9,7 @@ static void usage(const char* argv0) {
     fprintf(stderr,
             "Usage:\n"
             "  %s [--port 5000] [--scale 1.0] [--size 1664x1024] [--app <command>] "
-            "[--tile-size 128x64|64x64] [--xwayland|--no-xwayland]\n\n"
+            "[--tile-size 128x64|64x64|32x32|16x16] [--xwayland|--no-xwayland]\n\n"
             "Examples:\n"
             "  %s --port 5000 --app foot\n"
             "  %s --port 5000 --scale 1.25 --size 1366x768 --app foot\n"
@@ -94,6 +94,15 @@ int main(int argc, char** argv) {
                 height > UINT16_MAX)
             {
                 fprintf(stderr, "Invalid --tile-size value: %s\n", argv[i]);
+                usage(argv[0]);
+                return 1;
+            }
+
+            const bool supported_tile_size = (width == 128u && height == 64u) || (width == 64u && height == 64u) ||
+                                             (width == 32u && height == 32u) || (width == 16u && height == 16u);
+            if (!supported_tile_size)
+            {
+                fprintf(stderr, "Invalid --tile-size value: %s; supported values are 128x64, 64x64, 32x32, and 16x16\n", argv[i]);
                 usage(argv[0]);
                 return 1;
             }

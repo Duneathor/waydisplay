@@ -215,10 +215,19 @@ bool packet_header_valid(const wd_udp_tile_packet_decoded& header, size_t packet
         return false;
     }
 
-    const size_t max_compressed_size =
-        wd_zstd_compress_bound(static_cast<size_t>(config.tile_width) * static_cast<size_t>(config.tile_height) * WD_BYTES_PER_PIXEL);
+    const size_t uncompressed_tile_bytes =
+        static_cast<size_t>(config.tile_width) * static_cast<size_t>(config.tile_height) * WD_BYTES_PER_PIXEL;
 
-    if (header.compressed_tile_size > max_compressed_size)
+    if (wd_tile_protocol_is_compressed(header.tile_protocol))
+    {
+        const size_t max_compressed_size = wd_zstd_compress_bound(uncompressed_tile_bytes);
+
+        if (header.compressed_tile_size > max_compressed_size)
+        {
+            return false;
+        }
+    }
+    else if (header.compressed_tile_size != uncompressed_tile_bytes)
     {
         return false;
     }
@@ -313,6 +322,14 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
 
+    const size_t uncompressed_tile_bytes =
+        static_cast<size_t>(state.config.tile_width) * static_cast<size_t>(state.config.tile_height) * WD_BYTES_PER_PIXEL;
+
+    if (!wd_tile_protocol_is_compressed(header.tile_protocol))
+    {
+        header.compressed_tile_size = static_cast<uint16_t>(uncompressed_tile_bytes);
+    }
+
     if (!packet_header_valid(header, packet_size, udp_payload_target, state.config))
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
@@ -357,8 +374,10 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         entry.tile_id           = header.tile_id;
         entry.generation        = header.tile_generation;
         entry.tile_timestamp_ns = header.tile_timestamp_ns;
+        entry.input_sequence    = header.input_sequence;
         entry.packet_count      = header.tile_pkt_count;
         entry.compressed_size   = header.compressed_tile_size;
+        entry.compressed_payload = wd_tile_protocol_is_compressed(header.tile_protocol);
         entry.first_packet_ns   = now_ns;
 
         uint64_t retx_response_ns = 0;
@@ -396,7 +415,8 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         entry.received_count = 0;
     }
 
-    if (entry.packet_count != header.tile_pkt_count || entry.compressed_size != header.compressed_tile_size)
+    if (entry.packet_count != header.tile_pkt_count || entry.compressed_size != header.compressed_tile_size ||
+        entry.compressed_payload != wd_tile_protocol_is_compressed(header.tile_protocol))
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         return completed;
@@ -419,23 +439,35 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         return completed;
     }
 
-    const size_t uncompressed_tile_bytes =
-        static_cast<size_t>(state.config.tile_width) * static_cast<size_t>(state.config.tile_height) * WD_BYTES_PER_PIXEL;
-
     completed.tile_bytes.assign(uncompressed_tile_bytes, 0);
 
-    const bool ok = wd_zstd_decompress(entry.compressed.data(), entry.compressed.size(), completed.tile_bytes.data(),
-                                       completed.tile_bytes.size(), uncompressed_tile_bytes);
-
-    if (!ok)
+    if (entry.compressed_payload)
     {
-        std::fprintf(stderr, "failed to decompress tile %u generation %llu\n", entry.tile_id,
-                     static_cast<unsigned long long>(entry.generation));
+        const bool ok = wd_zstd_decompress(entry.compressed.data(), entry.compressed.size(), completed.tile_bytes.data(),
+                                           completed.tile_bytes.size(), uncompressed_tile_bytes);
 
-        clear_retx_inflight(state, entry.tile_id, entry.generation);
+        if (!ok)
+        {
+            std::fprintf(stderr, "failed to decompress tile %u generation %llu\n", entry.tile_id,
+                         static_cast<unsigned long long>(entry.generation));
 
-        entry = Entry{};
-        return completed;
+            clear_retx_inflight(state, entry.tile_id, entry.generation);
+
+            entry = Entry{};
+            return completed;
+        }
+    }
+    else
+    {
+        if (entry.compressed.size() != uncompressed_tile_bytes)
+        {
+            state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+            clear_retx_inflight(state, entry.tile_id, entry.generation);
+            entry = Entry{};
+            return completed;
+        }
+
+        std::memcpy(completed.tile_bytes.data(), entry.compressed.data(), uncompressed_tile_bytes);
     }
 
     completed.valid                  = true;

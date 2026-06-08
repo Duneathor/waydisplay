@@ -39,6 +39,7 @@ class TileReassembler {
         uint64_t             input_sequence    = 0;
         uint16_t             packet_count      = 0;
         uint32_t             compressed_size   = 0;
+        bool                 compressed_payload = true;
         uint64_t             first_packet_ns   = 0;
         std::vector<uint8_t> compressed;
         std::vector<uint8_t> received;

@@ -18,17 +18,19 @@ static void readback_box_from_damage(struct wd_server* server, int max_width, in
     {
         bool have = false;
 
-        for (uint16_t tile_id = 0; tile_id < server->total_tiles; ++tile_id)
+        for (uint32_t tile_id = 0; tile_id < server->total_base_tiles; ++tile_id)
         {
             if (!server->damage_tiles[tile_id])
             {
                 continue;
             }
 
-            int tx1 = (int)wd_tile_start_x_for_tile(tile_id, server->tiles_x, server->tile_width);
-            int ty1 = (int)wd_tile_start_y_for_tile(tile_id, server->tiles_x, server->tile_height);
-            int tx2 = tx1 + (int)wd_tile_visible_width_for_tile(server->display_width, tile_id, server->tiles_x, server->tile_width);
-            int ty2 = ty1 + (int)wd_tile_visible_height_for_tile(server->display_height, tile_id, server->tiles_x, server->tile_height);
+            const uint32_t bx = tile_id % (uint32_t)server->base_tiles_x;
+            const uint32_t by = tile_id / (uint32_t)server->base_tiles_x;
+            int tx1 = (int)(bx * (uint32_t)server->base_tile_width);
+            int ty1 = (int)(by * (uint32_t)server->base_tile_height);
+            int tx2 = tx1 + (int)server->base_tile_width;
+            int ty2 = ty1 + (int)server->base_tile_height;
 
             if (tx1 < 0)
             {

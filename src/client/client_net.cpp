@@ -400,19 +400,21 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
     wd_throughput_probe_start_payload start{};
     std::memcpy(&start, payload, sizeof(start));
 
-    if (start.probe_count == 0 || start.payload_size == 0)
+    if (start.probe_count == 0 || start.probe_count > UINT8_MAX || start.payload_size == 0)
     {
         return false;
     }
 
-    uint32_t bytes_received = 0;
-    uint16_t packets_received = 0;
+    const bool duration_limited = start.probe_count == UINT8_MAX;
+
+    uint64_t bytes_received = 0;
+    uint32_t packets_received = 0;
     const uint64_t start_ns = wd_now_ns();
     const uint64_t deadline_ns = start_ns + (static_cast<uint64_t>(start.duration_ms) + 500ull) * 1000ull * 1000ull;
 
     std::vector<uint8_t> recvbuf(WD_UDP_TILE_HEADER_MAX_SIZE + 65535);
 
-    while (wd_now_ns() < deadline_ns && packets_received < start.probe_count)
+    while (wd_now_ns() < deadline_ns && (duration_limited || packets_received < start.probe_count))
     {
         ssize_t n = ::recv(state.udp_fd, recvbuf.data(), recvbuf.size(), 0);
 
@@ -463,7 +465,7 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
             continue;
         }
 
-        bytes_received += static_cast<uint32_t>(n);
+        bytes_received += static_cast<uint64_t>(n);
         packets_received++;
     }
 

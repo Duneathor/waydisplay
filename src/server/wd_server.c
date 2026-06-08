@@ -71,6 +71,37 @@ static bool launch_startup_command(struct wd_server* server) {
     return true;
 }
 
+
+static void server_process_pending_display_resize(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    struct wd_net_state* net = &server->net;
+
+    pthread_mutex_lock(&net->lock);
+    if (!net->display_resize_pending)
+    {
+        pthread_mutex_unlock(&net->lock);
+        return;
+    }
+
+    uint64_t serial = net->display_resize_request_serial;
+    uint32_t width  = net->display_resize_width;
+    uint32_t height = net->display_resize_height;
+    net->display_resize_pending = false;
+    pthread_mutex_unlock(&net->lock);
+
+    bool ok = wd_server_apply_display_size(server, width, height);
+
+    pthread_mutex_lock(&net->lock);
+    net->display_resize_result           = ok;
+    net->display_resize_completed_serial = serial;
+    pthread_cond_broadcast(&net->display_resize_cond);
+    pthread_mutex_unlock(&net->lock);
+}
+
 static int server_frame_timer(void* data) {
     struct wd_server* server = data;
 
@@ -84,6 +115,8 @@ static int server_frame_timer(void* data) {
         wl_display_terminate(server->display);
         return 0;
     }
+
+    server_process_pending_display_resize(server);
 
     /*
      * Drain keyboard first so a held Ctrl modifier is active before a clipboard
@@ -150,8 +183,8 @@ static int server_frame_timer(void* data) {
     return 0;
 }
 
-static void mark_damage_tile(struct wd_server* server, uint16_t tile_id) {
-    if (!server || tile_id >= server->total_tiles)
+static void mark_damage_tile(struct wd_server* server, uint32_t tile_id) {
+    if (!server || tile_id >= server->total_base_tiles)
     {
         return;
     }
@@ -179,14 +212,14 @@ void wd_server_mark_scene_dirty(struct wd_server* server) {
     server->damage_all_tiles  = true;
     server->damage_tile_count = 0;
 
-    if (server->damage_tiles && server->total_tiles > 0)
+    if (server->damage_tiles && server->total_base_tiles > 0)
     {
-        memset(server->damage_tiles, 0, (size_t)server->total_tiles * sizeof(*server->damage_tiles));
+        memset(server->damage_tiles, 0, (size_t)server->total_base_tiles * sizeof(*server->damage_tiles));
     }
 }
 
 void wd_server_mark_rect_dirty(struct wd_server* server, int x, int y, int width, int height) {
-    if (!server || width <= 0 || height <= 0 || server->total_tiles == 0)
+    if (!server || width <= 0 || height <= 0 || server->total_base_tiles == 0)
     {
         return;
     }
@@ -226,25 +259,25 @@ void wd_server_mark_rect_dirty(struct wd_server* server, int x, int y, int width
         return;
     }
 
-    uint16_t start_tile_x = (uint16_t)((uint32_t)x1 / server->tile_width);
-    uint16_t end_tile_x   = (uint16_t)(((uint32_t)(x2 - 1)) / server->tile_width);
-    uint16_t start_tile_y = (uint16_t)((uint32_t)y1 / server->tile_height);
-    uint16_t end_tile_y   = (uint16_t)(((uint32_t)(y2 - 1)) / server->tile_height);
+    uint16_t start_tile_x = (uint16_t)((uint32_t)x1 / server->base_tile_width);
+    uint16_t end_tile_x   = (uint16_t)(((uint32_t)(x2 - 1)) / server->base_tile_width);
+    uint16_t start_tile_y = (uint16_t)((uint32_t)y1 / server->base_tile_height);
+    uint16_t end_tile_y   = (uint16_t)(((uint32_t)(y2 - 1)) / server->base_tile_height);
 
-    if (end_tile_x >= server->tiles_x)
+    if (end_tile_x >= server->base_tiles_x)
     {
-        end_tile_x = (uint16_t)(server->tiles_x - 1);
+        end_tile_x = (uint16_t)(server->base_tiles_x - 1);
     }
-    if (end_tile_y >= server->tiles_y)
+    if (end_tile_y >= server->base_tiles_y)
     {
-        end_tile_y = (uint16_t)(server->tiles_y - 1);
+        end_tile_y = (uint16_t)(server->base_tiles_y - 1);
     }
 
     for (uint16_t ty = start_tile_y; ty <= end_tile_y; ++ty)
     {
         for (uint16_t tx = start_tile_x; tx <= end_tile_x; ++tx)
         {
-            uint16_t tile_id = (uint16_t)(ty * server->tiles_x + tx);
+            uint32_t tile_id = (uint32_t)ty * (uint32_t)server->base_tiles_x + (uint32_t)tx;
             mark_damage_tile(server, tile_id);
         }
     }
@@ -365,11 +398,17 @@ bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t h
         }
     }
 
-    const uint16_t tiles_x     = wd_tiles_for_width_with_tile(width, server->tile_width);
-    const uint16_t tiles_y     = wd_tiles_for_height_with_tile(height, server->tile_height);
-    const uint32_t total_tiles = (uint32_t)tiles_x * (uint32_t)tiles_y;
+    const uint16_t tiles_x          = wd_tiles_for_width_with_tile(width, server->tile_width);
+    const uint16_t tiles_y          = wd_tiles_for_height_with_tile(height, server->tile_height);
+    const uint32_t total_tiles      = (uint32_t)tiles_x * (uint32_t)tiles_y;
+    const uint16_t base_tile_width  = WD_BASE_TILE_WIDTH;
+    const uint16_t base_tile_height = WD_BASE_TILE_HEIGHT;
+    const uint16_t base_tiles_x     = wd_tiles_for_width_with_tile(width, base_tile_width);
+    const uint16_t base_tiles_y     = wd_tiles_for_height_with_tile(height, base_tile_height);
+    const uint32_t total_base_tiles = (uint32_t)base_tiles_x * (uint32_t)base_tiles_y;
 
-    if (tiles_x == 0 || tiles_y == 0 || total_tiles == 0 || total_tiles > UINT16_MAX)
+    if (tiles_x == 0 || tiles_y == 0 || total_tiles == 0 || total_tiles > UINT16_MAX || base_tiles_x == 0 || base_tiles_y == 0 ||
+        total_base_tiles == 0)
     {
         return false;
     }
@@ -379,6 +418,11 @@ bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t h
     server->tiles_x            = tiles_x;
     server->tiles_y            = tiles_y;
     server->total_tiles        = (uint16_t)total_tiles;
+    server->base_tile_width    = base_tile_width;
+    server->base_tile_height   = base_tile_height;
+    server->base_tiles_x       = base_tiles_x;
+    server->base_tiles_y       = base_tiles_y;
+    server->total_base_tiles   = total_base_tiles;
     server->framebuffer_pixels = server->display_width * server->display_height;
     server->framebuffer_bytes  = server->framebuffer_pixels * WD_BYTES_PER_PIXEL;
 
@@ -387,6 +431,34 @@ bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t h
 
 void wd_server_set_default_geometry(struct wd_server* server) {
     (void)wd_server_set_geometry(server, WD_DISPLAY_WIDTH, WD_DISPLAY_HEIGHT);
+}
+
+
+bool wd_server_request_display_size(struct wd_server* server, uint32_t width, uint32_t height) {
+    if (!server || width == 0 || height == 0 || width > UINT16_MAX || height > UINT16_MAX)
+    {
+        return false;
+    }
+
+    struct wd_net_state* net = &server->net;
+
+    pthread_mutex_lock(&net->lock);
+
+    uint64_t serial = ++net->display_resize_request_serial;
+    net->display_resize_width  = width;
+    net->display_resize_height = height;
+    net->display_resize_pending = true;
+
+    while (net->running && net->display_resize_completed_serial < serial)
+    {
+        pthread_cond_wait(&net->display_resize_cond, &net->lock);
+    }
+
+    bool ok = net->running && net->display_resize_completed_serial >= serial && net->display_resize_result;
+
+    pthread_mutex_unlock(&net->lock);
+
+    return ok;
 }
 
 bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint32_t height) {
@@ -405,6 +477,11 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     const uint16_t old_tiles_x            = server->tiles_x;
     const uint16_t old_tiles_y            = server->tiles_y;
     const uint16_t old_total_tiles        = server->total_tiles;
+    const uint16_t old_base_tile_width    = server->base_tile_width;
+    const uint16_t old_base_tile_height   = server->base_tile_height;
+    const uint16_t old_base_tiles_x       = server->base_tiles_x;
+    const uint16_t old_base_tiles_y       = server->base_tiles_y;
+    const uint32_t old_total_base_tiles   = server->total_base_tiles;
     const uint32_t old_framebuffer_pixels = server->framebuffer_pixels;
     const uint32_t old_framebuffer_bytes  = server->framebuffer_bytes;
 
@@ -426,6 +503,11 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     server->tiles_x            = old_tiles_x;
     server->tiles_y            = old_tiles_y;
     server->total_tiles        = old_total_tiles;
+    server->base_tile_width    = old_base_tile_width;
+    server->base_tile_height   = old_base_tile_height;
+    server->base_tiles_x       = old_base_tiles_x;
+    server->base_tiles_y       = old_base_tiles_y;
+    server->total_base_tiles   = old_total_base_tiles;
     server->framebuffer_pixels = old_framebuffer_pixels;
     server->framebuffer_bytes  = old_framebuffer_bytes;
 
@@ -715,14 +797,20 @@ int wd_server_run(struct wd_server* server) {
 
     if (!launch_startup_command(server))
     {
+        pthread_mutex_lock(&server->net.lock);
         server->net.running = false;
+        pthread_cond_broadcast(&server->net.display_resize_cond);
+        pthread_mutex_unlock(&server->net.lock);
         pthread_join(net_thread, NULL);
         return 1;
     }
 
     wl_display_run(server->display);
 
+    pthread_mutex_lock(&server->net.lock);
     server->net.running = false;
+    pthread_cond_broadcast(&server->net.display_resize_cond);
+    pthread_mutex_unlock(&server->net.lock);
 
     if (server->net.listen_fd >= 0)
     {

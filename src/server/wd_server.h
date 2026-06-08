@@ -194,6 +194,7 @@ struct wd_cached_tile {
     uint8_t* compressed;
     uint32_t compressed_size;
     uint32_t compressed_capacity;
+    bool     compressed_payload;
 
     uint64_t generation;
     uint64_t timestamp_ns;
@@ -207,10 +208,25 @@ struct wd_stats {
     uint64_t udp_tiles_sent;
     uint64_t udp_fresh_tiles_sent;
     uint64_t udp_retx_tiles_sent;
+    uint64_t udp_compressed_tiles_sent;
+    uint64_t udp_uncompressed_tiles_sent;
     uint64_t udp_compressed_tile_bytes_sent;
+    uint64_t udp_uncompressed_tile_bytes_sent;
     uint64_t udp_packets_sent;
     uint64_t udp_bytes_sent;
     uint64_t udp_send_pressure_drops;
+
+    uint64_t tile_choice_compressed;
+    uint64_t tile_choice_uncompressed;
+    uint64_t tile_choice_compressed_payload_sum;
+    uint64_t tile_choice_uncompressed_payload_sum;
+    uint64_t tile_choice_compressed_wire_sum;
+    uint64_t tile_choice_uncompressed_wire_sum;
+    uint64_t tile_choice_chosen_wire_sum;
+    uint64_t tile_choice_saved_wire_sum;
+
+    uint64_t tile_size_upshifts;
+    uint64_t tile_size_downshifts;
 
     uint64_t tcp_hello_rx;
     uint64_t tcp_config_tx;
@@ -318,6 +334,8 @@ struct wd_stream_policy {
     uint64_t limited_udp_rate_ceiling;
     uint32_t limited_rate_good_windows;
     uint32_t client_completion_low_windows;
+    uint32_t tile_size_good_windows;
+    uint32_t tile_size_bad_windows;
     double   limited_udp_byte_tokens;
     uint64_t last_limited_udp_byte_refill_ns;
 };
@@ -337,6 +355,14 @@ struct wd_queued_pointer_event {
 
 struct wd_net_state {
     pthread_mutex_t lock;
+    pthread_cond_t  display_resize_cond;
+
+    bool     display_resize_pending;
+    uint64_t display_resize_request_serial;
+    uint64_t display_resize_completed_serial;
+    uint32_t display_resize_width;
+    uint32_t display_resize_height;
+    bool     display_resize_result;
 
     bool running;
     bool client_connected;
@@ -430,7 +456,7 @@ struct wd_server {
     bool                              scene_dirty;
     bool                              damage_all_tiles;
     bool*                             damage_tiles;
-    uint16_t                          damage_tile_count;
+    uint32_t                          damage_tile_count;
 
     struct wlr_xdg_shell*                    xdg_shell;
     struct wlr_xdg_decoration_manager_v1*    xdg_decoration_manager;
@@ -457,6 +483,11 @@ struct wd_server {
     uint16_t tiles_x;
     uint16_t tiles_y;
     uint16_t total_tiles;
+    uint16_t base_tile_width;
+    uint16_t base_tile_height;
+    uint16_t base_tiles_x;
+    uint16_t base_tiles_y;
+    uint32_t total_base_tiles;
     uint32_t framebuffer_pixels;
     uint32_t framebuffer_bytes;
 
@@ -622,8 +653,11 @@ void wd_server_mark_rect_dirty(struct wd_server* server, int x, int y, int width
 void wd_server_mark_view_dirty(struct wd_view* view);
 void wd_server_mark_view_move_dirty(struct wd_view* view, int old_x, int old_y);
 bool wd_server_set_tile_size(struct wd_server* server, uint16_t tile_width, uint16_t tile_height);
+bool wd_server_reconfigure_tile_size_locked(struct wd_server* server, uint16_t tile_width, uint16_t tile_height);
+bool wd_server_send_current_config_locked(struct wd_server* server);
 bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t height);
 bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint32_t height);
+bool wd_server_request_display_size(struct wd_server* server, uint32_t width, uint32_t height);
 void wd_server_set_default_geometry(struct wd_server* server);
 
 /* wd_clipboard.c */

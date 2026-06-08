@@ -1216,16 +1216,17 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         return false;
     }
 
-    if (config.width == state.config.width && config.height == state.config.height && config.tiles_x == state.config.tiles_x &&
-        config.tiles_y == state.config.tiles_y && config.total_tiles == state.config.total_tiles)
+    if (config.width == state.config.width && config.height == state.config.height &&
+        config.tile_width == state.config.tile_width && config.tile_height == state.config.tile_height &&
+        config.tiles_x == state.config.tiles_x && config.tiles_y == state.config.tiles_y && config.total_tiles == state.config.total_tiles)
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
         state.config = config;
         return false;
     }
 
-    WD_LOG_INFO("server display resized: %ux%u tiles=%ux%u total=%u", config.width, config.height, config.tiles_x, config.tiles_y,
-                config.total_tiles);
+    WD_LOG_INFO("server config updated: display=%ux%u tile=%ux%u grid=%ux%u total=%u", config.width, config.height,
+                config.tile_width, config.tile_height, config.tiles_x, config.tiles_y, config.total_tiles);
 
     std::vector<uint32_t> new_framebuffer(static_cast<size_t>(config.width) * config.height, 0);
     std::vector<uint64_t> new_displayed_generation(config.total_tiles, 0);
