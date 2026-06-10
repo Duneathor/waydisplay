@@ -225,9 +225,6 @@ struct wd_stats {
     uint64_t tile_choice_chosen_wire_sum;
     uint64_t tile_choice_saved_wire_sum;
 
-    uint64_t tile_size_upshifts;
-    uint64_t tile_size_downshifts;
-
     uint64_t tcp_hello_rx;
     uint64_t tcp_config_tx;
     uint64_t tcp_summary_tx;
@@ -296,8 +293,8 @@ struct wd_stats {
     uint64_t tcp_summary_delta_tx;
     uint64_t tcp_summary_delta_tiles;
 
-    uint64_t limited_rate_downshifts;
-    uint64_t limited_rate_upshifts;
+    uint64_t rate_decreases;
+    uint64_t rate_increases;
     uint64_t frame_rate_downshifts;
     uint64_t frame_rate_upshifts;
     uint64_t dirty_pointer_priority_pops;
@@ -317,22 +314,16 @@ struct wd_stream_policy {
     uint16_t target_fps;
     uint16_t effective_target_fps;
 
-    uint32_t throttle_bad_windows;
-    uint32_t frame_rate_good_windows;
-    uint32_t throttle_good_windows;
+    uint32_t frame_rate_good_seconds;
 
     uint64_t last_frame_send_ns;
 
     uint64_t limited_udp_bytes_per_second;
     uint64_t limited_udp_rate_floor;
     uint64_t limited_udp_rate_ceiling;
-    uint32_t limited_rate_good_windows;
-    uint32_t client_completion_low_windows;
-    uint32_t tile_size_good_windows;
-    uint32_t tile_size_bad_windows;
-    uint32_t tile_size_change_cooldown_windows;
-    uint16_t max_wire_tile_width;
-    uint16_t max_wire_tile_height;
+    uint32_t link_good_seconds;
+    uint32_t link_loss_seconds;
+    uint32_t multipacket_loss_cooldown_seconds;
     double   limited_udp_byte_tokens;
     uint64_t last_limited_udp_byte_refill_ns;
 };

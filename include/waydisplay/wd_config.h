@@ -58,46 +58,26 @@ extern "C" {
 #define WD_TILE_PRIORITY_POINTER_ACTIVE_NS 250000000ull
 #define WD_TILE_PRIORITY_POINTER_DISTANCE_WEIGHT_BYTES 4096u
 
-/* Adaptive network throttling. */
-#define WD_THROTTLE_BAD_WINDOWS_TO_DOWNGRADE       2u
-#define WD_THROTTLE_GOOD_WINDOWS_TO_UPGRADE        8u
-#define WD_THROTTLE_REPAIR_RATIO_NUMERATOR         1u
-#define WD_THROTTLE_REPAIR_RATIO_DENOMINATOR       2u
-#define WD_THROTTLE_REPAIR_STORM_TILES_PER_SECOND  96u
-#define WD_THROTTLE_REPAIR_STORM_REQUESTS_PER_SEC  2u
-#define WD_THROTTLE_MIN_FRESH_TILES_FOR_RATIO      16u
-#define WD_THROTTLE_PRESSURE_DOWNGRADE_WINDOWS     1u
-#define WD_LIMITED_RATE_DECREASE_PERCENT           85u
-#define WD_LIMITED_RATE_PRESSURE_DECREASE_PERCENT  70u
-#define WD_LIMITED_RATE_INCREASE_PERCENT           112u
-#define WD_LIMITED_RATE_INCREASE_MIN_BYTES         (64ull * 1024ull)
-#define WD_LIMITED_RATE_GOOD_WINDOWS_TO_INCREASE   3u
-#define WD_LIMITED_RATE_CLIENT_COMPLETION_MIN_SENT 4u
-#define WD_LIMITED_RATE_CLIENT_COMPLETION_PERCENT  35u
-#define WD_LIMITED_RATE_CLIENT_COMPLETION_BAD_WINDOWS 2u
-#define WD_THROTTLE_CLIENT_RETX_REQUESTS_PER_SEC    16u
+/* Stream link health policy.  Tile size is not adapted globally: each dirty
+ * tile is encoded at the largest supported wire size that satisfies the
+ * current packet/budget/loss rules. */
+#define WD_WIRE_TILE_MAX_WIDTH                        128u
+#define WD_WIRE_TILE_MAX_HEIGHT                       64u
+#define WD_STREAM_LINK_LOSS_SECONDS_TO_DECREASE       1u
+#define WD_STREAM_LINK_GOOD_SECONDS_TO_INCREASE       2u
+#define WD_STREAM_RATE_DECREASE_PERCENT               85u
+#define WD_STREAM_RATE_PRESSURE_DECREASE_PERCENT      70u
+#define WD_STREAM_RATE_INCREASE_PERCENT               112u
+#define WD_STREAM_RATE_INCREASE_MIN_BYTES             (64ull * 1024ull)
+#define WD_STREAM_CLIENT_COMPLETION_MIN_PACKETS       4u
+#define WD_STREAM_CLIENT_COMPLETION_LOSS_PERCENT      35u
+#define WD_STREAM_MULTIPACKET_LOSS_COOLDOWN_SECONDS   2u
 
-/* Adaptive wire tile sizing.  Damage is tracked at 16x16; these are
- * protocol tile sizes selected at runtime based on packetization and
- * client completion feedback. */
-#define WD_ADAPTIVE_TILE_MIN_HEIGHT                 16u
-#define WD_ADAPTIVE_TILE_MAX_WIDTH                  128u
-#define WD_ADAPTIVE_TILE_MAX_HEIGHT                 64u
-#define WD_ADAPTIVE_TILE_GOOD_WINDOWS_TO_UPSCALE    8u
-#define WD_ADAPTIVE_TILE_BAD_WINDOWS_TO_DOWNSCALE   2u
-#define WD_ADAPTIVE_TILE_CHANGE_COOLDOWN_WINDOWS    2u
-#define WD_ADAPTIVE_TILE_DIRECT_JUMP_GOOD_WINDOWS   6u
-#define WD_ADAPTIVE_TILE_COMPLETION_GOOD_PERCENT    95u
-#define WD_ADAPTIVE_TILE_COMPLETION_BAD_PERCENT     75u
-#define WD_ADAPTIVE_TILE_MIN_CLIENT_PACKETS         128u
-#define WD_ADAPTIVE_TILE_FIT_SLACK_PERCENT          90u
-#define WD_ADAPTIVE_TILE_DIRECT_JUMP_MIN_COMPLETION_PERCENT 99u
-
-#define WD_ADAPTIVE_FPS_MIN                         5u
-#define WD_ADAPTIVE_FPS_DECREASE_PERCENT            85u
-#define WD_ADAPTIVE_FPS_PRESSURE_DECREASE_PERCENT   70u
-#define WD_ADAPTIVE_FPS_INCREASE_PERCENT            110u
-#define WD_ADAPTIVE_FPS_GOOD_WINDOWS_TO_INCREASE    3u
+#define WD_STREAM_FPS_MIN                            5u
+#define WD_STREAM_FPS_DECREASE_PERCENT               85u
+#define WD_STREAM_FPS_PRESSURE_DECREASE_PERCENT      70u
+#define WD_STREAM_FPS_INCREASE_PERCENT               110u
+#define WD_STREAM_FPS_GOOD_SECONDS_TO_INCREASE       3u
 
 /* Client interaction/render-loop tuning. */
 #define WD_CLIENT_DEFAULT_TARGET_FPS           WD_DEFAULT_PARTIAL_FPS

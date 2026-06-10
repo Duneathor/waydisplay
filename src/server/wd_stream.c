@@ -94,21 +94,15 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
 
     memset(policy, 0, sizeof(*policy));
 
-    policy->target_fps                   = WD_DEFAULT_PARTIAL_FPS;
-    policy->effective_target_fps         = WD_DEFAULT_PARTIAL_FPS;
-    policy->throttle_bad_windows         = 0;
-    policy->frame_rate_good_windows      = 0;
-    policy->throttle_good_windows        = 0;
-    policy->limited_udp_bytes_per_second = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
+    policy->target_fps                    = WD_DEFAULT_PARTIAL_FPS;
+    policy->effective_target_fps          = WD_DEFAULT_PARTIAL_FPS;
+    policy->frame_rate_good_seconds       = 0;
+    policy->limited_udp_bytes_per_second  = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
     policy->limited_udp_rate_floor        = WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND;
     policy->limited_udp_rate_ceiling      = WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND;
-    policy->limited_rate_good_windows      = 0;
-    policy->client_completion_low_windows  = 0;
-    policy->tile_size_good_windows         = 0;
-    policy->tile_size_bad_windows          = 0;
-    policy->tile_size_change_cooldown_windows = 0;
-    policy->max_wire_tile_width = WD_ADAPTIVE_TILE_MAX_WIDTH;
-    policy->max_wire_tile_height = WD_ADAPTIVE_TILE_MAX_HEIGHT;
+    policy->link_good_seconds             = 0;
+    policy->link_loss_seconds             = 0;
+    policy->multipacket_loss_cooldown_seconds = 0;
     wd_stream_policy_reset_tokens(policy);
 }
 
@@ -131,16 +125,10 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
 
     policy->target_fps           = fps;
     policy->effective_target_fps = fps;
-    policy->throttle_bad_windows     = 0;
-    policy->frame_rate_good_windows  = 0;
-    policy->throttle_good_windows    = 0;
-    policy->limited_rate_good_windows = 0;
-    policy->client_completion_low_windows = 0;
-    policy->tile_size_good_windows = 0;
-    policy->tile_size_bad_windows = 0;
-    policy->tile_size_change_cooldown_windows = 0;
-    policy->max_wire_tile_width = WD_ADAPTIVE_TILE_MAX_WIDTH;
-    policy->max_wire_tile_height = WD_ADAPTIVE_TILE_MAX_HEIGHT;
+    policy->frame_rate_good_seconds = 0;
+    policy->link_good_seconds = 0;
+    policy->link_loss_seconds = 0;
+    policy->multipacket_loss_cooldown_seconds = 0;
     if (policy->limited_udp_bytes_per_second == 0)
     {
         policy->limited_udp_bytes_per_second = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
@@ -169,14 +157,10 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
         {
             policy->limited_udp_rate_floor = requested_limited_rate;
         }
-        policy->limited_rate_good_windows = 0;
+        policy->link_good_seconds = 0;
     }
 
-    policy->tile_size_good_windows = 0;
-    policy->tile_size_bad_windows = 0;
-    policy->tile_size_change_cooldown_windows = 0;
-    policy->max_wire_tile_width = WD_ADAPTIVE_TILE_MAX_WIDTH;
-    policy->max_wire_tile_height = WD_ADAPTIVE_TILE_MAX_HEIGHT;
+    policy->multipacket_loss_cooldown_seconds = 0;
 
     wd_stream_policy_reset_tokens(policy);
 }
@@ -193,7 +177,7 @@ void wd_stream_policy_set_limited_udp_byte_rate(struct wd_stream_policy* policy,
     policy->limited_udp_bytes_per_second    = rate;
     policy->limited_udp_rate_floor          = WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND;
     policy->limited_udp_rate_ceiling        = rate;
-    policy->limited_rate_good_windows       = 0;
+    policy->link_good_seconds       = 0;
     policy->limited_udp_byte_tokens         = 0.0;
     policy->last_limited_udp_byte_refill_ns = 0;
 }
@@ -216,7 +200,7 @@ static uint64_t wd_stream_policy_limited_ceiling(const struct wd_stream_policy* 
     return wd_stream_clamp_limited_udp_byte_rate(ceiling);
 }
 
-static void wd_stream_policy_set_limited_rate_adaptive_locked(struct wd_stream_policy* policy, uint64_t rate) {
+static void wd_stream_policy_set_limited_rate_locked(struct wd_stream_policy* policy, uint64_t rate) {
     if (!policy)
     {
         return;
@@ -256,9 +240,9 @@ static uint16_t wd_stream_policy_effective_fps_locked(const struct wd_stream_pol
     {
         fps = WD_DEFAULT_PARTIAL_FPS;
     }
-    if (fps < WD_ADAPTIVE_FPS_MIN)
+    if (fps < WD_STREAM_FPS_MIN)
     {
-        fps = WD_ADAPTIVE_FPS_MIN;
+        fps = WD_STREAM_FPS_MIN;
     }
     if (fps > WD_MAX_REASONABLE_FPS)
     {
@@ -268,348 +252,27 @@ static uint16_t wd_stream_policy_effective_fps_locked(const struct wd_stream_pol
 }
 
 
-static uint32_t wd_stream_tile_area(uint16_t width, uint16_t height) {
-    return (uint32_t)width * (uint32_t)height;
-}
-
-static bool wd_stream_next_larger_tile_size(uint16_t width, uint16_t height, uint16_t* out_width, uint16_t* out_height) {
-    if (!out_width || !out_height)
-    {
-        return false;
-    }
-
-    if (width <= 16 && height <= 16)
-    {
-        *out_width = 32;
-        *out_height = 32;
-        return true;
-    }
-    if (width <= 32 && height <= 32)
-    {
-        *out_width = 64;
-        *out_height = 64;
-        return true;
-    }
-    if (width <= 64 && height <= 64)
-    {
-        *out_width = 128;
-        *out_height = 64;
-        return true;
-    }
-
-    return false;
-}
-
-static bool wd_stream_next_smaller_tile_size(uint16_t width, uint16_t height, uint16_t* out_width, uint16_t* out_height) {
-    if (!out_width || !out_height)
-    {
-        return false;
-    }
-
-    if (width >= 128 && height >= 64)
-    {
-        *out_width = 64;
-        *out_height = 64;
-        return true;
-    }
-    if (width >= 64 && height >= 64)
-    {
-        *out_width = 32;
-        *out_height = 32;
-        return true;
-    }
-    if (width >= 32 && height >= 32)
-    {
-        *out_width = 16;
-        *out_height = 16;
-        return true;
-    }
-
-    return false;
-}
-
-static bool wd_stream_tile_payloads_fit_one_packet(const struct wd_stats* stats, uint16_t udp_payload_target) {
-    if (!stats || stats->udp_tiles_sent == 0 || udp_payload_target == 0)
-    {
-        return false;
-    }
-
-    if (stats->udp_packets_sent <= stats->udp_tiles_sent)
-    {
-        return true;
-    }
-
-    /* The choice stats use payload+header wire bytes.  A one-packet tile can
-     * still exceed udp_payload_target slightly after accounting for the header,
-     * so allow the largest current extensible header as slack. */
-    const uint64_t choices = stats->tile_choice_compressed + stats->tile_choice_uncompressed;
-    if (choices == 0)
-    {
-        return false;
-    }
-
-    const uint32_t avg_chosen_wire = (uint32_t)(stats->tile_choice_chosen_wire_sum / choices);
-    return avg_chosen_wire <= (uint32_t)udp_payload_target + WD_UDP_TILE_HEADER_MAX_SIZE;
-}
-
-static bool wd_stream_observed_wire_bytes_per_pixel(const struct wd_stats* stats, uint16_t tile_width, uint16_t tile_height,
-                                                       uint64_t* out_wire_bytes, uint64_t* out_pixels) {
-    if (!stats || !out_wire_bytes || !out_pixels || tile_width == 0 || tile_height == 0)
-    {
-        return false;
-    }
-
-    const uint64_t choices = stats->tile_choice_compressed + stats->tile_choice_uncompressed;
-    if (choices == 0 || stats->tile_choice_chosen_wire_sum == 0)
-    {
-        return false;
-    }
-
-    *out_wire_bytes = stats->tile_choice_chosen_wire_sum;
-    *out_pixels = choices * (uint64_t)wd_stream_tile_area(tile_width, tile_height);
-    return *out_pixels != 0;
-}
-
-static bool wd_stream_estimated_tile_wire_fits_packet(const struct wd_stats* stats, uint16_t current_width, uint16_t current_height,
-                                                       uint16_t candidate_width, uint16_t candidate_height,
-                                                       uint16_t udp_payload_target) {
-    if (!stats || udp_payload_target == 0)
-    {
-        return false;
-    }
-
-    uint64_t observed_wire_bytes = 0;
-    uint64_t observed_pixels = 0;
-    if (!wd_stream_observed_wire_bytes_per_pixel(stats, current_width, current_height, &observed_wire_bytes, &observed_pixels))
-    {
-        return false;
-    }
-
-    const uint64_t candidate_pixels = (uint64_t)wd_stream_tile_area(candidate_width, candidate_height);
-    if (candidate_pixels == 0)
-    {
-        return false;
-    }
-
-    /*
-     * The observed wire cost already includes the chosen compressed/raw
-     * representation and current extensible header overhead.  Scale it by
-     * tile area as a conservative candidate estimate, then require it to use
-     * only a configured fraction of the probed packet payload.  Larger tiles
-     * often compress better than this estimate, but the slack avoids
-     * upshifting into packet fragmentation when content changes slightly.
-     */
-    const uint64_t estimated_wire = (observed_wire_bytes * candidate_pixels + observed_pixels - 1ull) / observed_pixels;
-    const uint64_t packet_budget = ((uint64_t)udp_payload_target + WD_UDP_TILE_HEADER_MAX_SIZE) *
-                                   (uint64_t)WD_ADAPTIVE_TILE_FIT_SLACK_PERCENT / 100ull;
-    return estimated_wire <= packet_budget;
-}
-
-static bool wd_stream_largest_fitting_tile_size(const struct wd_stats* stats, uint16_t current_width, uint16_t current_height,
-                                                 uint16_t udp_payload_target, uint16_t* out_width, uint16_t* out_height) {
-    if (!out_width || !out_height)
-    {
-        return false;
-    }
-
-    static const struct {
-        uint16_t width;
-        uint16_t height;
-    } candidates[] = {
-        {16, 16},
-        {32, 32},
-        {64, 64},
-        {128, 64},
-    };
-
-    uint16_t best_width = current_width;
-    uint16_t best_height = current_height;
-    bool found = false;
-
-    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i)
-    {
-        const uint16_t candidate_width = candidates[i].width;
-        const uint16_t candidate_height = candidates[i].height;
-
-        if (wd_stream_tile_area(candidate_width, candidate_height) < wd_stream_tile_area(current_width, current_height))
-        {
-            continue;
-        }
-        if (wd_stream_tile_area(candidate_width, candidate_height) > wd_stream_tile_area(WD_ADAPTIVE_TILE_MAX_WIDTH, WD_ADAPTIVE_TILE_MAX_HEIGHT))
-        {
-            continue;
-        }
-        if (!wd_stream_estimated_tile_wire_fits_packet(stats, current_width, current_height, candidate_width, candidate_height,
-                                                       udp_payload_target))
-        {
-            continue;
-        }
-
-        best_width = candidate_width;
-        best_height = candidate_height;
-        found = true;
-    }
-
-    if (!found || (best_width == current_width && best_height == current_height))
-    {
-        return false;
-    }
-
-    *out_width = best_width;
-    *out_height = best_height;
-    return true;
-}
-
-static uint64_t wd_stream_client_completion_percent(const struct wd_stats* stats) {
-    if (!stats || stats->client_stats_rx == 0 || stats->client_udp_packets_rx < WD_ADAPTIVE_TILE_MIN_CLIENT_PACKETS)
-    {
-        return 0;
-    }
-
-    return (stats->client_completed_packets * 100ull) / stats->client_udp_packets_rx;
-}
-
-static bool wd_stream_client_completion_bad(const struct wd_stats* stats) {
-    if (!stats || stats->client_stats_rx == 0 || stats->client_udp_packets_rx < WD_ADAPTIVE_TILE_MIN_CLIENT_PACKETS)
+static bool wd_stream_client_packet_loss_sample(const struct wd_stats* stats) {
+    if (!stats || stats->client_stats_rx == 0 || stats->client_udp_packets_rx < WD_STREAM_CLIENT_COMPLETION_MIN_PACKETS)
     {
         return false;
     }
 
     return stats->client_completed_packets * 100ull <
-           stats->client_udp_packets_rx * (uint64_t)WD_ADAPTIVE_TILE_COMPLETION_BAD_PERCENT;
+           stats->client_udp_packets_rx * (uint64_t)WD_STREAM_CLIENT_COMPLETION_LOSS_PERCENT;
 }
 
-static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, struct wd_stream_policy* policy,
-                                                     struct wd_stats* stats, bool bad_window, bool client_completion_low) {
-    if (!server || !policy || !stats)
+static bool wd_stream_client_reporting_tile_loss_locked(const struct wd_stream_policy* policy, const struct wd_stats* stats) {
+    if (stats && (stats->client_partial_tiles_timed_out != 0 || stats->client_retx_requests_tx != 0 || wd_stream_client_packet_loss_sample(stats)))
     {
-        return;
+        return true;
     }
 
-    if (!server->net.client_connected)
-    {
-        policy->tile_size_good_windows = 0;
-        policy->tile_size_bad_windows  = 0;
-        policy->tile_size_change_cooldown_windows = 0;
-        return;
-    }
-
-    if (policy->max_wire_tile_width == 0 || policy->max_wire_tile_height == 0)
-    {
-        policy->max_wire_tile_width = WD_ADAPTIVE_TILE_MAX_WIDTH;
-        policy->max_wire_tile_height = WD_ADAPTIVE_TILE_MAX_HEIGHT;
-    }
-
-    bool tile_change_cooling_down = false;
-    if (policy->tile_size_change_cooldown_windows != 0)
-    {
-        policy->tile_size_change_cooldown_windows--;
-        tile_change_cooling_down = true;
-    }
-
-    const bool one_packet_tiles = wd_stream_tile_payloads_fit_one_packet(stats, server->net.udp_payload_target);
-    const uint64_t completion_percent = wd_stream_client_completion_percent(stats);
-    const bool completion_good  = completion_percent >= WD_ADAPTIVE_TILE_COMPLETION_GOOD_PERCENT;
-    const bool completion_excellent = completion_percent >= WD_ADAPTIVE_TILE_DIRECT_JUMP_MIN_COMPLETION_PERCENT;
-    const bool completion_bad   = wd_stream_client_completion_bad(stats) || client_completion_low;
-    const bool multi_packet_avg = stats->udp_tiles_sent != 0 && stats->udp_packets_sent > stats->udp_tiles_sent;
-
-    const bool should_downscale = (bad_window || completion_bad) && multi_packet_avg;
-    const bool should_upscale   = !bad_window && !completion_bad && (one_packet_tiles || completion_good) &&
-                                  (stats->udp_tiles_sent != 0 || stats->client_tiles_completed != 0);
-
-    uint16_t new_width  = 0;
-    uint16_t new_height = 0;
-    const char* upscale_reason = NULL;
-
-    if (should_downscale && wd_stream_next_smaller_tile_size(policy->max_wire_tile_width, policy->max_wire_tile_height, &new_width, &new_height))
-    {
-        policy->tile_size_good_windows = 0;
-        if (policy->tile_size_bad_windows < UINT32_MAX)
-        {
-            policy->tile_size_bad_windows++;
-        }
-        if (policy->tile_size_bad_windows < WD_ADAPTIVE_TILE_BAD_WINDOWS_TO_DOWNSCALE)
-        {
-            return;
-        }
-        policy->tile_size_bad_windows = 0;
-
-        const uint16_t old_width  = policy->max_wire_tile_width;
-        const uint16_t old_height = policy->max_wire_tile_height;
-        policy->max_wire_tile_width = new_width;
-        policy->max_wire_tile_height = new_height;
-        policy->tile_size_change_cooldown_windows = WD_ADAPTIVE_TILE_CHANGE_COOLDOWN_WINDOWS;
-        stats->tile_size_downshifts++;
-        WD_LOG_INFO("WayDisplay: adaptive max wire tile down: %ux%u -> %ux%u%s",
-                    old_width, old_height, new_width, new_height,
-                    completion_bad ? " due to low tile completion" : " due to send/repair pressure");
-        return;
-    }
-
-    policy->tile_size_bad_windows = 0;
-
-    if (!should_upscale || tile_change_cooling_down)
-    {
-        policy->tile_size_good_windows = 0;
-        return;
-    }
-
-    if (policy->tile_size_good_windows < UINT32_MAX)
-    {
-        policy->tile_size_good_windows++;
-    }
-
-    const bool sustained_excellent_completion = completion_excellent &&
-                                               policy->tile_size_good_windows >= WD_ADAPTIVE_TILE_DIRECT_JUMP_GOOD_WINDOWS;
-
-    if (sustained_excellent_completion)
-    {
-        new_width = WD_ADAPTIVE_TILE_MAX_WIDTH;
-        new_height = WD_ADAPTIVE_TILE_MAX_HEIGHT;
-        upscale_reason = " because client completion stayed lossless";
-    }
-    else if (wd_stream_largest_fitting_tile_size(stats, server->tile_width, server->tile_height, server->net.udp_payload_target,
-                                                 &new_width, &new_height))
-    {
-        upscale_reason = " because estimated tile wire size fits one UDP packet";
-    }
-    else if (wd_stream_next_larger_tile_size(policy->max_wire_tile_width, policy->max_wire_tile_height, &new_width, &new_height))
-    {
-        upscale_reason = one_packet_tiles ? " because current tiles fit one UDP packet" : " because client completion is healthy";
-    }
-    else
-    {
-        policy->tile_size_good_windows = 0;
-        return;
-    }
-
-    if ((new_width == policy->max_wire_tile_width && new_height == policy->max_wire_tile_height) ||
-        wd_stream_tile_area(new_width, new_height) > wd_stream_tile_area(WD_ADAPTIVE_TILE_MAX_WIDTH, WD_ADAPTIVE_TILE_MAX_HEIGHT))
-    {
-        policy->tile_size_good_windows = 0;
-        return;
-    }
-
-    if (policy->tile_size_good_windows < WD_ADAPTIVE_TILE_GOOD_WINDOWS_TO_UPSCALE)
-    {
-        return;
-    }
-    policy->tile_size_good_windows = 0;
-
-    const uint16_t old_width  = policy->max_wire_tile_width;
-    const uint16_t old_height = policy->max_wire_tile_height;
-    policy->max_wire_tile_width = new_width;
-    policy->max_wire_tile_height = new_height;
-    policy->tile_size_change_cooldown_windows = WD_ADAPTIVE_TILE_CHANGE_COOLDOWN_WINDOWS;
-    stats->tile_size_upshifts++;
-    WD_LOG_INFO("WayDisplay: adaptive max wire tile up: %ux%u -> %ux%u%s",
-                old_width, old_height, new_width, new_height,
-                upscale_reason ? upscale_reason : " because link health allows larger tiles");
+    return policy && policy->multipacket_loss_cooldown_seconds != 0;
 }
 
-static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool bad_window,
-                                                       bool send_pressure, bool client_completion_low) {
+static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool link_loss,
+                                                       bool send_pressure, bool client_loss) {
     if (!policy || !stats)
     {
         return;
@@ -626,19 +289,19 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
 
     uint16_t old_fps = wd_stream_policy_effective_fps_locked(policy);
 
-    if (bad_window)
+    if (link_loss)
     {
-        policy->frame_rate_good_windows = 0;
+        policy->frame_rate_good_seconds = 0;
 
-        uint32_t decrease_percent = send_pressure ? WD_ADAPTIVE_FPS_PRESSURE_DECREASE_PERCENT : WD_ADAPTIVE_FPS_DECREASE_PERCENT;
+        uint32_t decrease_percent = send_pressure ? WD_STREAM_FPS_PRESSURE_DECREASE_PERCENT : WD_STREAM_FPS_DECREASE_PERCENT;
         uint32_t new_fps = ((uint32_t)old_fps * decrease_percent) / 100u;
-        if (new_fps >= old_fps && old_fps > WD_ADAPTIVE_FPS_MIN)
+        if (new_fps >= old_fps && old_fps > WD_STREAM_FPS_MIN)
         {
             new_fps = old_fps - 1u;
         }
-        if (new_fps < WD_ADAPTIVE_FPS_MIN)
+        if (new_fps < WD_STREAM_FPS_MIN)
         {
-            new_fps = WD_ADAPTIVE_FPS_MIN;
+            new_fps = WD_STREAM_FPS_MIN;
         }
 
         if ((uint16_t)new_fps != old_fps)
@@ -646,9 +309,9 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
             policy->effective_target_fps = (uint16_t)new_fps;
             policy->last_frame_send_ns = 0;
             stats->frame_rate_downshifts++;
-            WD_LOG_INFO("WayDisplay: adaptive frame rate down: %u -> %u fps%s", old_fps, (unsigned)new_fps,
+            WD_LOG_INFO("WayDisplay: stream frame rate down: %u -> %u fps%s", old_fps, (unsigned)new_fps,
                         send_pressure ? " due to UDP send pressure" :
-                        (client_completion_low ? " due to low client completion" : " due to repair pressure"));
+                        (client_loss ? " due to client loss" : " due to repair pressure"));
         }
         return;
     }
@@ -656,26 +319,26 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
     bool useful_activity = stats->udp_tiles_sent != 0 || stats->dirty_tiles != 0 || stats->client_tiles_completed != 0;
     if (!useful_activity)
     {
-        policy->frame_rate_good_windows = 0;
+        policy->frame_rate_good_seconds = 0;
         return;
     }
 
     if (old_fps >= policy->target_fps)
     {
         policy->effective_target_fps = policy->target_fps;
-        policy->frame_rate_good_windows = 0;
+        policy->frame_rate_good_seconds = 0;
         return;
     }
 
-    policy->frame_rate_good_windows++;
-    if (policy->frame_rate_good_windows < WD_ADAPTIVE_FPS_GOOD_WINDOWS_TO_INCREASE)
+    policy->frame_rate_good_seconds++;
+    if (policy->frame_rate_good_seconds < WD_STREAM_FPS_GOOD_SECONDS_TO_INCREASE)
     {
         return;
     }
 
-    policy->frame_rate_good_windows = 0;
+    policy->frame_rate_good_seconds = 0;
 
-    uint32_t percent_fps = ((uint32_t)old_fps * WD_ADAPTIVE_FPS_INCREASE_PERCENT) / 100u;
+    uint32_t percent_fps = ((uint32_t)old_fps * WD_STREAM_FPS_INCREASE_PERCENT) / 100u;
     uint32_t new_fps = percent_fps > (uint32_t)old_fps ? percent_fps : (uint32_t)old_fps + 1u;
     if (new_fps > policy->target_fps)
     {
@@ -687,120 +350,110 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
         policy->effective_target_fps = (uint16_t)new_fps;
         policy->last_frame_send_ns = 0;
         stats->frame_rate_upshifts++;
-        WD_LOG_INFO("WayDisplay: adaptive frame rate up: %u -> %u fps", old_fps, (unsigned)new_fps);
+        WD_LOG_INFO("WayDisplay: stream frame rate up: %u -> %u fps", old_fps, (unsigned)new_fps);
     }
 }
 
-static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool bad_window,
-                                                        bool send_pressure, bool client_completion_low) {
+static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool link_loss,
+                                                        bool send_pressure, bool tile_loss) {
     if (!policy || !stats)
     {
         return;
     }
 
+    const bool useful_tile_activity = stats->udp_tiles_sent != 0 || stats->dirty_tiles != 0 || stats->client_tiles_completed != 0;
     uint64_t old_rate = wd_stream_clamp_limited_udp_byte_rate(policy->limited_udp_bytes_per_second);
     uint64_t new_rate = old_rate;
 
-    if (bad_window)
+    if (link_loss)
     {
-        policy->limited_rate_good_windows     = 0;
-        policy->client_completion_low_windows = 0;
-        policy->throttle_bad_windows++;
+        policy->link_good_seconds = 0;
+        if (policy->link_loss_seconds < UINT32_MAX)
+        {
+            policy->link_loss_seconds++;
+        }
 
-        uint32_t decrease_percent = send_pressure ? WD_LIMITED_RATE_PRESSURE_DECREASE_PERCENT : WD_LIMITED_RATE_DECREASE_PERCENT;
+        if (policy->link_loss_seconds < WD_STREAM_LINK_LOSS_SECONDS_TO_DECREASE)
+        {
+            return;
+        }
+
+        policy->link_loss_seconds = 0;
+
+        uint32_t decrease_percent = send_pressure ? WD_STREAM_RATE_PRESSURE_DECREASE_PERCENT : WD_STREAM_RATE_DECREASE_PERCENT;
         new_rate = old_rate * (uint64_t)decrease_percent / 100ull;
 
-        wd_stream_policy_set_limited_rate_adaptive_locked(policy, new_rate);
+        wd_stream_policy_set_limited_rate_locked(policy, new_rate);
         if (policy->limited_udp_bytes_per_second != old_rate)
         {
-            stats->limited_rate_downshifts++;
-            WD_LOG_INFO("WayDisplay: adaptive limited rate down: %llu -> %llu KiB/s%s",
+            stats->rate_decreases++;
+            WD_LOG_INFO("WayDisplay: stream byte budget down: %llu -> %llu KiB/s%s",
                         (unsigned long long)(old_rate / 1024ull),
                         (unsigned long long)(policy->limited_udp_bytes_per_second / 1024ull),
                         send_pressure ? " due to UDP send pressure" :
-                        (client_completion_low ? " due to low client completion" : " due to repair pressure"));
+                        (tile_loss ? " due to client tile loss" : " due to low client packet completion"));
         }
         return;
     }
 
-    policy->throttle_bad_windows = 0;
-
-    bool useful_tile_activity = stats->udp_tiles_sent != 0 || stats->dirty_tiles != 0;
+    policy->link_loss_seconds = 0;
     if (!useful_tile_activity)
     {
-        policy->limited_rate_good_windows = 0;
+        policy->link_good_seconds = 0;
         return;
     }
 
-    policy->limited_rate_good_windows++;
-    if (policy->limited_rate_good_windows < WD_LIMITED_RATE_GOOD_WINDOWS_TO_INCREASE)
+    if (policy->link_good_seconds < UINT32_MAX)
+    {
+        policy->link_good_seconds++;
+    }
+    if (policy->link_good_seconds < WD_STREAM_LINK_GOOD_SECONDS_TO_INCREASE)
     {
         return;
     }
 
-    policy->limited_rate_good_windows = 0;
+    policy->link_good_seconds = 0;
 
-    uint64_t percent_rate = old_rate * (uint64_t)WD_LIMITED_RATE_INCREASE_PERCENT / 100ull;
-    uint64_t step_rate    = old_rate + WD_LIMITED_RATE_INCREASE_MIN_BYTES;
+    uint64_t percent_rate = old_rate * (uint64_t)WD_STREAM_RATE_INCREASE_PERCENT / 100ull;
+    uint64_t step_rate    = old_rate + WD_STREAM_RATE_INCREASE_MIN_BYTES;
     new_rate              = percent_rate > step_rate ? percent_rate : step_rate;
 
-    wd_stream_policy_set_limited_rate_adaptive_locked(policy, new_rate);
+    wd_stream_policy_set_limited_rate_locked(policy, new_rate);
     if (policy->limited_udp_bytes_per_second != old_rate)
     {
-        stats->limited_rate_upshifts++;
-        WD_LOG_INFO("WayDisplay: adaptive limited rate up: %llu -> %llu KiB/s",
+        stats->rate_increases++;
+        WD_LOG_INFO("WayDisplay: stream byte budget up: %llu -> %llu KiB/s",
                     (unsigned long long)(old_rate / 1024ull),
                     (unsigned long long)(policy->limited_udp_bytes_per_second / 1024ull));
     }
 }
 
-static void wd_stream_policy_update_adaptive_locked(struct wd_server* server, struct wd_stream_policy* policy, struct wd_stats* stats) {
-    if (!server || !policy || !stats)
+static void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, struct wd_stats* stats) {
+    if (!policy || !stats)
     {
         return;
     }
 
-    bool send_pressure = stats->udp_send_pressure_drops != 0;
+    const bool send_pressure = stats->udp_send_pressure_drops != 0;
+    const bool client_packet_loss = wd_stream_client_packet_loss_sample(stats);
+    const bool client_tile_loss = stats->client_partial_tiles_timed_out != 0 || stats->client_retx_requests_tx != 0;
+    const bool link_loss = send_pressure || client_packet_loss || client_tile_loss;
 
-    bool client_completion_low_sample = false;
-    if (stats->client_stats_rx != 0 && stats->client_udp_packets_rx >= WD_LIMITED_RATE_CLIENT_COMPLETION_MIN_SENT)
+    if (client_tile_loss || client_packet_loss)
     {
-        /*
-         * Compare client-side completed packet contribution with client-side
-         * packets received. Server and client stats windows are not phase
-         * locked; comparing server-sent tiles in this second against
-         * client-completed tiles reported for a slightly different second can
-         * falsely look like congestion and ratchet the stream down.
-         */
-        client_completion_low_sample = stats->client_completed_packets * 100ull <
-                                       stats->client_udp_packets_rx * (uint64_t)WD_LIMITED_RATE_CLIENT_COMPLETION_PERCENT;
+        policy->multipacket_loss_cooldown_seconds = WD_STREAM_MULTIPACKET_LOSS_COOLDOWN_SECONDS;
+    }
+    else if (policy->multipacket_loss_cooldown_seconds != 0)
+    {
+        policy->multipacket_loss_cooldown_seconds--;
     }
 
-    if (client_completion_low_sample)
-    {
-        if (policy->client_completion_low_windows < UINT32_MAX)
-        {
-            policy->client_completion_low_windows++;
-        }
-    }
-    else
-    {
-        policy->client_completion_low_windows = 0;
-    }
-
-    bool client_completion_low = policy->client_completion_low_windows >= WD_LIMITED_RATE_CLIENT_COMPLETION_BAD_WINDOWS;
-    bool client_repair_pressure = stats->client_partial_tiles_timed_out != 0;
-    bool bad_window = send_pressure || client_completion_low || client_repair_pressure;
-
-    /*
-     * Stream modes were removed: every session now runs a single adaptive
-     * max-rate policy. Start at the probed/capped byte ceiling and adjust the
-     * byte budget plus render cadence from real pressure/completion feedback;
-     * never downgrade into a separate partial/limited/live state.
-     */
-    wd_stream_policy_update_tile_size_locked(server, policy, stats, bad_window, client_completion_low);
-    wd_stream_policy_update_frame_rate_locked(policy, stats, bad_window, send_pressure, client_completion_low);
-    wd_stream_policy_update_limited_rate_locked(policy, stats, bad_window, send_pressure, client_completion_low);
+    /* Tile-size selection is intentionally not a stateful policy anymore.
+     * The sender chooses per dirty tile from the actual compressed wire size.
+     * This update only controls how quickly the byte token bucket refills and
+     * how often new frames are rendered under clear link pressure. */
+    wd_stream_policy_update_frame_rate_locked(policy, stats, link_loss, send_pressure, client_packet_loss || client_tile_loss);
+    wd_stream_policy_update_limited_rate_locked(policy, stats, link_loss, send_pressure, client_tile_loss);
 }
 
 
@@ -2200,35 +1853,36 @@ static bool wd_stream_try_build_wire_tile_candidate(struct wd_server* server, ui
 }
 
 static bool wd_stream_choose_wire_tile_candidate(struct wd_server* server, struct wd_stream_policy* policy, uint16_t base_tile_id,
-                                                 uint64_t input_sequence, uint8_t* tile_bytes, uint8_t* compressed_tile,
-                                                 size_t compressed_capacity, struct wd_wire_tile_candidate* out) {
+                                                 uint64_t input_sequence, uint64_t remaining_byte_budget, uint8_t* tile_bytes,
+                                                 uint8_t* compressed_tile, size_t compressed_capacity,
+                                                 struct wd_wire_tile_candidate* out, bool* out_budget_blocked) {
+    if (out_budget_blocked)
+    {
+        *out_budget_blocked = false;
+    }
+
     if (!server || !policy || !out)
     {
         return false;
     }
 
-    const uint16_t max_width = policy->max_wire_tile_width ? policy->max_wire_tile_width : WD_ADAPTIVE_TILE_MAX_WIDTH;
-    const uint16_t max_height = policy->max_wire_tile_height ? policy->max_wire_tile_height : WD_ADAPTIVE_TILE_MAX_HEIGHT;
-    const uint32_t max_area = wd_stream_tile_area(max_width, max_height);
-    const bool allow_multipacket = max_width == WD_ADAPTIVE_TILE_MAX_WIDTH && max_height == WD_ADAPTIVE_TILE_MAX_HEIGHT;
     const uint32_t one_packet_budget = (uint32_t)server->net.udp_payload_target + WD_UDP_TILE_HEADER_MAX_SIZE;
+    const bool tile_loss_reported = wd_stream_client_reporting_tile_loss_locked(policy, &server->net.stats);
 
-    static const struct { uint16_t width; uint16_t height; } candidates[] = {
-        {128, 64}, {64, 64}, {32, 32}, {16, 16},
+    static const struct {
+        uint16_t width;
+        uint16_t height;
+    } candidates[] = {
+        {128, 64},
+        {64, 64},
+        {32, 32},
+        {16, 16},
     };
-
-    struct wd_wire_tile_candidate largest_allowed;
-    bool have_largest_allowed = false;
-    struct wd_wire_tile_candidate smallest_allowed;
-    bool have_smallest_allowed = false;
 
     for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i)
     {
-        if (wd_stream_tile_area(candidates[i].width, candidates[i].height) > max_area)
-        {
-            continue;
-        }
-
+        const bool is_max_tile = candidates[i].width == WD_WIRE_TILE_MAX_WIDTH &&
+                                 candidates[i].height == WD_WIRE_TILE_MAX_HEIGHT;
         struct wd_wire_tile_candidate c;
         if (!wd_stream_try_build_wire_tile_candidate(server, base_tile_id, candidates[i].width, candidates[i].height,
                                                      input_sequence, tile_bytes, compressed_tile, compressed_capacity, &c))
@@ -2236,31 +1890,28 @@ static bool wd_stream_choose_wire_tile_candidate(struct wd_server* server, struc
             continue;
         }
 
-        if (!have_largest_allowed)
+        if (c.wire_size > remaining_byte_budget)
         {
-            largest_allowed = c;
-            have_largest_allowed = true;
+            if (out_budget_blocked)
+            {
+                *out_budget_blocked = true;
+            }
+            continue;
         }
-        smallest_allowed = c;
-        have_smallest_allowed = true;
 
         if (c.wire_size <= one_packet_budget)
         {
             *out = c;
             return true;
         }
+
+        if (is_max_tile && !tile_loss_reported)
+        {
+            *out = c;
+            return true;
+        }
     }
 
-    if (allow_multipacket && have_largest_allowed)
-    {
-        *out = largest_allowed;
-        return true;
-    }
-    if (have_smallest_allowed)
-    {
-        *out = smallest_allowed;
-        return true;
-    }
     return false;
 }
 
@@ -2318,7 +1969,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
     const uint64_t now = wd_now_ns();
 
-    const uint32_t max_wire_tile_bytes = WD_ADAPTIVE_TILE_MAX_WIDTH * WD_ADAPTIVE_TILE_MAX_HEIGHT * WD_BYTES_PER_PIXEL;
+    const uint32_t max_wire_tile_bytes = WD_WIRE_TILE_MAX_WIDTH * WD_WIRE_TILE_MAX_HEIGHT * WD_BYTES_PER_PIXEL;
     uint8_t* tile_bytes = malloc(max_wire_tile_bytes);
     if (!tile_bytes)
     {
@@ -2345,16 +1996,16 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     }
 
     /*
-     * Normal adaptive pass.  New/reconnected clients are handled through the
-     * same dirty-tile pipeline by invalidating cached tile hashes and marking
-     * the scene dirty.  Avoid a separate full-frame catch-up path, because it
+     * Normal send pass.  New/reconnected clients are handled through the same
+     * dirty-tile pipeline by invalidating cached tile hashes and marking the
+     * scene dirty.  Avoid a separate full-frame catch-up path, because it
      * competes with current dirty tiles and explicit retransmits for the same
-     * adaptive byte budget.
+     * byte budget.
      */
     /*
      * Detect new dirty work and send fresh/latest tiles before repair traffic.
-     * Retransmits are useful, but letting them consume the whole adaptive byte
-     * budget turns transient summary races into a priority inversion where
+     * Retransmits are useful, but letting them consume the whole byte budget
+     * turns transient summary races into a priority inversion where
      * current UI updates stall behind stale repairs.
      */
     wd_detect_dirty_tiles_into_queue_locked(server);
@@ -2389,10 +2040,17 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         }
 
         const uint64_t tile_input_sequence = net->input_since_last_fresh_tile ? net->last_input_sequence : 0;
+        const uint64_t remaining_byte_budget = wd_stream_policy_limited_byte_budget_locked(&net->stream_policy, now);
         struct wd_wire_tile_candidate candidate;
-        if (!wd_stream_choose_wire_tile_candidate(server, &net->stream_policy, tile_id, tile_input_sequence, tile_bytes,
-                                                  compressed_tile, compressed_capacity, &candidate))
+        bool budget_blocked = false;
+        if (!wd_stream_choose_wire_tile_candidate(server, &net->stream_policy, tile_id, tile_input_sequence, remaining_byte_budget,
+                                                  tile_bytes, compressed_tile, compressed_capacity, &candidate, &budget_blocked))
         {
+            if (budget_blocked)
+            {
+                wd_dirty_queue_reinsert_locked(net, tile_id, server->total_tiles);
+                break;
+            }
             continue;
         }
 
@@ -2415,8 +2073,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         bool     send_blocked    = false;
         uint32_t bytes_sent       = 0;
 
-        uint32_t predicted_bytes = wd_stream_tile_wire_bytes_for_payload(tile_payload_size, net->udp_payload_target, tile_input_sequence,
-                                                                         candidate.compressed_payload);
+        uint32_t predicted_bytes = candidate.wire_size;
         if (wd_stream_policy_limited_byte_budget_locked(&net->stream_policy, now) < predicted_bytes)
         {
             wd_dirty_queue_reinsert_locked(net, tile_id, server->total_tiles);
@@ -2664,14 +2321,12 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
 
     struct wd_stats s = net->stats;
     memset(&net->stats, 0, sizeof(net->stats));
-    wd_stream_policy_update_adaptive_locked(server, &net->stream_policy, &s);
+    wd_stream_policy_update_health_locked(&net->stream_policy, &s);
     uint64_t limited_udp_kib_per_second = net->stream_policy.limited_udp_bytes_per_second / 1024ull;
     uint16_t target_fps = net->stream_policy.target_fps;
     uint16_t effective_target_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
     uint16_t tile_width = server->tile_width;
     uint16_t tile_height = server->tile_height;
-    uint16_t max_wire_tile_width = net->stream_policy.max_wire_tile_width;
-    uint16_t max_wire_tile_height = net->stream_policy.max_wire_tile_height;
     bool input_channel_connected = net->input_tcp_fd >= 0;
     bool selection_channel_connected = net->selection_tcp_fd >= 0;
 
@@ -2683,24 +2338,20 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     static uint64_t prev_limited_kib = 0;
     static uint16_t prev_tile_width = 0;
     static uint16_t prev_tile_height = 0;
-    static uint16_t prev_max_wire_tile_width = 0;
-    static uint16_t prev_max_wire_tile_height = 0;
     static bool     prev_input_channel = false;
     static bool     prev_selection_channel = false;
 
     bool state_changed = !have_prev_state ||
                          prev_target_fps != target_fps || prev_effective_fps != effective_target_fps ||
                          prev_limited_kib != limited_udp_kib_per_second || prev_tile_width != tile_width ||
-                         prev_tile_height != tile_height || prev_max_wire_tile_width != max_wire_tile_width ||
-                         prev_max_wire_tile_height != max_wire_tile_height || prev_input_channel != input_channel_connected ||
+                         prev_tile_height != tile_height || prev_input_channel != input_channel_connected ||
                          prev_selection_channel != selection_channel_connected;
 
     if (state_changed)
     {
-        WD_LOG_DEBUG("WayDisplay state/s: transport=adaptive target_fps=%u effective_fps=%u adaptive_udp_kib_per_sec=%llu base_tile=%ux%u max_wire_tile=%ux%u input_channel=%s selection_channel=%s",
+        WD_LOG_DEBUG("WayDisplay state/s: target_fps=%u effective_fps=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s",
                      (unsigned)target_fps, (unsigned)effective_target_fps,
                      (unsigned long long)limited_udp_kib_per_second, (unsigned)tile_width, (unsigned)tile_height,
-                     (unsigned)max_wire_tile_width, (unsigned)max_wire_tile_height,
                      input_channel_connected ? "yes" : "no", selection_channel_connected ? "yes" : "no");
 
         have_prev_state = true;
@@ -2709,8 +2360,6 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
         prev_limited_kib = limited_udp_kib_per_second;
         prev_tile_width = tile_width;
         prev_tile_height = tile_height;
-        prev_max_wire_tile_width = max_wire_tile_width;
-        prev_max_wire_tile_height = max_wire_tile_height;
         prev_input_channel = input_channel_connected;
         prev_selection_channel = selection_channel_connected;
     }
@@ -2753,20 +2402,18 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     bool repair_activity = s.retx_req_rx != 0 || s.retx_tiles_req != 0 || s.retx_req_ignored_live != 0 ||
                            s.retx_req_stale_generation != 0 || s.retx_req_waiting_for_generation != 0 ||
                            s.retx_tiles_superseded_by_fresh != 0 || s.tcp_summary_tx != 0 || s.tcp_summary_delta_tx != 0 ||
-                           s.tcp_summary_delta_tiles != 0 || s.limited_rate_downshifts != 0 || s.limited_rate_upshifts != 0 ||
-                           s.frame_rate_downshifts != 0 || s.frame_rate_upshifts != 0 ||
-                           s.tile_size_downshifts != 0 || s.tile_size_upshifts != 0;
+                           s.tcp_summary_delta_tiles != 0 || s.rate_decreases != 0 || s.rate_increases != 0 ||
+                           s.frame_rate_downshifts != 0 || s.frame_rate_upshifts != 0;
     if (repair_activity)
     {
-        WD_LOG_DEBUG("WayDisplay repair/s: summaries=%llu full=%llu delta=%llu delta_tiles=%llu retx_req=%llu retx_tiles=%llu stale_gen=%llu waiting_gen=%llu ignored_live=%llu superseded=%llu limited_down=%llu limited_up=%llu fps_down=%llu fps_up=%llu tile_down=%llu tile_up=%llu",
+        WD_LOG_DEBUG("WayDisplay repair/s: summaries=%llu full=%llu delta=%llu delta_tiles=%llu retx_req=%llu retx_tiles=%llu stale_gen=%llu waiting_gen=%llu ignored_live=%llu superseded=%llu rate_down=%llu rate_up=%llu fps_down=%llu fps_up=%llu",
                      (unsigned long long)s.tcp_summary_tx, (unsigned long long)s.tcp_summary_full_tx,
                      (unsigned long long)s.tcp_summary_delta_tx, (unsigned long long)s.tcp_summary_delta_tiles,
                      (unsigned long long)s.retx_req_rx, (unsigned long long)s.retx_tiles_req,
                      (unsigned long long)s.retx_req_stale_generation, (unsigned long long)s.retx_req_waiting_for_generation,
                      (unsigned long long)s.retx_req_ignored_live, (unsigned long long)s.retx_tiles_superseded_by_fresh,
-                     (unsigned long long)s.limited_rate_downshifts, (unsigned long long)s.limited_rate_upshifts,
-                     (unsigned long long)s.frame_rate_downshifts, (unsigned long long)s.frame_rate_upshifts,
-                     (unsigned long long)s.tile_size_downshifts, (unsigned long long)s.tile_size_upshifts);
+                     (unsigned long long)s.rate_decreases, (unsigned long long)s.rate_increases,
+                     (unsigned long long)s.frame_rate_downshifts, (unsigned long long)s.frame_rate_upshifts);
     }
 
     bool client_activity = s.client_tiles_completed != 0 || s.client_udp_bytes_rx != 0 || s.client_partial_tiles_timed_out != 0 ||
