@@ -140,6 +140,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->dirty_regions               = calloc(server->total_tiles, sizeof(*net->dirty_regions));
     net->dirty_region_queued         = calloc(server->total_tiles, sizeof(*net->dirty_region_queued));
     net->dirty_region_count          = 0;
+    net->dirty_epochs                = calloc(server->total_tiles, sizeof(*net->dirty_epochs));
     net->dirty_queue                 = calloc(server->total_tiles, sizeof(*net->dirty_queue));
     net->dirty_queued                = calloc(server->total_tiles, sizeof(*net->dirty_queued));
     net->dirty_queue_enqueued_ns     = calloc(server->total_tiles, sizeof(*net->dirty_queue_enqueued_ns));
@@ -148,13 +149,14 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*net->retransmit_queue_enqueued_ns));
     net->retransmit_requested_generation = calloc(server->total_tiles, sizeof(*net->retransmit_requested_generation));
     net->summary_dirty_tiles         = calloc(server->total_tiles, sizeof(*net->summary_dirty_tiles));
-    if (!net->dirty_regions || !net->dirty_region_queued || !net->dirty_queue || !net->dirty_queued ||
+    if (!net->dirty_regions || !net->dirty_region_queued || !net->dirty_epochs || !net->dirty_queue || !net->dirty_queued ||
         !net->dirty_queue_enqueued_ns || !net->retransmit_queue ||
         !net->retransmit_queued || !net->retransmit_queue_enqueued_ns || !net->retransmit_requested_generation ||
         !net->summary_dirty_tiles)
     {
         free(net->dirty_regions);
         free(net->dirty_region_queued);
+        free(net->dirty_epochs);
         free(net->dirty_queue);
         free(net->dirty_queued);
         free(net->dirty_queue_enqueued_ns);
@@ -166,6 +168,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         net->dirty_regions               = NULL;
         net->dirty_region_queued         = NULL;
         net->dirty_region_count          = 0;
+        net->dirty_epochs                = NULL;
         net->dirty_queue                 = NULL;
         net->dirty_queued                = NULL;
         net->dirty_queue_enqueued_ns     = NULL;
@@ -228,6 +231,8 @@ void wd_net_destroy(struct wd_server* server) {
     net->dirty_regions = NULL;
     free(net->dirty_region_queued);
     net->dirty_region_queued = NULL;
+    free(net->dirty_epochs);
+    net->dirty_epochs = NULL;
     net->dirty_region_count = 0;
     free(net->dirty_queue);
     net->dirty_queue = NULL;

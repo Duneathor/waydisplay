@@ -557,6 +557,9 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     free(server->net.dirty_queued);
     server->net.dirty_queued = NULL;
 
+    free(server->net.dirty_epochs);
+    server->net.dirty_epochs = NULL;
+
     free(server->net.dirty_queue_enqueued_ns);
     server->net.dirty_queue_enqueued_ns = NULL;
 
@@ -593,6 +596,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
         server->net.dirty_regions                = calloc(server->total_tiles, sizeof(*server->net.dirty_regions));
         server->net.dirty_region_queued          = calloc(server->total_tiles, sizeof(*server->net.dirty_region_queued));
         server->net.dirty_region_count           = 0;
+        server->net.dirty_epochs                 = calloc(server->total_tiles, sizeof(*server->net.dirty_epochs));
         server->net.dirty_queue                  = calloc(server->total_tiles, sizeof(*server->net.dirty_queue));
         server->net.dirty_queued                 = calloc(server->total_tiles, sizeof(*server->net.dirty_queued));
         server->net.dirty_queue_enqueued_ns      = calloc(server->total_tiles, sizeof(*server->net.dirty_queue_enqueued_ns));
@@ -601,7 +605,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
         server->net.retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*server->net.retransmit_queue_enqueued_ns));
         server->net.retransmit_requested_generation = calloc(server->total_tiles, sizeof(*server->net.retransmit_requested_generation));
         server->net.summary_dirty_tiles          = calloc(server->total_tiles, sizeof(*server->net.summary_dirty_tiles));
-        ok = server->net.dirty_regions && server->net.dirty_region_queued && server->net.dirty_queue &&
+        ok = server->net.dirty_regions && server->net.dirty_region_queued && server->net.dirty_epochs && server->net.dirty_queue &&
              server->net.dirty_queued && server->net.dirty_queue_enqueued_ns &&
              server->net.retransmit_queue && server->net.retransmit_queued && server->net.retransmit_queue_enqueued_ns &&
              server->net.retransmit_requested_generation && server->net.summary_dirty_tiles;

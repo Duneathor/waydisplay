@@ -309,6 +309,12 @@ struct wd_stats {
     uint64_t tile_encode_ns;
     uint64_t summary_build_ns;
     uint64_t udp_send_ns;
+    uint64_t encode_jobs_submitted;
+    uint64_t encode_jobs_completed;
+    uint64_t encode_jobs_stale;
+    uint64_t encode_worker_ns;
+    uint64_t encode_wait_ns;
+    uint64_t encode_threads_used;
 
     uint64_t dirty_tiles_stale_skipped;
     uint64_t retx_tiles_superseded_by_fresh;
@@ -370,6 +376,8 @@ struct wd_net_state {
     uint16_t* dirty_regions;
     bool*     dirty_region_queued;
     uint16_t  dirty_region_count;
+
+    uint64_t* dirty_epochs;
 
     uint16_t* dirty_queue;
     bool*     dirty_queued;
