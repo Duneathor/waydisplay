@@ -226,6 +226,10 @@ struct wd_stats {
     uint64_t tile_choice_uncompressed_wire_sum;
     uint64_t tile_choice_chosen_wire_sum;
     uint64_t tile_choice_saved_wire_sum;
+    uint64_t tile_size_128x64_sent;
+    uint64_t tile_size_64x64_sent;
+    uint64_t tile_size_32x32_sent;
+    uint64_t tile_size_16x16_sent;
 
     uint64_t tcp_hello_rx;
     uint64_t tcp_config_tx;

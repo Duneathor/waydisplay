@@ -279,8 +279,8 @@ static bool wd_stream_client_reporting_tile_loss_locked(const struct wd_stream_p
     return policy && policy->multipacket_loss_cooldown_seconds != 0;
 }
 
-static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool link_loss,
-                                                       bool send_pressure, bool client_loss) {
+static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool frame_pressure,
+                                                       bool send_pressure) {
     if (!policy || !stats)
     {
         return;
@@ -297,7 +297,7 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
 
     uint16_t old_fps = wd_stream_policy_effective_fps_locked(policy);
 
-    if (link_loss)
+    if (frame_pressure)
     {
         policy->frame_rate_good_seconds = 0;
 
@@ -317,9 +317,7 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
             policy->effective_target_fps = (uint16_t)new_fps;
             policy->last_frame_send_ns = 0;
             stats->frame_rate_downshifts++;
-            WD_LOG_INFO("WayDisplay: stream frame rate down: %u -> %u fps%s", old_fps, (unsigned)new_fps,
-                        send_pressure ? " due to UDP send pressure" :
-                        (client_loss ? " due to client loss" : " due to repair pressure"));
+            WD_LOG_INFO("WayDisplay: stream frame rate down: %u -> %u fps due to UDP send pressure", old_fps, (unsigned)new_fps);
         }
         return;
     }
@@ -362,8 +360,7 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
     }
 }
 
-static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool link_loss,
-                                                        bool send_pressure, bool tile_loss) {
+static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool rate_pressure) {
     if (!policy || !stats)
     {
         return;
@@ -373,7 +370,7 @@ static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy*
     uint64_t old_rate = wd_stream_clamp_limited_udp_byte_rate(policy->limited_udp_bytes_per_second);
     uint64_t new_rate = old_rate;
 
-    if (link_loss)
+    if (rate_pressure)
     {
         policy->link_good_seconds = 0;
         if (policy->link_loss_seconds < UINT32_MAX)
@@ -388,18 +385,15 @@ static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy*
 
         policy->link_loss_seconds = 0;
 
-        uint32_t decrease_percent = send_pressure ? WD_STREAM_RATE_PRESSURE_DECREASE_PERCENT : WD_STREAM_RATE_DECREASE_PERCENT;
-        new_rate = old_rate * (uint64_t)decrease_percent / 100ull;
+        new_rate = old_rate * (uint64_t)WD_STREAM_RATE_PRESSURE_DECREASE_PERCENT / 100ull;
 
         wd_stream_policy_set_limited_rate_locked(policy, new_rate);
         if (policy->limited_udp_bytes_per_second != old_rate)
         {
             stats->rate_decreases++;
-            WD_LOG_INFO("WayDisplay: stream byte budget down: %llu -> %llu KiB/s%s",
+            WD_LOG_INFO("WayDisplay: stream byte budget down: %llu -> %llu KiB/s due to UDP send pressure",
                         (unsigned long long)(old_rate / 1024ull),
-                        (unsigned long long)(policy->limited_udp_bytes_per_second / 1024ull),
-                        send_pressure ? " due to UDP send pressure" :
-                        (tile_loss ? " due to client tile loss" : " due to low client packet completion"));
+                        (unsigned long long)(policy->limited_udp_bytes_per_second / 1024ull));
         }
         return;
     }
@@ -444,10 +438,9 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
 
     const bool send_pressure = stats->udp_send_pressure_drops != 0;
     const bool client_packet_loss = wd_stream_client_packet_loss_sample(stats);
-    const bool client_tile_loss = stats->client_partial_tiles_timed_out != 0 || stats->client_retx_requests_tx != 0;
-    const bool link_loss = send_pressure || client_packet_loss || client_tile_loss;
+    const bool client_tile_repair = stats->client_partial_tiles_timed_out != 0 || stats->client_retx_requests_tx != 0;
 
-    if (client_tile_loss || client_packet_loss)
+    if (client_tile_repair || client_packet_loss)
     {
         policy->multipacket_loss_cooldown_seconds = WD_STREAM_MULTIPACKET_LOSS_COOLDOWN_SECONDS;
     }
@@ -456,12 +449,13 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
         policy->multipacket_loss_cooldown_seconds--;
     }
 
-    /* Tile-size selection is intentionally not a stateful policy anymore.
-     * The sender chooses per dirty tile from the actual compressed wire size.
-     * This update only controls how quickly the byte token bucket refills and
-     * how often new frames are rendered under clear link pressure. */
-    wd_stream_policy_update_frame_rate_locked(policy, stats, link_loss, send_pressure, client_packet_loss || client_tile_loss);
-    wd_stream_policy_update_limited_rate_locked(policy, stats, link_loss, send_pressure, client_tile_loss);
+    /* Tile loss is a repair signal, not a congestion signal.  It temporarily
+     * disables fragmented 128x64 tiles through multipacket_loss_cooldown, but
+     * it must not shrink the byte budget or frame rate by itself.  Otherwise a
+     * few stale/superseded repair requests can force the sender into many more
+     * tiny tiles, which creates the downward spiral seen on small-MTU links. */
+    wd_stream_policy_update_frame_rate_locked(policy, stats, send_pressure, send_pressure);
+    wd_stream_policy_update_limited_rate_locked(policy, stats, send_pressure);
 }
 
 
@@ -783,7 +777,8 @@ static bool wd_stream_use_compressed_tile_payload(uint32_t compressed_size, uint
 }
 
 static void wd_stream_note_tile_choice_locked(struct wd_net_state* net, uint32_t compressed_size, uint32_t uncompressed_size,
-                                              uint16_t udp_payload_target, uint64_t input_sequence, bool compressed_payload) {
+                                              uint16_t udp_payload_target, uint64_t input_sequence, bool compressed_payload,
+                                              uint16_t tile_width, uint16_t tile_height) {
     if (!net)
     {
         return;
@@ -801,6 +796,23 @@ static void wd_stream_note_tile_choice_locked(struct wd_net_state* net, uint32_t
     else
     {
         net->stats.tile_choice_uncompressed++;
+    }
+
+    if (tile_width == 128 && tile_height == 64)
+    {
+        net->stats.tile_size_128x64_sent++;
+    }
+    else if (tile_width == 64 && tile_height == 64)
+    {
+        net->stats.tile_size_64x64_sent++;
+    }
+    else if (tile_width == 32 && tile_height == 32)
+    {
+        net->stats.tile_size_32x32_sent++;
+    }
+    else if (tile_width == 16 && tile_height == 16)
+    {
+        net->stats.tile_size_16x16_sent++;
     }
 
     net->stats.tile_choice_compressed_payload_sum += compressed_size;
@@ -2695,6 +2707,12 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         }
 
         const bool network_happy = !wd_stream_client_reporting_tile_loss_locked(&net->stream_policy, &net->stats);
+        const uint32_t base_uncompressed_bytes = (uint32_t)server->tile_width * (uint32_t)server->tile_height * WD_BYTES_PER_PIXEL;
+        const uint32_t base_wire_bytes = wd_stream_tile_wire_bytes_for_payload(base_uncompressed_bytes, net->udp_payload_target,
+                                                                               tile_input_sequence, false);
+        const uint32_t one_packet_wire_budget = (uint32_t)net->udp_payload_target + WD_UDP_TILE_HEADER_MAX_SIZE;
+        const uint32_t job_budget_reservation = base_wire_bytes > one_packet_wire_budget ? base_wire_bytes : one_packet_wire_budget;
+        uint64_t job_submit_budget = remaining_byte_budget;
         if (net->dirty_region_rng == 0)
         {
             net->dirty_region_rng = (uint32_t)(wd_now_ns() ^ ((uint64_t)server->display_width << 16) ^ server->display_height);
@@ -2707,6 +2725,12 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         uint16_t job_count = 0;
         while (job_count < batch_capacity && net->dirty_region_count > 0)
         {
+            if (job_budget_reservation != 0 && job_submit_budget < job_budget_reservation)
+            {
+                net->stats.dirty_budget_blocked++;
+                break;
+            }
+
             const uint64_t select_start_ns = wd_now_ns();
             uint32_t r = net->dirty_region_rng = net->dirty_region_rng * 1664525u + 1013904223u;
             uint16_t index = (uint16_t)(r % net->dirty_region_count);
@@ -2738,6 +2762,10 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
             jobs[job_count].dirty_snapshot = dirty_snapshot;
             jobs[job_count].dirty_epoch_snapshot = epoch_snapshot;
             jobs[job_count].result = &results[job_count];
+            if (job_budget_reservation != 0)
+            {
+                job_submit_budget -= job_budget_reservation;
+            }
             job_count++;
         }
 
@@ -2940,7 +2968,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
             wd_stream_note_tile_choice_locked(net, result->candidate.compressed_size, result->candidate.uncompressed_size,
                                               net->udp_payload_target, tile_input_sequence,
-                                              result->candidate.compressed_payload);
+                                              result->candidate.compressed_payload, result->candidate.width, result->candidate.height);
 
             for (uint16_t i = 0; i < result->candidate.covered_base_count; ++i)
             {
@@ -3203,7 +3231,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     if (video_activity)
     {
         uint64_t choices = s.tile_choice_compressed + s.tile_choice_uncompressed;
-        WD_LOG_DEBUG("WayDisplay video/s: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_batches=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
+        WD_LOG_DEBUG("WayDisplay video/s: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f tile_sizes=128x64:%llu,64x64:%llu,32x32:%llu,16x16:%llu encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_batches=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
                      (unsigned long long)s.dirty_tiles, (unsigned long long)s.dirty_tiles_stale_skipped,
                      (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_fresh_tiles_sent,
                      (unsigned long long)s.udp_retx_tiles_sent, (unsigned long long)s.udp_packets_sent,
@@ -3236,6 +3264,10 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                      (double)s.tile_encode_ns / 1000000.0,
                      (double)s.udp_send_ns / 1000000.0,
                      (double)s.summary_build_ns / 1000000.0,
+                     (unsigned long long)s.tile_size_128x64_sent,
+                     (unsigned long long)s.tile_size_64x64_sent,
+                     (unsigned long long)s.tile_size_32x32_sent,
+                     (unsigned long long)s.tile_size_16x16_sent,
                      (unsigned long long)s.encode_jobs_completed,
                      (unsigned long long)s.encode_jobs_submitted,
                      (unsigned long long)s.encode_jobs_stale,
