@@ -136,7 +136,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->listen_fd            = -1;
     net->udp_fd               = -1;
     net->session_id           = 0;
-    net->dirty_scan_next_tile = 0;
+    net->dirty_region_rng = 0;
     net->dirty_queue                 = calloc(server->total_tiles, sizeof(*net->dirty_queue));
     net->dirty_queued                = calloc(server->total_tiles, sizeof(*net->dirty_queued));
     net->dirty_queue_enqueued_ns     = calloc(server->total_tiles, sizeof(*net->dirty_queue_enqueued_ns));
@@ -174,8 +174,6 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->dirty_queue_count      = 0;
     net->retransmit_queue_count = 0;
     net->summary_dirty_count    = 0;
-    net->dirty_priority_pop_count      = 0;
-    net->retransmit_priority_pop_count = 0;
     net->udp_payload_target            = WD_UDP_PAYLOAD_TARGET;
 
     wd_stream_policy_set_defaults(&net->stream_policy);
@@ -992,7 +990,7 @@ void* wd_net_thread_main(void* arg) {
         }
         net->client_udp_addr      = client_udp_addr;
         net->client_connected     = true;
-        net->dirty_scan_next_tile = 0;
+        net->dirty_region_rng = 0;
         if (net->dirty_queued)
         {
             memset(net->dirty_queued, 0, server->total_tiles * sizeof(*net->dirty_queued));

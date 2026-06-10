@@ -693,10 +693,6 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
         pthread_mutex_lock(&server->net.lock);
         server->net.last_input_sequence = event->input_sequence;
         wd_stats_note_pointer_input_inject_locked(&server->net, local[i].server_rx_timestamp_ns, inject_ns);
-        server->net.pointer_priority_valid = true;
-        server->net.pointer_priority_x = (uint32_t)lx;
-        server->net.pointer_priority_y = (uint32_t)ly;
-        server->net.pointer_priority_ns = inject_ns;
         server->net.stats.pointer_events_injected++;
         pthread_mutex_unlock(&server->net.lock);
 

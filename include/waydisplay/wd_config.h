@@ -52,11 +52,9 @@ extern "C" {
 #define WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND     (1000ull * 1024ull * 1024ull * 1024ull)
 #define WD_LIMITED_MODE_THROUGHPUT_SAFETY_PERCENT    85u
 
-/* Tile send priority. Prefer low wire-cost tiles while periodically
- * taking the oldest queued tile so large/background tiles still make progress. */
-#define WD_TILE_PRIORITY_FAIRNESS_INTERVAL 8u
-#define WD_TILE_PRIORITY_POINTER_ACTIVE_NS 250000000ull
-#define WD_TILE_PRIORITY_POINTER_DISTANCE_WEIGHT_BYTES 4096u
+/* Retransmits get a small first pass when the client reports loss; fresh
+ * damage itself is selected by randomized dirty region probing. */
+#define WD_RETRANSMIT_LOSS_BUDGET_PERCENT 25u
 
 /* Stream link health policy.  Tile size is not adapted globally: each dirty
  * tile is encoded at the largest supported wire size that satisfies the

@@ -595,7 +595,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 
     if (ok)
     {
-        server->net.dirty_scan_next_tile = 0;
+        server->net.dirty_region_rng = 0;
         server->net.dirty_queue_read       = 0;
         server->net.dirty_queue_write      = 0;
         server->net.dirty_queue_count      = 0;

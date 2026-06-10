@@ -203,6 +203,14 @@ struct wd_cached_tile {
     uint32_t last_hash;
 };
 
+struct wd_udp_tile_send_result {
+    bool     any_packet_sent;
+    bool     all_packets_sent;
+    bool     send_blocked;
+    uint32_t packets_sent;
+    uint32_t bytes_sent;
+};
+
 struct wd_stats {
     uint64_t dirty_tiles;
     uint64_t udp_tiles_sent;
@@ -297,8 +305,11 @@ struct wd_stats {
     uint64_t rate_increases;
     uint64_t frame_rate_downshifts;
     uint64_t frame_rate_upshifts;
-    uint64_t dirty_pointer_priority_pops;
-    uint64_t retx_pointer_priority_pops;
+    uint64_t dirty_region_probes;
+    uint64_t dirty_region_hits;
+    uint64_t dirty_budget_blocked;
+    uint64_t partial_tile_sends;
+    uint64_t partial_tile_packets_sent;
 
     uint64_t dirty_tiles_stale_skipped;
     uint64_t retx_tiles_superseded_by_fresh;
@@ -356,7 +367,7 @@ struct wd_net_state {
     bool client_connected;
     uint16_t udp_payload_target;
 
-    uint16_t dirty_scan_next_tile;
+    uint32_t dirty_region_rng;
 
     uint16_t* dirty_queue;
     bool*     dirty_queued;
@@ -373,14 +384,6 @@ struct wd_net_state {
 
     bool*    summary_dirty_tiles;
     uint16_t summary_dirty_count;
-
-    uint32_t dirty_priority_pop_count;
-    uint32_t retransmit_priority_pop_count;
-
-    bool     pointer_priority_valid;
-    uint32_t pointer_priority_x;
-    uint32_t pointer_priority_y;
-    uint64_t pointer_priority_ns;
 
     int listen_fd;
     int tcp_fd;
@@ -623,7 +626,7 @@ void wd_stream_destroy(struct wd_server* server);
 bool wd_stream_send_dirty_tiles(struct wd_server* server);
 bool wd_stream_send_generation_summary_locked(struct wd_server* server);
 bool wd_stream_send_pending_generation_summary_locked(struct wd_server* server);
-bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id, bool* launched, bool* send_blocked, uint32_t* bytes_sent);
+bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id, struct wd_udp_tile_send_result* result);
 bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id, uint64_t requested_generation);
 void wd_stream_print_and_reset_stats(struct wd_server* server);
 
