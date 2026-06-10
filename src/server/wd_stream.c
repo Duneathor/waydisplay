@@ -27,43 +27,6 @@ static void wd_stream_note_input_to_first_fresh_tile_locked(struct wd_net_state*
 }
 
 
-static void wd_stream_note_full_frame_start_locked(struct wd_net_state* net, uint64_t now_ns) {
-    if (!net || net->full_frame_start_ns != 0)
-    {
-        return;
-    }
-
-    net->full_frame_start_ns = now_ns;
-    net->full_frame_tiles_sent = 0;
-    net->stats.full_frame_catchup_started++;
-}
-
-static void wd_stream_note_full_frame_tile_sent_locked(struct wd_net_state* net) {
-    if (!net || net->full_frame_start_ns == 0)
-    {
-        return;
-    }
-
-    net->full_frame_tiles_sent++;
-    net->stats.full_frame_catchup_tiles_sent++;
-}
-
-static void wd_stream_note_full_frame_complete_locked(struct wd_net_state* net, uint64_t now_ns) {
-    if (!net || net->full_frame_start_ns == 0)
-    {
-        return;
-    }
-
-    net->stats.full_frame_catchup_completed++;
-    if (now_ns >= net->full_frame_start_ns)
-    {
-        net->stats.full_frame_catchup_duration_sum_ns += now_ns - net->full_frame_start_ns;
-    }
-
-    net->full_frame_start_ns = 0;
-    net->full_frame_tiles_sent = 0;
-}
-
 static uint64_t wd_stream_byte_burst_cap_for_rate(uint64_t bytes_per_second) {
     if (bytes_per_second == 0)
     {
@@ -144,6 +107,8 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->tile_size_good_windows         = 0;
     policy->tile_size_bad_windows          = 0;
     policy->tile_size_change_cooldown_windows = 0;
+    policy->max_wire_tile_width = WD_ADAPTIVE_TILE_MAX_WIDTH;
+    policy->max_wire_tile_height = WD_ADAPTIVE_TILE_MAX_HEIGHT;
     wd_stream_policy_reset_tokens(policy);
 }
 
@@ -174,6 +139,8 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->tile_size_good_windows = 0;
     policy->tile_size_bad_windows = 0;
     policy->tile_size_change_cooldown_windows = 0;
+    policy->max_wire_tile_width = WD_ADAPTIVE_TILE_MAX_WIDTH;
+    policy->max_wire_tile_height = WD_ADAPTIVE_TILE_MAX_HEIGHT;
     if (policy->limited_udp_bytes_per_second == 0)
     {
         policy->limited_udp_bytes_per_second = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
@@ -208,6 +175,8 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->tile_size_good_windows = 0;
     policy->tile_size_bad_windows = 0;
     policy->tile_size_change_cooldown_windows = 0;
+    policy->max_wire_tile_width = WD_ADAPTIVE_TILE_MAX_WIDTH;
+    policy->max_wire_tile_height = WD_ADAPTIVE_TILE_MAX_HEIGHT;
 
     wd_stream_policy_reset_tokens(policy);
 }
@@ -525,6 +494,12 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
         return;
     }
 
+    if (policy->max_wire_tile_width == 0 || policy->max_wire_tile_height == 0)
+    {
+        policy->max_wire_tile_width = WD_ADAPTIVE_TILE_MAX_WIDTH;
+        policy->max_wire_tile_height = WD_ADAPTIVE_TILE_MAX_HEIGHT;
+    }
+
     bool tile_change_cooling_down = false;
     if (policy->tile_size_change_cooldown_windows != 0)
     {
@@ -547,7 +522,7 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
     uint16_t new_height = 0;
     const char* upscale_reason = NULL;
 
-    if (should_downscale && wd_stream_next_smaller_tile_size(server->tile_width, server->tile_height, &new_width, &new_height))
+    if (should_downscale && wd_stream_next_smaller_tile_size(policy->max_wire_tile_width, policy->max_wire_tile_height, &new_width, &new_height))
     {
         policy->tile_size_good_windows = 0;
         if (policy->tile_size_bad_windows < UINT32_MAX)
@@ -560,17 +535,15 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
         }
         policy->tile_size_bad_windows = 0;
 
-        const uint16_t old_width  = server->tile_width;
-        const uint16_t old_height = server->tile_height;
-        if (wd_server_reconfigure_tile_size_locked(server, new_width, new_height))
-        {
-            policy->tile_size_change_cooldown_windows = WD_ADAPTIVE_TILE_CHANGE_COOLDOWN_WINDOWS;
-            stats->tile_size_downshifts++;
-            WD_LOG_INFO("WayDisplay: adaptive tile size down: %ux%u -> %ux%u%s",
-                        old_width, old_height, new_width, new_height,
-                        completion_bad ? " due to low tile completion" : " due to send/repair pressure");
-            (void)wd_server_send_current_config_locked(server);
-        }
+        const uint16_t old_width  = policy->max_wire_tile_width;
+        const uint16_t old_height = policy->max_wire_tile_height;
+        policy->max_wire_tile_width = new_width;
+        policy->max_wire_tile_height = new_height;
+        policy->tile_size_change_cooldown_windows = WD_ADAPTIVE_TILE_CHANGE_COOLDOWN_WINDOWS;
+        stats->tile_size_downshifts++;
+        WD_LOG_INFO("WayDisplay: adaptive max wire tile down: %ux%u -> %ux%u%s",
+                    old_width, old_height, new_width, new_height,
+                    completion_bad ? " due to low tile completion" : " due to send/repair pressure");
         return;
     }
 
@@ -588,8 +561,7 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
     }
 
     const bool sustained_excellent_completion = completion_excellent &&
-                                               policy->tile_size_good_windows >=
-                                                   WD_ADAPTIVE_TILE_DIRECT_JUMP_GOOD_WINDOWS;
+                                               policy->tile_size_good_windows >= WD_ADAPTIVE_TILE_DIRECT_JUMP_GOOD_WINDOWS;
 
     if (sustained_excellent_completion)
     {
@@ -602,7 +574,7 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
     {
         upscale_reason = " because estimated tile wire size fits one UDP packet";
     }
-    else if (wd_stream_next_larger_tile_size(server->tile_width, server->tile_height, &new_width, &new_height))
+    else if (wd_stream_next_larger_tile_size(policy->max_wire_tile_width, policy->max_wire_tile_height, &new_width, &new_height))
     {
         upscale_reason = one_packet_tiles ? " because current tiles fit one UDP packet" : " because client completion is healthy";
     }
@@ -612,7 +584,7 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
         return;
     }
 
-    if ((new_width == server->tile_width && new_height == server->tile_height) ||
+    if ((new_width == policy->max_wire_tile_width && new_height == policy->max_wire_tile_height) ||
         wd_stream_tile_area(new_width, new_height) > wd_stream_tile_area(WD_ADAPTIVE_TILE_MAX_WIDTH, WD_ADAPTIVE_TILE_MAX_HEIGHT))
     {
         policy->tile_size_good_windows = 0;
@@ -625,17 +597,15 @@ static void wd_stream_policy_update_tile_size_locked(struct wd_server* server, s
     }
     policy->tile_size_good_windows = 0;
 
-    const uint16_t old_width  = server->tile_width;
-    const uint16_t old_height = server->tile_height;
-    if (wd_server_reconfigure_tile_size_locked(server, new_width, new_height))
-    {
-        policy->tile_size_change_cooldown_windows = WD_ADAPTIVE_TILE_CHANGE_COOLDOWN_WINDOWS;
-        stats->tile_size_upshifts++;
-        WD_LOG_INFO("WayDisplay: adaptive tile size up: %ux%u -> %ux%u%s",
-                    old_width, old_height, new_width, new_height,
-                    upscale_reason ? upscale_reason : " because link health allows larger tiles");
-        (void)wd_server_send_current_config_locked(server);
-    }
+    const uint16_t old_width  = policy->max_wire_tile_width;
+    const uint16_t old_height = policy->max_wire_tile_height;
+    policy->max_wire_tile_width = new_width;
+    policy->max_wire_tile_height = new_height;
+    policy->tile_size_change_cooldown_windows = WD_ADAPTIVE_TILE_CHANGE_COOLDOWN_WINDOWS;
+    stats->tile_size_upshifts++;
+    WD_LOG_INFO("WayDisplay: adaptive max wire tile up: %ux%u -> %ux%u%s",
+                old_width, old_height, new_width, new_height,
+                upscale_reason ? upscale_reason : " because link health allows larger tiles");
 }
 
 static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool bad_window,
@@ -844,7 +814,6 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
 
     pthread_mutex_lock(&net->lock);
 
-    bool                     full_frame_needed = net->full_frame_needed;
     bool                     client_connected  = net->client_connected;
     struct wd_stream_policy* policy            = &net->stream_policy;
 
@@ -854,7 +823,7 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
         return false;
     }
 
-    if (!server->scene_dirty && !full_frame_needed)
+    if (!server->scene_dirty)
     {
         pthread_mutex_unlock(&net->lock);
         return false;
@@ -865,7 +834,7 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
     uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
     uint64_t interval_ns = 1000000000ull / fps;
 
-    if (policy->last_frame_send_ns == 0 || now_ns - policy->last_frame_send_ns >= interval_ns || full_frame_needed)
+    if (policy->last_frame_send_ns == 0 || now_ns - policy->last_frame_send_ns >= interval_ns)
     {
         policy->last_frame_send_ns = now_ns;
         should                     = true;
@@ -875,6 +844,34 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
     pthread_mutex_unlock(&net->lock);
 
     return should;
+}
+
+void wd_stream_invalidate_all_tiles_locked(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    struct wd_net_state* net = &server->net;
+
+    if (net->tiles)
+    {
+        for (uint16_t i = 0; i < server->total_tiles; ++i)
+        {
+            net->tiles[i].last_hash       = 0;
+            net->tiles[i].compressed_size = 0;
+            net->tiles[i].input_sequence  = 0;
+        }
+    }
+
+    if (server->damage_tiles && server->total_base_tiles > 0)
+    {
+        memset(server->damage_tiles, 0, (size_t)server->total_base_tiles * sizeof(*server->damage_tiles));
+    }
+
+    server->damage_all_tiles  = true;
+    server->damage_tile_count = 0;
+    server->scene_dirty       = true;
 }
 
 bool wd_stream_init(struct wd_server* server) {
@@ -977,9 +974,6 @@ static void wd_stream_free_protocol_tile_state(struct wd_server* server, uint16_
     server->net.retransmit_requested_generation = NULL;
     free(server->net.summary_dirty_tiles);
     server->net.summary_dirty_tiles = NULL;
-    free(server->net.full_frame_sent_tiles);
-    server->net.full_frame_sent_tiles = NULL;
-
     free(server->damage_tiles);
     server->damage_tiles = NULL;
     server->damage_all_tiles = false;
@@ -1014,11 +1008,10 @@ bool wd_server_reconfigure_tile_size_locked(struct wd_server* server, uint16_t t
     server->net.retransmit_queue_enqueued_ns    = calloc(server->total_tiles, sizeof(*server->net.retransmit_queue_enqueued_ns));
     server->net.retransmit_requested_generation = calloc(server->total_tiles, sizeof(*server->net.retransmit_requested_generation));
     server->net.summary_dirty_tiles             = calloc(server->total_tiles, sizeof(*server->net.summary_dirty_tiles));
-    server->net.full_frame_sent_tiles           = calloc(server->total_tiles, sizeof(*server->net.full_frame_sent_tiles));
 
     if (!server->net.dirty_queue || !server->net.dirty_queued || !server->net.dirty_queue_enqueued_ns ||
         !server->net.retransmit_queue || !server->net.retransmit_queued || !server->net.retransmit_queue_enqueued_ns ||
-        !server->net.retransmit_requested_generation || !server->net.summary_dirty_tiles || !server->net.full_frame_sent_tiles)
+        !server->net.retransmit_requested_generation || !server->net.summary_dirty_tiles)
     {
         wd_stream_free_protocol_tile_state(server, server->total_tiles);
         return false;
@@ -1030,11 +1023,6 @@ bool wd_server_reconfigure_tile_size_locked(struct wd_server* server, uint16_t t
         return false;
     }
 
-    server->net.full_frame_needed       = true;
-    server->net.full_frame_next_tile    = 0;
-    server->net.full_frame_start_ns     = 0;
-    server->net.full_frame_tiles_sent   = 0;
-    server->net.dirty_scan_next_tile    = 0;
     server->net.dirty_queue_read        = 0;
     server->net.dirty_queue_write       = 0;
     server->net.dirty_queue_count       = 0;
@@ -1042,7 +1030,6 @@ bool wd_server_reconfigure_tile_size_locked(struct wd_server* server, uint16_t t
     server->net.summary_dirty_count     = 0;
     server->net.dirty_priority_pop_count      = 0;
     server->net.retransmit_priority_pop_count = 0;
-    server->net.full_frame_priority_pop_count = 0;
     server->last_summary_ns             = 0;
     server->last_delta_summary_ns       = 0;
     server->scene_dirty                 = true;
@@ -1234,9 +1221,10 @@ static void wd_stream_policy_consume_limited_bytes_locked(struct wd_stream_polic
     }
 }
 
-static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_t tile_id, uint64_t generation, uint64_t timestamp_ns,
-                                               uint64_t input_sequence, const uint8_t* tile_payload, uint32_t tile_payload_size,
-                                               bool compressed_payload, bool* launched, bool* send_blocked, uint32_t* bytes_sent) {
+static bool wd_stream_send_tile_payload_sized_locked(struct wd_server* server, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
+                                                     uint64_t generation, uint64_t timestamp_ns, uint64_t input_sequence,
+                                                     const uint8_t* tile_payload, uint32_t tile_payload_size,
+                                                     bool compressed_payload, bool* launched, bool* send_blocked, uint32_t* bytes_sent) {
     struct wd_net_state* net = &server->net;
 
     if (launched)
@@ -1254,7 +1242,11 @@ static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_
         *bytes_sent = 0;
     }
 
-    if (tile_id >= server->total_tiles)
+    const uint16_t packet_tiles_x = wd_tiles_for_width_with_tile(server->display_width, tile_width);
+    const uint16_t packet_tiles_y = wd_tiles_for_height_with_tile(server->display_height, tile_height);
+    const uint32_t packet_total_tiles = (uint32_t)packet_tiles_x * (uint32_t)packet_tiles_y;
+    if (tile_width == 0 || tile_height == 0 || packet_tiles_x == 0 || packet_tiles_y == 0 || tile_id >= packet_total_tiles ||
+        packet_total_tiles > UINT16_MAX)
     {
         return false;
     }
@@ -1295,7 +1287,7 @@ static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_
 
         uint8_t protocol = wd_stream_tile_protocol_for_packet(packet_count, input_sequence, compressed_payload);
         uint16_t header_size = wd_udp_tile_header_size_for_protocol(protocol);
-        uint8_t tile_size = wd_tile_size_code_for_dimensions(server->tile_width, server->tile_height);
+        uint8_t tile_size = wd_tile_size_code_for_dimensions(tile_width, tile_height);
 
         switch (protocol)
         {
@@ -1489,7 +1481,10 @@ static bool wd_stream_send_tile_payload_locked(struct wd_server* server, uint16_
             net->stats.udp_uncompressed_tiles_sent++;
             net->stats.udp_uncompressed_tile_bytes_sent += tile_payload_size;
         }
-        wd_stream_mark_summary_dirty_locked(server, tile_id);
+        if (tile_width == server->tile_width && tile_height == server->tile_height)
+        {
+            wd_stream_mark_summary_dirty_locked(server, tile_id);
+        }
     }
 
     return true;
@@ -1505,9 +1500,9 @@ bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_i
 
     struct wd_cached_tile* cache = &net->tiles[tile_id];
 
-    return wd_stream_send_tile_payload_locked(server, tile_id, cache->generation, cache->timestamp_ns, cache->input_sequence,
-                                              cache->compressed, cache->compressed_size, cache->compressed_payload, launched, send_blocked,
-                                              bytes_sent);
+    return wd_stream_send_tile_payload_sized_locked(server, tile_id, server->tile_width, server->tile_height, cache->generation,
+                                                    cache->timestamp_ns, cache->input_sequence, cache->compressed, cache->compressed_size,
+                                                    cache->compressed_payload, launched, send_blocked, bytes_sent);
 }
 
 static uint32_t wd_stream_cached_tile_priority_cost_locked(const struct wd_server* server, uint16_t tile_id) {
@@ -1940,101 +1935,6 @@ static bool wd_retransmit_queue_pop_priority_locked(struct wd_server* server, ui
 }
 
 
-static bool wd_full_frame_pick_tile_locked(struct wd_server* server, uint64_t now_ns, uint16_t* out_tile_id, bool* out_pointer_priority) {
-    if (!server || !out_tile_id)
-    {
-        return false;
-    }
-
-    struct wd_net_state* net = &server->net;
-
-    if (out_pointer_priority)
-    {
-        *out_pointer_priority = false;
-    }
-
-    if (net->full_frame_next_tile >= server->total_tiles)
-    {
-        return false;
-    }
-
-    if (!net->full_frame_sent_tiles)
-    {
-        *out_tile_id = net->full_frame_next_tile;
-        return *out_tile_id < server->total_tiles;
-    }
-
-    net->full_frame_priority_pop_count++;
-    bool take_oldest = (WD_TILE_PRIORITY_FAIRNESS_INTERVAL != 0u) &&
-                       (net->full_frame_priority_pop_count % WD_TILE_PRIORITY_FAIRNESS_INTERVAL == 0u);
-
-    bool     found      = false;
-    uint16_t best_tile  = 0;
-    uint32_t best_score = UINT32_MAX;
-    bool     used_pointer_priority = false;
-
-    for (uint16_t tile_id = 0; tile_id < server->total_tiles; ++tile_id)
-    {
-        if (net->full_frame_sent_tiles[tile_id])
-        {
-            continue;
-        }
-
-        if (take_oldest)
-        {
-            best_tile = tile_id;
-            found     = true;
-            break;
-        }
-
-        bool pointer_priority_active = false;
-        uint32_t score = wd_stream_cached_tile_priority_score_locked(server, tile_id, now_ns, &pointer_priority_active);
-        if (!found || score < best_score)
-        {
-            best_tile = tile_id;
-            best_score = score;
-            found = true;
-            used_pointer_priority = pointer_priority_active;
-        }
-    }
-
-    if (!found)
-    {
-        net->full_frame_next_tile = server->total_tiles;
-        return false;
-    }
-
-    *out_tile_id = best_tile;
-    if (out_pointer_priority)
-    {
-        *out_pointer_priority = used_pointer_priority && !take_oldest;
-    }
-    return true;
-}
-
-static void wd_full_frame_mark_tile_sent_locked(struct wd_server* server, uint16_t tile_id) {
-    if (!server || tile_id >= server->total_tiles)
-    {
-        return;
-    }
-
-    struct wd_net_state* net = &server->net;
-
-    if (net->full_frame_sent_tiles)
-    {
-        if (net->full_frame_sent_tiles[tile_id])
-        {
-            return;
-        }
-        net->full_frame_sent_tiles[tile_id] = true;
-    }
-
-    if (net->full_frame_next_tile < server->total_tiles)
-    {
-        net->full_frame_next_tile++;
-    }
-}
-
 static void wd_clear_damage_tiles(struct wd_server* server) {
     if (!server || !server->damage_tiles)
     {
@@ -2146,6 +2046,268 @@ static void wd_detect_dirty_tiles_into_queue_locked(struct wd_server* server) {
     wd_clear_damage_tiles(server);
 }
 
+
+struct wd_wire_tile_candidate {
+    uint16_t width;
+    uint16_t height;
+    uint16_t tile_id;
+    uint16_t covered_base_ids[64];
+    uint16_t covered_base_count;
+    uint32_t uncompressed_size;
+    uint32_t compressed_size;
+    uint32_t wire_size;
+    bool compressed_payload;
+};
+
+static bool wd_stream_collect_wire_tile_base_ids(const struct wd_server* server, uint16_t tile_id, uint16_t tile_width,
+                                                 uint16_t tile_height, uint16_t* out_ids, uint16_t* out_count,
+                                                 uint16_t max_count) {
+    if (!server || !out_ids || !out_count || tile_width == 0 || tile_height == 0 || server->tile_width == 0 || server->tile_height == 0)
+    {
+        return false;
+    }
+
+    *out_count = 0;
+    const uint16_t tiles_x = wd_tiles_for_width_with_tile(server->display_width, tile_width);
+    if (tiles_x == 0)
+    {
+        return false;
+    }
+
+    const uint32_t x = wd_tile_start_x_for_tile(tile_id, tiles_x, tile_width);
+    const uint32_t y = wd_tile_start_y_for_tile(tile_id, tiles_x, tile_height);
+    const uint32_t w = wd_tile_visible_width_for_tile(server->display_width, tile_id, tiles_x, tile_width);
+    const uint32_t h = wd_tile_visible_height_for_tile(server->display_height, tile_id, tiles_x, tile_height);
+    if (w == 0 || h == 0)
+    {
+        return false;
+    }
+
+    uint32_t bx0 = x / server->tile_width;
+    uint32_t by0 = y / server->tile_height;
+    uint32_t bx1 = (x + w - 1u) / server->tile_width;
+    uint32_t by1 = (y + h - 1u) / server->tile_height;
+    if (bx1 >= server->tiles_x)
+    {
+        bx1 = (uint32_t)server->tiles_x - 1u;
+    }
+    if (by1 >= server->tiles_y)
+    {
+        by1 = (uint32_t)server->tiles_y - 1u;
+    }
+
+    for (uint32_t by = by0; by <= by1; ++by)
+    {
+        for (uint32_t bx = bx0; bx <= bx1; ++bx)
+        {
+            uint32_t base_id = by * (uint32_t)server->tiles_x + bx;
+            if (base_id >= server->total_tiles || *out_count >= max_count)
+            {
+                return false;
+            }
+            out_ids[(*out_count)++] = (uint16_t)base_id;
+        }
+    }
+    return *out_count != 0;
+}
+
+static bool wd_stream_wire_tile_for_base_tile(const struct wd_server* server, uint16_t base_tile_id, uint16_t tile_width,
+                                              uint16_t tile_height, uint16_t* out_tile_id) {
+    if (!server || !out_tile_id || base_tile_id >= server->total_tiles || tile_width == 0 || tile_height == 0)
+    {
+        return false;
+    }
+
+    const uint32_t x = wd_tile_start_x_for_tile(base_tile_id, server->tiles_x, server->tile_width);
+    const uint32_t y = wd_tile_start_y_for_tile(base_tile_id, server->tiles_x, server->tile_height);
+    if ((x % tile_width) != 0 || (y % tile_height) != 0)
+    {
+        return false;
+    }
+
+    const uint16_t tiles_x = wd_tiles_for_width_with_tile(server->display_width, tile_width);
+    const uint16_t tiles_y = wd_tiles_for_height_with_tile(server->display_height, tile_height);
+    if (tiles_x == 0 || tiles_y == 0)
+    {
+        return false;
+    }
+
+    const uint32_t tx = x / tile_width;
+    const uint32_t ty = y / tile_height;
+    const uint32_t id = ty * (uint32_t)tiles_x + tx;
+    if (tx >= tiles_x || ty >= tiles_y || id > UINT16_MAX)
+    {
+        return false;
+    }
+
+    *out_tile_id = (uint16_t)id;
+    return true;
+}
+
+static bool wd_stream_try_build_wire_tile_candidate(struct wd_server* server, uint16_t base_tile_id, uint16_t tile_width,
+                                                    uint16_t tile_height, uint64_t input_sequence, uint8_t* tile_bytes,
+                                                    uint8_t* compressed_tile, size_t compressed_capacity,
+                                                    struct wd_wire_tile_candidate* out) {
+    if (!server || !tile_bytes || !compressed_tile || !out)
+    {
+        return false;
+    }
+
+    uint16_t wire_tile_id = 0;
+    if (!wd_stream_wire_tile_for_base_tile(server, base_tile_id, tile_width, tile_height, &wire_tile_id))
+    {
+        return false;
+    }
+
+    uint16_t covered_count = 0;
+    uint16_t covered_ids[64];
+    if (!wd_stream_collect_wire_tile_base_ids(server, wire_tile_id, tile_width, tile_height, covered_ids, &covered_count,
+                                             (uint16_t)(sizeof(covered_ids) / sizeof(covered_ids[0]))))
+    {
+        return false;
+    }
+
+    const uint32_t uncompressed_size = (uint32_t)tile_width * (uint32_t)tile_height * WD_BYTES_PER_PIXEL;
+    const uint16_t wire_tiles_x = wd_tiles_for_width_with_tile(server->display_width, tile_width);
+    const uint16_t wire_total_tiles = wd_total_tiles_for_size_with_tile(server->display_width, server->display_height, tile_width, tile_height);
+    if (!wd_extract_tile_xrgb8888_for_tile(server->framebuffer_xrgb8888, server->display_width, server->display_height,
+                                           wire_tiles_x, wire_total_tiles, wire_tile_id, tile_width, tile_height, tile_bytes))
+    {
+        return false;
+    }
+
+    uint32_t compressed_size = 0;
+    if (!wd_zstd_compress(tile_bytes, uncompressed_size, compressed_tile, (uint32_t)compressed_capacity, WD_ZSTD_LEVEL, &compressed_size))
+    {
+        return false;
+    }
+
+    const bool compressed_payload = wd_stream_use_compressed_tile_payload(compressed_size, uncompressed_size, server->net.udp_payload_target,
+                                                                         input_sequence);
+    const uint32_t payload_size = compressed_payload ? compressed_size : uncompressed_size;
+
+    memset(out, 0, sizeof(*out));
+    out->width = tile_width;
+    out->height = tile_height;
+    out->tile_id = wire_tile_id;
+    memcpy(out->covered_base_ids, covered_ids, (size_t)covered_count * sizeof(covered_ids[0]));
+    out->covered_base_count = covered_count;
+    out->uncompressed_size = uncompressed_size;
+    out->compressed_size = compressed_size;
+    out->wire_size = wd_stream_tile_wire_bytes_for_payload(payload_size, server->net.udp_payload_target, input_sequence, compressed_payload);
+    out->compressed_payload = compressed_payload;
+    return true;
+}
+
+static bool wd_stream_choose_wire_tile_candidate(struct wd_server* server, struct wd_stream_policy* policy, uint16_t base_tile_id,
+                                                 uint64_t input_sequence, uint8_t* tile_bytes, uint8_t* compressed_tile,
+                                                 size_t compressed_capacity, struct wd_wire_tile_candidate* out) {
+    if (!server || !policy || !out)
+    {
+        return false;
+    }
+
+    const uint16_t max_width = policy->max_wire_tile_width ? policy->max_wire_tile_width : WD_ADAPTIVE_TILE_MAX_WIDTH;
+    const uint16_t max_height = policy->max_wire_tile_height ? policy->max_wire_tile_height : WD_ADAPTIVE_TILE_MAX_HEIGHT;
+    const uint32_t max_area = wd_stream_tile_area(max_width, max_height);
+    const bool allow_multipacket = max_width == WD_ADAPTIVE_TILE_MAX_WIDTH && max_height == WD_ADAPTIVE_TILE_MAX_HEIGHT;
+    const uint32_t one_packet_budget = (uint32_t)server->net.udp_payload_target + WD_UDP_TILE_HEADER_MAX_SIZE;
+
+    static const struct { uint16_t width; uint16_t height; } candidates[] = {
+        {128, 64}, {64, 64}, {32, 32}, {16, 16},
+    };
+
+    struct wd_wire_tile_candidate largest_allowed;
+    bool have_largest_allowed = false;
+    struct wd_wire_tile_candidate smallest_allowed;
+    bool have_smallest_allowed = false;
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i)
+    {
+        if (wd_stream_tile_area(candidates[i].width, candidates[i].height) > max_area)
+        {
+            continue;
+        }
+
+        struct wd_wire_tile_candidate c;
+        if (!wd_stream_try_build_wire_tile_candidate(server, base_tile_id, candidates[i].width, candidates[i].height,
+                                                     input_sequence, tile_bytes, compressed_tile, compressed_capacity, &c))
+        {
+            continue;
+        }
+
+        if (!have_largest_allowed)
+        {
+            largest_allowed = c;
+            have_largest_allowed = true;
+        }
+        smallest_allowed = c;
+        have_smallest_allowed = true;
+
+        if (c.wire_size <= one_packet_budget)
+        {
+            *out = c;
+            return true;
+        }
+    }
+
+    if (allow_multipacket && have_largest_allowed)
+    {
+        *out = largest_allowed;
+        return true;
+    }
+    if (have_smallest_allowed)
+    {
+        *out = smallest_allowed;
+        return true;
+    }
+    return false;
+}
+
+static bool wd_stream_update_base_tile_cache_locked(struct wd_server* server, uint16_t base_tile_id, uint64_t generation,
+                                                    uint64_t timestamp_ns, uint64_t input_sequence, uint8_t* tile_bytes,
+                                                    uint8_t* compressed_tile, size_t compressed_capacity) {
+    if (!server || base_tile_id >= server->total_tiles || !tile_bytes || !compressed_tile)
+    {
+        return false;
+    }
+
+    if (!wd_extract_tile_xrgb8888_for_tile(server->framebuffer_xrgb8888, server->display_width, server->display_height,
+                                           server->tiles_x, server->total_tiles, base_tile_id, server->tile_width,
+                                           server->tile_height, tile_bytes))
+    {
+        return false;
+    }
+
+    uint32_t compressed_size = 0;
+    if (!wd_zstd_compress(tile_bytes, server->uncompressed_tile_bytes, compressed_tile, (uint32_t)compressed_capacity,
+                          WD_ZSTD_LEVEL, &compressed_size))
+    {
+        return false;
+    }
+
+    struct wd_cached_tile* tile = &server->net.tiles[base_tile_id];
+    const bool compressed_payload = wd_stream_use_compressed_tile_payload(compressed_size, server->uncompressed_tile_bytes,
+                                                                         server->net.udp_payload_target, input_sequence);
+    const uint8_t* payload = compressed_payload ? compressed_tile : tile_bytes;
+    const uint32_t payload_size = compressed_payload ? compressed_size : server->uncompressed_tile_bytes;
+    if (payload_size > tile->compressed_capacity)
+    {
+        return false;
+    }
+
+    memcpy(tile->compressed, payload, payload_size);
+    tile->compressed_size = payload_size;
+    tile->compressed_payload = compressed_payload;
+    tile->generation = generation;
+    tile->timestamp_ns = timestamp_ns;
+    tile->input_sequence = input_sequence;
+    tile->last_hash = wd_fnv1a_tile_hash_xrgb8888_for_tile(server->framebuffer_xrgb8888, server->display_width,
+                                                           server->display_height, server->tiles_x, server->total_tiles,
+                                                           base_tile_id, server->tile_width, server->tile_height);
+    return true;
+}
+
 bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     struct wd_net_state* net = &server->net;
 
@@ -2156,13 +2318,14 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
     const uint64_t now = wd_now_ns();
 
-    uint8_t* tile_bytes = malloc(server->uncompressed_tile_bytes);
+    const uint32_t max_wire_tile_bytes = WD_ADAPTIVE_TILE_MAX_WIDTH * WD_ADAPTIVE_TILE_MAX_HEIGHT * WD_BYTES_PER_PIXEL;
+    uint8_t* tile_bytes = malloc(max_wire_tile_bytes);
     if (!tile_bytes)
     {
         return false;
     }
 
-    size_t   compressed_capacity = wd_zstd_compress_bound(server->uncompressed_tile_bytes);
+    size_t   compressed_capacity = wd_zstd_compress_bound(max_wire_tile_bytes);
     uint8_t* compressed_tile     = malloc(compressed_capacity);
 
     if (!compressed_tile)
@@ -2182,177 +2345,17 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     }
 
     /*
-     * Phase 1:
-     * Progressive full-frame catch-up for new/reconnected clients.
-     *
-     * This sends each tile once across multiple adaptive-rate passes. The
-     * picker is priority-aware, so reconnect catch-up can paint pointer-adjacent
-     * or already-cheap cached tiles before less useful background tiles.
+     * Normal adaptive pass.  New/reconnected clients are handled through the
+     * same dirty-tile pipeline by invalidating cached tile hashes and marking
+     * the scene dirty.  Avoid a separate full-frame catch-up path, because it
+     * competes with current dirty tiles and explicit retransmits for the same
+     * adaptive byte budget.
      */
-    if (net->full_frame_needed)
-    {
-        wd_stream_note_full_frame_start_locked(net, now);
-
-        while (net->full_frame_next_tile < server->total_tiles)
-        {
-            uint16_t tile_id = 0;
-            bool used_pointer_priority = false;
-            if (!wd_full_frame_pick_tile_locked(server, now, &tile_id, &used_pointer_priority))
-            {
-                break;
-            }
-
-            struct wd_cached_tile* tile = &net->tiles[tile_id];
-
-            uint32_t hash = wd_fnv1a_tile_hash_xrgb8888_for_tile(server->framebuffer_xrgb8888, server->display_width, server->display_height,
-                                                           server->tiles_x, server->total_tiles, tile_id, server->tile_width, server->tile_height);
-
-            bool cache_valid = tile->compressed_size > 0 && tile->compressed;
-
-            if (!cache_valid || hash != tile->last_hash)
-            {
-                if (!wd_extract_tile_xrgb8888_for_tile(server->framebuffer_xrgb8888, server->display_width, server->display_height,
-                                                 server->tiles_x, server->total_tiles, tile_id, server->tile_width, server->tile_height, tile_bytes))
-                {
-                    continue;
-                }
-
-                uint32_t compressed_size = 0;
-
-                if (!wd_zstd_compress(tile_bytes, server->uncompressed_tile_bytes, tile->compressed, tile->compressed_capacity, WD_ZSTD_LEVEL,
-                                      &compressed_size))
-                {
-                    WD_LOG_ERROR("WayDisplay: zstd compression failed for full-frame tile %u", tile_id);
-                    continue;
-                }
-
-                tile->last_hash = hash;
-                tile->generation++;
-                tile->timestamp_ns = now;
-                tile->input_sequence = 0;
-                tile->compressed_payload = wd_stream_use_compressed_tile_payload(compressed_size, server->uncompressed_tile_bytes,
-                                                                                 net->udp_payload_target, 0);
-                wd_stream_note_tile_choice_locked(net, compressed_size, server->uncompressed_tile_bytes, net->udp_payload_target, 0,
-                                                  tile->compressed_payload);
-                if (!tile->compressed_payload)
-                {
-                    memcpy(tile->compressed, tile_bytes, server->uncompressed_tile_bytes);
-                    tile->compressed_size = server->uncompressed_tile_bytes;
-                }
-                else
-                {
-                    tile->compressed_size = compressed_size;
-                }
-
-                net->stats.dirty_tiles++;
-            }
-
-            bool     launched     = false;
-            bool     send_blocked = false;
-            uint32_t bytes_sent    = 0;
-
-            uint32_t predicted_bytes = wd_stream_tile_wire_bytes_for_payload(tile->compressed_size, net->udp_payload_target,
-                                                                             tile->input_sequence, tile->compressed_payload);
-            if (wd_stream_policy_limited_byte_budget_locked(&net->stream_policy, now) < predicted_bytes)
-            {
-                break;
-            }
-
-            if (!wd_stream_send_cached_tile_locked(server, tile_id, &launched, &send_blocked, &bytes_sent))
-            {
-                continue;
-            }
-
-            if (!launched && send_blocked)
-            {
-                break;
-            }
-
-            if (launched)
-            {
-                wd_full_frame_mark_tile_sent_locked(server, tile_id);
-                if (used_pointer_priority)
-                {
-                    net->stats.full_frame_pointer_priority_pops++;
-                }
-                net->stats.udp_fresh_tiles_sent++;
-                wd_stream_note_full_frame_tile_sent_locked(net);
-                wd_stream_note_input_to_first_fresh_tile_locked(net, now);
-                wd_stream_policy_consume_limited_bytes_locked(&net->stream_policy, bytes_sent);
-            }
-
-            if (send_blocked)
-            {
-                break;
-            }
-        }
-
-        if (net->full_frame_next_tile >= server->total_tiles)
-        {
-            wd_stream_note_full_frame_complete_locked(net, wd_now_ns());
-
-            net->full_frame_needed    = false;
-            net->full_frame_next_tile = 0;
-            if (net->full_frame_sent_tiles)
-            {
-                memset(net->full_frame_sent_tiles, 0, server->total_tiles * sizeof(*net->full_frame_sent_tiles));
-            }
-            net->dirty_scan_next_tile = 0;
-
-            /*
-             * After initial catch-up, clear stale queue state and force the
-             * next normal pass to detect current dirty tiles from hashes.
-             */
-            if (net->dirty_queued)
-            {
-                memset(net->dirty_queued, 0, server->total_tiles * sizeof(*net->dirty_queued));
-            }
-            if (net->dirty_queue_enqueued_ns)
-            {
-                memset(net->dirty_queue_enqueued_ns, 0, server->total_tiles * sizeof(*net->dirty_queue_enqueued_ns));
-            }
-            if (net->retransmit_queued)
-            {
-                memset(net->retransmit_queued, 0, server->total_tiles * sizeof(*net->retransmit_queued));
-            }
-            if (net->retransmit_queue_enqueued_ns)
-            {
-                memset(net->retransmit_queue_enqueued_ns, 0, server->total_tiles * sizeof(*net->retransmit_queue_enqueued_ns));
-            }
-            if (net->retransmit_requested_generation)
-            {
-                memset(net->retransmit_requested_generation, 0, server->total_tiles * sizeof(*net->retransmit_requested_generation));
-            }
-            if (net->summary_dirty_tiles)
-            {
-                memset(net->summary_dirty_tiles, 0, server->total_tiles * sizeof(*net->summary_dirty_tiles));
-            }
-            net->summary_dirty_count    = 0;
-            net->dirty_queue_read       = 0;
-            net->dirty_queue_write      = 0;
-            net->dirty_queue_count      = 0;
-            net->retransmit_queue_count = 0;
-
-            wd_clear_damage_tiles(server);
-            server->scene_dirty = false;
-        }
-        else
-        {
-            server->scene_dirty = true;
-        }
-
-        pthread_mutex_unlock(&net->lock);
-
-        free(compressed_tile);
-        return true;
-    }
-
     /*
-     * Phase 2:
-     * Normal adaptive pass. Detect new dirty work and send fresh/latest tiles
-     * before repair traffic. Retransmits are useful, but letting them consume
-     * the whole adaptive byte budget turns transient summary races into a
-     * priority inversion where current UI updates stall behind stale repairs.
+     * Detect new dirty work and send fresh/latest tiles before repair traffic.
+     * Retransmits are useful, but letting them consume the whole adaptive byte
+     * budget turns transient summary races into a priority inversion where
+     * current UI updates stall behind stale repairs.
      */
     wd_detect_dirty_tiles_into_queue_locked(server);
 
@@ -2385,44 +2388,44 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
             continue;
         }
 
-        if (!wd_extract_tile_xrgb8888_for_tile(server->framebuffer_xrgb8888, server->display_width, server->display_height, server->tiles_x,
-                                         server->total_tiles, tile_id, server->tile_width, server->tile_height, tile_bytes))
-        {
-            continue;
-        }
-
-        uint32_t compressed_size = 0;
-
-        if (!wd_zstd_compress(tile_bytes, server->uncompressed_tile_bytes, compressed_tile, (uint32_t)compressed_capacity, WD_ZSTD_LEVEL,
-                              &compressed_size))
-        {
-            WD_LOG_ERROR("WayDisplay: zstd compression failed for dirty tile %u", tile_id);
-            continue;
-        }
-
         const uint64_t tile_input_sequence = net->input_since_last_fresh_tile ? net->last_input_sequence : 0;
-        const bool compressed_payload = wd_stream_use_compressed_tile_payload(compressed_size, server->uncompressed_tile_bytes,
-                                                                              net->udp_payload_target, tile_input_sequence);
-        wd_stream_note_tile_choice_locked(net, compressed_size, server->uncompressed_tile_bytes, net->udp_payload_target, tile_input_sequence,
-                                          compressed_payload);
-        const uint8_t* tile_payload = compressed_payload ? compressed_tile : tile_bytes;
-        const uint32_t tile_payload_size = compressed_payload ? compressed_size : server->uncompressed_tile_bytes;
+        struct wd_wire_tile_candidate candidate;
+        if (!wd_stream_choose_wire_tile_candidate(server, &net->stream_policy, tile_id, tile_input_sequence, tile_bytes,
+                                                  compressed_tile, compressed_capacity, &candidate))
+        {
+            continue;
+        }
+
+        const uint8_t* tile_payload = candidate.compressed_payload ? compressed_tile : tile_bytes;
+        const uint32_t tile_payload_size = candidate.compressed_payload ? candidate.compressed_size : candidate.uncompressed_size;
+        wd_stream_note_tile_choice_locked(net, candidate.compressed_size, candidate.uncompressed_size, net->udp_payload_target,
+                                          tile_input_sequence, candidate.compressed_payload);
 
         uint64_t next_generation = tile->generation + 1;
+        for (uint16_t i = 0; i < candidate.covered_base_count; ++i)
+        {
+            const uint16_t covered_id = candidate.covered_base_ids[i];
+            if (covered_id < server->total_tiles && net->tiles[covered_id].generation >= next_generation)
+            {
+                next_generation = net->tiles[covered_id].generation + 1;
+            }
+        }
+
         bool     launched        = false;
         bool     send_blocked    = false;
         uint32_t bytes_sent       = 0;
 
         uint32_t predicted_bytes = wd_stream_tile_wire_bytes_for_payload(tile_payload_size, net->udp_payload_target, tile_input_sequence,
-                                                                         compressed_payload);
+                                                                         candidate.compressed_payload);
         if (wd_stream_policy_limited_byte_budget_locked(&net->stream_policy, now) < predicted_bytes)
         {
             wd_dirty_queue_reinsert_locked(net, tile_id, server->total_tiles);
             break;
         }
 
-        if (!wd_stream_send_tile_payload_locked(server, tile_id, next_generation, now, tile_input_sequence, tile_payload, tile_payload_size,
-                                                compressed_payload, &launched, &send_blocked, &bytes_sent))
+        if (!wd_stream_send_tile_payload_sized_locked(server, candidate.tile_id, candidate.width, candidate.height, next_generation, now,
+                                                      tile_input_sequence, tile_payload, tile_payload_size, candidate.compressed_payload,
+                                                      &launched, &send_blocked, &bytes_sent))
         {
             continue;
         }
@@ -2433,13 +2436,26 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
             break;
         }
 
-        memcpy(tile->compressed, tile_payload, tile_payload_size);
-        tile->last_hash          = hash;
-        tile->generation         = next_generation;
-        tile->timestamp_ns       = now;
-        tile->input_sequence     = tile_input_sequence;
-        tile->compressed_size    = tile_payload_size;
-        tile->compressed_payload = compressed_payload;
+        for (uint16_t i = 0; i < candidate.covered_base_count; ++i)
+        {
+            const uint16_t covered_id = candidate.covered_base_ids[i];
+            if (covered_id >= server->total_tiles)
+            {
+                continue;
+            }
+
+            (void)wd_stream_update_base_tile_cache_locked(server, covered_id, next_generation, now, tile_input_sequence,
+                                                          tile_bytes, compressed_tile, compressed_capacity);
+            if (net->dirty_queued && net->dirty_queued[covered_id])
+            {
+                net->dirty_queued[covered_id] = false;
+                if (net->dirty_queue_enqueued_ns)
+                {
+                    net->dirty_queue_enqueued_ns[covered_id] = 0;
+                }
+            }
+            wd_stream_mark_summary_dirty_locked(server, covered_id);
+        }
 
         net->stats.dirty_tiles++;
         net->stats.udp_fresh_tiles_sent++;
@@ -2654,6 +2670,8 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     uint16_t effective_target_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
     uint16_t tile_width = server->tile_width;
     uint16_t tile_height = server->tile_height;
+    uint16_t max_wire_tile_width = net->stream_policy.max_wire_tile_width;
+    uint16_t max_wire_tile_height = net->stream_policy.max_wire_tile_height;
     bool input_channel_connected = net->input_tcp_fd >= 0;
     bool selection_channel_connected = net->selection_tcp_fd >= 0;
 
@@ -2665,20 +2683,24 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     static uint64_t prev_limited_kib = 0;
     static uint16_t prev_tile_width = 0;
     static uint16_t prev_tile_height = 0;
+    static uint16_t prev_max_wire_tile_width = 0;
+    static uint16_t prev_max_wire_tile_height = 0;
     static bool     prev_input_channel = false;
     static bool     prev_selection_channel = false;
 
     bool state_changed = !have_prev_state ||
                          prev_target_fps != target_fps || prev_effective_fps != effective_target_fps ||
                          prev_limited_kib != limited_udp_kib_per_second || prev_tile_width != tile_width ||
-                         prev_tile_height != tile_height || prev_input_channel != input_channel_connected ||
+                         prev_tile_height != tile_height || prev_max_wire_tile_width != max_wire_tile_width ||
+                         prev_max_wire_tile_height != max_wire_tile_height || prev_input_channel != input_channel_connected ||
                          prev_selection_channel != selection_channel_connected;
 
     if (state_changed)
     {
-        WD_LOG_DEBUG("WayDisplay state/s: transport=adaptive target_fps=%u effective_fps=%u adaptive_udp_kib_per_sec=%llu tile=%ux%u input_channel=%s selection_channel=%s",
+        WD_LOG_DEBUG("WayDisplay state/s: transport=adaptive target_fps=%u effective_fps=%u adaptive_udp_kib_per_sec=%llu base_tile=%ux%u max_wire_tile=%ux%u input_channel=%s selection_channel=%s",
                      (unsigned)target_fps, (unsigned)effective_target_fps,
                      (unsigned long long)limited_udp_kib_per_second, (unsigned)tile_width, (unsigned)tile_height,
+                     (unsigned)max_wire_tile_width, (unsigned)max_wire_tile_height,
                      input_channel_connected ? "yes" : "no", selection_channel_connected ? "yes" : "no");
 
         have_prev_state = true;
@@ -2687,6 +2709,8 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
         prev_limited_kib = limited_udp_kib_per_second;
         prev_tile_width = tile_width;
         prev_tile_height = tile_height;
+        prev_max_wire_tile_width = max_wire_tile_width;
+        prev_max_wire_tile_height = max_wire_tile_height;
         prev_input_channel = input_channel_connected;
         prev_selection_channel = selection_channel_connected;
     }
@@ -2794,20 +2818,14 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                      wd_avg_ms(s.input_to_first_fresh_tile_sum_ns, s.input_to_first_fresh_tile_samples));
     }
 
-    bool compositor_activity = s.full_frame_catchup_started != 0 || s.full_frame_catchup_completed != 0 ||
-                               s.full_frame_catchup_tiles_sent != 0 || s.full_frame_pointer_priority_pops != 0 ||
-                               s.xdg_move_invalid_serial != 0 || s.xdg_resize_invalid_serial != 0 ||
+    bool compositor_activity = s.xdg_move_invalid_serial != 0 || s.xdg_resize_invalid_serial != 0 ||
                                s.popup_explicit_scene_trees != 0 || s.popup_explicit_scene_tree_failures != 0 ||
                                s.cursor_shape_requests != 0 || s.cursor_set_cursor_requests != 0 ||
                                s.cursor_set_cursor_rejected != 0 || s.cursor_set_cursor_hidden != 0 ||
                                s.cursor_set_cursor_fallback != 0;
     if (compositor_activity)
     {
-        WD_LOG_DEBUG("WayDisplay compositor/s: full_frame_started=%llu completed=%llu tiles=%llu avg_ms=%.2f pointer_prio=%llu xdg_move_bad_serial=%llu xdg_resize_bad_serial=%llu popup_scene=%llu popup_scene_fail=%llu cursor_shape=%llu cursor_set=%llu cursor_reject=%llu cursor_hidden=%llu cursor_fallback=%llu",
-                     (unsigned long long)s.full_frame_catchup_started, (unsigned long long)s.full_frame_catchup_completed,
-                     (unsigned long long)s.full_frame_catchup_tiles_sent,
-                     wd_avg_ms(s.full_frame_catchup_duration_sum_ns, s.full_frame_catchup_completed),
-                     (unsigned long long)s.full_frame_pointer_priority_pops,
+        WD_LOG_DEBUG("WayDisplay compositor/s: xdg_move_bad_serial=%llu xdg_resize_bad_serial=%llu popup_scene=%llu popup_scene_fail=%llu cursor_shape=%llu cursor_set=%llu cursor_reject=%llu cursor_hidden=%llu cursor_fallback=%llu",
                      (unsigned long long)s.xdg_move_invalid_serial, (unsigned long long)s.xdg_resize_invalid_serial,
                      (unsigned long long)s.popup_explicit_scene_trees, (unsigned long long)s.popup_explicit_scene_tree_failures,
                      (unsigned long long)s.cursor_shape_requests, (unsigned long long)s.cursor_set_cursor_requests,

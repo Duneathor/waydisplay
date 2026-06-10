@@ -136,10 +136,6 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->listen_fd            = -1;
     net->udp_fd               = -1;
     net->session_id           = 0;
-    net->full_frame_needed    = true;
-    net->full_frame_next_tile = 0;
-    net->full_frame_start_ns  = 0;
-    net->full_frame_tiles_sent = 0;
     net->dirty_scan_next_tile = 0;
     net->dirty_queue                 = calloc(server->total_tiles, sizeof(*net->dirty_queue));
     net->dirty_queued                = calloc(server->total_tiles, sizeof(*net->dirty_queued));
@@ -149,10 +145,9 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*net->retransmit_queue_enqueued_ns));
     net->retransmit_requested_generation = calloc(server->total_tiles, sizeof(*net->retransmit_requested_generation));
     net->summary_dirty_tiles         = calloc(server->total_tiles, sizeof(*net->summary_dirty_tiles));
-    net->full_frame_sent_tiles       = calloc(server->total_tiles, sizeof(*net->full_frame_sent_tiles));
     if (!net->dirty_queue || !net->dirty_queued || !net->dirty_queue_enqueued_ns || !net->retransmit_queue ||
         !net->retransmit_queued || !net->retransmit_queue_enqueued_ns || !net->retransmit_requested_generation ||
-        !net->summary_dirty_tiles || !net->full_frame_sent_tiles)
+        !net->summary_dirty_tiles)
     {
         free(net->dirty_queue);
         free(net->dirty_queued);
@@ -162,7 +157,6 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         free(net->retransmit_queue_enqueued_ns);
         free(net->retransmit_requested_generation);
         free(net->summary_dirty_tiles);
-        free(net->full_frame_sent_tiles);
         net->dirty_queue                 = NULL;
         net->dirty_queued                = NULL;
         net->dirty_queue_enqueued_ns     = NULL;
@@ -171,7 +165,6 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         net->retransmit_queue_enqueued_ns = NULL;
         net->retransmit_requested_generation = NULL;
         net->summary_dirty_tiles         = NULL;
-        net->full_frame_sent_tiles       = NULL;
         pthread_cond_destroy(&net->display_resize_cond);
         pthread_mutex_destroy(&net->lock);
         return false;
@@ -183,7 +176,6 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->summary_dirty_count    = 0;
     net->dirty_priority_pop_count      = 0;
     net->retransmit_priority_pop_count = 0;
-    net->full_frame_priority_pop_count = 0;
     net->udp_payload_target            = WD_UDP_PAYLOAD_TARGET;
 
     wd_stream_policy_set_defaults(&net->stream_policy);
@@ -248,9 +240,6 @@ void wd_net_destroy(struct wd_server* server) {
     free(net->summary_dirty_tiles);
     net->summary_dirty_tiles = NULL;
     net->summary_dirty_count = 0;
-
-    free(net->full_frame_sent_tiles);
-    net->full_frame_sent_tiles = NULL;
 
     free(net->clipboard_text);
     net->clipboard_text         = NULL;
@@ -1003,14 +992,6 @@ void* wd_net_thread_main(void* arg) {
         }
         net->client_udp_addr      = client_udp_addr;
         net->client_connected     = true;
-        net->full_frame_needed    = true;
-        net->full_frame_next_tile = 0;
-        if (net->full_frame_sent_tiles)
-        {
-            memset(net->full_frame_sent_tiles, 0, server->total_tiles * sizeof(*net->full_frame_sent_tiles));
-        }
-        net->full_frame_start_ns  = 0;
-        net->full_frame_tiles_sent = 0;
         net->dirty_scan_next_tile = 0;
         if (net->dirty_queued)
         {
@@ -1041,6 +1022,7 @@ void* wd_net_thread_main(void* arg) {
         net->dirty_queue_count      = 0;
         net->retransmit_queue_count = 0;
         net->summary_dirty_count    = 0;
+        wd_stream_invalidate_all_tiles_locked(server);
         server->last_summary_ns       = 0;
         server->last_delta_summary_ns = 0;
 
@@ -1275,38 +1257,35 @@ void* wd_net_thread_main(void* arg) {
 
                         uint64_t accepted_retransmits = 0;
 
-                        if (!net->full_frame_needed)
+                        for (uint16_t i = 0; i < rh.request_count; ++i)
                         {
-                            for (uint16_t i = 0; i < rh.request_count; ++i)
+                            if (entries[i].tile_id >= server->total_tiles)
                             {
-                                if (entries[i].tile_id >= server->total_tiles)
-                                {
-                                    continue;
-                                }
+                                continue;
+                            }
 
-                                struct wd_cached_tile* tile = &net->tiles[entries[i].tile_id];
-                                uint64_t requested_generation = entries[i].requested_generation;
+                            struct wd_cached_tile* tile = &net->tiles[entries[i].tile_id];
+                            uint64_t requested_generation = entries[i].requested_generation;
 
-                                if (tile->compressed_size == 0 || !tile->compressed)
-                                {
-                                    continue;
-                                }
+                            if (tile->compressed_size == 0 || !tile->compressed)
+                            {
+                                continue;
+                            }
 
-                                if (requested_generation != 0 && tile->generation < requested_generation)
-                                {
-                                    net->stats.retx_req_waiting_for_generation++;
-                                    continue;
-                                }
+                            if (requested_generation != 0 && tile->generation < requested_generation)
+                            {
+                                net->stats.retx_req_waiting_for_generation++;
+                                continue;
+                            }
 
-                                if (requested_generation != 0 && tile->generation > requested_generation)
-                                {
-                                    net->stats.retx_req_stale_generation++;
-                                }
+                            if (requested_generation != 0 && tile->generation > requested_generation)
+                            {
+                                net->stats.retx_req_stale_generation++;
+                            }
 
-                                if (wd_stream_queue_retransmit_tile_locked(server, entries[i].tile_id, requested_generation))
-                                {
-                                    accepted_retransmits++;
-                                }
+                            if (wd_stream_queue_retransmit_tile_locked(server, entries[i].tile_id, requested_generation))
+                            {
+                                accepted_retransmits++;
                             }
                         }
 

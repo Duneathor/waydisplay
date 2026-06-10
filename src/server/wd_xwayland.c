@@ -55,8 +55,26 @@ static uint16_t sane_height(uint16_t height) {
     return height >= WD_XWAYLAND_MIN_VISIBLE_HEIGHT ? height : WD_XWAYLAND_DEFAULT_HEIGHT;
 }
 
-bool wd_xwayland_view_has_decoration(struct wd_view* view) {
-    return view && view->xwayland_surface && view->xwayland_had_map_request;
+static bool xwayland_view_is_managed(struct wd_view* view) {
+    return view && view->xwayland_surface && !view->xwayland_surface->override_redirect;
+}
+
+static uint16_t xwayland_configure_width(struct wd_view* view, uint16_t width) {
+    if (xwayland_view_is_managed(view))
+    {
+        return sane_width(width);
+    }
+
+    return width > 0 ? width : 1;
+}
+
+static uint16_t xwayland_configure_height(struct wd_view* view, uint16_t height) {
+    if (xwayland_view_is_managed(view))
+    {
+        return sane_height(height);
+    }
+
+    return height > 0 ? height : 1;
 }
 
 static uint16_t xwayland_content_width(struct wd_view* view) {
@@ -65,7 +83,11 @@ static uint16_t xwayland_content_width(struct wd_view* view) {
         return WD_XWAYLAND_DEFAULT_WIDTH;
     }
 
-    return sane_width(view->xwayland_surface->width);
+    return xwayland_configure_width(view, view->xwayland_surface->width);
+}
+
+bool wd_xwayland_view_has_decoration(struct wd_view* view) {
+    return xwayland_view_is_managed(view) && view->xwayland_had_map_request;
 }
 
 static void xwayland_decoration_set_node_data(struct wlr_scene_rect* rect, struct wd_view* view) {
@@ -73,6 +95,15 @@ static void xwayland_decoration_set_node_data(struct wlr_scene_rect* rect, struc
     {
         rect->node.data = view;
     }
+}
+
+void wd_xwayland_view_update_scene_position(struct wd_view* view) {
+    if (!view || !view->scene_tree)
+    {
+        return;
+    }
+
+    wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
 }
 
 static void xwayland_view_update_decoration(struct wd_view* view) {
@@ -235,8 +266,8 @@ static void xwayland_view_configure_current_geometry(struct wd_view* view) {
     }
 
     struct wlr_xwayland_surface* xsurface = view->xwayland_surface;
-    uint16_t                     width    = sane_width(xsurface->width);
-    uint16_t                     height   = sane_height(xsurface->height);
+    uint16_t                     width    = xwayland_configure_width(view, xsurface->width);
+    uint16_t                     height   = xwayland_configure_height(view, xsurface->height);
 
     wlr_xwayland_surface_configure(xsurface, view->x, view->y, width, height);
     xwayland_view_update_decoration(view);
@@ -354,7 +385,7 @@ static void xwayland_view_mark_mapped(struct wd_view* view, bool focus) {
 
     if (view->scene_tree)
     {
-        if (focus && wd_xwayland_view_has_decoration(view))
+        if (focus && xwayland_view_is_managed(view))
         {
             wd_scene_focus_view(view);
         }
@@ -540,7 +571,6 @@ static void xwayland_view_associate(struct wd_view* view) {
             xwayland_view_update_decoration(view);
         }
     }
-
     xwayland_view_attach_surface_listeners(view);
 
     /*
@@ -559,8 +589,9 @@ static void xwayland_view_associate(struct wd_view* view) {
         xwayland_mark_scene_dirty(view);
     }
 
-    WD_LOG_DEBUG("WayDisplay: Xwayland associated view=%p scene_tree=%p mapped=%d", (void*)view, (void*)view->scene_tree,
-                 view->mapped ? 1 : 0);
+    WD_LOG_DEBUG("WayDisplay: Xwayland associated view=%p scene_tree=%p mapped=%d managed=%d override_redirect=%d parent=%p",
+                 (void*)view, (void*)view->scene_tree, view->mapped ? 1 : 0, xwayland_view_is_managed(view) ? 1 : 0,
+                 view->xwayland_surface->override_redirect ? 1 : 0, (void*)view->xwayland_surface->parent);
 }
 
 static void handle_xwayland_associate(struct wl_listener* listener, void* data) {
@@ -594,8 +625,8 @@ static void handle_xwayland_map_request(struct wl_listener* listener, void* data
     WD_LOG_DEBUG("WayDisplay: Xwayland map request view=%p requested=%dx%d+%d+%d configured=%ux%u "
                  "pending_associate=%d",
                  (void*)view, (int)view->xwayland_surface->width, (int)view->xwayland_surface->height, (int)view->xwayland_surface->x,
-                 (int)view->xwayland_surface->y, (unsigned)sane_width(view->xwayland_surface->width),
-                 (unsigned)sane_height(view->xwayland_surface->height), view->scene_tree ? 0 : 1);
+                 (int)view->xwayland_surface->y, (unsigned)xwayland_configure_width(view, view->xwayland_surface->width),
+                 (unsigned)xwayland_configure_height(view, view->xwayland_surface->height), view->scene_tree ? 0 : 1);
 }
 
 static void xwayland_view_set_maximized(struct wd_view* view, bool maximize) {
@@ -742,8 +773,8 @@ static void handle_xwayland_request_configure(struct wl_listener* listener, void
     view->x = event->x;
     view->y = event->y;
 
-    uint16_t width  = sane_width(event->width);
-    uint16_t height = sane_height(event->height);
+    uint16_t width  = xwayland_configure_width(view, event->width);
+    uint16_t height = xwayland_configure_height(view, event->height);
 
     wlr_xwayland_surface_configure(view->xwayland_surface, event->x, event->y, width, height);
     wd_scene_set_view_position(view);
@@ -765,6 +796,11 @@ static void handle_xwayland_surface_destroy(struct wl_listener* listener, void* 
     }
 
     struct wd_server* server = view->server;
+
+    if (view->xwayland_surface && view->xwayland_surface->data == view)
+    {
+        view->xwayland_surface->data = NULL;
+    }
 
     xwayland_view_clear_focus_and_grabs(view);
 
@@ -840,6 +876,7 @@ static void handle_new_xwayland_surface(struct wl_listener* listener, void* data
 
     view->server           = server;
     view->xwayland_surface = xsurface;
+    xsurface->data         = view;
     view->x                = xsurface->x;
     view->y                = xsurface->y;
     view->positioned       = true;

@@ -2,6 +2,8 @@
 
 #include "wd_client.hpp"
 
+#include "waydisplay/wd_protocol.h"
+
 #include <cstdint>
 #include <vector>
 
@@ -10,6 +12,8 @@ namespace waydisplay {
 struct CompletedTile {
     bool                 valid             = false;
     uint16_t             tile_id           = 0;
+    uint16_t             tile_width        = 0;
+    uint16_t             tile_height       = 0;
     uint64_t             generation        = 0;
     uint64_t             tile_timestamp_ns      = 0;
     uint64_t             input_sequence         = 0;
@@ -34,6 +38,9 @@ class TileReassembler {
     struct Entry {
         bool                 active            = false;
         uint16_t             tile_id           = 0;
+        uint8_t              tile_size         = WD_TILE_16x16;
+        uint16_t             tile_width        = 0;
+        uint16_t             tile_height       = 0;
         uint64_t             generation        = 0;
         uint64_t             tile_timestamp_ns = 0;
         uint64_t             input_sequence    = 0;

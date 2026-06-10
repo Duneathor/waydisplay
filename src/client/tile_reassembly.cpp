@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <functional>
 
 namespace waydisplay {
 namespace {
@@ -178,6 +179,83 @@ bool enqueue_retx_for_partial_timeout(ClientState& state, uint16_t tile_id, uint
     return true;
 }
 
+
+bool tile_dimensions_from_header(const wd_udp_tile_packet_decoded& header, uint16_t& tile_width, uint16_t& tile_height) {
+    return wd_tile_dimensions_for_size_code(header.tile_size, &tile_width, &tile_height);
+}
+
+uint16_t tile_base_id_for_header(const wd_udp_tile_packet_decoded& header, const wd_server_config_payload& config) {
+    uint16_t tile_width = 0;
+    uint16_t tile_height = 0;
+    if (!tile_dimensions_from_header(header, tile_width, tile_height) || config.tile_width == 0 || config.tile_height == 0)
+    {
+        return UINT16_MAX;
+    }
+
+    const uint16_t tiles_x = wd_tiles_for_width_with_tile(config.width, tile_width);
+    if (tiles_x == 0)
+    {
+        return UINT16_MAX;
+    }
+
+    const uint32_t x = wd_tile_start_x_for_tile(header.tile_id, tiles_x, tile_width);
+    const uint32_t y = wd_tile_start_y_for_tile(header.tile_id, tiles_x, tile_height);
+    const uint32_t bx = x / config.tile_width;
+    const uint32_t by = y / config.tile_height;
+    const uint32_t base_id = by * static_cast<uint32_t>(config.tiles_x) + bx;
+    return base_id < config.total_tiles ? static_cast<uint16_t>(base_id) : UINT16_MAX;
+}
+
+void for_each_base_tile_covered(const wd_udp_tile_packet_decoded& header, const wd_server_config_payload& config,
+                                const std::function<void(uint16_t)>& fn) {
+    uint16_t tile_width = 0;
+    uint16_t tile_height = 0;
+    if (!tile_dimensions_from_header(header, tile_width, tile_height) || config.tile_width == 0 || config.tile_height == 0)
+    {
+        return;
+    }
+
+    const uint16_t tiles_x = wd_tiles_for_width_with_tile(config.width, tile_width);
+    if (tiles_x == 0)
+    {
+        return;
+    }
+
+    const uint32_t x = wd_tile_start_x_for_tile(header.tile_id, tiles_x, tile_width);
+    const uint32_t y = wd_tile_start_y_for_tile(header.tile_id, tiles_x, tile_height);
+    const uint32_t w = wd_tile_visible_width_for_tile(config.width, header.tile_id, tiles_x, tile_width);
+    const uint32_t h = wd_tile_visible_height_for_tile(config.height, header.tile_id, tiles_x, tile_height);
+    if (w == 0 || h == 0)
+    {
+        return;
+    }
+
+    uint32_t bx0 = x / config.tile_width;
+    uint32_t by0 = y / config.tile_height;
+    uint32_t bx1 = (x + w - 1u) / config.tile_width;
+    uint32_t by1 = (y + h - 1u) / config.tile_height;
+    if (bx1 >= config.tiles_x)
+    {
+        bx1 = static_cast<uint32_t>(config.tiles_x) - 1u;
+    }
+    if (by1 >= config.tiles_y)
+    {
+        by1 = static_cast<uint32_t>(config.tiles_y) - 1u;
+    }
+
+    for (uint32_t by = by0; by <= by1; ++by)
+    {
+        for (uint32_t bx = bx0; bx <= bx1; ++bx)
+        {
+            const uint32_t base_id = by * static_cast<uint32_t>(config.tiles_x) + bx;
+            if (base_id < config.total_tiles)
+            {
+                fn(static_cast<uint16_t>(base_id));
+            }
+        }
+    }
+}
+
 bool packet_header_valid(const wd_udp_tile_packet_decoded& header, size_t packet_size, uint16_t udp_payload_target,
                          const wd_server_config_payload& config) {
     if (header.session_id != config.session_id)
@@ -185,7 +263,17 @@ bool packet_header_valid(const wd_udp_tile_packet_decoded& header, size_t packet
         return false;
     }
 
-    if (header.tile_id >= config.total_tiles)
+    uint16_t tile_width = 0;
+    uint16_t tile_height = 0;
+    if (!tile_dimensions_from_header(header, tile_width, tile_height))
+    {
+        return false;
+    }
+
+    const uint16_t packet_tiles_x = wd_tiles_for_width_with_tile(config.width, tile_width);
+    const uint16_t packet_tiles_y = wd_tiles_for_height_with_tile(config.height, tile_height);
+    const uint32_t packet_total_tiles = static_cast<uint32_t>(packet_tiles_x) * static_cast<uint32_t>(packet_tiles_y);
+    if (packet_tiles_x == 0 || packet_tiles_y == 0 || header.tile_id >= packet_total_tiles || packet_total_tiles > UINT16_MAX)
     {
         return false;
     }
@@ -216,7 +304,7 @@ bool packet_header_valid(const wd_udp_tile_packet_decoded& header, size_t packet
     }
 
     const size_t uncompressed_tile_bytes =
-        static_cast<size_t>(config.tile_width) * static_cast<size_t>(config.tile_height) * WD_BYTES_PER_PIXEL;
+        static_cast<size_t>(tile_width) * static_cast<size_t>(tile_height) * WD_BYTES_PER_PIXEL;
 
     if (wd_tile_protocol_is_compressed(header.tile_protocol))
     {
@@ -271,13 +359,26 @@ void TileReassembler::expire_entry(ClientState& state, Entry& entry) {
     state.stats.partial_tile_missing_packets.fetch_add(missing_packets, std::memory_order_relaxed);
     reduce_tile_reassembly_timeout_after_loss(state);
 
-    if (enqueue_retx_for_partial_timeout(state, entry.tile_id, entry.generation))
+    wd_udp_tile_packet_decoded header{};
+    header.tile_id = entry.tile_id;
+    header.tile_size = entry.tile_size;
+    header.tile_generation = entry.generation;
+
+    bool queued_any = false;
+    for_each_base_tile_covered(header, state.config, [&](uint16_t base_id) {
+        if (enqueue_retx_for_partial_timeout(state, base_id, entry.generation))
+        {
+            queued_any = true;
+        }
+        else
+        {
+            clear_retx_inflight(state, base_id, entry.generation);
+        }
+    });
+
+    if (queued_any)
     {
         state.stats.partial_tile_retx_queued.fetch_add(1, std::memory_order_relaxed);
-    }
-    else
-    {
-        clear_retx_inflight(state, entry.tile_id, entry.generation);
     }
 
     entry = Entry{};
@@ -322,8 +423,16 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
 
+    uint16_t packet_tile_width = 0;
+    uint16_t packet_tile_height = 0;
+    if (!tile_dimensions_from_header(header, packet_tile_width, packet_tile_height))
+    {
+        state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+        return completed;
+    }
+
     const size_t uncompressed_tile_bytes =
-        static_cast<size_t>(state.config.tile_width) * static_cast<size_t>(state.config.tile_height) * WD_BYTES_PER_PIXEL;
+        static_cast<size_t>(packet_tile_width) * static_cast<size_t>(packet_tile_height) * WD_BYTES_PER_PIXEL;
 
     if (!wd_tile_protocol_is_compressed(header.tile_protocol))
     {
@@ -339,19 +448,53 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
     {
         std::lock_guard<std::mutex> lock(state.generation_mutex);
 
-        if (header.tile_generation < state.displayed_generation[header.tile_id])
+        bool old_generation = false;
+        for_each_base_tile_covered(header, state.config, [&](uint16_t base_id) {
+            if (base_id < state.displayed_generation.size() && header.tile_generation < state.displayed_generation[base_id])
+            {
+                old_generation = true;
+            }
+        });
+        if (old_generation)
         {
             state.stats.udp_ignored_old_generation.fetch_add(1, std::memory_order_relaxed);
             return completed;
         }
     }
 
-    if (entries_.size() != state.config.total_tiles)
+    const size_t entry_capacity = std::max<size_t>(state.config.total_tiles, 1u) * 4u;
+    if (entries_.size() != entry_capacity)
     {
-        entries_.assign(state.config.total_tiles, Entry{});
+        entries_.assign(entry_capacity, Entry{});
     }
 
-    Entry& entry = entries_[header.tile_id];
+    Entry* entry_ptr = nullptr;
+    for (Entry& candidate : entries_)
+    {
+        if (candidate.active && candidate.tile_id == header.tile_id && candidate.tile_size == header.tile_size)
+        {
+            entry_ptr = &candidate;
+            break;
+        }
+    }
+    if (!entry_ptr)
+    {
+        for (Entry& candidate : entries_)
+        {
+            if (!candidate.active)
+            {
+                entry_ptr = &candidate;
+                break;
+            }
+        }
+    }
+    if (!entry_ptr)
+    {
+        expire_entry(state, entries_.front());
+        entry_ptr = &entries_.front();
+    }
+
+    Entry& entry = *entry_ptr;
 
     const uint64_t now_ns = wd_now_ns();
 
@@ -372,6 +515,9 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         entry                   = Entry{};
         entry.active            = true;
         entry.tile_id           = header.tile_id;
+        entry.tile_size         = header.tile_size;
+        entry.tile_width        = packet_tile_width;
+        entry.tile_height       = packet_tile_height;
         entry.generation        = header.tile_generation;
         entry.tile_timestamp_ns = header.tile_timestamp_ns;
         entry.input_sequence    = header.input_sequence;
@@ -384,22 +530,23 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         {
             std::lock_guard<std::mutex> lock(state.retx_mutex);
 
-            if (state.retx_last_requested_generation.size() == state.config.total_tiles &&
+            const uint16_t base_id = tile_base_id_for_header(header, state.config);
+            if (base_id < state.config.total_tiles && state.retx_last_requested_generation.size() == state.config.total_tiles &&
                 state.retx_last_request_ns.size() == state.config.total_tiles &&
-                state.retx_last_requested_generation[entry.tile_id] != 0 &&
-                state.retx_last_requested_generation[entry.tile_id] <= entry.generation &&
-                state.retx_last_request_ns[entry.tile_id] != 0 &&
-                now_ns >= state.retx_last_request_ns[entry.tile_id])
+                state.retx_last_requested_generation[base_id] != 0 &&
+                state.retx_last_requested_generation[base_id] <= entry.generation &&
+                state.retx_last_request_ns[base_id] != 0 &&
+                now_ns >= state.retx_last_request_ns[base_id])
             {
-                retx_response_ns = now_ns - state.retx_last_request_ns[entry.tile_id];
+                retx_response_ns = now_ns - state.retx_last_request_ns[base_id];
                 state.retx_inflight_grace_ns = clamp_tile_reassembly_timeout_ns(retx_response_ns + retx_response_ns / 2);
             }
 
-            if (state.retx_inflight_generation.size() == state.config.total_tiles &&
+            if (base_id < state.config.total_tiles && state.retx_inflight_generation.size() == state.config.total_tiles &&
                 state.retx_inflight_since_ns.size() == state.config.total_tiles)
             {
-                state.retx_inflight_generation[entry.tile_id] = entry.generation;
-                state.retx_inflight_since_ns[entry.tile_id]  = entry.first_packet_ns;
+                state.retx_inflight_generation[base_id] = entry.generation;
+                state.retx_inflight_since_ns[base_id]  = entry.first_packet_ns;
             }
         }
 
@@ -451,7 +598,12 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
             std::fprintf(stderr, "failed to decompress tile %u generation %llu\n", entry.tile_id,
                          static_cast<unsigned long long>(entry.generation));
 
-            clear_retx_inflight(state, entry.tile_id, entry.generation);
+            wd_udp_tile_packet_decoded clear_header{};
+            clear_header.tile_id = entry.tile_id;
+            clear_header.tile_size = entry.tile_size;
+            for_each_base_tile_covered(clear_header, state.config, [&](uint16_t base_id) {
+                clear_retx_inflight(state, base_id, entry.generation);
+            });
 
             entry = Entry{};
             return completed;
@@ -462,7 +614,12 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         if (entry.compressed.size() != uncompressed_tile_bytes)
         {
             state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
-            clear_retx_inflight(state, entry.tile_id, entry.generation);
+            wd_udp_tile_packet_decoded clear_header{};
+            clear_header.tile_id = entry.tile_id;
+            clear_header.tile_size = entry.tile_size;
+            for_each_base_tile_covered(clear_header, state.config, [&](uint16_t base_id) {
+                clear_retx_inflight(state, base_id, entry.generation);
+            });
             entry = Entry{};
             return completed;
         }
@@ -472,6 +629,8 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
 
     completed.valid                  = true;
     completed.tile_id                = entry.tile_id;
+    completed.tile_width             = entry.tile_width;
+    completed.tile_height            = entry.tile_height;
     completed.generation             = entry.generation;
     completed.tile_timestamp_ns      = entry.tile_timestamp_ns;
     completed.input_sequence         = entry.input_sequence;
@@ -485,7 +644,12 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         update_tile_reassembly_timeout(state, completed.completed_timestamp_ns - completed.first_packet_ns, false);
     }
 
-    clear_retx_inflight(state, entry.tile_id, entry.generation);
+    wd_udp_tile_packet_decoded clear_header{};
+    clear_header.tile_id = entry.tile_id;
+    clear_header.tile_size = entry.tile_size;
+    for_each_base_tile_covered(clear_header, state.config, [&](uint16_t base_id) {
+        clear_retx_inflight(state, base_id, entry.generation);
+    });
 
     entry = Entry{};
 

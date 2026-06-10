@@ -302,7 +302,6 @@ struct wd_stats {
     uint64_t frame_rate_upshifts;
     uint64_t dirty_pointer_priority_pops;
     uint64_t retx_pointer_priority_pops;
-    uint64_t full_frame_pointer_priority_pops;
 
     uint64_t dirty_tiles_stale_skipped;
     uint64_t retx_tiles_superseded_by_fresh;
@@ -312,11 +311,6 @@ struct wd_stats {
     uint64_t retx_queue_age_sum_ns;
     uint64_t retx_req_stale_generation;
     uint64_t retx_req_waiting_for_generation;
-
-    uint64_t full_frame_catchup_started;
-    uint64_t full_frame_catchup_completed;
-    uint64_t full_frame_catchup_tiles_sent;
-    uint64_t full_frame_catchup_duration_sum_ns;
 };
 
 struct wd_stream_policy {
@@ -337,6 +331,8 @@ struct wd_stream_policy {
     uint32_t tile_size_good_windows;
     uint32_t tile_size_bad_windows;
     uint32_t tile_size_change_cooldown_windows;
+    uint16_t max_wire_tile_width;
+    uint16_t max_wire_tile_height;
     double   limited_udp_byte_tokens;
     uint64_t last_limited_udp_byte_refill_ns;
 };
@@ -367,12 +363,8 @@ struct wd_net_state {
 
     bool running;
     bool client_connected;
-    bool full_frame_needed;
-
     uint16_t udp_payload_target;
 
-    uint16_t full_frame_next_tile;
-    bool*    full_frame_sent_tiles;
     uint16_t dirty_scan_next_tile;
 
     uint16_t* dirty_queue;
@@ -393,7 +385,6 @@ struct wd_net_state {
 
     uint32_t dirty_priority_pop_count;
     uint32_t retransmit_priority_pop_count;
-    uint32_t full_frame_priority_pop_count;
 
     bool     pointer_priority_valid;
     uint32_t pointer_priority_x;
@@ -418,8 +409,6 @@ struct wd_net_state {
     bool                   input_since_last_summary;
     bool                   input_since_last_fresh_tile;
     uint64_t               last_input_sequence;
-    uint64_t               full_frame_start_ns;
-    uint64_t               full_frame_tiles_sent;
     uint64_t               udp_send_pressure_log_ns;
     uint64_t               udp_send_pressure_drops;
 
@@ -585,6 +574,7 @@ bool wd_wlroots_resize_headless_output(struct wd_server* server);
 bool wd_xwayland_init(struct wd_server* server);
 void wd_xwayland_destroy(struct wd_server* server);
 bool wd_xwayland_view_has_decoration(struct wd_view* view);
+void wd_xwayland_view_update_scene_position(struct wd_view* view);
 bool wd_xwayland_view_decoration_at(struct wd_view* view, double sx, double sy);
 bool wd_xwayland_view_handle_decoration_press(struct wd_view* view, double sx, double sy);
 #endif
@@ -637,6 +627,7 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server);
 
 /* wd_stream.c */
 bool wd_stream_init(struct wd_server* server);
+void wd_stream_invalidate_all_tiles_locked(struct wd_server* server);
 void wd_stream_destroy(struct wd_server* server);
 bool wd_stream_send_dirty_tiles(struct wd_server* server);
 bool wd_stream_send_generation_summary_locked(struct wd_server* server);

@@ -169,6 +169,14 @@ void wd_scene_set_view_position(struct wd_view* view) {
         return;
     }
 
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    if (view->xwayland_surface)
+    {
+        wd_xwayland_view_update_scene_position(view);
+        return;
+    }
+#endif
+
     wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
 }
 

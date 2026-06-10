@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 12u
+#define WD_PROTOCOL_VERSION 13u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -485,6 +485,35 @@ static inline uint8_t wd_tile_size_code_for_dimensions(uint16_t width, uint16_t 
         return WD_TILE_16x16;
     }
     return WD_TILE_128x64;
+}
+
+static inline bool wd_tile_dimensions_for_size_code(uint8_t tile_size, uint16_t* out_width, uint16_t* out_height) {
+    if (!out_width || !out_height)
+    {
+        return false;
+    }
+
+    switch (tile_size)
+    {
+        case WD_TILE_128x64:
+            *out_width = 128;
+            *out_height = 64;
+            return true;
+        case WD_TILE_64x64:
+            *out_width = 64;
+            *out_height = 64;
+            return true;
+        case WD_TILE_32x32:
+            *out_width = 32;
+            *out_height = 32;
+            return true;
+        case WD_TILE_16x16:
+            *out_width = 16;
+            *out_height = 16;
+            return true;
+        default:
+            return false;
+    }
 }
 
 static inline bool wd_udp_tile_packet_decode(const void* packet, size_t packet_size, struct wd_udp_tile_packet_decoded* out) {

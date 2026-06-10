@@ -883,36 +883,86 @@ void print_client_stats(ClientState& state) {
     }
 }
 
-bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, const std::vector<uint8_t>& tile_bytes) {
-    if (tile_id >= state.config.total_tiles)
+bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
+                      const std::vector<uint8_t>& tile_bytes) {
+    const uint16_t tiles_x = wd_tiles_for_width_with_tile(state.config.width, tile_width);
+    const uint16_t tiles_y = wd_tiles_for_height_with_tile(state.config.height, tile_height);
+    const uint32_t total_tiles = static_cast<uint32_t>(tiles_x) * static_cast<uint32_t>(tiles_y);
+    if (tile_width == 0 || tile_height == 0 || tiles_x == 0 || tiles_y == 0 || tile_id >= total_tiles)
     {
         return false;
     }
 
-    const uint32_t tile_x = tile_id % state.config.tiles_x;
-    const uint32_t tile_y = tile_id / state.config.tiles_x;
-    const uint32_t dst_x  = tile_x * state.config.tile_width;
-    const uint32_t dst_y  = tile_y * state.config.tile_height;
-    const size_t   expected_size =
-        static_cast<size_t>(state.config.tile_width) * static_cast<size_t>(state.config.tile_height) * WD_BYTES_PER_PIXEL;
+    const uint32_t tile_x = tile_id % tiles_x;
+    const uint32_t tile_y = tile_id / tiles_x;
+    const uint32_t dst_x  = tile_x * tile_width;
+    const uint32_t dst_y  = tile_y * tile_height;
+    const size_t   expected_size = static_cast<size_t>(tile_width) * static_cast<size_t>(tile_height) * WD_BYTES_PER_PIXEL;
 
     if (tile_bytes.size() < expected_size || dst_x >= state.config.width || dst_y >= state.config.height)
     {
         return false;
     }
 
-    const uint32_t visible_width  = std::min<uint32_t>(state.config.tile_width, state.config.width - dst_x);
-    const uint32_t visible_height = std::min<uint32_t>(state.config.tile_height, state.config.height - dst_y);
+    const uint32_t visible_width  = std::min<uint32_t>(tile_width, state.config.width - dst_x);
+    const uint32_t visible_height = std::min<uint32_t>(tile_height, state.config.height - dst_y);
 
     for (uint32_t y = 0; y < visible_height; ++y)
     {
-        const uint8_t* src = tile_bytes.data() + static_cast<size_t>(y) * state.config.tile_width * WD_BYTES_PER_PIXEL;
+        const uint8_t* src = tile_bytes.data() + static_cast<size_t>(y) * tile_width * WD_BYTES_PER_PIXEL;
         uint32_t*      dst = state.framebuffer.data() + static_cast<size_t>(dst_y + y) * state.config.width + dst_x;
 
         std::memcpy(dst, src, static_cast<size_t>(visible_width) * WD_BYTES_PER_PIXEL);
     }
 
     return true;
+}
+
+void mark_completed_base_generations(ClientState& state, const CompletedTile& completed) {
+    if (state.config.tile_width == 0 || state.config.tile_height == 0 || completed.tile_width == 0 || completed.tile_height == 0)
+    {
+        return;
+    }
+
+    const uint16_t tiles_x = wd_tiles_for_width_with_tile(state.config.width, completed.tile_width);
+    if (tiles_x == 0)
+    {
+        return;
+    }
+
+    const uint32_t x = wd_tile_start_x_for_tile(completed.tile_id, tiles_x, completed.tile_width);
+    const uint32_t y = wd_tile_start_y_for_tile(completed.tile_id, tiles_x, completed.tile_height);
+    const uint32_t w = wd_tile_visible_width_for_tile(state.config.width, completed.tile_id, tiles_x, completed.tile_width);
+    const uint32_t h = wd_tile_visible_height_for_tile(state.config.height, completed.tile_id, tiles_x, completed.tile_height);
+    if (w == 0 || h == 0)
+    {
+        return;
+    }
+
+    uint32_t bx0 = x / state.config.tile_width;
+    uint32_t by0 = y / state.config.tile_height;
+    uint32_t bx1 = (x + w - 1u) / state.config.tile_width;
+    uint32_t by1 = (y + h - 1u) / state.config.tile_height;
+    if (bx1 >= state.config.tiles_x)
+    {
+        bx1 = static_cast<uint32_t>(state.config.tiles_x) - 1u;
+    }
+    if (by1 >= state.config.tiles_y)
+    {
+        by1 = static_cast<uint32_t>(state.config.tiles_y) - 1u;
+    }
+
+    for (uint32_t by = by0; by <= by1; ++by)
+    {
+        for (uint32_t bx = bx0; bx <= bx1; ++bx)
+        {
+            const uint32_t base_id = by * static_cast<uint32_t>(state.config.tiles_x) + bx;
+            if (base_id < state.displayed_generation.size() && completed.generation > state.displayed_generation[base_id])
+            {
+                state.displayed_generation[base_id] = completed.generation;
+            }
+        }
+    }
 }
 
 bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame_dirty,
@@ -1016,7 +1066,7 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
             continue;
         }
 
-        if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_bytes))
+        if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_width, completed.tile_height, completed.tile_bytes))
         {
             state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
             continue;
@@ -1025,10 +1075,7 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
         {
             std::lock_guard<std::mutex> lock(state.generation_mutex);
 
-            if (completed.generation > state.displayed_generation[completed.tile_id])
-            {
-                state.displayed_generation[completed.tile_id] = completed.generation;
-            }
+            mark_completed_base_generations(state, completed);
         }
 
         if (completed.first_packet_ns != 0 && completed.completed_timestamp_ns >= completed.first_packet_ns)

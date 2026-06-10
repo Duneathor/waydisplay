@@ -61,6 +61,22 @@ static bool launch_startup_command(struct wd_server* server) {
         setenv("CLUTTER_BACKEND", "wayland", 1);
         setenv("MOZ_ENABLE_WAYLAND", "1", 1);
 
+#if WAYDISPLAY_ENABLE_XWAYLAND
+        /*
+         * Java AWT/Swing uses the window-manager identity to decide whether it
+         * should use reparenting-window assumptions. wlroots compositors,
+         * including Sway, commonly require this override for JetBrains, Vivado,
+         * Logisim/Geogebra and similar Xwayland Java applications; otherwise
+         * the top-level X11 window can map successfully while the client keeps
+         * painting only a blank/white surface.
+         *
+         * Set it for WayDisplay-launched processes so shells launched via
+         * --app inherit the safer Xwayland behavior. Existing user-provided
+         * values are preserved.
+         */
+        setenv("_JAVA_AWT_WM_NONREPARENTING", "1", 0);
+#endif
+
         execl("/bin/sh", "/bin/sh", "-c", server->startup_command, (char*)NULL);
 
         _exit(127);
@@ -545,8 +561,6 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     server->net.summary_dirty_tiles = NULL;
     server->net.summary_dirty_count = 0;
 
-    free(server->net.full_frame_sent_tiles);
-    server->net.full_frame_sent_tiles = NULL;
 
     free(server->framebuffer_xrgb8888);
     server->framebuffer_xrgb8888 = NULL;
@@ -569,10 +583,9 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
         server->net.retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*server->net.retransmit_queue_enqueued_ns));
         server->net.retransmit_requested_generation = calloc(server->total_tiles, sizeof(*server->net.retransmit_requested_generation));
         server->net.summary_dirty_tiles          = calloc(server->total_tiles, sizeof(*server->net.summary_dirty_tiles));
-        server->net.full_frame_sent_tiles        = calloc(server->total_tiles, sizeof(*server->net.full_frame_sent_tiles));
         ok = server->net.dirty_queue && server->net.dirty_queued && server->net.dirty_queue_enqueued_ns &&
              server->net.retransmit_queue && server->net.retransmit_queued && server->net.retransmit_queue_enqueued_ns &&
-             server->net.retransmit_requested_generation && server->net.summary_dirty_tiles && server->net.full_frame_sent_tiles;
+             server->net.retransmit_requested_generation && server->net.summary_dirty_tiles;
     }
 
     if (ok)
@@ -582,20 +595,13 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 
     if (ok)
     {
-        server->net.full_frame_needed    = true;
-        server->net.full_frame_next_tile = 0;
-        if (server->net.full_frame_sent_tiles)
-        {
-            memset(server->net.full_frame_sent_tiles, 0, server->total_tiles * sizeof(*server->net.full_frame_sent_tiles));
-        }
-        server->net.full_frame_start_ns  = 0;
-        server->net.full_frame_tiles_sent = 0;
         server->net.dirty_scan_next_tile = 0;
         server->net.dirty_queue_read       = 0;
         server->net.dirty_queue_write      = 0;
         server->net.dirty_queue_count      = 0;
         server->net.retransmit_queue_count = 0;
         server->net.summary_dirty_count    = 0;
+        wd_stream_invalidate_all_tiles_locked(server);
         server->last_summary_ns            = 0;
         server->last_delta_summary_ns      = 0;
         server->scene_dirty                = true;
