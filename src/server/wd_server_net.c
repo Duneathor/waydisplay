@@ -137,6 +137,9 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->udp_fd               = -1;
     net->session_id           = 0;
     net->dirty_region_rng = 0;
+    net->dirty_regions               = calloc(server->total_tiles, sizeof(*net->dirty_regions));
+    net->dirty_region_queued         = calloc(server->total_tiles, sizeof(*net->dirty_region_queued));
+    net->dirty_region_count          = 0;
     net->dirty_queue                 = calloc(server->total_tiles, sizeof(*net->dirty_queue));
     net->dirty_queued                = calloc(server->total_tiles, sizeof(*net->dirty_queued));
     net->dirty_queue_enqueued_ns     = calloc(server->total_tiles, sizeof(*net->dirty_queue_enqueued_ns));
@@ -145,10 +148,13 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*net->retransmit_queue_enqueued_ns));
     net->retransmit_requested_generation = calloc(server->total_tiles, sizeof(*net->retransmit_requested_generation));
     net->summary_dirty_tiles         = calloc(server->total_tiles, sizeof(*net->summary_dirty_tiles));
-    if (!net->dirty_queue || !net->dirty_queued || !net->dirty_queue_enqueued_ns || !net->retransmit_queue ||
+    if (!net->dirty_regions || !net->dirty_region_queued || !net->dirty_queue || !net->dirty_queued ||
+        !net->dirty_queue_enqueued_ns || !net->retransmit_queue ||
         !net->retransmit_queued || !net->retransmit_queue_enqueued_ns || !net->retransmit_requested_generation ||
         !net->summary_dirty_tiles)
     {
+        free(net->dirty_regions);
+        free(net->dirty_region_queued);
         free(net->dirty_queue);
         free(net->dirty_queued);
         free(net->dirty_queue_enqueued_ns);
@@ -157,6 +163,9 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         free(net->retransmit_queue_enqueued_ns);
         free(net->retransmit_requested_generation);
         free(net->summary_dirty_tiles);
+        net->dirty_regions               = NULL;
+        net->dirty_region_queued         = NULL;
+        net->dirty_region_count          = 0;
         net->dirty_queue                 = NULL;
         net->dirty_queued                = NULL;
         net->dirty_queue_enqueued_ns     = NULL;
@@ -169,6 +178,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         pthread_mutex_destroy(&net->lock);
         return false;
     }
+    net->dirty_region_count     = 0;
     net->dirty_queue_read       = 0;
     net->dirty_queue_write      = 0;
     net->dirty_queue_count      = 0;
@@ -214,6 +224,11 @@ void wd_net_destroy(struct wd_server* server) {
         net->udp_fd = -1;
     }
 
+    free(net->dirty_regions);
+    net->dirty_regions = NULL;
+    free(net->dirty_region_queued);
+    net->dirty_region_queued = NULL;
+    net->dirty_region_count = 0;
     free(net->dirty_queue);
     net->dirty_queue = NULL;
 
@@ -991,6 +1006,11 @@ void* wd_net_thread_main(void* arg) {
         net->client_udp_addr      = client_udp_addr;
         net->client_connected     = true;
         net->dirty_region_rng = 0;
+        if (net->dirty_region_queued)
+        {
+            memset(net->dirty_region_queued, 0, server->total_tiles * sizeof(*net->dirty_region_queued));
+        }
+        net->dirty_region_count = 0;
         if (net->dirty_queued)
         {
             memset(net->dirty_queued, 0, server->total_tiles * sizeof(*net->dirty_queued));
@@ -1262,13 +1282,9 @@ void* wd_net_thread_main(void* arg) {
                                 continue;
                             }
 
-                            struct wd_cached_tile* tile = &net->tiles[entries[i].tile_id];
+                            struct wd_tile_state* tile = &net->tiles[entries[i].tile_id];
                             uint64_t requested_generation = entries[i].requested_generation;
 
-                            if (tile->compressed_size == 0 || !tile->compressed)
-                            {
-                                continue;
-                            }
 
                             if (requested_generation != 0 && tile->generation < requested_generation)
                             {

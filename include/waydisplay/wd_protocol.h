@@ -188,7 +188,7 @@ struct wd_retransmit_entry {
     uint16_t tile_id;
     uint16_t reserved;
 
-    /* 0 means retransmit the latest cached generation for this tile. */
+    /* 0 means retransmit the latest known generation for this tile. */
     uint64_t requested_generation;
 };
 

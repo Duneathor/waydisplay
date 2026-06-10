@@ -42,6 +42,7 @@ extern "C" {
 /* Tile generation summary cadence. */
 #define WD_GENERATION_SUMMARY_FULL_INTERVAL_NS  2000000000ull
 #define WD_GENERATION_SUMMARY_DELTA_INTERVAL_NS 50000000ull
+#define WD_GENERATION_SUMMARY_CLEAN_DELTA_INTERVAL_NS 200000000ull
 
 /* Stream policy defaults. */
 #define WD_DEFAULT_PARTIAL_FPS                     60u

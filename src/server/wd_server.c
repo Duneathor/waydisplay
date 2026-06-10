@@ -179,13 +179,22 @@ static int server_frame_timer(void* data) {
         server->last_summary_ns       = t;
         server->last_delta_summary_ns = t;
     }
-    else if (server->last_delta_summary_ns == 0 || t - server->last_delta_summary_ns >= WD_GENERATION_SUMMARY_DELTA_INTERVAL_NS)
+    else
     {
+        uint64_t delta_interval_ns = WD_GENERATION_SUMMARY_CLEAN_DELTA_INTERVAL_NS;
         pthread_mutex_lock(&server->net.lock);
-        wd_stream_send_pending_generation_summary_locked(server);
+        if (server->net.retransmit_queue_count != 0 || server->net.stats.client_partial_tiles_timed_out != 0 ||
+            server->net.stats.client_retx_requests_tx != 0)
+        {
+            delta_interval_ns = WD_GENERATION_SUMMARY_DELTA_INTERVAL_NS;
+        }
+        const bool should_send_delta = server->last_delta_summary_ns == 0 || t - server->last_delta_summary_ns >= delta_interval_ns;
+        if (should_send_delta)
+        {
+            wd_stream_send_pending_generation_summary_locked(server);
+            server->last_delta_summary_ns = t;
+        }
         pthread_mutex_unlock(&server->net.lock);
-
-        server->last_delta_summary_ns = t;
     }
 
     if (t - server->last_stats_ns > 1000000000ull)
@@ -536,6 +545,12 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 
     wd_stream_destroy(server);
 
+    free(server->net.dirty_regions);
+    server->net.dirty_regions = NULL;
+    free(server->net.dirty_region_queued);
+    server->net.dirty_region_queued = NULL;
+    server->net.dirty_region_count = 0;
+
     free(server->net.dirty_queue);
     server->net.dirty_queue = NULL;
 
@@ -575,6 +590,9 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 
     if (ok)
     {
+        server->net.dirty_regions                = calloc(server->total_tiles, sizeof(*server->net.dirty_regions));
+        server->net.dirty_region_queued          = calloc(server->total_tiles, sizeof(*server->net.dirty_region_queued));
+        server->net.dirty_region_count           = 0;
         server->net.dirty_queue                  = calloc(server->total_tiles, sizeof(*server->net.dirty_queue));
         server->net.dirty_queued                 = calloc(server->total_tiles, sizeof(*server->net.dirty_queued));
         server->net.dirty_queue_enqueued_ns      = calloc(server->total_tiles, sizeof(*server->net.dirty_queue_enqueued_ns));
@@ -583,7 +601,8 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
         server->net.retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*server->net.retransmit_queue_enqueued_ns));
         server->net.retransmit_requested_generation = calloc(server->total_tiles, sizeof(*server->net.retransmit_requested_generation));
         server->net.summary_dirty_tiles          = calloc(server->total_tiles, sizeof(*server->net.summary_dirty_tiles));
-        ok = server->net.dirty_queue && server->net.dirty_queued && server->net.dirty_queue_enqueued_ns &&
+        ok = server->net.dirty_regions && server->net.dirty_region_queued && server->net.dirty_queue &&
+             server->net.dirty_queued && server->net.dirty_queue_enqueued_ns &&
              server->net.retransmit_queue && server->net.retransmit_queued && server->net.retransmit_queue_enqueued_ns &&
              server->net.retransmit_requested_generation && server->net.summary_dirty_tiles;
     }
@@ -596,6 +615,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     if (ok)
     {
         server->net.dirty_region_rng = 0;
+        server->net.dirty_region_count     = 0;
         server->net.dirty_queue_read       = 0;
         server->net.dirty_queue_write      = 0;
         server->net.dirty_queue_count      = 0;

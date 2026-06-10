@@ -190,17 +190,11 @@ struct wd_resize_grab {
     uint32_t view_height;
 };
 
-struct wd_cached_tile {
-    uint8_t* compressed;
-    uint32_t compressed_size;
-    uint32_t compressed_capacity;
-    bool     compressed_payload;
-
+struct wd_tile_state {
     uint64_t generation;
     uint64_t timestamp_ns;
     uint64_t input_sequence;
 
-    uint32_t last_hash;
 };
 
 struct wd_udp_tile_send_result {
@@ -310,6 +304,11 @@ struct wd_stats {
     uint64_t dirty_budget_blocked;
     uint64_t partial_tile_sends;
     uint64_t partial_tile_packets_sent;
+    uint64_t dirty_detect_ns;
+    uint64_t dirty_region_select_ns;
+    uint64_t tile_encode_ns;
+    uint64_t summary_build_ns;
+    uint64_t udp_send_ns;
 
     uint64_t dirty_tiles_stale_skipped;
     uint64_t retx_tiles_superseded_by_fresh;
@@ -368,6 +367,9 @@ struct wd_net_state {
     uint16_t udp_payload_target;
 
     uint32_t dirty_region_rng;
+    uint16_t* dirty_regions;
+    bool*     dirty_region_queued;
+    uint16_t  dirty_region_count;
 
     uint16_t* dirty_queue;
     bool*     dirty_queued;
@@ -397,7 +399,7 @@ struct wd_net_state {
     struct sockaddr_in      client_udp_addr;
     struct wd_stream_policy stream_policy;
 
-    struct wd_cached_tile* tiles;
+    struct wd_tile_state* tiles;
     struct wd_stats        stats;
     uint64_t               last_input_inject_ns;
     bool                   input_since_last_summary;
@@ -626,7 +628,6 @@ void wd_stream_destroy(struct wd_server* server);
 bool wd_stream_send_dirty_tiles(struct wd_server* server);
 bool wd_stream_send_generation_summary_locked(struct wd_server* server);
 bool wd_stream_send_pending_generation_summary_locked(struct wd_server* server);
-bool wd_stream_send_cached_tile_locked(struct wd_server* server, uint16_t tile_id, struct wd_udp_tile_send_result* result);
 bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id, uint64_t requested_generation);
 void wd_stream_print_and_reset_stats(struct wd_server* server);
 
