@@ -314,7 +314,9 @@ struct wd_stats {
     uint64_t encode_jobs_stale;
     uint64_t encode_worker_ns;
     uint64_t encode_wait_ns;
-    uint64_t encode_threads_used;
+    uint64_t encode_batches;
+    uint64_t encode_worker_threads;
+    uint64_t encode_thread_wakeups;
 
     uint64_t dirty_tiles_stale_skipped;
     uint64_t retx_tiles_superseded_by_fresh;
@@ -360,6 +362,7 @@ struct wd_queued_pointer_event {
 struct wd_net_state {
     pthread_mutex_t lock;
     pthread_cond_t  display_resize_cond;
+    pthread_cond_t  encoder_idle_cond;
 
     bool     display_resize_pending;
     uint64_t display_resize_request_serial;
@@ -378,6 +381,9 @@ struct wd_net_state {
     uint16_t  dirty_region_count;
 
     uint64_t* dirty_epochs;
+
+    bool encoder_batch_active;
+    void* encoder_pool;
 
     uint16_t* dirty_queue;
     bool*     dirty_queued;
@@ -552,6 +558,7 @@ struct wd_server {
     uint64_t last_stats_ns;
 
     uint32_t* framebuffer_xrgb8888;
+    uint64_t framebuffer_generation;
 
     const char* socket_name;
     const char* startup_command;
@@ -632,6 +639,7 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server);
 /* wd_stream.c */
 bool wd_stream_init(struct wd_server* server);
 void wd_stream_invalidate_all_tiles_locked(struct wd_server* server);
+void wd_stream_wait_for_encoder_idle_locked(struct wd_server* server);
 void wd_stream_destroy(struct wd_server* server);
 bool wd_stream_send_dirty_tiles(struct wd_server* server);
 bool wd_stream_send_generation_summary_locked(struct wd_server* server);

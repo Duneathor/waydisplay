@@ -128,6 +128,13 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         return false;
     }
 
+    if (pthread_cond_init(&net->encoder_idle_cond, NULL) != 0)
+    {
+        pthread_cond_destroy(&net->display_resize_cond);
+        pthread_mutex_destroy(&net->lock);
+        return false;
+    }
+
     net->running              = true;
     net->tcp_port             = tcp_port;
     net->tcp_fd               = -1;
@@ -177,6 +184,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         net->retransmit_queue_enqueued_ns = NULL;
         net->retransmit_requested_generation = NULL;
         net->summary_dirty_tiles         = NULL;
+        pthread_cond_destroy(&net->encoder_idle_cond);
         pthread_cond_destroy(&net->display_resize_cond);
         pthread_mutex_destroy(&net->lock);
         return false;
@@ -269,6 +277,9 @@ void wd_net_destroy(struct wd_server* server) {
     net->primary_text_size    = 0;
     net->primary_text_pending = false;
 
+    wd_stream_destroy(server);
+
+    pthread_cond_destroy(&net->encoder_idle_cond);
     pthread_cond_destroy(&net->display_resize_cond);
     pthread_mutex_destroy(&net->lock);
 }

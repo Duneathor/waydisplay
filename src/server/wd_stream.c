@@ -18,6 +18,8 @@
 #define WD_ENCODER_MAX_THREADS 4u
 #define WD_ENCODER_BATCH_JOBS 256u
 
+static void wd_stream_encoder_pool_destroy(struct wd_server* server);
+
 static void wd_stream_note_input_to_first_fresh_tile_locked(struct wd_net_state* net, uint64_t tile_send_ns) {
     if (!net || !net->input_since_last_fresh_tile || net->last_input_inject_ns == 0 || tile_send_ns < net->last_input_inject_ns)
     {
@@ -551,7 +553,14 @@ bool wd_stream_init(struct wd_server* server) {
 }
 
 void wd_stream_destroy(struct wd_server* server) {
-    if (!server || !server->net.tiles)
+    if (!server)
+    {
+        return;
+    }
+
+    wd_stream_encoder_pool_destroy(server);
+
+    if (!server->net.tiles)
     {
         return;
     }
@@ -1254,10 +1263,6 @@ static bool wd_dirty_queue_push_locked(struct wd_net_state* net, uint16_t tile_i
     return true;
 }
 
-static bool wd_dirty_queue_reinsert_locked(struct wd_net_state* net, uint16_t tile_id, uint16_t total_tiles) {
-    return wd_dirty_queue_push_locked(net, tile_id, total_tiles);
-}
-
 bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id, uint64_t requested_generation) {
     if (!server || tile_id >= server->total_tiles)
     {
@@ -1404,6 +1409,7 @@ struct wd_parallel_encode_result {
     uint8_t* payload;
     uint32_t payload_size;
     uint64_t worker_encode_ns;
+    uint64_t framebuffer_generation;
 };
 
 struct wd_parallel_encode_job {
@@ -1411,18 +1417,43 @@ struct wd_parallel_encode_job {
     uint16_t top_region_id;
     uint64_t input_sequence;
     uint64_t remaining_byte_budget;
+    uint64_t framebuffer_generation;
+    uint16_t udp_payload_target;
     bool network_happy;
     const bool* dirty_snapshot;
     const uint64_t* dirty_epoch_snapshot;
     struct wd_parallel_encode_result* result;
 };
 
+struct wd_encoder_worker_state {
+    struct wd_encoder_pool* pool;
+    uint16_t worker_index;
+    pthread_t thread;
+    uint8_t* tile_bytes;
+    uint8_t* compressed_tile;
+    size_t compressed_capacity;
+};
+
 struct wd_parallel_encode_batch {
     struct wd_parallel_encode_job* jobs;
     uint16_t job_count;
     uint16_t next_job;
-    pthread_mutex_t lock;
+    uint16_t completed_jobs;
+    uint64_t worker_encode_ns;
+    bool active;
 };
+
+struct wd_encoder_pool {
+    pthread_mutex_t lock;
+    pthread_cond_t work_cond;
+    pthread_cond_t done_cond;
+    bool running;
+    uint16_t thread_count;
+    struct wd_parallel_encode_batch* batch;
+    struct wd_encoder_worker_state workers[WD_ENCODER_MAX_THREADS];
+};
+
+static void* wd_stream_encoder_worker_main(void* data);
 
 static uint16_t wd_stream_encoder_thread_count(void) {
     long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
@@ -1435,6 +1466,145 @@ static uint16_t wd_stream_encoder_thread_count(void) {
         return WD_ENCODER_MAX_THREADS;
     }
     return (uint16_t)(cpu_count - 1);
+}
+
+
+static void wd_stream_encoder_pool_destroy(struct wd_server* server) {
+    if (!server || !server->net.encoder_pool)
+    {
+        return;
+    }
+
+    struct wd_encoder_pool* pool = server->net.encoder_pool;
+    pthread_mutex_lock(&pool->lock);
+    pool->running = false;
+    pthread_cond_broadcast(&pool->work_cond);
+    pthread_mutex_unlock(&pool->lock);
+
+    for (uint16_t i = 0; i < pool->thread_count; ++i)
+    {
+        pthread_join(pool->workers[i].thread, NULL);
+        free(pool->workers[i].tile_bytes);
+        pool->workers[i].tile_bytes = NULL;
+        free(pool->workers[i].compressed_tile);
+        pool->workers[i].compressed_tile = NULL;
+    }
+
+    pthread_cond_destroy(&pool->done_cond);
+    pthread_cond_destroy(&pool->work_cond);
+    pthread_mutex_destroy(&pool->lock);
+    free(pool);
+    server->net.encoder_pool = NULL;
+}
+
+static bool wd_stream_encoder_pool_ensure(struct wd_server* server) {
+    if (!server)
+    {
+        return false;
+    }
+    if (server->net.encoder_pool)
+    {
+        return true;
+    }
+
+    struct wd_encoder_pool* pool = calloc(1, sizeof(*pool));
+    if (!pool)
+    {
+        return false;
+    }
+    if (pthread_mutex_init(&pool->lock, NULL) != 0)
+    {
+        free(pool);
+        return false;
+    }
+    if (pthread_cond_init(&pool->work_cond, NULL) != 0)
+    {
+        pthread_mutex_destroy(&pool->lock);
+        free(pool);
+        return false;
+    }
+    if (pthread_cond_init(&pool->done_cond, NULL) != 0)
+    {
+        pthread_cond_destroy(&pool->work_cond);
+        pthread_mutex_destroy(&pool->lock);
+        free(pool);
+        return false;
+    }
+
+    const uint32_t max_wire_tile_bytes = WD_WIRE_TILE_MAX_WIDTH * WD_WIRE_TILE_MAX_HEIGHT * WD_BYTES_PER_PIXEL;
+    const size_t compressed_capacity = wd_zstd_compress_bound(max_wire_tile_bytes);
+    pool->thread_count = wd_stream_encoder_thread_count();
+    if (pool->thread_count == 0)
+    {
+        pool->thread_count = 1;
+    }
+    pool->running = true;
+    server->net.encoder_pool = pool;
+
+    for (uint16_t i = 0; i < pool->thread_count; ++i)
+    {
+        pool->workers[i].pool = pool;
+        pool->workers[i].worker_index = i;
+        pool->workers[i].compressed_capacity = compressed_capacity;
+        pool->workers[i].tile_bytes = malloc(max_wire_tile_bytes);
+        pool->workers[i].compressed_tile = malloc(compressed_capacity);
+        if (!pool->workers[i].tile_bytes || !pool->workers[i].compressed_tile ||
+            pthread_create(&pool->workers[i].thread, NULL, wd_stream_encoder_worker_main, &pool->workers[i]) != 0)
+        {
+            free(pool->workers[i].tile_bytes);
+            pool->workers[i].tile_bytes = NULL;
+            free(pool->workers[i].compressed_tile);
+            pool->workers[i].compressed_tile = NULL;
+            pool->thread_count = i;
+            wd_stream_encoder_pool_destroy(server);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool wd_stream_encoder_pool_run(struct wd_server* server, struct wd_parallel_encode_batch* batch,
+                                       uint16_t* out_worker_threads) {
+    if (out_worker_threads)
+    {
+        *out_worker_threads = 0;
+    }
+    if (!server || !batch || batch->job_count == 0 || !wd_stream_encoder_pool_ensure(server))
+    {
+        return false;
+    }
+
+    struct wd_encoder_pool* pool = server->net.encoder_pool;
+    pthread_mutex_lock(&pool->lock);
+    batch->next_job = 0;
+    batch->completed_jobs = 0;
+    batch->worker_encode_ns = 0;
+    batch->active = true;
+    pool->batch = batch;
+    pthread_cond_broadcast(&pool->work_cond);
+    while (batch->active)
+    {
+        pthread_cond_wait(&pool->done_cond, &pool->lock);
+    }
+    pool->batch = NULL;
+    if (out_worker_threads)
+    {
+        *out_worker_threads = pool->thread_count;
+    }
+    pthread_mutex_unlock(&pool->lock);
+    return true;
+}
+
+void wd_stream_wait_for_encoder_idle_locked(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+    while (server->net.encoder_batch_active)
+    {
+        pthread_cond_wait(&server->net.encoder_idle_cond, &server->net.lock);
+    }
 }
 
 static bool wd_stream_collect_wire_tile_base_ids(const struct wd_server* server, uint16_t tile_id, uint16_t tile_width,
@@ -1906,7 +2076,7 @@ static bool wd_stream_try_encode_candidate_for_snapshot(const struct wd_parallel
             return false;
         }
         compressed_payload = wd_stream_use_compressed_tile_payload(compressed_size, uncompressed_size,
-                                                                   server->net.udp_payload_target, job->input_sequence);
+                                                                   job->udp_payload_target, job->input_sequence);
     }
 
     const uint32_t payload_size = compressed_payload ? compressed_size : uncompressed_size;
@@ -1918,7 +2088,7 @@ static bool wd_stream_try_encode_candidate_for_snapshot(const struct wd_parallel
     out->covered_base_count = covered_count;
     out->uncompressed_size = uncompressed_size;
     out->compressed_size = compressed_size;
-    out->wire_size = wd_stream_tile_wire_bytes_for_payload(payload_size, server->net.udp_payload_target,
+    out->wire_size = wd_stream_tile_wire_bytes_for_payload(payload_size, job->udp_payload_target,
                                                            job->input_sequence, compressed_payload);
     out->compressed_payload = compressed_payload;
     for (uint16_t i = 0; i < covered_count; ++i)
@@ -2055,25 +2225,16 @@ static bool wd_stream_choose_region_recursive_snapshot(struct wd_parallel_encode
     return false;
 }
 
-static void wd_stream_parallel_encode_one_job(struct wd_parallel_encode_job* job) {
-    if (!job || !job->result || !job->server)
+static void wd_stream_parallel_encode_one_job(struct wd_parallel_encode_job* job, uint8_t* tile_bytes,
+                                              uint8_t* compressed_tile, size_t compressed_capacity) {
+    if (!job || !job->result || !job->server || !tile_bytes || !compressed_tile)
     {
         return;
     }
     struct wd_parallel_encode_result* result = job->result;
     memset(result, 0, sizeof(*result));
     result->top_region_id = job->top_region_id;
-
-    const uint32_t max_wire_tile_bytes = WD_WIRE_TILE_MAX_WIDTH * WD_WIRE_TILE_MAX_HEIGHT * WD_BYTES_PER_PIXEL;
-    uint8_t* tile_bytes = malloc(max_wire_tile_bytes);
-    size_t compressed_capacity = wd_zstd_compress_bound(max_wire_tile_bytes);
-    uint8_t* compressed_tile = malloc(compressed_capacity);
-    if (!tile_bytes || !compressed_tile)
-    {
-        free(compressed_tile);
-        free(tile_bytes);
-        return;
-    }
+    result->framebuffer_generation = job->framebuffer_generation;
 
     const uint64_t start_ns = wd_now_ns();
     bool budget_blocked = false;
@@ -2099,109 +2260,48 @@ static void wd_stream_parallel_encode_one_job(struct wd_parallel_encode_job* job
     }
     result->budget_blocked = budget_blocked;
     result->worker_encode_ns = wd_now_ns() - start_ns;
-    free(compressed_tile);
-    free(tile_bytes);
 }
 
-static void* wd_stream_parallel_encode_worker(void* data) {
-    struct wd_parallel_encode_batch* batch = data;
-    if (!batch)
+static void* wd_stream_encoder_worker_main(void* data) {
+    struct wd_encoder_worker_state* worker = data;
+    if (!worker || !worker->pool)
     {
         return NULL;
     }
+
+    struct wd_encoder_pool* pool = worker->pool;
     for (;;)
     {
-        pthread_mutex_lock(&batch->lock);
-        uint16_t index = batch->next_job;
-        if (index < batch->job_count)
+        pthread_mutex_lock(&pool->lock);
+        while (pool->running && (!pool->batch || !pool->batch->active || pool->batch->next_job >= pool->batch->job_count))
         {
-            batch->next_job++;
+            pthread_cond_wait(&pool->work_cond, &pool->lock);
         }
-        pthread_mutex_unlock(&batch->lock);
-        if (index >= batch->job_count)
+
+        if (!pool->running)
         {
+            pthread_mutex_unlock(&pool->lock);
             break;
         }
-        wd_stream_parallel_encode_one_job(&batch->jobs[index]);
+
+        struct wd_parallel_encode_batch* batch = pool->batch;
+        uint16_t index = batch->next_job++;
+        pthread_mutex_unlock(&pool->lock);
+
+        wd_stream_parallel_encode_one_job(&batch->jobs[index], worker->tile_bytes, worker->compressed_tile,
+                                          worker->compressed_capacity);
+
+        pthread_mutex_lock(&pool->lock);
+        batch->worker_encode_ns += batch->jobs[index].result ? batch->jobs[index].result->worker_encode_ns : 0;
+        batch->completed_jobs++;
+        if (batch->completed_jobs >= batch->job_count)
+        {
+            batch->active = false;
+            pthread_cond_signal(&pool->done_cond);
+        }
+        pthread_mutex_unlock(&pool->lock);
     }
     return NULL;
-}
-
-static bool wd_stream_choose_random_dirty_region_locked(struct wd_server* server, uint64_t input_sequence,
-                                                        uint64_t remaining_byte_budget, uint8_t* tile_bytes,
-                                                        uint8_t* compressed_tile, size_t compressed_capacity,
-                                                        struct wd_wire_tile_candidate* out, bool* out_budget_blocked) {
-    if (out_budget_blocked)
-    {
-        *out_budget_blocked = false;
-    }
-    if (!server || !out || server->total_tiles == 0 || server->net.dirty_region_count == 0)
-    {
-        return false;
-    }
-
-    const uint32_t top_uncompressed_bytes = WD_WIRE_TILE_MAX_WIDTH * WD_WIRE_TILE_MAX_HEIGHT * WD_BYTES_PER_PIXEL;
-    const uint32_t minimum_wire_bytes = wd_stream_tile_wire_bytes_for_payload(top_uncompressed_bytes,
-                                                                              server->net.udp_payload_target, input_sequence, false);
-    if (minimum_wire_bytes == 0 || minimum_wire_bytes > remaining_byte_budget)
-    {
-        if (out_budget_blocked)
-        {
-            *out_budget_blocked = true;
-        }
-        return false;
-    }
-
-    const bool network_happy = !wd_stream_client_reporting_tile_loss_locked(&server->net.stream_policy, &server->net.stats);
-    if (server->net.dirty_region_rng == 0)
-    {
-        server->net.dirty_region_rng = (uint32_t)(wd_now_ns() ^ ((uint64_t)server->display_width << 16) ^ server->display_height);
-        if (server->net.dirty_region_rng == 0)
-        {
-            server->net.dirty_region_rng = 1;
-        }
-    }
-
-    bool budget_blocked = false;
-    const uint16_t attempts = server->net.dirty_region_count;
-    for (uint16_t i = 0; i < attempts && server->net.dirty_region_count > 0; ++i)
-    {
-        const uint64_t select_start_ns = wd_now_ns();
-        uint32_t r = server->net.dirty_region_rng = server->net.dirty_region_rng * 1664525u + 1013904223u;
-        uint16_t index = (uint16_t)(r % server->net.dirty_region_count);
-        uint16_t top_id = server->net.dirty_regions[index];
-
-        if (!wd_stream_top_region_still_dirty_locked(server, top_id))
-        {
-            wd_stream_remove_dirty_top_region_locked(server, top_id);
-            server->net.stats.dirty_region_select_ns += wd_now_ns() - select_start_ns;
-            continue;
-        }
-        server->net.stats.dirty_region_select_ns += wd_now_ns() - select_start_ns;
-
-        bool candidate_budget_blocked = false;
-        if (wd_stream_choose_region_recursive_locked(server, top_id, WD_WIRE_TILE_MAX_WIDTH, WD_WIRE_TILE_MAX_HEIGHT,
-                                                     input_sequence, remaining_byte_budget, network_happy, tile_bytes,
-                                                     compressed_tile, compressed_capacity, out, &candidate_budget_blocked))
-        {
-            return true;
-        }
-        if (!wd_stream_top_region_still_dirty_locked(server, top_id))
-        {
-            wd_stream_remove_dirty_top_region_locked(server, top_id);
-        }
-        if (candidate_budget_blocked)
-        {
-            budget_blocked = true;
-            break;
-        }
-    }
-
-    if (out_budget_blocked)
-    {
-        *out_budget_blocked = budget_blocked;
-    }
-    return false;
 }
 
 static bool wd_retransmit_queue_pop_sendable_locked(struct wd_server* server, uint64_t remaining_byte_budget,
@@ -2519,6 +2619,8 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
             jobs[job_count].top_region_id = top_id;
             jobs[job_count].input_sequence = tile_input_sequence;
             jobs[job_count].remaining_byte_budget = remaining_byte_budget;
+            jobs[job_count].framebuffer_generation = server->framebuffer_generation;
+            jobs[job_count].udp_payload_target = net->udp_payload_target;
             jobs[job_count].network_happy = network_happy;
             jobs[job_count].dirty_snapshot = dirty_snapshot;
             jobs[job_count].dirty_epoch_snapshot = epoch_snapshot;
@@ -2541,57 +2643,49 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         memset(&batch, 0, sizeof(batch));
         batch.jobs = jobs;
         batch.job_count = job_count;
-        pthread_mutex_init(&batch.lock, NULL);
 
-        uint16_t thread_count = wd_stream_encoder_thread_count();
-        if (thread_count > job_count)
-        {
-            thread_count = job_count;
-        }
-        if (thread_count == 0)
-        {
-            thread_count = 1;
-        }
-
-        pthread_t threads[WD_ENCODER_MAX_THREADS];
-        memset(threads, 0, sizeof(threads));
-        uint16_t created_threads = 0;
+        uint16_t worker_threads = 0;
         const uint64_t wait_start_ns = wd_now_ns();
+        net->encoder_batch_active = true;
         pthread_mutex_unlock(&net->lock);
-        for (uint16_t i = 0; i < thread_count; ++i)
-        {
-            if (pthread_create(&threads[i], NULL, wd_stream_parallel_encode_worker, &batch) == 0)
-            {
-                created_threads++;
-            }
-            else
-            {
-                threads[i] = 0;
-            }
-        }
-        if (created_threads == 0)
-        {
-            wd_stream_parallel_encode_worker(&batch);
-            created_threads = 1;
-        }
-        for (uint16_t i = 0; i < thread_count; ++i)
-        {
-            if (threads[i])
-            {
-                pthread_join(threads[i], NULL);
-            }
-        }
+        bool encoded = wd_stream_encoder_pool_run(server, &batch, &worker_threads);
         pthread_mutex_lock(&net->lock);
+        net->encoder_batch_active = false;
+        pthread_cond_broadcast(&net->encoder_idle_cond);
         net->stats.encode_wait_ns += wd_now_ns() - wait_start_ns;
-        net->stats.encode_threads_used += created_threads;
-        pthread_mutex_destroy(&batch.lock);
+        net->stats.encode_batches++;
+        net->stats.encode_worker_threads += worker_threads;
+        net->stats.encode_thread_wakeups += worker_threads;
+        net->stats.encode_worker_ns += batch.worker_encode_ns;
+        net->stats.tile_encode_ns += batch.worker_encode_ns;
+        if (!encoded)
+        {
+            for (uint16_t ri = 0; ri < job_count; ++ri)
+            {
+                const uint16_t top_id = jobs[ri].top_region_id;
+                if (wd_stream_top_region_still_dirty_locked(server, top_id))
+                {
+                    uint16_t ids[64];
+                    uint16_t count = 0;
+                    if (wd_stream_collect_wire_tile_base_ids(server, top_id, WD_WIRE_TILE_MAX_WIDTH,
+                                                             WD_WIRE_TILE_MAX_HEIGHT, ids, &count,
+                                                             (uint16_t)(sizeof(ids) / sizeof(ids[0]))) && count > 0)
+                    {
+                        wd_stream_mark_dirty_top_region_locked(server, ids[0]);
+                    }
+                }
+            }
+            free(results);
+            free(jobs);
+            free(epoch_snapshot);
+            free(dirty_snapshot);
+            break;
+        }
 
         bool stop_sending = false;
         for (uint16_t ri = 0; ri < job_count; ++ri)
         {
             struct wd_parallel_encode_result* result = &results[ri];
-            net->stats.encode_worker_ns += result->worker_encode_ns;
-            net->stats.tile_encode_ns += result->worker_encode_ns;
             if (!result->valid)
             {
                 if (result->budget_blocked && net->dirty_region_count > 0)
@@ -2620,8 +2714,8 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
                 continue;
             }
 
-            bool stale = false;
-            for (uint16_t i = 0; i < result->candidate.covered_base_count; ++i)
+            bool stale = result->framebuffer_generation != server->framebuffer_generation;
+            for (uint16_t i = 0; !stale && i < result->candidate.covered_base_count; ++i)
             {
                 const uint16_t covered_id = result->candidate.covered_base_ids[i];
                 if (covered_id >= server->total_tiles)
@@ -2992,11 +3086,11 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                           s.dirty_region_probes != 0 || s.dirty_region_hits != 0 ||
                           s.dirty_budget_blocked != 0 || s.partial_tile_sends != 0 || s.dirty_detect_ns != 0 || s.dirty_region_select_ns != 0 ||
                           s.tile_encode_ns != 0 || s.summary_build_ns != 0 || s.udp_send_ns != 0 || s.encode_jobs_submitted != 0 ||
-                          s.encode_jobs_completed != 0 || s.encode_jobs_stale != 0 || s.encode_wait_ns != 0;
+                          s.encode_jobs_completed != 0 || s.encode_jobs_stale != 0 || s.encode_wait_ns != 0 || s.encode_batches != 0;
     if (video_activity)
     {
         uint64_t choices = s.tile_choice_compressed + s.tile_choice_uncompressed;
-        WD_LOG_DEBUG("WayDisplay video/s: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_threads=%llu",
+        WD_LOG_DEBUG("WayDisplay video/s: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_batches=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
                      (unsigned long long)s.dirty_tiles, (unsigned long long)s.dirty_tiles_stale_skipped,
                      (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_fresh_tiles_sent,
                      (unsigned long long)s.udp_retx_tiles_sent, (unsigned long long)s.udp_packets_sent,
@@ -3034,7 +3128,9 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                      (unsigned long long)s.encode_jobs_stale,
                      (double)s.encode_wait_ns / 1000000.0,
                      (double)s.encode_worker_ns / 1000000.0,
-                     (unsigned long long)s.encode_threads_used);
+                     (unsigned long long)s.encode_batches,
+                     s.encode_batches ? (double)s.encode_worker_threads / (double)s.encode_batches : 0.0,
+                     (unsigned long long)s.encode_thread_wakeups);
     }
 
     bool repair_activity = s.retx_req_rx != 0 || s.retx_tiles_req != 0 || s.retx_req_ignored_live != 0 ||

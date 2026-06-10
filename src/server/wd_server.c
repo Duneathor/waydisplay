@@ -543,6 +543,13 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 
     pthread_mutex_lock(&server->net.lock);
 
+    wd_stream_wait_for_encoder_idle_locked(server);
+    server->framebuffer_generation++;
+    if (server->framebuffer_generation == 0)
+    {
+        server->framebuffer_generation = 1;
+    }
+
     wd_stream_destroy(server);
 
     free(server->net.dirty_regions);
@@ -589,6 +596,14 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     {
         server->framebuffer_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(uint32_t));
         ok                           = server->framebuffer_xrgb8888 != NULL;
+        if (ok)
+        {
+            server->framebuffer_generation++;
+            if (server->framebuffer_generation == 0)
+            {
+                server->framebuffer_generation = 1;
+            }
+        }
     }
 
     if (ok)
@@ -668,6 +683,10 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
     }
 
     server->framebuffer_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(uint32_t));
+    if (server->framebuffer_xrgb8888)
+    {
+        server->framebuffer_generation = 1;
+    }
 
     if (!server->framebuffer_xrgb8888)
     {
