@@ -1414,6 +1414,14 @@ struct wd_parallel_encode_result {
 
 struct wd_parallel_encode_job {
     struct wd_server* server;
+    const uint32_t* framebuffer_xrgb8888;
+    uint32_t display_width;
+    uint32_t display_height;
+    uint16_t tile_width;
+    uint16_t tile_height;
+    uint16_t tiles_x;
+    uint16_t tiles_y;
+    uint16_t total_tiles;
     uint16_t top_region_id;
     uint64_t input_sequence;
     uint64_t remaining_byte_budget;
@@ -1880,6 +1888,26 @@ static bool wd_stream_candidate_allowed_for_region_locked(struct wd_server* serv
     return candidate->wire_size <= one_packet_budget;
 }
 
+static bool wd_stream_candidate_allowed_for_job(const struct wd_parallel_encode_job* job,
+                                                const struct wd_wire_tile_candidate* candidate) {
+    if (!job || !candidate || candidate->wire_size == 0 || candidate->wire_size > job->remaining_byte_budget)
+    {
+        return false;
+    }
+
+    const uint32_t one_packet_budget = (uint32_t)job->udp_payload_target + WD_UDP_TILE_HEADER_MAX_SIZE;
+    const bool is_max_tile = candidate->width == WD_WIRE_TILE_MAX_WIDTH && candidate->height == WD_WIRE_TILE_MAX_HEIGHT;
+    if (candidate->width == job->tile_width && candidate->height == job->tile_height)
+    {
+        return true;
+    }
+    if (is_max_tile && job->network_happy)
+    {
+        return true;
+    }
+    return candidate->wire_size <= one_packet_budget;
+}
+
 static bool wd_stream_choose_region_recursive_locked(struct wd_server* server, uint16_t wire_tile_id, uint16_t tile_width,
                                                      uint16_t tile_height, uint64_t input_sequence, uint64_t remaining_byte_budget,
                                                      bool network_happy, uint8_t* tile_bytes, uint8_t* compressed_tile,
@@ -2016,21 +2044,100 @@ static bool wd_stream_choose_region_recursive_locked(struct wd_server* server, u
 }
 
 
-static bool wd_stream_snapshot_region_has_dirty(const struct wd_server* server, const bool* dirty_snapshot,
-                                                uint16_t wire_tile_id, uint16_t tile_width, uint16_t tile_height,
-                                                uint16_t* out_ids, uint16_t* out_count, uint16_t max_count) {
-    if (!server || !dirty_snapshot || !out_ids || !out_count)
+static bool wd_stream_job_collect_wire_tile_base_ids(const struct wd_parallel_encode_job* job, uint16_t tile_id,
+                                                        uint16_t tile_width, uint16_t tile_height, uint16_t* out_ids,
+                                                        uint16_t* out_count, uint16_t max_count) {
+    if (!job || !out_ids || !out_count || tile_width == 0 || tile_height == 0 || job->tile_width == 0 ||
+        job->tile_height == 0)
     {
         return false;
     }
-    if (!wd_stream_collect_wire_tile_base_ids(server, wire_tile_id, tile_width, tile_height, out_ids, out_count, max_count))
+
+    *out_count = 0;
+    const uint16_t tiles_x = wd_tiles_for_width_with_tile(job->display_width, tile_width);
+    if (tiles_x == 0)
+    {
+        return false;
+    }
+
+    const uint32_t x = wd_tile_start_x_for_tile(tile_id, tiles_x, tile_width);
+    const uint32_t y = wd_tile_start_y_for_tile(tile_id, tiles_x, tile_height);
+    const uint32_t w = wd_tile_visible_width_for_tile(job->display_width, tile_id, tiles_x, tile_width);
+    const uint32_t h = wd_tile_visible_height_for_tile(job->display_height, tile_id, tiles_x, tile_height);
+    if (w == 0 || h == 0)
+    {
+        return false;
+    }
+
+    uint32_t bx0 = x / job->tile_width;
+    uint32_t by0 = y / job->tile_height;
+    uint32_t bx1 = (x + w - 1u) / job->tile_width;
+    uint32_t by1 = (y + h - 1u) / job->tile_height;
+    if (bx1 >= job->tiles_x)
+    {
+        bx1 = (uint32_t)job->tiles_x - 1u;
+    }
+    if (by1 >= job->tiles_y)
+    {
+        by1 = (uint32_t)job->tiles_y - 1u;
+    }
+
+    for (uint32_t by = by0; by <= by1; ++by)
+    {
+        for (uint32_t bx = bx0; bx <= bx1; ++bx)
+        {
+            uint32_t base_id = by * (uint32_t)job->tiles_x + bx;
+            if (base_id >= job->total_tiles || *out_count >= max_count)
+            {
+                return false;
+            }
+            out_ids[(*out_count)++] = (uint16_t)base_id;
+        }
+    }
+    return *out_count != 0;
+}
+
+static bool wd_stream_job_wire_tile_for_pixel(const struct wd_parallel_encode_job* job, uint32_t x, uint32_t y,
+                                              uint16_t tile_width, uint16_t tile_height, uint16_t* out_tile_id) {
+    if (!job || !out_tile_id || tile_width == 0 || tile_height == 0 || x >= job->display_width || y >= job->display_height)
+    {
+        return false;
+    }
+
+    const uint16_t tiles_x = wd_tiles_for_width_with_tile(job->display_width, tile_width);
+    const uint16_t tiles_y = wd_tiles_for_height_with_tile(job->display_height, tile_height);
+    if (tiles_x == 0 || tiles_y == 0)
+    {
+        return false;
+    }
+
+    const uint32_t tx = x / tile_width;
+    const uint32_t ty = y / tile_height;
+    const uint32_t id = ty * (uint32_t)tiles_x + tx;
+    if (tx >= tiles_x || ty >= tiles_y || id > UINT16_MAX)
+    {
+        return false;
+    }
+
+    *out_tile_id = (uint16_t)id;
+    return true;
+}
+
+static bool wd_stream_snapshot_region_has_dirty(const struct wd_parallel_encode_job* job, const bool* dirty_snapshot,
+                                                uint16_t wire_tile_id, uint16_t tile_width, uint16_t tile_height,
+                                                uint16_t* out_ids, uint16_t* out_count, uint16_t max_count) {
+    if (!job || !dirty_snapshot || !out_ids || !out_count)
+    {
+        return false;
+    }
+    if (!wd_stream_job_collect_wire_tile_base_ids(job, wire_tile_id, tile_width, tile_height, out_ids, out_count, max_count))
     {
         return false;
     }
     for (uint16_t i = 0; i < *out_count; ++i)
     {
         const uint16_t base_id = out_ids[i];
-        if (base_id < server->total_tiles && dirty_snapshot[base_id])
+        if (base_id < job->total_tiles && dirty_snapshot[base_id])
         {
             return true;
         }
@@ -2043,24 +2150,23 @@ static bool wd_stream_try_encode_candidate_for_snapshot(const struct wd_parallel
                                                         uint8_t* tile_bytes, uint8_t* compressed_tile,
                                                         size_t compressed_capacity, struct wd_wire_tile_candidate* out,
                                                         uint64_t* out_epochs) {
-    if (!job || !job->server || !tile_bytes || !compressed_tile || !out || !out_epochs)
+    if (!job || !job->server || !job->framebuffer_xrgb8888 || !tile_bytes || !compressed_tile || !out || !out_epochs)
     {
         return false;
     }
 
-    struct wd_server* server = job->server;
     uint16_t covered_count = 0;
     uint16_t covered_ids[64];
-    if (!wd_stream_collect_wire_tile_base_ids(server, wire_tile_id, tile_width, tile_height, covered_ids, &covered_count,
+    if (!wd_stream_job_collect_wire_tile_base_ids(job, wire_tile_id, tile_width, tile_height, covered_ids, &covered_count,
                                              (uint16_t)(sizeof(covered_ids) / sizeof(covered_ids[0]))))
     {
         return false;
     }
 
     const uint32_t uncompressed_size = (uint32_t)tile_width * (uint32_t)tile_height * WD_BYTES_PER_PIXEL;
-    const uint16_t wire_tiles_x = wd_tiles_for_width_with_tile(server->display_width, tile_width);
-    const uint16_t wire_total_tiles = wd_total_tiles_for_size_with_tile(server->display_width, server->display_height, tile_width, tile_height);
-    if (!wd_extract_tile_xrgb8888_for_tile(server->framebuffer_xrgb8888, server->display_width, server->display_height,
+    const uint16_t wire_tiles_x = wd_tiles_for_width_with_tile(job->display_width, tile_width);
+    const uint16_t wire_total_tiles = wd_total_tiles_for_size_with_tile(job->display_width, job->display_height, tile_width, tile_height);
+    if (!wd_extract_tile_xrgb8888_for_tile(job->framebuffer_xrgb8888, job->display_width, job->display_height,
                                            wire_tiles_x, wire_total_tiles, wire_tile_id, tile_width, tile_height, tile_bytes))
     {
         return false;
@@ -2112,16 +2218,15 @@ static bool wd_stream_choose_region_recursive_snapshot(struct wd_parallel_encode
         return false;
     }
 
-    struct wd_server* server = job->server;
     uint16_t covered_count = 0;
     uint16_t covered_ids[64];
-    if (!wd_stream_snapshot_region_has_dirty(server, job->dirty_snapshot, wire_tile_id, tile_width, tile_height,
+    if (!wd_stream_snapshot_region_has_dirty(job, job->dirty_snapshot, wire_tile_id, tile_width, tile_height,
                                              covered_ids, &covered_count, (uint16_t)(sizeof(covered_ids) / sizeof(covered_ids[0]))))
     {
         return false;
     }
 
-    const bool is_base_tile = tile_width == server->tile_width && tile_height == server->tile_height;
+    const bool is_base_tile = tile_width == job->tile_width && tile_height == job->tile_height;
     const bool allow_compression = !is_base_tile;
     struct wd_wire_tile_candidate candidate;
     uint64_t candidate_epochs[64] = {0};
@@ -2129,7 +2234,7 @@ static bool wd_stream_choose_region_recursive_snapshot(struct wd_parallel_encode
     if (wd_stream_try_encode_candidate_for_snapshot(job, wire_tile_id, tile_width, tile_height, allow_compression,
                                                     tile_bytes, compressed_tile, compressed_capacity, &candidate,
                                                     candidate_epochs) &&
-        wd_stream_candidate_allowed_for_region_locked(server, &candidate, job->remaining_byte_budget, job->network_happy))
+        wd_stream_candidate_allowed_for_job(job, &candidate))
     {
         *out = candidate;
         memcpy(out_epochs, candidate_epochs, (size_t)candidate.covered_base_count * sizeof(candidate_epochs[0]));
@@ -2145,7 +2250,7 @@ static bool wd_stream_choose_region_recursive_snapshot(struct wd_parallel_encode
         return false;
     }
 
-    const uint16_t parent_tiles_x = wd_tiles_for_width_with_tile(server->display_width, tile_width);
+    const uint16_t parent_tiles_x = wd_tiles_for_width_with_tile(job->display_width, tile_width);
     const uint32_t start_x = wd_tile_start_x_for_tile(wire_tile_id, parent_tiles_x, tile_width);
     const uint32_t start_y = wd_tile_start_y_for_tile(wire_tile_id, parent_tiles_x, tile_height);
     uint16_t child_width = 0;
@@ -2160,8 +2265,8 @@ static bool wd_stream_choose_region_recursive_snapshot(struct wd_parallel_encode
         const uint32_t xs[2] = {start_x, start_x + child_width};
         for (uint16_t i = 0; i < 2; ++i)
         {
-            if (xs[i] < server->display_width && start_y < server->display_height &&
-                wd_stream_wire_tile_for_pixel(server, xs[i], start_y, child_width, child_height, &child_ids[child_count]))
+            if (xs[i] < job->display_width && start_y < job->display_height &&
+                wd_stream_job_wire_tile_for_pixel(job, xs[i], start_y, child_width, child_height, &child_ids[child_count]))
             {
                 child_count++;
             }
@@ -2177,8 +2282,8 @@ static bool wd_stream_choose_region_recursive_snapshot(struct wd_parallel_encode
         {
             for (uint16_t x = 0; x < 2; ++x)
             {
-                if (xs[x] < server->display_width && ys[y] < server->display_height &&
-                    wd_stream_wire_tile_for_pixel(server, xs[x], ys[y], child_width, child_height, &child_ids[child_count]))
+                if (xs[x] < job->display_width && ys[y] < job->display_height &&
+                    wd_stream_job_wire_tile_for_pixel(job, xs[x], ys[y], child_width, child_height, &child_ids[child_count]))
                 {
                     child_count++;
                 }
@@ -2187,16 +2292,16 @@ static bool wd_stream_choose_region_recursive_snapshot(struct wd_parallel_encode
     }
     else if (tile_width == 32 && tile_height == 32)
     {
-        child_width = server->tile_width;
-        child_height = server->tile_height;
+        child_width = job->tile_width;
+        child_height = job->tile_height;
         const uint32_t xs[2] = {start_x, start_x + child_width};
         const uint32_t ys[2] = {start_y, start_y + child_height};
         for (uint16_t y = 0; y < 2; ++y)
         {
             for (uint16_t x = 0; x < 2; ++x)
             {
-                if (xs[x] < server->display_width && ys[y] < server->display_height &&
-                    wd_stream_wire_tile_for_pixel(server, xs[x], ys[y], child_width, child_height, &child_ids[child_count]))
+                if (xs[x] < job->display_width && ys[y] < job->display_height &&
+                    wd_stream_job_wire_tile_for_pixel(job, xs[x], ys[y], child_width, child_height, &child_ids[child_count]))
                 {
                     child_count++;
                 }
@@ -2616,6 +2721,14 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
             net->stats.dirty_region_select_ns += wd_now_ns() - select_start_ns;
 
             jobs[job_count].server = server;
+            jobs[job_count].framebuffer_xrgb8888 = server->framebuffer_xrgb8888;
+            jobs[job_count].display_width = server->display_width;
+            jobs[job_count].display_height = server->display_height;
+            jobs[job_count].tile_width = server->tile_width;
+            jobs[job_count].tile_height = server->tile_height;
+            jobs[job_count].tiles_x = server->tiles_x;
+            jobs[job_count].tiles_y = server->tiles_y;
+            jobs[job_count].total_tiles = server->total_tiles;
             jobs[job_count].top_region_id = top_id;
             jobs[job_count].input_sequence = tile_input_sequence;
             jobs[job_count].remaining_byte_budget = remaining_byte_budget;
