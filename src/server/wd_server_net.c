@@ -156,10 +156,11 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*net->retransmit_queue_enqueued_ns));
     net->retransmit_requested_generation = calloc(server->total_tiles, sizeof(*net->retransmit_requested_generation));
     net->summary_dirty_tiles         = calloc(server->total_tiles, sizeof(*net->summary_dirty_tiles));
+    net->summary_dirty_queue         = calloc(server->total_tiles, sizeof(*net->summary_dirty_queue));
     if (!net->dirty_regions || !net->dirty_region_queued || !net->dirty_epochs || !net->dirty_queue || !net->dirty_queued ||
         !net->dirty_queue_enqueued_ns || !net->retransmit_queue ||
         !net->retransmit_queued || !net->retransmit_queue_enqueued_ns || !net->retransmit_requested_generation ||
-        !net->summary_dirty_tiles)
+        !net->summary_dirty_tiles || !net->summary_dirty_queue)
     {
         free(net->dirty_regions);
         free(net->dirty_region_queued);
@@ -172,6 +173,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         free(net->retransmit_queue_enqueued_ns);
         free(net->retransmit_requested_generation);
         free(net->summary_dirty_tiles);
+        free(net->summary_dirty_queue);
         net->dirty_regions               = NULL;
         net->dirty_region_queued         = NULL;
         net->dirty_region_count          = 0;
@@ -184,6 +186,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         net->retransmit_queue_enqueued_ns = NULL;
         net->retransmit_requested_generation = NULL;
         net->summary_dirty_tiles         = NULL;
+        net->summary_dirty_queue         = NULL;
         pthread_cond_destroy(&net->encoder_idle_cond);
         pthread_cond_destroy(&net->display_resize_cond);
         pthread_mutex_destroy(&net->lock);
@@ -265,6 +268,10 @@ void wd_net_destroy(struct wd_server* server) {
 
     free(net->summary_dirty_tiles);
     net->summary_dirty_tiles = NULL;
+
+    free(net->summary_dirty_queue);
+    net->summary_dirty_queue = NULL;
+
     net->summary_dirty_count = 0;
 
     free(net->clipboard_text);
@@ -948,7 +955,7 @@ void* wd_net_thread_main(void* arg) {
         if (hello.desired_width != 0 || hello.desired_height != 0)
         {
             if (hello.desired_width == 0 || hello.desired_height == 0 ||
-                !wd_server_apply_display_size(server, hello.desired_width, hello.desired_height))
+                !wd_server_request_display_size(server, hello.desired_width, hello.desired_height))
             {
                 WD_LOG_ERROR("WayDisplay: rejected requested client display size %ux%u", hello.desired_width, hello.desired_height);
                 close(tcp_fd);
@@ -1076,7 +1083,7 @@ void* wd_net_thread_main(void* arg) {
         net->primary_text         = NULL;
         net->primary_text_size    = 0;
         net->primary_text_pending = false;
-        wd_cursor_send_current_locked(server);
+        wd_cursor_queue_current_locked(server);
 
         pthread_mutex_unlock(&net->lock);
 
@@ -1304,8 +1311,9 @@ void* wd_net_thread_main(void* arg) {
 
                             if (requested_generation != 0 && tile->generation < requested_generation)
                             {
-                                net->stats.retx_req_waiting_for_generation++;
-                                continue;
+                                /* Queue the request instead of dropping it; the
+                                 * stream path will hold it until the requested
+                                 * generation exists or fresh damage supersedes it. */
                             }
 
                             if (requested_generation != 0 && tile->generation > requested_generation)

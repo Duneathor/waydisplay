@@ -39,9 +39,14 @@ extern "C" {
 #define WD_THROUGHPUT_PROBE_TARGET_BYTES (8u * 1024u * 1024u)
 #define WD_THROUGHPUT_PROBE_DURATION_MS  750u
 
-/* Tile generation summary cadence. */
-#define WD_GENERATION_SUMMARY_FULL_INTERVAL_NS  2000000000ull
-#define WD_GENERATION_SUMMARY_DELTA_INTERVAL_NS 50000000ull
+/* Tile generation summary cadence.
+ *
+ * Full summaries are large at high resolutions, so they are sent only when
+ * summary state is reset (connect/resize/reconfigure) and as a rare sanity
+ * refresh. Delta summaries carry normal generation updates.
+ */
+#define WD_GENERATION_SUMMARY_FULL_SANITY_INTERVAL_NS 60000000000ull
+#define WD_GENERATION_SUMMARY_DELTA_INTERVAL_NS       50000000ull
 #define WD_GENERATION_SUMMARY_CLEAN_DELTA_INTERVAL_NS 200000000ull
 
 /* Stream policy defaults. */
@@ -52,10 +57,6 @@ extern "C" {
 #define WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND     (25ull * 1024ull)
 #define WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND     (1000ull * 1024ull * 1024ull * 1024ull)
 #define WD_LIMITED_MODE_THROUGHPUT_SAFETY_PERCENT    85u
-
-/* Retransmits get a small first pass when the client reports loss; fresh
- * damage itself is selected by randomized dirty region probing. */
-#define WD_RETRANSMIT_LOSS_BUDGET_PERCENT 25u
 
 /* Stream link health policy.  Tile size is not adapted globally: each dirty
  * tile is encoded at the largest supported wire size that satisfies the

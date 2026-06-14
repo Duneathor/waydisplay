@@ -421,6 +421,12 @@ void wd_pointer_begin_move(struct wd_server* server, struct wd_view* view) {
         return;
     }
 
+    if (view->fullscreen || view->maximized)
+    {
+        WD_LOG_DEBUG("WayDisplay: ignoring move of %s view", view->fullscreen ? "fullscreen" : "maximized");
+        return;
+    }
+
     server->move_grab.active = true;
     server->move_grab.view   = view;
     server->move_grab.grab_x = server->pointer_x;
@@ -474,6 +480,12 @@ void wd_pointer_end_move(struct wd_server* server) {
 void wd_pointer_begin_resize(struct wd_server* server, struct wd_view* view, uint32_t edges) {
     if (!server || !view || edges == WLR_EDGE_NONE)
     {
+        return;
+    }
+
+    if (view->fullscreen || view->maximized)
+    {
+        WD_LOG_DEBUG("WayDisplay: ignoring resize of %s view", view->fullscreen ? "fullscreen" : "maximized");
         return;
     }
 

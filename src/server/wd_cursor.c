@@ -86,16 +86,51 @@ static bool wd_cursor_send_shape_locked(struct wd_server* server, uint16_t shape
     payload.session_id = net->session_id;
     payload.shape      = shape;
 
-    return wd_send_tcp_message(net->tcp_fd, WD_MSG_CURSOR_SHAPE, &payload, sizeof(payload));
+    bool ok = wd_send_tcp_message(net->tcp_fd, WD_MSG_CURSOR_SHAPE, &payload, sizeof(payload));
+    if (ok)
+    {
+        net->stats.cursor_shape_tx++;
+    }
+    return ok;
 }
 
-bool wd_cursor_send_current_locked(struct wd_server* server) {
+void wd_cursor_queue_current_locked(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    struct wd_net_state* net = &server->net;
+    if (net->pending_cursor_shape_dirty && net->pending_cursor_shape != server->cursor_shape)
+    {
+        net->stats.cursor_shape_coalesced++;
+    }
+    net->pending_cursor_shape       = server->cursor_shape;
+    net->pending_cursor_shape_dirty = true;
+}
+
+bool wd_cursor_flush_pending_locked(struct wd_server* server) {
     if (!server)
     {
         return false;
     }
 
-    return wd_cursor_send_shape_locked(server, server->cursor_shape);
+    struct wd_net_state* net = &server->net;
+    if (!net->pending_cursor_shape_dirty)
+    {
+        return true;
+    }
+
+    uint16_t shape = net->pending_cursor_shape;
+    net->pending_cursor_shape_dirty = false;
+
+    bool ok = wd_cursor_send_shape_locked(server, shape);
+    if (!ok)
+    {
+        net->pending_cursor_shape       = shape;
+        net->pending_cursor_shape_dirty = true;
+    }
+    return ok;
 }
 
 void wd_cursor_set_shape(struct wd_server* server, uint16_t shape) {
@@ -117,7 +152,7 @@ void wd_cursor_set_shape(struct wd_server* server, uint16_t shape) {
     server->cursor_shape = shape;
 
     pthread_mutex_lock(&server->net.lock);
-    wd_cursor_send_shape_locked(server, shape);
+    wd_cursor_queue_current_locked(server);
     pthread_mutex_unlock(&server->net.lock);
 }
 

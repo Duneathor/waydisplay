@@ -662,6 +662,34 @@ static void xwayland_view_set_maximized(struct wd_view* view, bool maximize) {
     xwayland_mark_scene_dirty(view);
 }
 
+
+void wd_xwayland_handle_output_resize(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    struct wd_view* view;
+    wl_list_for_each(view, &server->views, link)
+    {
+        if (!view || !view->xwayland_surface || !view->mapped)
+        {
+            continue;
+        }
+
+        if (view->maximized || view->fullscreen)
+        {
+            view->x = 0;
+            view->y = 0;
+            wd_scene_set_view_position(view);
+            wlr_xwayland_surface_configure(view->xwayland_surface, view->x, view->y, xwayland_view_display_width(view),
+                                           xwayland_view_display_height(view));
+            xwayland_view_update_decoration(view);
+            xwayland_mark_scene_dirty(view);
+        }
+    }
+}
+
 static void handle_xwayland_request_maximize(struct wl_listener* listener, void* data) {
     (void)data;
 

@@ -281,6 +281,8 @@ struct wd_stats {
     uint64_t popup_explicit_scene_tree_failures;
 
     uint64_t cursor_shape_requests;
+    uint64_t cursor_shape_tx;
+    uint64_t cursor_shape_coalesced;
     uint64_t cursor_set_cursor_requests;
     uint64_t cursor_set_cursor_rejected;
     uint64_t cursor_set_cursor_hidden;
@@ -329,7 +331,6 @@ struct wd_stats {
     uint64_t retx_queue_age_samples;
     uint64_t retx_queue_age_sum_ns;
     uint64_t retx_req_stale_generation;
-    uint64_t retx_req_waiting_for_generation;
 };
 
 struct wd_stream_policy {
@@ -402,8 +403,12 @@ struct wd_net_state {
     uint64_t* retransmit_requested_generation;
     uint16_t  retransmit_queue_count;
 
-    bool*    summary_dirty_tiles;
-    uint16_t summary_dirty_count;
+    bool*     summary_dirty_tiles;
+    uint16_t* summary_dirty_queue;
+    uint16_t  summary_dirty_count;
+
+    uint16_t pending_cursor_shape;
+    bool     pending_cursor_shape_dirty;
 
     int listen_fd;
     int tcp_fd;
@@ -624,10 +629,11 @@ bool wd_keyboard_shortcuts_inhibit_active(struct wd_server* server);
 bool     wd_cursor_init(struct wd_server* server);
 void     wd_cursor_destroy(struct wd_server* server);
 void     wd_cursor_set_shape(struct wd_server* server, uint16_t shape);
+bool     wd_cursor_flush_pending_locked(struct wd_server* server);
 uint16_t wd_cursor_shape_for_resize_edges(uint32_t edges);
 
 /* net lock must already be held. */
-bool wd_cursor_send_current_locked(struct wd_server* server);
+void wd_cursor_queue_current_locked(struct wd_server* server);
 
 /* wd_scene.c */
 void            wd_scene_init_listeners(struct wd_server* server);
@@ -635,6 +641,7 @@ void            wd_scene_focus_view(struct wd_view* view);
 void            wd_scene_deactivate_view(struct wd_view* view);
 void            wd_scene_set_view_position(struct wd_view* view);
 void            wd_scene_note_dialog_state(struct wd_view* view);
+void            wd_scene_handle_output_resize(struct wd_server* server);
 struct wd_view* wd_scene_view_from_xdg_toplevel_resource(struct wd_server* server, struct wl_resource* toplevel_resource);
 
 /* wd_readback.c */
@@ -687,6 +694,10 @@ void wd_keyboard_drain_and_inject(struct wd_server* server);
 void wd_keyboard_note_key_state(struct wd_server* server, uint32_t evdev_key_code, bool pressed);
 void wd_keyboard_notify_enter(struct wd_server* server, struct wlr_surface* surface);
 void wd_keyboard_clear_pressed_keys(struct wd_server* server);
+
+#if WAYDISPLAY_ENABLE_XWAYLAND
+void wd_xwayland_handle_output_resize(struct wd_server* server);
+#endif
 
 void wd_pointer_queue_event_locked(struct wd_net_state* net, const struct wd_pointer_event_payload* event, uint64_t server_rx_timestamp_ns);
 

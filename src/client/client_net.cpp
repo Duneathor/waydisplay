@@ -22,10 +22,11 @@
 namespace waydisplay {
 namespace {
 
-constexpr size_t   MAX_RETRANSMIT_ENTRIES_PER_MESSAGE = 32;
-constexpr size_t   MAX_RETRANSMIT_QUEUE_DEPTH         = 512;
-constexpr double   RETRANSMIT_REQUEST_TILES_PER_SECOND = 64.0;
-constexpr double   RETRANSMIT_REQUEST_BURST_TILES      = 64.0;
+constexpr size_t MAX_RETRANSMIT_REQUEST_PAYLOAD_BYTES = WD_TCP_MAX_PAYLOAD_SIZE;
+constexpr size_t MAX_RETRANSMIT_REQUEST_ENTRY_CAP =
+    (MAX_RETRANSMIT_REQUEST_PAYLOAD_BYTES - sizeof(wd_retransmit_request_payload_header)) / sizeof(wd_retransmit_entry);
+constexpr size_t MAX_RETRANSMIT_ENTRIES_PER_MESSAGE =
+    MAX_RETRANSMIT_REQUEST_ENTRY_CAP > UINT16_MAX ? UINT16_MAX : MAX_RETRANSMIT_REQUEST_ENTRY_CAP;
 constexpr uint64_t RETRANSMIT_REREQUEST_INTERVAL_NS   = 250ull * 1000ull * 1000ull;
 constexpr uint64_t SUMMARY_RETRANSMIT_GRACE_NS         = 150ull * 1000ull * 1000ull;
 constexpr uint64_t RETRANSMIT_GRACE_MIN_NS            = 50ull * 1000ull * 1000ull;
@@ -167,12 +168,16 @@ bool open_udp_socket(ClientState& state) {
     if (::bind(state.udp_fd, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) < 0)
     {
         std::perror("bind UDP");
+        ::close(state.udp_fd);
+        state.udp_fd = -1;
         return false;
     }
 
     if (wd_set_nonblocking(state.udp_fd) < 0)
     {
         std::perror("set UDP nonblocking");
+        ::close(state.udp_fd);
+        state.udp_fd = -1;
         return false;
     }
 
@@ -487,7 +492,6 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
 bool receive_server_config(ClientState& state) {
     wd_client_hello_payload hello{};
     hello.client_udp_port      = state.client_udp_port;
-    hello.reserved_stream_mode = 0;
     hello.target_fps                  = state.stream_config.target_fps;
     hello.desired_width               = state.desired_width;
     hello.desired_height              = state.desired_height;
@@ -618,17 +622,6 @@ bool queue_retransmit_tile_locked(ClientState& state, uint16_t tile_id, uint64_t
 
     if (state.retx_queued_generation[tile_id] == 0)
     {
-        while (state.retx_queue.size() >= MAX_RETRANSMIT_QUEUE_DEPTH)
-        {
-            const uint16_t dropped_tile_id = state.retx_queue.front();
-            state.retx_queue.pop_front();
-
-            if (dropped_tile_id < state.retx_queued_generation.size())
-            {
-                state.retx_queued_generation[dropped_tile_id] = 0;
-            }
-        }
-
         state.retx_queue.push_back(tile_id);
     }
 
@@ -709,6 +702,12 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
                 state.retx_inflight_since_ns[entry.tile_id] != 0 &&
                 now_ns - state.retx_inflight_since_ns[entry.tile_id] < state.retx_inflight_grace_ns)
             {
+                if (state.retx_summary_pending_generation[entry.tile_id] < entry.tile_generation)
+                {
+                    state.retx_summary_pending_generation[entry.tile_id] = entry.tile_generation;
+                    state.retx_summary_pending_since_ns[entry.tile_id]  = now_ns;
+                    newly_deferred_from_summary++;
+                }
                 continue;
             }
 
@@ -716,6 +715,12 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
                 state.retx_last_request_ns[entry.tile_id] != 0 &&
                 now_ns - state.retx_last_request_ns[entry.tile_id] < RETRANSMIT_REREQUEST_INTERVAL_NS)
             {
+                if (state.retx_summary_pending_generation[entry.tile_id] < entry.tile_generation)
+                {
+                    state.retx_summary_pending_generation[entry.tile_id] = entry.tile_generation;
+                    state.retx_summary_pending_since_ns[entry.tile_id]  = now_ns;
+                    newly_deferred_from_summary++;
+                }
                 continue;
             }
 
@@ -998,16 +1003,19 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
 
     if (!open_udp_socket(state))
     {
+        client_disconnect(state);
         return false;
     }
 
     if (!open_tcp_socket(state))
     {
+        client_disconnect(state);
         return false;
     }
 
     if (!receive_server_config(state))
     {
+        client_disconnect(state);
         return false;
     }
 
@@ -1042,8 +1050,6 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         state.retx_inflight_since_ns.assign(state.tile_count(), 0);
         state.retx_summary_pending_generation.assign(state.tile_count(), 0);
         state.retx_summary_pending_since_ns.assign(state.tile_count(), 0);
-        state.retx_request_tokens = RETRANSMIT_REQUEST_BURST_TILES;
-        state.retx_request_last_refill_ns = wd_now_ns();
     }
 
     state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + state.config.udp_payload_target + 512, 0);
@@ -1284,29 +1290,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
 
         const uint64_t now_ns = wd_now_ns();
 
-        if (state.retx_request_last_refill_ns == 0)
-        {
-            state.retx_request_last_refill_ns = now_ns;
-            state.retx_request_tokens         = RETRANSMIT_REQUEST_BURST_TILES;
-        }
-        else if (now_ns > state.retx_request_last_refill_ns)
-        {
-            const double elapsed_seconds = static_cast<double>(now_ns - state.retx_request_last_refill_ns) / 1000000000.0;
-            state.retx_request_tokens += elapsed_seconds * RETRANSMIT_REQUEST_TILES_PER_SECOND;
-            if (state.retx_request_tokens > RETRANSMIT_REQUEST_BURST_TILES)
-            {
-                state.retx_request_tokens = RETRANSMIT_REQUEST_BURST_TILES;
-            }
-            state.retx_request_last_refill_ns = now_ns;
-        }
-
-        const size_t request_budget = static_cast<size_t>(state.retx_request_tokens);
-        if (request_budget == 0)
-        {
-            return true;
-        }
-
-        const size_t max_entries_this_flush = std::min(MAX_RETRANSMIT_ENTRIES_PER_MESSAGE, request_budget);
+        const size_t max_entries_this_flush = MAX_RETRANSMIT_ENTRIES_PER_MESSAGE;
 
         ensure_retransmit_tracking_locked(state, state.config.total_tiles);
 
@@ -1347,6 +1331,8 @@ bool client_flush_retransmit_requests(ClientState& state) {
             if (state.retx_last_requested_generation[tile_id] >= target_generation && state.retx_last_request_ns[tile_id] != 0 &&
                 now_ns - state.retx_last_request_ns[tile_id] < RETRANSMIT_REREQUEST_INTERVAL_NS)
             {
+                state.retx_queued_generation[tile_id] = target_generation;
+                state.retx_queue.push_back(tile_id);
                 continue;
             }
 
@@ -1355,18 +1341,8 @@ bool client_flush_retransmit_requests(ClientState& state) {
 
             wd_retransmit_entry request{};
             request.tile_id              = tile_id;
-            request.reserved             = 0;
             request.requested_generation = target_generation;
             entries.push_back(request);
-        }
-
-        if (!entries.empty())
-        {
-            state.retx_request_tokens -= static_cast<double>(entries.size());
-            if (state.retx_request_tokens < 0.0)
-            {
-                state.retx_request_tokens = 0.0;
-            }
         }
     }
 

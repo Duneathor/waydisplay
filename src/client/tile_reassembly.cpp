@@ -21,7 +21,6 @@ constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MIN_NS     = 100ull * 1000ull * 1000u
 constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS = 250ull * 1000ull * 1000ull;
 constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MAX_NS     = 450ull * 1000ull * 1000ull;
 constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_SLACK_NS   = 50ull * 1000ull * 1000ull;
-constexpr size_t   MAX_REASSEMBLY_RETRANSMIT_QUEUE_DEPTH = 256;
 
 uint64_t clamp_tile_reassembly_timeout_ns(uint64_t ns) {
     return std::max(TILE_REASSEMBLY_TIMEOUT_MIN_NS, std::min(TILE_REASSEMBLY_TIMEOUT_MAX_NS, ns));
@@ -151,17 +150,6 @@ bool enqueue_retx_for_partial_timeout(ClientState& state, uint16_t tile_id, uint
 
     if (state.retx_queued_generation[tile_id] == 0)
     {
-        while (state.retx_queue.size() >= MAX_REASSEMBLY_RETRANSMIT_QUEUE_DEPTH)
-        {
-            const uint16_t dropped_tile_id = state.retx_queue.front();
-            state.retx_queue.pop_front();
-
-            if (dropped_tile_id < state.retx_queued_generation.size())
-            {
-                state.retx_queued_generation[dropped_tile_id] = 0;
-            }
-        }
-
         state.retx_queue.push_back(tile_id);
     }
 

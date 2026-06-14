@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <errno.h>
+#include <thread>
 #include <iterator>
 #include <string>
 #include <sys/socket.h>
@@ -965,8 +966,14 @@ void mark_completed_base_generations(ClientState& state, const CompletedTile& co
     }
 }
 
-bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame_dirty,
-               std::vector<uint64_t>& out_present_tile_timestamps, std::vector<uint64_t>& out_present_input_sequences) {
+bool client_has_pending_server_config(ClientState& state) {
+    std::lock_guard<std::mutex> lock(state.config_mutex);
+    return state.pending_config_valid;
+}
+
+bool drain_udp(ClientState& state, TileReassembler& reassembler) {
+    std::lock_guard<std::mutex> processing_lock(state.udp_processing_mutex);
+
     uint16_t udp_payload_target = state.config.udp_payload_target;
     if (udp_payload_target == 0)
     {
@@ -982,6 +989,11 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
 
     for (;;)
     {
+        if (client_has_pending_server_config(state))
+        {
+            return true;
+        }
+
         ssize_t n = ::recv(state.udp_fd, state.udp_recv_buffer.data(), state.udp_recv_buffer.size(), 0);
 
         if (n < 0)
@@ -1066,10 +1078,13 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
             continue;
         }
 
-        if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_width, completed.tile_height, completed.tile_bytes))
         {
-            state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
-            continue;
+            std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
+            if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_width, completed.tile_height, completed.tile_bytes))
+            {
+                state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
         }
 
         {
@@ -1087,14 +1102,61 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler, bool& out_frame
 
         if (completed.completed_timestamp_ns != 0)
         {
-            out_present_tile_timestamps.push_back(completed.completed_timestamp_ns);
-            out_present_input_sequences.push_back(completed.input_sequence);
+            std::lock_guard<std::mutex> present_lock(state.present_mutex);
+            state.pending_present_tile_timestamps.push_back(completed.completed_timestamp_ns);
+            state.pending_present_input_sequences.push_back(completed.input_sequence);
         }
 
         state.stats.udp_completed_compressed_bytes.fetch_add(completed.compressed_size, std::memory_order_relaxed);
         state.stats.udp_completed_packets.fetch_add(completed.packet_count, std::memory_order_relaxed);
         state.stats.udp_tiles_completed.fetch_add(1, std::memory_order_relaxed);
-        out_frame_dirty = true;
+        state.frame_dirty.store(true, std::memory_order_release);
+    }
+}
+
+
+void udp_reader_main(ClientState* state) {
+    TileReassembler reassembler;
+    uint64_t observed_config_generation = state->client_config_generation.load(std::memory_order_acquire);
+
+    while (state->running.load(std::memory_order_relaxed))
+    {
+        const uint64_t current_generation = state->client_config_generation.load(std::memory_order_acquire);
+        if (current_generation != observed_config_generation)
+        {
+            reassembler.reset();
+            observed_config_generation = current_generation;
+        }
+
+        if (client_has_pending_server_config(*state))
+        {
+            SDL_Delay(1);
+            continue;
+        }
+
+        if (!drain_udp(*state, reassembler))
+        {
+            state->running.store(false, std::memory_order_relaxed);
+            break;
+        }
+
+        {
+            std::lock_guard<std::mutex> processing_lock(state->udp_processing_mutex);
+            reassembler.expire_stale_entries(*state);
+        }
+        client_promote_deferred_summary_retransmits(*state);
+
+        if (!client_flush_retransmit_requests(*state))
+        {
+            std::fprintf(stderr, "failed to send retransmit request\n");
+            state->running.store(false, std::memory_order_relaxed);
+            break;
+        }
+
+        if (!state->frame_dirty.load(std::memory_order_acquire))
+        {
+            SDL_Delay(1);
+        }
     }
 }
 
@@ -1241,8 +1303,7 @@ bool client_config_dimensions_valid(const wd_server_config_payload& config) {
     return bytes <= WD_CLIENT_MAX_FRAMEBUFFER_BYTES;
 }
 
-bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Renderer* renderer, SDL_Texture*& texture,
-                                 TileReassembler& reassembler) {
+bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Renderer* renderer, SDL_Texture*& texture) {
     wd_server_config_payload config{};
 
     {
@@ -1275,7 +1336,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     WD_LOG_INFO("server config updated: display=%ux%u tile=%ux%u grid=%ux%u total=%u", config.width, config.height,
                 config.tile_width, config.tile_height, config.tiles_x, config.tiles_y, config.total_tiles);
 
-    std::vector<uint32_t> new_framebuffer(static_cast<size_t>(config.width) * config.height, 0);
+    std::vector<uint32_t> new_framebuffer(static_cast<size_t>(config.width) * config.height, 0xff202020u);
     std::vector<uint64_t> new_displayed_generation(config.total_tiles, 0);
     std::vector<uint64_t> new_retx_queued_generation(config.total_tiles, 0);
     std::vector<uint64_t> new_retx_last_requested_generation(config.total_tiles, 0);
@@ -1297,7 +1358,9 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     }
 
     {
+        std::lock_guard<std::mutex> processing_lock(state.udp_processing_mutex);
         std::lock_guard<std::mutex> config_lock(state.config_mutex);
+        std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
         std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
         std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
 
@@ -1312,12 +1375,16 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         state.retx_inflight_since_ns         = std::move(new_retx_inflight_since_ns);
         state.retx_summary_pending_generation = std::move(new_retx_summary_pending_generation);
         state.retx_summary_pending_since_ns   = std::move(new_retx_summary_pending_since_ns);
-        state.retx_request_tokens            = 0.0;
-        state.retx_request_last_refill_ns    = 0;
         state.udp_recv_buffer                = std::move(new_udp_recv_buffer);
+        state.client_config_generation.fetch_add(1, std::memory_order_release);
+        state.frame_dirty.store(true, std::memory_order_release);
     }
 
-    reassembler.reset();
+    {
+        std::lock_guard<std::mutex> present_lock(state.present_mutex);
+        state.pending_present_tile_timestamps.clear();
+        state.pending_present_input_sequences.clear();
+    }
 
     SDL_DestroyTexture(texture);
     texture = new_texture;
@@ -1471,15 +1538,6 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
             send_host_clipboard_to_server(state, true);
         }
 
-        if (linux_button == WD_BTN_RIGHT)
-        {
-            std::fprintf(stderr,
-                         "WayDisplay client: sending right click %s "
-                         "window=%d,%d remote=%u,%u mods=0x%x\n",
-                         event.type == SDL_MOUSEBUTTONDOWN ? "press" : "release", event.button.x, event.button.y, pointer.x, pointer.y,
-                         pointer.modifiers);
-        }
-
         if (!client_send_pointer_event(state, pointer))
         {
             std::fprintf(stderr, "failed to send pointer button\n");
@@ -1592,7 +1650,7 @@ int run_sdl_viewer(ClientState& state) {
         return 1;
     }
 
-    TileReassembler reassembler;
+    std::thread udp_thread(udp_reader_main, &state);
 
     uint64_t              last_stats_ns           = wd_now_ns();
     bool                  frame_dirty             = true;
@@ -1610,7 +1668,7 @@ int run_sdl_viewer(ClientState& state) {
         apply_pending_cursor_shape(state);
         drain_remote_selection_updates(state);
 
-        if (apply_pending_server_config(state, window, renderer, texture, reassembler))
+        if (apply_pending_server_config(state, window, renderer, texture))
         {
             last_requested_width    = state.config.width;
             last_requested_height   = state.config.height;
@@ -1681,30 +1739,23 @@ int run_sdl_viewer(ClientState& state) {
             }
         }
 
-        if (!drain_udp(state, reassembler, frame_dirty, present_tile_timestamps, present_input_sequences))
-        {
-            state.running.store(false, std::memory_order_relaxed);
-            break;
-        }
-
-        reassembler.expire_stale_entries(state);
-        client_promote_deferred_summary_retransmits(state);
-
-        if (!client_flush_retransmit_requests(state))
-        {
-            std::fprintf(stderr, "failed to send retransmit request\n");
-            state.running.store(false, std::memory_order_relaxed);
-            break;
-        }
-
-        if (frame_dirty)
+        if (frame_dirty || state.frame_dirty.exchange(false, std::memory_order_acq_rel))
         {
             const uint32_t frame_width     = state.config.width;
             const uint32_t frame_height    = state.config.height;
             const size_t   expected_pixels = static_cast<size_t>(frame_width) * frame_height;
 
-            if (frame_width == 0 || frame_height == 0 || state.framebuffer.size() < expected_pixels ||
-                SDL_UpdateTexture(texture, nullptr, state.framebuffer.data(), static_cast<int>(frame_width * WD_BYTES_PER_PIXEL)) != 0)
+            bool texture_updated = false;
+            {
+                std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
+                if (frame_width != 0 && frame_height != 0 && state.framebuffer.size() >= expected_pixels &&
+                    SDL_UpdateTexture(texture, nullptr, state.framebuffer.data(), static_cast<int>(frame_width * WD_BYTES_PER_PIXEL)) == 0)
+                {
+                    texture_updated = true;
+                }
+            }
+
+            if (!texture_updated)
             {
                 std::fprintf(stderr, "failed to update SDL texture: %s\n", SDL_GetError());
                 state.running.store(false, std::memory_order_relaxed);
@@ -1715,6 +1766,12 @@ int run_sdl_viewer(ClientState& state) {
             SDL_RenderCopy(renderer, texture, nullptr, &g_content_rect);
             render_context_menu(renderer, context_menu);
             SDL_RenderPresent(renderer);
+
+            {
+                std::lock_guard<std::mutex> present_lock(state.present_mutex);
+                present_tile_timestamps.swap(state.pending_present_tile_timestamps);
+                present_input_sequences.swap(state.pending_present_input_sequences);
+            }
 
             const uint64_t present_ns = wd_now_ns();
             for (uint64_t tile_timestamp_ns : present_tile_timestamps)
@@ -1755,6 +1812,12 @@ int run_sdl_viewer(ClientState& state) {
         }
 
         SDL_Delay(WD_CLIENT_FRAME_DELAY_MS);
+    }
+
+    state.running.store(false, std::memory_order_relaxed);
+    if (udp_thread.joinable())
+    {
+        udp_thread.join();
     }
 
     SDL_DestroyTexture(texture);

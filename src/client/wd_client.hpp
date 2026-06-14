@@ -94,6 +94,15 @@ struct ClientState {
     std::vector<uint32_t> framebuffer;
     std::vector<uint64_t> displayed_generation;
 
+    std::mutex udp_processing_mutex;
+    std::mutex framebuffer_mutex;
+    std::atomic<bool> frame_dirty{false};
+    std::atomic<uint64_t> client_config_generation{1};
+
+    std::mutex present_mutex;
+    std::vector<uint64_t> pending_present_tile_timestamps;
+    std::vector<uint64_t> pending_present_input_sequences;
+
     std::mutex               config_mutex;
     wd_server_config_payload pending_config{};
     bool                     pending_config_valid = false;
@@ -125,8 +134,6 @@ struct ClientState {
     std::vector<uint64_t>           retx_inflight_since_ns;
     std::vector<uint64_t>           retx_summary_pending_generation;
     std::vector<uint64_t>           retx_summary_pending_since_ns;
-    double                          retx_request_tokens = 0.0;
-    uint64_t                        retx_request_last_refill_ns = 0;
     uint64_t                        retx_inflight_grace_ns = 250ull * 1000ull * 1000ull;
 
     std::mutex            tile_reassembly_timeout_mutex;

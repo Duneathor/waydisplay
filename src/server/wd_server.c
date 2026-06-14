@@ -145,6 +145,10 @@ static int server_frame_timer(void* data) {
 
     uint64_t t = wd_now_ns();
 
+    pthread_mutex_lock(&server->net.lock);
+    wd_cursor_flush_pending_locked(server);
+    pthread_mutex_unlock(&server->net.lock);
+
     bool should_render = wd_stream_policy_should_render_now(server, t);
 
     if (should_render)
@@ -170,7 +174,7 @@ static int server_frame_timer(void* data) {
         }
     }
 
-    if (server->last_summary_ns == 0 || t - server->last_summary_ns >= WD_GENERATION_SUMMARY_FULL_INTERVAL_NS)
+    if (server->last_summary_ns == 0 || t - server->last_summary_ns >= WD_GENERATION_SUMMARY_FULL_SANITY_INTERVAL_NS)
     {
         pthread_mutex_lock(&server->net.lock);
         wd_stream_send_generation_summary_locked(server);
@@ -189,10 +193,12 @@ static int server_frame_timer(void* data) {
             delta_interval_ns = WD_GENERATION_SUMMARY_DELTA_INTERVAL_NS;
         }
         const bool should_send_delta = server->last_delta_summary_ns == 0 || t - server->last_delta_summary_ns >= delta_interval_ns;
-        if (should_send_delta)
+        if (should_send_delta && server->net.summary_dirty_count != 0)
         {
-            wd_stream_send_pending_generation_summary_locked(server);
-            server->last_delta_summary_ns = t;
+            if (wd_stream_send_pending_generation_summary_locked(server))
+            {
+                server->last_delta_summary_ns = t;
+            }
         }
         pthread_mutex_unlock(&server->net.lock);
     }
@@ -486,6 +492,193 @@ bool wd_server_request_display_size(struct wd_server* server, uint32_t width, ui
     return ok;
 }
 
+
+struct wd_display_geometry_snapshot {
+    uint32_t display_width;
+    uint32_t display_height;
+    uint16_t tiles_x;
+    uint16_t tiles_y;
+    uint16_t total_tiles;
+    uint16_t base_tile_width;
+    uint16_t base_tile_height;
+    uint16_t base_tiles_x;
+    uint16_t base_tiles_y;
+    uint32_t total_base_tiles;
+    uint32_t framebuffer_pixels;
+    uint32_t framebuffer_bytes;
+};
+
+struct wd_resize_allocations {
+    uint32_t* framebuffer_xrgb8888;
+    struct wd_tile_state* tiles;
+    bool* damage_tiles;
+    uint16_t* dirty_regions;
+    bool* dirty_region_queued;
+    uint64_t* dirty_epochs;
+    uint16_t* dirty_queue;
+    bool* dirty_queued;
+    uint64_t* dirty_queue_enqueued_ns;
+    uint16_t* retransmit_queue;
+    bool* retransmit_queued;
+    uint64_t* retransmit_queue_enqueued_ns;
+    uint64_t* retransmit_requested_generation;
+    bool* summary_dirty_tiles;
+    uint16_t* summary_dirty_queue;
+};
+
+static struct wd_display_geometry_snapshot wd_server_capture_geometry(const struct wd_server* server) {
+    struct wd_display_geometry_snapshot geometry;
+    memset(&geometry, 0, sizeof(geometry));
+    if (!server)
+    {
+        return geometry;
+    }
+
+    geometry.display_width      = server->display_width;
+    geometry.display_height     = server->display_height;
+    geometry.tiles_x            = server->tiles_x;
+    geometry.tiles_y            = server->tiles_y;
+    geometry.total_tiles        = server->total_tiles;
+    geometry.base_tile_width    = server->base_tile_width;
+    geometry.base_tile_height   = server->base_tile_height;
+    geometry.base_tiles_x       = server->base_tiles_x;
+    geometry.base_tiles_y       = server->base_tiles_y;
+    geometry.total_base_tiles   = server->total_base_tiles;
+    geometry.framebuffer_pixels = server->framebuffer_pixels;
+    geometry.framebuffer_bytes  = server->framebuffer_bytes;
+    return geometry;
+}
+
+static void wd_server_restore_geometry(struct wd_server* server, const struct wd_display_geometry_snapshot* geometry) {
+    if (!server || !geometry)
+    {
+        return;
+    }
+
+    server->display_width      = geometry->display_width;
+    server->display_height     = geometry->display_height;
+    server->tiles_x            = geometry->tiles_x;
+    server->tiles_y            = geometry->tiles_y;
+    server->total_tiles        = geometry->total_tiles;
+    server->base_tile_width    = geometry->base_tile_width;
+    server->base_tile_height   = geometry->base_tile_height;
+    server->base_tiles_x       = geometry->base_tiles_x;
+    server->base_tiles_y       = geometry->base_tiles_y;
+    server->total_base_tiles   = geometry->total_base_tiles;
+    server->framebuffer_pixels = geometry->framebuffer_pixels;
+    server->framebuffer_bytes  = geometry->framebuffer_bytes;
+}
+
+static void wd_resize_allocations_free(struct wd_resize_allocations* allocs) {
+    if (!allocs)
+    {
+        return;
+    }
+
+    free(allocs->framebuffer_xrgb8888);
+    free(allocs->tiles);
+    free(allocs->damage_tiles);
+    free(allocs->dirty_regions);
+    free(allocs->dirty_region_queued);
+    free(allocs->dirty_epochs);
+    free(allocs->dirty_queue);
+    free(allocs->dirty_queued);
+    free(allocs->dirty_queue_enqueued_ns);
+    free(allocs->retransmit_queue);
+    free(allocs->retransmit_queued);
+    free(allocs->retransmit_queue_enqueued_ns);
+    free(allocs->retransmit_requested_generation);
+    free(allocs->summary_dirty_tiles);
+    free(allocs->summary_dirty_queue);
+    memset(allocs, 0, sizeof(*allocs));
+}
+
+static bool wd_resize_allocations_prepare(struct wd_resize_allocations* allocs, const struct wd_server* server) {
+    if (!allocs || !server || server->total_tiles == 0 || server->total_base_tiles == 0 || server->framebuffer_pixels == 0)
+    {
+        return false;
+    }
+
+    memset(allocs, 0, sizeof(*allocs));
+
+    allocs->framebuffer_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(*allocs->framebuffer_xrgb8888));
+    allocs->tiles                = calloc(server->total_tiles, sizeof(*allocs->tiles));
+    allocs->damage_tiles         = calloc(server->total_base_tiles, sizeof(*allocs->damage_tiles));
+    allocs->dirty_regions        = calloc(server->total_tiles, sizeof(*allocs->dirty_regions));
+    allocs->dirty_region_queued  = calloc(server->total_tiles, sizeof(*allocs->dirty_region_queued));
+    allocs->dirty_epochs         = calloc(server->total_tiles, sizeof(*allocs->dirty_epochs));
+    allocs->dirty_queue          = calloc(server->total_tiles, sizeof(*allocs->dirty_queue));
+    allocs->dirty_queued         = calloc(server->total_tiles, sizeof(*allocs->dirty_queued));
+    allocs->dirty_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*allocs->dirty_queue_enqueued_ns));
+    allocs->retransmit_queue     = calloc(server->total_tiles, sizeof(*allocs->retransmit_queue));
+    allocs->retransmit_queued    = calloc(server->total_tiles, sizeof(*allocs->retransmit_queued));
+    allocs->retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*allocs->retransmit_queue_enqueued_ns));
+    allocs->retransmit_requested_generation = calloc(server->total_tiles, sizeof(*allocs->retransmit_requested_generation));
+    allocs->summary_dirty_tiles  = calloc(server->total_tiles, sizeof(*allocs->summary_dirty_tiles));
+    allocs->summary_dirty_queue  = calloc(server->total_tiles, sizeof(*allocs->summary_dirty_queue));
+
+    if (!allocs->framebuffer_xrgb8888 || !allocs->tiles || !allocs->damage_tiles || !allocs->dirty_regions ||
+        !allocs->dirty_region_queued || !allocs->dirty_epochs || !allocs->dirty_queue || !allocs->dirty_queued ||
+        !allocs->dirty_queue_enqueued_ns || !allocs->retransmit_queue || !allocs->retransmit_queued ||
+        !allocs->retransmit_queue_enqueued_ns || !allocs->retransmit_requested_generation ||
+        !allocs->summary_dirty_tiles || !allocs->summary_dirty_queue)
+    {
+        wd_resize_allocations_free(allocs);
+        return false;
+    }
+
+    return true;
+}
+
+static void wd_server_free_net_resize_arrays(struct wd_net_state* net) {
+    if (!net)
+    {
+        return;
+    }
+
+    free(net->dirty_regions);
+    net->dirty_regions = NULL;
+    free(net->dirty_region_queued);
+    net->dirty_region_queued = NULL;
+    free(net->dirty_epochs);
+    net->dirty_epochs = NULL;
+    free(net->dirty_queue);
+    net->dirty_queue = NULL;
+    free(net->dirty_queued);
+    net->dirty_queued = NULL;
+    free(net->dirty_queue_enqueued_ns);
+    net->dirty_queue_enqueued_ns = NULL;
+    free(net->retransmit_queue);
+    net->retransmit_queue = NULL;
+    free(net->retransmit_queued);
+    net->retransmit_queued = NULL;
+    free(net->retransmit_queue_enqueued_ns);
+    net->retransmit_queue_enqueued_ns = NULL;
+    free(net->retransmit_requested_generation);
+    net->retransmit_requested_generation = NULL;
+    free(net->summary_dirty_tiles);
+    net->summary_dirty_tiles = NULL;
+    free(net->summary_dirty_queue);
+    net->summary_dirty_queue = NULL;
+}
+
+static void wd_server_free_resize_stream_state(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    free(server->net.tiles);
+    server->net.tiles = NULL;
+
+    free(server->damage_tiles);
+    server->damage_tiles      = NULL;
+    server->damage_all_tiles  = false;
+    server->damage_tile_count = 0;
+
+    wd_server_free_net_resize_arrays(&server->net);
+}
+
 bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint32_t height) {
     if (!server || width == 0 || height == 0 || width > UINT16_MAX || height > UINT16_MAX)
     {
@@ -497,158 +690,86 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
         return true;
     }
 
-    const uint32_t old_width              = server->display_width;
-    const uint32_t old_height             = server->display_height;
-    const uint16_t old_tiles_x            = server->tiles_x;
-    const uint16_t old_tiles_y            = server->tiles_y;
-    const uint16_t old_total_tiles        = server->total_tiles;
-    const uint16_t old_base_tile_width    = server->base_tile_width;
-    const uint16_t old_base_tile_height   = server->base_tile_height;
-    const uint16_t old_base_tiles_x       = server->base_tiles_x;
-    const uint16_t old_base_tiles_y       = server->base_tiles_y;
-    const uint32_t old_total_base_tiles   = server->total_base_tiles;
-    const uint32_t old_framebuffer_pixels = server->framebuffer_pixels;
-    const uint32_t old_framebuffer_bytes  = server->framebuffer_bytes;
+    const struct wd_display_geometry_snapshot old_geometry = wd_server_capture_geometry(server);
 
-    /*
-     * Resize the wlroots output before tearing down the current stream buffers.
-     * Some renderers can reject a live resize transiently; keeping the old
-     * buffers/state intact lets the server reject the client request without
-     * leaving the compositor in a half-destroyed state.
-     */
     if (!wd_server_set_geometry(server, width, height))
     {
+        wd_server_restore_geometry(server, &old_geometry);
         return false;
     }
 
-    bool output_resized = wd_wlroots_resize_headless_output(server);
-
-    server->display_width      = old_width;
-    server->display_height     = old_height;
-    server->tiles_x            = old_tiles_x;
-    server->tiles_y            = old_tiles_y;
-    server->total_tiles        = old_total_tiles;
-    server->base_tile_width    = old_base_tile_width;
-    server->base_tile_height   = old_base_tile_height;
-    server->base_tiles_x       = old_base_tiles_x;
-    server->base_tiles_y       = old_base_tiles_y;
-    server->total_base_tiles   = old_total_base_tiles;
-    server->framebuffer_pixels = old_framebuffer_pixels;
-    server->framebuffer_bytes  = old_framebuffer_bytes;
-
-    if (!output_resized)
+    struct wd_resize_allocations next_allocs;
+    if (!wd_resize_allocations_prepare(&next_allocs, server))
     {
+        wd_server_restore_geometry(server, &old_geometry);
+        return false;
+    }
+
+    if (!wd_wlroots_resize_headless_output(server))
+    {
+        wd_resize_allocations_free(&next_allocs);
+        wd_server_restore_geometry(server, &old_geometry);
         return false;
     }
 
     pthread_mutex_lock(&server->net.lock);
 
     wd_stream_wait_for_encoder_idle_locked(server);
+
+    uint32_t* old_framebuffer = server->framebuffer_xrgb8888;
+    wd_server_free_resize_stream_state(server);
+
+    server->framebuffer_xrgb8888 = next_allocs.framebuffer_xrgb8888;
+    server->net.tiles = next_allocs.tiles;
+    server->damage_tiles = next_allocs.damage_tiles;
+    server->net.dirty_regions = next_allocs.dirty_regions;
+    server->net.dirty_region_queued = next_allocs.dirty_region_queued;
+    server->net.dirty_epochs = next_allocs.dirty_epochs;
+    server->net.dirty_queue = next_allocs.dirty_queue;
+    server->net.dirty_queued = next_allocs.dirty_queued;
+    server->net.dirty_queue_enqueued_ns = next_allocs.dirty_queue_enqueued_ns;
+    server->net.retransmit_queue = next_allocs.retransmit_queue;
+    server->net.retransmit_queued = next_allocs.retransmit_queued;
+    server->net.retransmit_queue_enqueued_ns = next_allocs.retransmit_queue_enqueued_ns;
+    server->net.retransmit_requested_generation = next_allocs.retransmit_requested_generation;
+    server->net.summary_dirty_tiles = next_allocs.summary_dirty_tiles;
+    server->net.summary_dirty_queue = next_allocs.summary_dirty_queue;
+    memset(&next_allocs, 0, sizeof(next_allocs));
+
+    free(old_framebuffer);
+
     server->framebuffer_generation++;
     if (server->framebuffer_generation == 0)
     {
         server->framebuffer_generation = 1;
     }
 
-    wd_stream_destroy(server);
-
-    free(server->net.dirty_regions);
-    server->net.dirty_regions = NULL;
-    free(server->net.dirty_region_queued);
-    server->net.dirty_region_queued = NULL;
-    server->net.dirty_region_count = 0;
-
-    free(server->net.dirty_queue);
-    server->net.dirty_queue = NULL;
-
-    free(server->net.dirty_queued);
-    server->net.dirty_queued = NULL;
-
-    free(server->net.dirty_epochs);
-    server->net.dirty_epochs = NULL;
-
-    free(server->net.dirty_queue_enqueued_ns);
-    server->net.dirty_queue_enqueued_ns = NULL;
-
-    free(server->net.retransmit_queue);
-    server->net.retransmit_queue = NULL;
-
-    free(server->net.retransmit_queued);
-    server->net.retransmit_queued = NULL;
-
-    free(server->net.retransmit_queue_enqueued_ns);
-    server->net.retransmit_queue_enqueued_ns = NULL;
-
-    free(server->net.retransmit_requested_generation);
-    server->net.retransmit_requested_generation = NULL;
-
-    free(server->net.summary_dirty_tiles);
-    server->net.summary_dirty_tiles = NULL;
-    server->net.summary_dirty_count = 0;
-
-
-    free(server->framebuffer_xrgb8888);
-    server->framebuffer_xrgb8888 = NULL;
-
-    bool ok = wd_server_set_geometry(server, width, height);
-
-    if (ok)
-    {
-        server->framebuffer_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(uint32_t));
-        ok                           = server->framebuffer_xrgb8888 != NULL;
-        if (ok)
-        {
-            server->framebuffer_generation++;
-            if (server->framebuffer_generation == 0)
-            {
-                server->framebuffer_generation = 1;
-            }
-        }
-    }
-
-    if (ok)
-    {
-        server->net.dirty_regions                = calloc(server->total_tiles, sizeof(*server->net.dirty_regions));
-        server->net.dirty_region_queued          = calloc(server->total_tiles, sizeof(*server->net.dirty_region_queued));
-        server->net.dirty_region_count           = 0;
-        server->net.dirty_epochs                 = calloc(server->total_tiles, sizeof(*server->net.dirty_epochs));
-        server->net.dirty_queue                  = calloc(server->total_tiles, sizeof(*server->net.dirty_queue));
-        server->net.dirty_queued                 = calloc(server->total_tiles, sizeof(*server->net.dirty_queued));
-        server->net.dirty_queue_enqueued_ns      = calloc(server->total_tiles, sizeof(*server->net.dirty_queue_enqueued_ns));
-        server->net.retransmit_queue             = calloc(server->total_tiles, sizeof(*server->net.retransmit_queue));
-        server->net.retransmit_queued            = calloc(server->total_tiles, sizeof(*server->net.retransmit_queued));
-        server->net.retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*server->net.retransmit_queue_enqueued_ns));
-        server->net.retransmit_requested_generation = calloc(server->total_tiles, sizeof(*server->net.retransmit_requested_generation));
-        server->net.summary_dirty_tiles          = calloc(server->total_tiles, sizeof(*server->net.summary_dirty_tiles));
-        ok = server->net.dirty_regions && server->net.dirty_region_queued && server->net.dirty_epochs && server->net.dirty_queue &&
-             server->net.dirty_queued && server->net.dirty_queue_enqueued_ns &&
-             server->net.retransmit_queue && server->net.retransmit_queued && server->net.retransmit_queue_enqueued_ns &&
-             server->net.retransmit_requested_generation && server->net.summary_dirty_tiles;
-    }
-
-    if (ok)
-    {
-        ok = wd_stream_init(server);
-    }
-
-    if (ok)
-    {
-        server->net.dirty_region_rng = 0;
-        server->net.dirty_region_count     = 0;
-        server->net.dirty_queue_read       = 0;
-        server->net.dirty_queue_write      = 0;
-        server->net.dirty_queue_count      = 0;
-        server->net.retransmit_queue_count = 0;
-        server->net.summary_dirty_count    = 0;
-        wd_stream_invalidate_all_tiles_locked(server);
-        server->last_summary_ns            = 0;
-        server->last_delta_summary_ns      = 0;
-        server->scene_dirty                = true;
-    }
+    server->net.dirty_region_rng       = 0;
+    server->net.dirty_region_count     = 0;
+    server->net.dirty_queue_read       = 0;
+    server->net.dirty_queue_write      = 0;
+    server->net.dirty_queue_count      = 0;
+    server->net.retransmit_queue_count = 0;
+    server->net.summary_dirty_count    = 0;
+    server->last_summary_ns            = 0;
+    server->last_delta_summary_ns      = 0;
+    wd_stream_invalidate_all_tiles_locked(server);
 
     pthread_mutex_unlock(&server->net.lock);
 
-    return ok;
+    /*
+     * Reconfigure mapped views only after the stream/framebuffer state has
+     * been rebuilt for the new geometry. These hooks can send configure
+     * events that trigger client commits and dirty tracking, so running them
+     * while resize is still swapping the old stream state can corrupt
+     * resize-time queues.
+     */
+    wd_scene_handle_output_resize(server);
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    wd_xwayland_handle_output_resize(server);
+#endif
+
+    return true;
 }
 
 bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale, uint32_t display_width,

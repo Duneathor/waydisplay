@@ -1866,6 +1866,42 @@ static void view_handle_request_maximize(struct wl_listener* listener, void* dat
     wd_server_mark_view_dirty(view);
 }
 
+
+void wd_scene_handle_output_resize(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    uint32_t output_w = output_logical_width(server);
+    uint32_t output_h = output_logical_height(server);
+
+    struct wd_view* view;
+    wl_list_for_each(view, &server->views, link)
+    {
+        if (!view || !view->xdg_surface || !view->xdg_surface->toplevel)
+        {
+            continue;
+        }
+
+        view_set_bounds(view, output_w, output_h);
+        view_apply_fractional_scale(view);
+
+        if (!view->mapped || !xdg_toplevel_can_configure(view))
+        {
+            continue;
+        }
+
+        if (view->maximized || view->fullscreen)
+        {
+            view->x = 0;
+            view->y = 0;
+            wd_scene_set_view_position(view);
+            wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, output_w, output_h);
+        }
+    }
+}
+
 static void view_handle_request_fullscreen(struct wl_listener* listener, void* data) {
     (void)data;
 
