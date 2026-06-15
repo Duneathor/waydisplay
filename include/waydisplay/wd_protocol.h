@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 19u
+#define WD_PROTOCOL_VERSION 20u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -95,6 +95,10 @@ enum wd_video_mode {
 #define WD_VIDEO_MIN_DIRTY_PERCENT_MAX     100u
 #define WD_VIDEO_ENTER_SECONDS_DEFAULT     3u
 #define WD_VIDEO_ENTER_SECONDS_MAX         60u
+#define WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT 30u
+#define WD_VIDEO_EXIT_DIRTY_PERCENT_MAX     100u
+#define WD_VIDEO_EXIT_SECONDS_DEFAULT       30u
+#define WD_VIDEO_EXIT_SECONDS_MAX           300u
 
 
 enum wd_video_frame_flags {
@@ -179,6 +183,15 @@ struct wd_client_hello_payload {
 
     /* Target video encoder bitrate in KiB/s. 0 means derive from link budget. */
     uint32_t video_bitrate_kib_per_second;
+
+    /* Dirty coverage threshold for auto video-mode exit. 0 means default. */
+    uint8_t video_exit_dirty_percent;
+
+    /* Reserved for future video-policy byte flags. Must be zero. */
+    uint8_t video_reserved;
+
+    /* Seconds dirty coverage must stay below exit threshold. 0 means default. */
+    uint16_t video_exit_seconds;
 };
 
 enum wd_server_capability {
@@ -812,7 +825,7 @@ WD_PACKED_END
 #if defined(__cplusplus)
 static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 36, "unexpected wd_udp_tile_packet_header size");
-static_assert(sizeof(struct wd_client_hello_payload) == 30, "unexpected wd_client_hello_payload size");
+static_assert(sizeof(struct wd_client_hello_payload) == 34, "unexpected wd_client_hello_payload size");
 static_assert(sizeof(struct wd_tile_generation_entry) == 10, "unexpected wd_tile_generation_entry size");
 static_assert(sizeof(struct wd_tile_summary_payload_header) == 12, "unexpected wd_tile_summary_payload_header size");
 static_assert(sizeof(struct wd_retransmit_request_payload_header) == 3, "unexpected wd_retransmit_request_payload_header size");
@@ -834,7 +847,7 @@ static_assert(sizeof(struct wd_display_resize_payload) == 5, "unexpected wd_disp
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 36, "unexpected wd_udp_tile_packet_header size");
-_Static_assert(sizeof(struct wd_client_hello_payload) == 30, "unexpected wd_client_hello_payload size");
+_Static_assert(sizeof(struct wd_client_hello_payload) == 34, "unexpected wd_client_hello_payload size");
 _Static_assert(sizeof(struct wd_tile_generation_entry) == 10, "unexpected wd_tile_generation_entry size");
 _Static_assert(sizeof(struct wd_tile_summary_payload_header) == 12, "unexpected wd_tile_summary_payload_header size");
 _Static_assert(sizeof(struct wd_retransmit_request_payload_header) == 3, "unexpected wd_retransmit_request_payload_header size");

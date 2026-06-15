@@ -25,6 +25,8 @@ void usage(const char* argv0) {
                  "  --video-bitrate-kib <N>       Target video encoder bitrate in KiB/s, default link budget\n"
                  "  --video-min-dirty-percent <N> Dirty coverage needed for auto video mode, default 60\n"
                  "  --video-enter-seconds <N>     Seconds auto criteria must remain stable, default 3\n"
+                 "  --video-exit-dirty-percent <N> Dirty coverage to leave video mode, default 30\n"
+                 "  --video-exit-seconds <N>      Seconds exit criteria must remain stable, default 30\n"
                  "  --limited-rate-kib <N>       Deprecated alias for --rate-kib\n"
                  "  --wan                        Shorthand for --rate-kib 4096\n\n"
                  "Examples:\n"
@@ -220,6 +222,30 @@ int main(int argc, char** argv) {
         {
             if (i + 1 >= argc || !parse_u16(argv[i + 1], stream_config.video_enter_seconds) ||
                 stream_config.video_enter_seconds > WD_VIDEO_ENTER_SECONDS_MAX)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            ++i;
+        }
+        else if (std::strcmp(argv[i], "--video-exit-dirty-percent") == 0)
+        {
+            uint32_t percent = 0;
+            if (i + 1 >= argc || !parse_u32(argv[i + 1], percent) ||
+                percent > WD_VIDEO_EXIT_DIRTY_PERCENT_MAX)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+            stream_config.video_exit_dirty_percent = static_cast<uint8_t>(percent);
+
+            ++i;
+        }
+        else if (std::strcmp(argv[i], "--video-exit-seconds") == 0)
+        {
+            if (i + 1 >= argc || !parse_u16(argv[i + 1], stream_config.video_exit_seconds) ||
+                stream_config.video_exit_seconds > WD_VIDEO_EXIT_SECONDS_MAX)
             {
                 usage(argv[0]);
                 return 1;

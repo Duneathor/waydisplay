@@ -135,6 +135,8 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->video_mode                    = WD_VIDEO_MODE_AUTO;
     policy->video_min_dirty_percent       = WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT;
     policy->video_enter_seconds           = WD_VIDEO_ENTER_SECONDS_DEFAULT;
+    policy->video_exit_dirty_percent      = WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT;
+    policy->video_exit_seconds            = WD_VIDEO_EXIT_SECONDS_DEFAULT;
     policy->video_bitrate_kib_per_second  = 0;
     policy->video_candidate_seconds       = 0;
     policy->tile_recovery_seconds         = 0;
@@ -180,6 +182,16 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     if (policy->video_enter_seconds > WD_VIDEO_ENTER_SECONDS_MAX)
     {
         policy->video_enter_seconds = WD_VIDEO_ENTER_SECONDS_MAX;
+    }
+    policy->video_exit_dirty_percent = hello->video_exit_dirty_percent != 0 ? hello->video_exit_dirty_percent : WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT;
+    if (policy->video_exit_dirty_percent > WD_VIDEO_EXIT_DIRTY_PERCENT_MAX)
+    {
+        policy->video_exit_dirty_percent = WD_VIDEO_EXIT_DIRTY_PERCENT_MAX;
+    }
+    policy->video_exit_seconds = hello->video_exit_seconds != 0 ? hello->video_exit_seconds : WD_VIDEO_EXIT_SECONDS_DEFAULT;
+    if (policy->video_exit_seconds > WD_VIDEO_EXIT_SECONDS_MAX)
+    {
+        policy->video_exit_seconds = WD_VIDEO_EXIT_SECONDS_MAX;
     }
     policy->video_bitrate_kib_per_second = hello->video_bitrate_kib_per_second;
     policy->video_candidate_seconds = 0;
@@ -302,18 +314,46 @@ static void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
         peak_dirty_threshold_pct = 100.0;
     }
 
+    const uint8_t exit_dirty_pct = policy->video_exit_dirty_percent != 0
+                                       ? policy->video_exit_dirty_percent
+                                       : WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT;
+    const uint16_t exit_seconds = policy->video_exit_seconds != 0
+                                      ? policy->video_exit_seconds
+                                      : WD_VIDEO_EXIT_SECONDS_DEFAULT;
+
     const bool high_dirty = dirty_avg_pct >= (double)min_dirty_pct && dirty_peak_pct >= peak_dirty_threshold_pct;
+    const bool low_dirty = stats->stream_mode_frame_samples != 0 && dirty_avg_pct <= (double)exit_dirty_pct;
     const bool budget_pressure = budget_pressure_pct >= 25.0;
     const bool video_ready = video_negotiated && video_channel_connected && video_encoder_available;
     const bool video_forced = policy->video_mode == WD_VIDEO_MODE_FORCE;
     const bool video_disabled = policy->video_mode == WD_VIDEO_MODE_OFF;
-    const bool video_candidate = !video_disabled &&
-                                 (video_forced ||
-                                  (stats->stream_mode_frame_samples != 0 && high_dirty && budget_pressure && fps_limited));
+    const bool video_entry_candidate = !video_disabled &&
+                                       (video_forced ||
+                                        (stats->stream_mode_frame_samples != 0 && high_dirty && budget_pressure && fps_limited));
 
-    if (video_candidate && video_ready)
+    if (video_disabled || !video_ready)
+    {
+        policy->video_candidate_seconds = 0;
+        policy->tile_recovery_seconds = 0;
+        if (policy->stream_mode != WD_STREAM_MODE_TILES)
+        {
+            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILES,
+                                             video_disabled ? "video disabled" : "video unavailable",
+                                             dirty_avg_pct, dirty_peak_pct, budget_pressure_pct, video_channel_connected,
+                                             video_encoder_available);
+        }
+        return;
+    }
+
+    if (video_entry_candidate)
     {
         policy->tile_recovery_seconds = 0;
+
+        if (policy->stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE || policy->stream_mode == WD_STREAM_MODE_VIDEO_READY)
+        {
+            return;
+        }
+
         if (policy->video_candidate_seconds < UINT32_MAX)
         {
             policy->video_candidate_seconds++;
@@ -338,22 +378,38 @@ static void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
         return;
     }
 
+    if (policy->stream_mode == WD_STREAM_MODE_TILES)
+    {
+        policy->video_candidate_seconds = 0;
+        policy->tile_recovery_seconds = 0;
+        return;
+    }
+
     policy->video_candidate_seconds = 0;
 
-    if (policy->stream_mode != WD_STREAM_MODE_TILES)
+    if (video_forced)
     {
-        if (policy->tile_recovery_seconds < UINT32_MAX)
-        {
-            policy->tile_recovery_seconds++;
-        }
+        policy->tile_recovery_seconds = 0;
+        return;
+    }
 
-        if (policy->tile_recovery_seconds >= 5 || !video_ready)
-        {
-            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILES, video_ready ? "tile criteria recovered" : "video unavailable",
-                                             dirty_avg_pct, dirty_peak_pct, budget_pressure_pct, video_channel_connected,
-                                             video_encoder_available);
-            policy->tile_recovery_seconds = 0;
-        }
+    if (!low_dirty)
+    {
+        policy->tile_recovery_seconds = 0;
+        return;
+    }
+
+    if (policy->tile_recovery_seconds < UINT32_MAX)
+    {
+        policy->tile_recovery_seconds++;
+    }
+
+    if (policy->tile_recovery_seconds >= exit_seconds)
+    {
+        wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILES, "tile exit criteria stable",
+                                         dirty_avg_pct, dirty_peak_pct, budget_pressure_pct, video_channel_connected,
+                                         video_encoder_available);
+        policy->tile_recovery_seconds = 0;
     }
 }
 
@@ -4130,6 +4186,8 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     uint8_t video_mode = net->stream_policy.video_mode;
     uint8_t video_min_dirty_percent = net->stream_policy.video_min_dirty_percent;
     uint16_t video_enter_seconds = net->stream_policy.video_enter_seconds;
+    uint8_t video_exit_dirty_percent = net->stream_policy.video_exit_dirty_percent;
+    uint16_t video_exit_seconds = net->stream_policy.video_exit_seconds;
     uint32_t video_bitrate_kib = wd_stream_video_bitrate_kib_locked(&net->stream_policy);
 
     pthread_mutex_unlock(&net->lock);
@@ -4156,16 +4214,19 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                          stats_log->prev_video_mode != video_mode ||
                          stats_log->prev_video_min_dirty_percent != video_min_dirty_percent ||
                          stats_log->prev_video_enter_seconds != video_enter_seconds ||
+                         stats_log->prev_video_exit_dirty_percent != video_exit_dirty_percent ||
+                         stats_log->prev_video_exit_seconds != video_exit_seconds ||
                          stats_log->prev_video_bitrate_kib != video_bitrate_kib ||
                          stats_log->prev_stream_mode != stream_mode;
 
     if (state_changed)
     {
-        WD_LOG_DEBUG("state: target_fps=%u effective_fps=%u output_fps=%u client_visible=%s stream_mode=%s video_mode=%s video_bitrate_kib=%u video_min_dirty_pct=%u video_enter_seconds=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s video_negotiated=%s video_channel=%s video_encoder=%s",
+        WD_LOG_DEBUG("state: target_fps=%u effective_fps=%u output_fps=%u client_visible=%s stream_mode=%s video_mode=%s video_bitrate_kib=%u video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s video_negotiated=%s video_channel=%s video_encoder=%s",
                      (unsigned)target_fps, (unsigned)effective_target_fps, (unsigned)output_fps,
                      client_render_visible ? "yes" : "no", wd_stream_mode_name(stream_mode),
                      wd_video_mode_name(video_mode), (unsigned)video_bitrate_kib,
                      (unsigned)video_min_dirty_percent, (unsigned)video_enter_seconds,
+                     (unsigned)video_exit_dirty_percent, (unsigned)video_exit_seconds,
                      (unsigned long long)limited_udp_kib_per_second, (unsigned)tile_width, (unsigned)tile_height,
                      input_channel_connected ? "yes" : "no", selection_channel_connected ? "yes" : "no",
                      video_negotiated ? "yes" : "no", video_channel_connected ? "yes" : "no",
@@ -4187,6 +4248,8 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
         stats_log->prev_video_mode = video_mode;
         stats_log->prev_video_min_dirty_percent = video_min_dirty_percent;
         stats_log->prev_video_enter_seconds = video_enter_seconds;
+        stats_log->prev_video_exit_dirty_percent = video_exit_dirty_percent;
+        stats_log->prev_video_exit_seconds = video_exit_seconds;
         stats_log->prev_video_bitrate_kib = video_bitrate_kib;
         stats_log->prev_stream_mode = stream_mode;
     }
@@ -4210,12 +4273,13 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                                                 ? ((double)limited_udp_kib_per_second * 1024.0) / (wire_avg_bytes * total_tiles)
                                                 : 0.0;
 
-        WD_LOG_DEBUG("stream-mode/min: samples=%llu dirty_avg_pct=%.1f dirty_peak_pct=%.1f pending_avg_pct=%.1f pending_peak_pct=%.1f budget_pressure_frames=%llu budget_pressure_pct=%.1f video_mode=%s video_min_dirty_pct=%u video_enter_seconds=%u est_tile_full_frame_mib=%.2f est_tile_budget_fps=%.1f",
+        WD_LOG_DEBUG("stream-mode/min: samples=%llu dirty_avg_pct=%.1f dirty_peak_pct=%.1f pending_avg_pct=%.1f pending_peak_pct=%.1f budget_pressure_frames=%llu budget_pressure_pct=%.1f video_mode=%s video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u est_tile_full_frame_mib=%.2f est_tile_budget_fps=%.1f",
                      (unsigned long long)s.stream_mode_frame_samples, dirty_avg_pct, dirty_peak_pct,
                      pending_avg_pct, pending_peak_pct,
                      (unsigned long long)s.stream_mode_budget_pressure_frames, budget_pressure_pct,
                      wd_video_mode_name(video_mode), (unsigned)video_min_dirty_percent,
-                     (unsigned)video_enter_seconds, estimated_full_frame_mib, estimated_budget_fps);
+                     (unsigned)video_enter_seconds, (unsigned)video_exit_dirty_percent,
+                     (unsigned)video_exit_seconds, estimated_full_frame_mib, estimated_budget_fps);
     }
 
     bool video_activity = s.dirty_tiles != 0 || s.dirty_tiles_stale_skipped != 0 || s.udp_tiles_sent != 0 ||

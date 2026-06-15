@@ -413,6 +413,8 @@ struct wd_stats_log_state {
     uint8_t         prev_video_mode;
     uint8_t         prev_video_min_dirty_percent;
     uint16_t        prev_video_enter_seconds;
+    uint8_t         prev_video_exit_dirty_percent;
+    uint16_t        prev_video_exit_seconds;
     uint32_t        prev_video_bitrate_kib;
     enum wd_stream_mode prev_stream_mode;
 };
@@ -425,6 +427,8 @@ struct wd_stream_policy {
     uint8_t video_mode;
     uint8_t video_min_dirty_percent;
     uint16_t video_enter_seconds;
+    uint8_t video_exit_dirty_percent;
+    uint16_t video_exit_seconds;
     uint32_t video_bitrate_kib_per_second;
     uint32_t video_candidate_seconds;
     uint32_t tile_recovery_seconds;

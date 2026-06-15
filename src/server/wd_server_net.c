@@ -1371,11 +1371,13 @@ void* wd_net_thread_main(void* arg) {
         net->video_transport = client_video_tcp_h265 ? WD_VIDEO_TRANSPORT_TCP : 0;
         wd_stream_policy_set_limited_udp_byte_rate(&net->stream_policy, selected_limited_udp_rate);
         wd_stream_policy_apply_client_hello(&net->stream_policy, &hello);
-        WD_LOG_INFO("video mode control: mode=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u negotiated=%s",
+        WD_LOG_INFO("video mode control: mode=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u negotiated=%s",
                     wd_video_mode_name(net->stream_policy.video_mode),
                     net->stream_policy.video_bitrate_kib_per_second,
                     net->stream_policy.video_min_dirty_percent,
                     net->stream_policy.video_enter_seconds,
+                    net->stream_policy.video_exit_dirty_percent,
+                    net->stream_policy.video_exit_seconds,
                     client_video_tcp_h265 ? "yes" : "no");
         pthread_mutex_unlock(&net->lock);
 
