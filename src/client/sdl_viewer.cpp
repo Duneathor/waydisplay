@@ -193,6 +193,14 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.video_decoder_resets += src.video_decoder_resets;
     dst.video_decode_samples += src.video_decode_samples;
     dst.video_decode_sum_ns += src.video_decode_sum_ns;
+    dst.video_messages_rx += src.video_messages_rx;
+    dst.video_data_frames_rx += src.video_data_frames_rx;
+    dst.video_invalid_frames_rx += src.video_invalid_frames_rx;
+    dst.video_stale_frames_dropped += src.video_stale_frames_dropped;
+    dst.video_last_frame_id_rx = std::max(dst.video_last_frame_id_rx, src.video_last_frame_id_rx);
+    dst.video_last_frame_id_presented = std::max(dst.video_last_frame_id_presented, src.video_last_frame_id_presented);
+    dst.video_present_latency_samples += src.video_present_latency_samples;
+    dst.video_present_latency_sum_ns += src.video_present_latency_sum_ns;
     dst.udp_async_posted += src.udp_async_posted;
     dst.udp_async_completed += src.udp_async_completed;
     dst.udp_async_failed += src.udp_async_failed;
@@ -220,6 +228,8 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.sdl_texture_upload_samples += src.sdl_texture_upload_samples;
     dst.sdl_texture_upload_sum_ns += src.sdl_texture_upload_sum_ns;
     dst.sdl_texture_upload_max_ns = std::max(dst.sdl_texture_upload_max_ns, src.sdl_texture_upload_max_ns);
+    dst.sdl_video_texture_uploads += src.sdl_video_texture_uploads;
+    dst.sdl_video_texture_upload_pixels += src.sdl_video_texture_upload_pixels;
     dst.sdl_present_samples += src.sdl_present_samples;
     dst.sdl_present_sum_ns += src.sdl_present_sum_ns;
     dst.sdl_present_max_ns = std::max(dst.sdl_present_max_ns, src.sdl_present_max_ns);
@@ -1025,6 +1035,14 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t video_decoder_resets = logged.video_decoder_resets;
     const uint64_t video_decode_samples = logged.video_decode_samples;
     const uint64_t video_decode_sum_ns = logged.video_decode_sum_ns;
+    const uint64_t video_messages_rx = logged.video_messages_rx;
+    const uint64_t video_data_frames_rx = logged.video_data_frames_rx;
+    const uint64_t video_invalid_frames_rx = logged.video_invalid_frames_rx;
+    const uint64_t video_stale_frames_dropped = logged.video_stale_frames_dropped;
+    const uint64_t video_last_frame_id_rx = logged.video_last_frame_id_rx;
+    const uint64_t video_last_frame_id_presented = logged.video_last_frame_id_presented;
+    const uint64_t video_present_latency_samples = logged.video_present_latency_samples;
+    const uint64_t video_present_latency_sum_ns = logged.video_present_latency_sum_ns;
     const uint64_t udp_async_posted = logged.udp_async_posted;
     const uint64_t udp_async_completed = logged.udp_async_completed;
     const uint64_t udp_async_failed = logged.udp_async_failed;
@@ -1052,6 +1070,8 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t sdl_texture_upload_samples = logged.sdl_texture_upload_samples;
     const uint64_t sdl_texture_upload_sum_ns = logged.sdl_texture_upload_sum_ns;
     const uint64_t sdl_texture_upload_max_ns = logged.sdl_texture_upload_max_ns;
+    const uint64_t sdl_video_texture_uploads = logged.sdl_video_texture_uploads;
+    const uint64_t sdl_video_texture_upload_pixels = logged.sdl_video_texture_upload_pixels;
     const uint64_t sdl_present_samples = logged.sdl_present_samples;
     const uint64_t sdl_present_sum_ns = logged.sdl_present_sum_ns;
     const uint64_t sdl_present_max_ns = logged.sdl_present_max_ns;
@@ -1115,23 +1135,31 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                      static_cast<unsigned long long>(selection_channel_events), static_cast<unsigned long long>(selection_fallback_events));
     }
 
-    const bool client_video_activity = video_frames_rx != 0 || video_frames_decoded != 0 || video_frames_presented != 0 ||
-                                       video_decode_failed != 0 || video_publish_failed != 0 ||
-                                       video_control_frames_rx != 0 || video_need_keyframe_drops != 0 ||
-                                       video_decoder_resets != 0;
+    const bool client_video_activity = video_messages_rx != 0 || video_data_frames_rx != 0 || video_frames_decoded != 0 ||
+                                       video_frames_presented != 0 || video_decode_failed != 0 ||
+                                       video_publish_failed != 0 || video_control_frames_rx != 0 ||
+                                       video_invalid_frames_rx != 0 || video_stale_frames_dropped != 0 ||
+                                       video_need_keyframe_drops != 0 || video_decoder_resets != 0;
     if (client_video_activity)
     {
-        WD_LOG_DEBUG("[client video/min] rx=%llu decoded=%llu presented=%llu control=%llu kib=%.1f decode_avg_ms=%.2f decode_failed=%llu publish_failed=%llu need_keyframe_drops=%llu resets=%llu",
+        WD_LOG_DEBUG("[client video/min] messages=%llu data=%llu legacy_rx=%llu decoded=%llu presented=%llu control=%llu invalid=%llu stale_drop=%llu kib=%.1f decode_avg_ms=%.2f present_age_avg_ms=%.2f decode_failed=%llu publish_failed=%llu need_keyframe_drops=%llu resets=%llu last_rx=%llu last_presented=%llu",
+                     static_cast<unsigned long long>(video_messages_rx),
+                     static_cast<unsigned long long>(video_data_frames_rx),
                      static_cast<unsigned long long>(video_frames_rx),
                      static_cast<unsigned long long>(video_frames_decoded),
                      static_cast<unsigned long long>(video_frames_presented),
                      static_cast<unsigned long long>(video_control_frames_rx),
+                     static_cast<unsigned long long>(video_invalid_frames_rx),
+                     static_cast<unsigned long long>(video_stale_frames_dropped),
                      static_cast<double>(video_bytes_rx) / 1024.0,
                      avg_ms(video_decode_sum_ns, video_decode_samples),
+                     avg_ms(video_present_latency_sum_ns, video_present_latency_samples),
                      static_cast<unsigned long long>(video_decode_failed),
                      static_cast<unsigned long long>(video_publish_failed),
                      static_cast<unsigned long long>(video_need_keyframe_drops),
-                     static_cast<unsigned long long>(video_decoder_resets));
+                     static_cast<unsigned long long>(video_decoder_resets),
+                     static_cast<unsigned long long>(video_last_frame_id_rx),
+                     static_cast<unsigned long long>(video_last_frame_id_presented));
     }
 
     const bool tcp_async_activity = tcp_async_queued != 0 || tcp_async_completed != 0 || tcp_async_failed != 0 ||
@@ -1162,17 +1190,19 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
 
     if (sdl_render_frames != 0 || sdl_texture_upload_samples != 0 || sdl_present_samples != 0)
     {
-        WD_LOG_DEBUG("[client render/min] frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu upload_mpix=%.2f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
+        WD_LOG_DEBUG("[client render/min] frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu video_full=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu upload_mpix=%.2f video_upload_mpix=%.2f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
                      static_cast<unsigned long long>(sdl_render_frames),
                      static_cast<unsigned long long>(sdl_remote_frames),
                      static_cast<unsigned long long>(sdl_empty_remote_wakeups),
                      static_cast<unsigned long long>(sdl_texture_full_uploads),
                      static_cast<unsigned long long>(sdl_texture_partial_uploads),
+                     static_cast<unsigned long long>(sdl_video_texture_uploads),
                      static_cast<unsigned long long>(sdl_texture_dirty_rects),
                      static_cast<unsigned long long>(sdl_texture_source_dirty_rects),
                      static_cast<unsigned long long>(sdl_texture_coalesced_dirty_rects),
                      static_cast<unsigned long long>(sdl_texture_bounds_uploads),
                      static_cast<double>(sdl_texture_upload_pixels) / 1000000.0,
+                     static_cast<double>(sdl_video_texture_upload_pixels) / 1000000.0,
                      avg_ms(sdl_texture_upload_sum_ns, sdl_texture_upload_samples),
                      static_cast<double>(sdl_texture_upload_max_ns) / 1000000.0,
                      avg_ms(sdl_present_sum_ns, sdl_present_samples),
@@ -1240,6 +1270,14 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t video_decoder_resets     = take_stat(state.stats.video_decoder_resets);
     const uint64_t video_decode_samples     = take_stat(state.stats.video_decode_samples);
     const uint64_t video_decode_sum_ns      = take_stat(state.stats.video_decode_sum_ns);
+    const uint64_t video_messages_rx        = take_stat(state.stats.video_messages_rx);
+    const uint64_t video_data_frames_rx     = take_stat(state.stats.video_data_frames_rx);
+    const uint64_t video_invalid_frames_rx  = take_stat(state.stats.video_invalid_frames_rx);
+    const uint64_t video_stale_frames_dropped = take_stat(state.stats.video_stale_frames_dropped);
+    const uint64_t video_last_frame_id_rx   = state.stats.video_last_frame_id_rx.load(std::memory_order_relaxed);
+    const uint64_t video_last_frame_id_presented = state.stats.video_last_frame_id_presented.load(std::memory_order_relaxed);
+    const uint64_t video_present_latency_samples = take_stat(state.stats.video_present_latency_samples);
+    const uint64_t video_present_latency_sum_ns  = take_stat(state.stats.video_present_latency_sum_ns);
     client_reap_async_udp_receives(state);
     const uint64_t udp_async_posted         = take_stat(state.stats.udp_async_posted);
     const uint64_t udp_async_completed      = take_stat(state.stats.udp_async_completed);
@@ -1268,6 +1306,8 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t sdl_texture_upload_samples = take_stat(state.stats.sdl_texture_upload_samples);
     const uint64_t sdl_texture_upload_sum_ns  = take_stat(state.stats.sdl_texture_upload_sum_ns);
     const uint64_t sdl_texture_upload_max_ns  = take_stat(state.stats.sdl_texture_upload_max_ns);
+    const uint64_t sdl_video_texture_uploads  = take_stat(state.stats.sdl_video_texture_uploads);
+    const uint64_t sdl_video_texture_upload_pixels = take_stat(state.stats.sdl_video_texture_upload_pixels);
     const uint64_t sdl_present_samples        = take_stat(state.stats.sdl_present_samples);
     const uint64_t sdl_present_sum_ns         = take_stat(state.stats.sdl_present_sum_ns);
     const uint64_t sdl_present_max_ns         = take_stat(state.stats.sdl_present_max_ns);
@@ -1330,6 +1370,14 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.video_decoder_resets = video_decoder_resets;
     sample.video_decode_samples = video_decode_samples;
     sample.video_decode_sum_ns = video_decode_sum_ns;
+    sample.video_messages_rx = video_messages_rx;
+    sample.video_data_frames_rx = video_data_frames_rx;
+    sample.video_invalid_frames_rx = video_invalid_frames_rx;
+    sample.video_stale_frames_dropped = video_stale_frames_dropped;
+    sample.video_last_frame_id_rx = video_last_frame_id_rx;
+    sample.video_last_frame_id_presented = video_last_frame_id_presented;
+    sample.video_present_latency_samples = video_present_latency_samples;
+    sample.video_present_latency_sum_ns = video_present_latency_sum_ns;
     sample.udp_async_posted = udp_async_posted;
     sample.udp_async_completed = udp_async_completed;
     sample.udp_async_failed = udp_async_failed;
@@ -1357,17 +1405,24 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.sdl_texture_upload_samples = sdl_texture_upload_samples;
     sample.sdl_texture_upload_sum_ns = sdl_texture_upload_sum_ns;
     sample.sdl_texture_upload_max_ns = sdl_texture_upload_max_ns;
+    sample.sdl_video_texture_uploads = sdl_video_texture_uploads;
+    sample.sdl_video_texture_upload_pixels = sdl_video_texture_upload_pixels;
     sample.sdl_present_samples = sdl_present_samples;
     sample.sdl_present_sum_ns = sdl_present_sum_ns;
     sample.sdl_present_max_ns = sdl_present_max_ns;
     client_stats_accumulate(state.stats_log.totals, sample);
 
-    const bool feedback_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || partial_timeouts != 0 ||
-                                   invalid != 0 || old_gen != 0 || retx != 0 || udp_interarrival_samples != 0 ||
-                                   video_frames_rx != 0 || video_frames_decoded != 0 ||
-                                   video_frames_presented != 0 || video_decode_failed != 0 ||
-                                   video_publish_failed != 0 || video_control_frames_rx != 0 ||
-                                   video_need_keyframe_drops != 0 || video_decoder_resets != 0;
+    const bool video_feedback_heartbeat = state.video_stream_negotiated ||
+                                          state.video_tcp_connected.load(std::memory_order_acquire);
+    const bool feedback_activity = video_feedback_heartbeat || udp_packets != 0 || udp_bytes != 0 || completed != 0 ||
+                                   partial_timeouts != 0 || invalid != 0 || old_gen != 0 || retx != 0 ||
+                                   udp_interarrival_samples != 0 || video_messages_rx != 0 ||
+                                   video_data_frames_rx != 0 || video_frames_rx != 0 ||
+                                   video_frames_decoded != 0 || video_frames_presented != 0 ||
+                                   video_decode_failed != 0 || video_publish_failed != 0 ||
+                                   video_control_frames_rx != 0 || video_invalid_frames_rx != 0 ||
+                                   video_stale_frames_dropped != 0 || video_need_keyframe_drops != 0 ||
+                                   video_decoder_resets != 0;
 
     if (feedback_activity)
     {
@@ -1409,6 +1464,14 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         feedback.video_decoder_resets       = video_decoder_resets;
         feedback.video_decode_samples       = video_decode_samples;
         feedback.video_decode_sum_ns        = video_decode_sum_ns;
+        feedback.video_messages_rx          = video_messages_rx;
+        feedback.video_data_frames_rx       = video_data_frames_rx;
+        feedback.video_invalid_frames_rx    = video_invalid_frames_rx;
+        feedback.video_stale_frames_dropped = video_stale_frames_dropped;
+        feedback.video_last_frame_id_rx     = video_last_frame_id_rx;
+        feedback.video_last_frame_id_presented = video_last_frame_id_presented;
+        feedback.video_present_latency_samples = video_present_latency_samples;
+        feedback.video_present_latency_sum_ns  = video_present_latency_sum_ns;
         if (feedback.session_id != 0)
         {
             client_send_stats(state, feedback);
@@ -2037,6 +2100,14 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
 
         state.config               = config;
         state.framebuffer          = std::move(new_framebuffer);
+        {
+            std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
+            state.video_framebuffer.clear();
+            state.video_frame_width = 0;
+            state.video_frame_height = 0;
+            state.video_frame_id = 0;
+            state.pending_video_frame_dirty.store(false, std::memory_order_release);
+        }
         state.pending_dirty_rects.clear();
         state.pending_dirty_rect_count.store(0, std::memory_order_release);
         state.displayed_generation = std::move(new_displayed_generation);
@@ -2243,6 +2314,37 @@ bool upload_full_texture(ClientState& state, SDL_Texture* texture, uint32_t fram
         record_texture_upload_stats(state, started_ns, static_cast<uint64_t>(frame_width) * static_cast<uint64_t>(frame_height));
     }
 
+    return ok;
+}
+
+bool upload_pending_video_texture(ClientState& state, SDL_Texture* texture, uint32_t frame_width, uint32_t frame_height) {
+    const uint64_t started_ns = wd_now_ns();
+    std::vector<uint32_t> pixels;
+    {
+        std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
+        if (!state.pending_video_frame_dirty.load(std::memory_order_acquire) ||
+            state.video_frame_width != frame_width || state.video_frame_height != frame_height)
+        {
+            return false;
+        }
+        pixels = state.video_framebuffer;
+        state.pending_video_frame_dirty.store(false, std::memory_order_release);
+    }
+
+    const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
+    if (frame_width == 0 || frame_height == 0 || pixels.size() < expected_pixels)
+    {
+        return false;
+    }
+
+    const bool ok = SDL_UpdateTexture(texture, nullptr, pixels.data(), static_cast<int>(frame_width * WD_BYTES_PER_PIXEL));
+    if (ok)
+    {
+        state.stats.sdl_texture_full_uploads.fetch_add(1, std::memory_order_relaxed);
+        state.stats.sdl_video_texture_uploads.fetch_add(1, std::memory_order_relaxed);
+        state.stats.sdl_video_texture_upload_pixels.fetch_add(expected_pixels, std::memory_order_relaxed);
+        record_texture_upload_stats(state, started_ns, static_cast<uint64_t>(frame_width) * static_cast<uint64_t>(frame_height));
+    }
     return ok;
 }
 
@@ -2768,7 +2870,8 @@ int run_sdl_viewer(ClientState& state) {
         bool       remote_frame_dirty = false;
         bool       remote_texture_updated = false;
 
-        const bool remote_dirty_pending = state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0;
+        const bool video_frame_pending = state.pending_video_frame_dirty.load(std::memory_order_acquire);
+        const bool remote_dirty_pending = video_frame_pending || state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0;
         if (local_frame_dirty || remote_dirty_pending)
         {
             const uint64_t present_check_ns = wd_now_ns();
@@ -2784,7 +2887,9 @@ int run_sdl_viewer(ClientState& state) {
             if (texture_needs_full_upload || remote_frame_dirty)
             {
                 dirty_rects.clear();
-                if (!texture_needs_full_upload)
+                const bool upload_video_frame = !texture_needs_full_upload &&
+                                                state.pending_video_frame_dirty.load(std::memory_order_acquire);
+                if (!texture_needs_full_upload && !upload_video_frame)
                 {
                     std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
                     dirty_rects.swap(state.pending_dirty_rects);
@@ -2803,7 +2908,7 @@ int run_sdl_viewer(ClientState& state) {
                     coalesce_dirty_texture_rects(dirty_rects, frame_width, frame_height, used_bounds_upload);
                 }
 
-                const bool upload_full = texture_needs_full_upload || should_upload_full_texture(state, dirty_rects);
+                const bool upload_full = texture_needs_full_upload || (!upload_video_frame && should_upload_full_texture(state, dirty_rects));
                 if (source_dirty_rect_count != 0)
                 {
                     state.stats.sdl_texture_source_dirty_rects.fetch_add(source_dirty_rect_count, std::memory_order_relaxed);
@@ -2819,8 +2924,9 @@ int run_sdl_viewer(ClientState& state) {
                     state.pending_dirty_rects.clear();
                     state.pending_dirty_rect_count.store(0, std::memory_order_release);
                 }
-                const bool texture_updated = upload_full ? upload_full_texture(state, texture, frame_width, frame_height)
-                                                         : upload_dirty_texture_rects(state, texture, dirty_rects, frame_width, frame_height);
+                const bool texture_updated = upload_video_frame ? upload_pending_video_texture(state, texture, frame_width, frame_height)
+                                             : (upload_full ? upload_full_texture(state, texture, frame_width, frame_height)
+                                                            : upload_dirty_texture_rects(state, texture, dirty_rects, frame_width, frame_height));
 
                 if (!texture_updated)
                 {

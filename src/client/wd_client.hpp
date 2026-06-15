@@ -121,6 +121,14 @@ struct ClientStats {
     std::atomic<uint64_t> video_decoder_resets{0};
     std::atomic<uint64_t> video_decode_samples{0};
     std::atomic<uint64_t> video_decode_sum_ns{0};
+    std::atomic<uint64_t> video_messages_rx{0};
+    std::atomic<uint64_t> video_data_frames_rx{0};
+    std::atomic<uint64_t> video_invalid_frames_rx{0};
+    std::atomic<uint64_t> video_stale_frames_dropped{0};
+    std::atomic<uint64_t> video_last_frame_id_rx{0};
+    std::atomic<uint64_t> video_last_frame_id_presented{0};
+    std::atomic<uint64_t> video_present_latency_samples{0};
+    std::atomic<uint64_t> video_present_latency_sum_ns{0};
 
     std::atomic<uint64_t> tile_assembly_samples{0};
     std::atomic<uint64_t> tile_assembly_sum_ns{0};
@@ -145,6 +153,8 @@ struct ClientStats {
     std::atomic<uint64_t> sdl_texture_upload_samples{0};
     std::atomic<uint64_t> sdl_texture_upload_sum_ns{0};
     std::atomic<uint64_t> sdl_texture_upload_max_ns{0};
+    std::atomic<uint64_t> sdl_video_texture_uploads{0};
+    std::atomic<uint64_t> sdl_video_texture_upload_pixels{0};
     std::atomic<uint64_t> sdl_present_samples{0};
     std::atomic<uint64_t> sdl_present_sum_ns{0};
     std::atomic<uint64_t> sdl_present_max_ns{0};
@@ -208,6 +218,14 @@ struct ClientStatsSnapshot {
     uint64_t video_decoder_resets = 0;
     uint64_t video_decode_samples = 0;
     uint64_t video_decode_sum_ns = 0;
+    uint64_t video_messages_rx = 0;
+    uint64_t video_data_frames_rx = 0;
+    uint64_t video_invalid_frames_rx = 0;
+    uint64_t video_stale_frames_dropped = 0;
+    uint64_t video_last_frame_id_rx = 0;
+    uint64_t video_last_frame_id_presented = 0;
+    uint64_t video_present_latency_samples = 0;
+    uint64_t video_present_latency_sum_ns = 0;
     uint64_t udp_async_posted = 0;
     uint64_t udp_async_completed = 0;
     uint64_t udp_async_failed = 0;
@@ -235,6 +253,8 @@ struct ClientStatsSnapshot {
     uint64_t sdl_texture_upload_samples = 0;
     uint64_t sdl_texture_upload_sum_ns = 0;
     uint64_t sdl_texture_upload_max_ns = 0;
+    uint64_t sdl_video_texture_uploads = 0;
+    uint64_t sdl_video_texture_upload_pixels = 0;
     uint64_t sdl_present_samples = 0;
     uint64_t sdl_present_sum_ns = 0;
     uint64_t sdl_present_max_ns = 0;
@@ -267,6 +287,9 @@ struct ClientState {
     ClientVideoDecoder*     video_decoder      = nullptr;
     std::mutex              video_decoder_mutex;
     bool                    video_decoder_needs_keyframe = true;
+    std::atomic<bool>       video_tcp_connected{false};
+    std::atomic<bool>       video_unavailable{false};
+    std::mutex              video_tcp_mutex;
     std::mutex            async_tcp_stats_mutex;
     ClientAsyncTcpStatsSeen control_tcp_seen{};
     ClientAsyncTcpStatsSeen input_tcp_seen{};
@@ -289,6 +312,13 @@ struct ClientState {
 
     std::vector<uint32_t> framebuffer;
     std::vector<uint64_t> displayed_generation;
+
+    std::mutex              video_frame_mutex;
+    std::vector<uint32_t>   video_framebuffer;
+    uint32_t                video_frame_width  = 0;
+    uint32_t                video_frame_height = 0;
+    uint64_t                video_frame_id     = 0;
+    std::atomic<bool>       pending_video_frame_dirty{false};
 
     std::mutex udp_processing_mutex;
     std::mutex framebuffer_mutex;

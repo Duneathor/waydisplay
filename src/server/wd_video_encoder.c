@@ -32,6 +32,8 @@ struct wd_video_encoder {
     struct SwsContext* sws_ctx;
     uint32_t*          padded_pixels;
     size_t             padded_pixel_capacity;
+    uint8_t*           packet_copy;
+    size_t             packet_copy_capacity;
 #endif
 };
 
@@ -48,6 +50,10 @@ static void wd_video_encoder_release_backend(struct wd_video_encoder* encoder) {
     free(encoder->padded_pixels);
     encoder->padded_pixels = NULL;
     encoder->padded_pixel_capacity = 0;
+
+    free(encoder->packet_copy);
+    encoder->packet_copy = NULL;
+    encoder->packet_copy_capacity = 0;
 
     av_packet_free(&encoder->packet);
     av_frame_free(&encoder->frame);
@@ -105,6 +111,46 @@ static int wd_video_encoder_even_dimension(uint16_t value) {
         dimension++;
     }
     return dimension;
+}
+
+static bool wd_video_encoder_copy_packet(struct wd_video_encoder* encoder, const AVPacket* src,
+                                         uint64_t fallback_pts_usec,
+                                         struct wd_video_encoder_packet* packet) {
+    if (!encoder || !src || !packet || src->size <= 0 ||
+        (uint64_t)src->size > WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES)
+    {
+        return false;
+    }
+
+    if (encoder->packet_copy_capacity < (size_t)src->size)
+    {
+        uint8_t* new_copy = realloc(encoder->packet_copy, (size_t)src->size);
+        if (!new_copy)
+        {
+            return false;
+        }
+        encoder->packet_copy = new_copy;
+        encoder->packet_copy_capacity = (size_t)src->size;
+    }
+    memcpy(encoder->packet_copy, src->data, (size_t)src->size);
+
+    memset(packet, 0, sizeof(*packet));
+    packet->header.session_id = encoder->config.session_id;
+    packet->header.codec      = WD_VIDEO_CODEC_H265;
+    packet->header.flags      = 0;
+    if ((src->flags & AV_PKT_FLAG_KEY) != 0)
+    {
+        packet->header.flags |= WD_VIDEO_FRAME_KEYFRAME | WD_VIDEO_FRAME_CONFIG;
+    }
+    packet->header.frame_id      = encoder->next_frame_id++;
+    packet->header.pts_usec      = src->pts != AV_NOPTS_VALUE ? (uint64_t)src->pts : fallback_pts_usec;
+    packet->header.width         = encoder->config.width;
+    packet->header.height        = encoder->config.height;
+    packet->header.coded_width   = (uint16_t)encoder->codec_ctx->width;
+    packet->header.coded_height  = (uint16_t)encoder->codec_ctx->height;
+    packet->header.data_size     = (uint32_t)src->size;
+    packet->data                 = encoder->packet_copy;
+    return true;
 }
 #endif
 
@@ -210,13 +256,14 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
     encoder->codec_ctx->framerate  = (AVRational){fps, 1};
     encoder->codec_ctx->gop_size   = fps > 0 ? fps : 30;
     encoder->codec_ctx->max_b_frames = 0;
+    encoder->codec_ctx->thread_count = 2;
     encoder->codec_ctx->bit_rate   = wd_video_encoder_bitrate_bits_per_second(config);
 
     if (encoder->codec_ctx->priv_data)
     {
         (void)av_opt_set(encoder->codec_ctx->priv_data, "preset", "ultrafast", 0);
         (void)av_opt_set(encoder->codec_ctx->priv_data, "tune", "zerolatency", 0);
-        (void)av_opt_set(encoder->codec_ctx->priv_data, "x265-params", "repeat-headers=1:log-level=error", 0);
+        (void)av_opt_set(encoder->codec_ctx->priv_data, "x265-params", "repeat-headers=1:log-level=error:pools=none:frame-threads=1", 0);
     }
 
     av_log_set_level(AV_LOG_WARNING);
@@ -365,66 +412,75 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder,
     encoder->frame->pts = (int64_t)input->pts_usec;
     encoder->frame->pict_type = encoder->keyframe_requested ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
 
-    av_packet_unref(encoder->packet);
-    int rc = avcodec_send_frame(encoder->codec_ctx, encoder->frame);
-    if (rc == AVERROR(EAGAIN))
+    bool frame_sent = false;
+    bool have_output = false;
+
+    for (int attempt = 0; attempt < 2 && !frame_sent; ++attempt)
     {
-        rc = avcodec_receive_packet(encoder->codec_ctx, encoder->packet);
-        if (rc >= 0)
+        int rc = avcodec_send_frame(encoder->codec_ctx, encoder->frame);
+        if (rc == 0)
         {
-            /* Return the delayed packet now; the current frame can be retried on
-             * the next cadence tick. */
+            frame_sent = true;
+            break;
         }
-        else if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
-        {
-            return true;
-        }
-        else
+        if (rc != AVERROR(EAGAIN))
         {
             return false;
         }
+
+        for (;;)
+        {
+            av_packet_unref(encoder->packet);
+            rc = avcodec_receive_packet(encoder->codec_ctx, encoder->packet);
+            if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
+            {
+                break;
+            }
+            if (rc < 0)
+            {
+                return false;
+            }
+            if (!have_output)
+            {
+                if (!wd_video_encoder_copy_packet(encoder, encoder->packet, input->pts_usec, packet))
+                {
+                    av_packet_unref(encoder->packet);
+                    return false;
+                }
+                have_output = true;
+            }
+        }
     }
-    else if (rc < 0)
+
+    if (!frame_sent)
     {
         return false;
     }
+    encoder->keyframe_requested = false;
 
-    if (encoder->packet->size == 0)
+    for (;;)
     {
-        rc = avcodec_receive_packet(encoder->codec_ctx, encoder->packet);
+        av_packet_unref(encoder->packet);
+        int rc = avcodec_receive_packet(encoder->codec_ctx, encoder->packet);
         if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
         {
-            return true;
+            break;
         }
         if (rc < 0)
         {
             return false;
         }
+        if (!have_output)
+        {
+            if (!wd_video_encoder_copy_packet(encoder, encoder->packet, input->pts_usec, packet))
+            {
+                av_packet_unref(encoder->packet);
+                return false;
+            }
+            have_output = true;
+        }
     }
 
-    if (encoder->packet->size <= 0 || (uint64_t)encoder->packet->size > WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES)
-    {
-        av_packet_unref(encoder->packet);
-        return false;
-    }
-
-    packet->header.session_id = encoder->config.session_id;
-    packet->header.codec      = WD_VIDEO_CODEC_H265;
-    packet->header.flags      = 0;
-    if ((encoder->packet->flags & AV_PKT_FLAG_KEY) != 0)
-    {
-        packet->header.flags |= WD_VIDEO_FRAME_KEYFRAME | WD_VIDEO_FRAME_CONFIG;
-    }
-    packet->header.frame_id   = encoder->next_frame_id++;
-    packet->header.pts_usec   = input->pts_usec;
-    packet->header.width        = (uint16_t)input->width;
-    packet->header.height       = (uint16_t)input->height;
-    packet->header.coded_width  = (uint16_t)encoder->codec_ctx->width;
-    packet->header.coded_height = (uint16_t)encoder->codec_ctx->height;
-    packet->header.data_size    = (uint32_t)encoder->packet->size;
-    packet->data              = encoder->packet->data;
-
-    encoder->keyframe_requested = false;
     return true;
 #else
     (void)encoder;

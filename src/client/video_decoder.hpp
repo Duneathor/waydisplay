@@ -10,10 +10,12 @@ struct ClientVideoDecoder;
 
 struct ClientVideoDecoderConfig {
     uint8_t  session_id = 0;
-    uint16_t width      = 0;
-    uint16_t height     = 0;
-    uint16_t target_fps = 0;
-    uint32_t codec      = 0;
+    uint16_t width        = 0;
+    uint16_t height       = 0;
+    uint16_t coded_width  = 0;
+    uint16_t coded_height = 0;
+    uint16_t target_fps   = 0;
+    uint32_t codec        = 0;
 };
 
 struct ClientVideoPacket {

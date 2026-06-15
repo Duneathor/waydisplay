@@ -59,7 +59,91 @@ const AVCodec* find_h265_decoder() {
 bool decoder_config_matches(const ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {
     return decoder && decoder->configured && decoder->codec_ctx && decoder->config.session_id == config.session_id &&
            decoder->config.width == config.width && decoder->config.height == config.height &&
+           decoder->config.coded_width == config.coded_width && decoder->config.coded_height == config.coded_height &&
            decoder->config.target_fps == config.target_fps && decoder->config.codec == config.codec;
+}
+
+bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket& packet,
+                           ClientDecodedVideoFrame* out_frame) {
+    if (!decoder || !decoder->frame)
+    {
+        return false;
+    }
+
+    if (decoder->frame->width <= 0 || decoder->frame->height <= 0 ||
+        packet.header.width == 0 || packet.header.height == 0)
+    {
+        return false;
+    }
+
+    const uint16_t coded_width = packet.header.coded_width != 0
+                                     ? packet.header.coded_width
+                                     : static_cast<uint16_t>(decoder->frame->width);
+    const uint16_t coded_height = packet.header.coded_height != 0
+                                      ? packet.header.coded_height
+                                      : static_cast<uint16_t>(decoder->frame->height);
+    if (coded_width < packet.header.width || coded_height < packet.header.height ||
+        decoder->frame->width < coded_width || decoder->frame->height < coded_height)
+    {
+        return false;
+    }
+
+    const auto src_format = static_cast<AVPixelFormat>(decoder->frame->format);
+    decoder->sws_ctx = sws_getCachedContext(decoder->sws_ctx, coded_width, coded_height,
+                                            src_format, coded_width, coded_height,
+                                            AV_PIX_FMT_BGRA, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+    if (!decoder->sws_ctx)
+    {
+        return false;
+    }
+    decoder->sws_src_format = src_format;
+
+    const size_t expected_pixels = static_cast<size_t>(packet.header.width) * packet.header.height;
+    const size_t expected_coded_pixels = static_cast<size_t>(coded_width) * coded_height;
+    try
+    {
+        if (decoder->pixels.size() != expected_pixels)
+        {
+            decoder->pixels.assign(expected_pixels, 0xff000000u);
+        }
+        if (decoder->coded_pixels.size() != expected_coded_pixels)
+        {
+            decoder->coded_pixels.assign(expected_coded_pixels, 0xff000000u);
+        }
+    }
+    catch (...)
+    {
+        decoder->pixels.clear();
+        decoder->coded_pixels.clear();
+        return false;
+    }
+
+    uint8_t* const dst_slices[4] = {reinterpret_cast<uint8_t*>(decoder->coded_pixels.data()), nullptr, nullptr, nullptr};
+    const int      dst_stride[4] = {coded_width * static_cast<int>(sizeof(uint32_t)), 0, 0, 0};
+    if (sws_scale(decoder->sws_ctx, decoder->frame->data, decoder->frame->linesize, 0, coded_height,
+                  dst_slices, dst_stride) != coded_height)
+    {
+        return false;
+    }
+
+    for (uint32_t y = 0; y < packet.header.height; ++y)
+    {
+        const uint32_t* src = decoder->coded_pixels.data() + static_cast<size_t>(y) * coded_width;
+        uint32_t* dst = decoder->pixels.data() + static_cast<size_t>(y) * packet.header.width;
+        std::memcpy(dst, src, static_cast<size_t>(packet.header.width) * sizeof(*dst));
+    }
+
+    if (out_frame)
+    {
+        out_frame->pixels        = decoder->pixels.data();
+        out_frame->width         = packet.header.width;
+        out_frame->height        = packet.header.height;
+        out_frame->stride_pixels = packet.header.width;
+        out_frame->frame_id      = packet.header.frame_id;
+        out_frame->pts_usec      = packet.header.pts_usec;
+    }
+
+    return true;
 }
 #endif
 
@@ -124,7 +208,8 @@ const char* client_video_decoder_backend_name(const ClientVideoDecoder* decoder)
 }
 
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {
-    if (!decoder || config.codec != WD_VIDEO_CODEC_H265 || config.width == 0 || config.height == 0)
+    if (!decoder || config.codec != WD_VIDEO_CODEC_H265 || config.width == 0 || config.height == 0 ||
+        config.coded_width < config.width || config.coded_height < config.height)
     {
         return false;
     }
@@ -155,8 +240,8 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
         return false;
     }
 
-    decoder->codec_ctx->width  = config.width;
-    decoder->codec_ctx->height = config.height;
+    decoder->codec_ctx->width  = config.coded_width != 0 ? config.coded_width : config.width;
+    decoder->codec_ctx->height = config.coded_height != 0 ? config.coded_height : config.height;
 
     if (avcodec_open2(decoder->codec_ctx, decoder->codec, nullptr) < 0)
     {
@@ -204,7 +289,6 @@ bool client_video_decoder_decode_h265(ClientVideoDecoder* decoder, const ClientV
         return false;
     }
 
-    av_frame_unref(decoder->frame);
     av_packet_unref(decoder->packet);
     if (av_new_packet(decoder->packet, static_cast<int>(packet.header.data_size)) < 0)
     {
@@ -213,114 +297,76 @@ bool client_video_decoder_decode_h265(ClientVideoDecoder* decoder, const ClientV
     std::memcpy(decoder->packet->data, packet.data, packet.header.data_size);
     decoder->packet->pts = static_cast<int64_t>(packet.header.pts_usec);
 
-    int rc = avcodec_send_packet(decoder->codec_ctx, decoder->packet);
+    bool sent_packet = false;
+    bool got_frame = false;
+    bool converted_frame = false;
+
+    for (int attempt = 0; attempt < 2 && !sent_packet; ++attempt)
+    {
+        int rc = avcodec_send_packet(decoder->codec_ctx, decoder->packet);
+        if (rc == 0)
+        {
+            sent_packet = true;
+            break;
+        }
+        if (rc != AVERROR(EAGAIN))
+        {
+            av_packet_unref(decoder->packet);
+            return false;
+        }
+
+        for (;;)
+        {
+            av_frame_unref(decoder->frame);
+            rc = avcodec_receive_frame(decoder->codec_ctx, decoder->frame);
+            if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
+            {
+                break;
+            }
+            if (rc < 0)
+            {
+                av_packet_unref(decoder->packet);
+                return false;
+            }
+            got_frame = true;
+            converted_frame = convert_decoder_frame(decoder, packet, out_frame);
+            av_frame_unref(decoder->frame);
+            if (!converted_frame)
+            {
+                av_packet_unref(decoder->packet);
+                return false;
+            }
+        }
+    }
+
     av_packet_unref(decoder->packet);
-    if (rc == AVERROR(EAGAIN))
+    if (!sent_packet)
     {
-        rc = avcodec_receive_frame(decoder->codec_ctx, decoder->frame);
+        return false;
+    }
+
+    for (;;)
+    {
+        av_frame_unref(decoder->frame);
+        int rc = avcodec_receive_frame(decoder->codec_ctx, decoder->frame);
         if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
         {
-            return true;
+            break;
         }
         if (rc < 0)
         {
             return false;
         }
-    }
-    else if (rc < 0)
-    {
-        return false;
-    }
-
-    if (decoder->frame->width == 0 || decoder->frame->height == 0)
-    {
-        rc = avcodec_receive_frame(decoder->codec_ctx, decoder->frame);
-        if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
-        {
-            return true;
-        }
-        if (rc < 0)
+        got_frame = true;
+        converted_frame = convert_decoder_frame(decoder, packet, out_frame);
+        av_frame_unref(decoder->frame);
+        if (!converted_frame)
         {
             return false;
         }
     }
 
-    if (decoder->frame->width <= 0 || decoder->frame->height <= 0 ||
-        packet.header.width == 0 || packet.header.height == 0)
-    {
-        av_frame_unref(decoder->frame);
-        return false;
-    }
-
-    const uint16_t coded_width = packet.header.coded_width != 0 ? packet.header.coded_width : static_cast<uint16_t>(decoder->frame->width);
-    const uint16_t coded_height = packet.header.coded_height != 0 ? packet.header.coded_height : static_cast<uint16_t>(decoder->frame->height);
-    if (coded_width < packet.header.width || coded_height < packet.header.height ||
-        decoder->frame->width < coded_width || decoder->frame->height < coded_height)
-    {
-        av_frame_unref(decoder->frame);
-        return false;
-    }
-
-    const auto src_format = static_cast<AVPixelFormat>(decoder->frame->format);
-    decoder->sws_ctx = sws_getCachedContext(decoder->sws_ctx, coded_width, coded_height,
-                                            src_format, coded_width, coded_height,
-                                            AV_PIX_FMT_BGRA, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
-    if (!decoder->sws_ctx)
-    {
-        av_frame_unref(decoder->frame);
-        return false;
-    }
-    decoder->sws_src_format = src_format;
-
-    const size_t expected_pixels = static_cast<size_t>(packet.header.width) * packet.header.height;
-    const size_t expected_coded_pixels = static_cast<size_t>(coded_width) * coded_height;
-    try
-    {
-        if (decoder->pixels.size() != expected_pixels)
-        {
-            decoder->pixels.assign(expected_pixels, 0xff000000u);
-        }
-        if (decoder->coded_pixels.size() != expected_coded_pixels)
-        {
-            decoder->coded_pixels.assign(expected_coded_pixels, 0xff000000u);
-        }
-    }
-    catch (...)
-    {
-        av_frame_unref(decoder->frame);
-        decoder->pixels.clear();
-        decoder->coded_pixels.clear();
-        return false;
-    }
-
-    uint8_t* const dst_slices[4] = {reinterpret_cast<uint8_t*>(decoder->coded_pixels.data()), nullptr, nullptr, nullptr};
-    const int      dst_stride[4] = {coded_width * static_cast<int>(sizeof(uint32_t)), 0, 0, 0};
-    if (sws_scale(decoder->sws_ctx, decoder->frame->data, decoder->frame->linesize, 0, coded_height,
-                  dst_slices, dst_stride) != coded_height)
-    {
-        av_frame_unref(decoder->frame);
-        return false;
-    }
-
-    for (uint32_t y = 0; y < packet.header.height; ++y)
-    {
-        const uint32_t* src = decoder->coded_pixels.data() + static_cast<size_t>(y) * coded_width;
-        uint32_t* dst = decoder->pixels.data() + static_cast<size_t>(y) * packet.header.width;
-        std::memcpy(dst, src, static_cast<size_t>(packet.header.width) * sizeof(*dst));
-    }
-
-    if (out_frame)
-    {
-        out_frame->pixels        = decoder->pixels.data();
-        out_frame->width         = packet.header.width;
-        out_frame->height        = packet.header.height;
-        out_frame->stride_pixels = packet.header.width;
-        out_frame->frame_id      = packet.header.frame_id;
-        out_frame->pts_usec      = packet.header.pts_usec;
-    }
-
-    av_frame_unref(decoder->frame);
-    return true;
+    return got_frame ? converted_frame : true;
 #else
     (void)packet;
     return client_video_decoder_available(decoder);

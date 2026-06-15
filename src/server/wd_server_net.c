@@ -1859,6 +1859,20 @@ void* wd_net_thread_main(void* arg) {
                         net->stats.client_video_decoder_resets += cs.video_decoder_resets;
                         net->stats.client_video_decode_samples += cs.video_decode_samples;
                         net->stats.client_video_decode_sum_ns += cs.video_decode_sum_ns;
+                        net->stats.client_video_messages_rx += cs.video_messages_rx;
+                        net->stats.client_video_data_frames_rx += cs.video_data_frames_rx;
+                        net->stats.client_video_invalid_frames_rx += cs.video_invalid_frames_rx;
+                        net->stats.client_video_stale_frames_dropped += cs.video_stale_frames_dropped;
+                        if (cs.video_last_frame_id_rx > net->stats.client_video_last_frame_id_rx)
+                        {
+                            net->stats.client_video_last_frame_id_rx = cs.video_last_frame_id_rx;
+                        }
+                        if (cs.video_last_frame_id_presented > net->stats.client_video_last_frame_id_presented)
+                        {
+                            net->stats.client_video_last_frame_id_presented = cs.video_last_frame_id_presented;
+                        }
+                        net->stats.client_video_present_latency_samples += cs.video_present_latency_samples;
+                        net->stats.client_video_present_latency_sum_ns += cs.video_present_latency_sum_ns;
                         pthread_mutex_unlock(&net->lock);
                     }
                 }

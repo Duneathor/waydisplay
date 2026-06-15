@@ -601,7 +601,7 @@ static uint32_t wd_stream_video_bitrate_kib_locked(const struct wd_stream_policy
         return WD_VIDEO_DEFAULT_BITRATE_KIB_PER_SECOND;
     }
 
-    uint64_t kib = policy->limited_udp_bytes_per_second / 1024ull;
+    uint64_t kib = (policy->limited_udp_bytes_per_second * 3ull) / (4ull * 1024ull);
     if (kib == 0)
     {
         return WD_VIDEO_DEFAULT_BITRATE_KIB_PER_SECOND;
@@ -1158,8 +1158,10 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
 
     if (video_frame_mode)
     {
-        const bool client_saw_video = stats->client_video_frames_rx != 0 || stats->client_video_control_frames_rx != 0;
-        const bool client_presented_video = stats->client_video_frames_presented != 0;
+        const bool client_saw_video = stats->client_video_data_frames_rx != 0 || stats->client_video_frames_rx != 0 ||
+                                      stats->client_video_control_frames_rx != 0;
+        const bool client_presented_video = stats->client_video_frames_presented != 0 ||
+                                            stats->client_video_last_frame_id_presented != 0;
         const bool client_reported_video_failure = stats->client_video_decode_failed != 0 ||
                                                    stats->client_video_publish_failed != 0 ||
                                                    stats->client_video_need_keyframe_drops != 0;
@@ -2101,6 +2103,12 @@ bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t t
 
     struct wd_net_state* net = &server->net;
 
+    if (wd_stream_mode_video_owns_display(net->stream_policy.stream_mode))
+    {
+        net->stats.retx_req_ignored_live++;
+        return false;
+    }
+
     if (!net->retransmit_queue || !net->retransmit_queued)
     {
         return false;
@@ -2154,6 +2162,51 @@ static void wd_clear_damage_tiles(struct wd_server* server) {
 
     server->damage_all_tiles  = false;
     server->damage_tile_count = 0;
+}
+
+static void wd_stream_collapse_tile_queues_for_video_locked(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    struct wd_net_state* net = &server->net;
+    if (net->dirty_queued)
+    {
+        memset(net->dirty_queued, 0, (size_t)server->total_tiles * sizeof(*net->dirty_queued));
+    }
+    if (net->dirty_queue_enqueued_ns)
+    {
+        memset(net->dirty_queue_enqueued_ns, 0, (size_t)server->total_tiles * sizeof(*net->dirty_queue_enqueued_ns));
+    }
+    if (net->dirty_region_queued)
+    {
+        memset(net->dirty_region_queued, 0, (size_t)server->total_tiles * sizeof(*net->dirty_region_queued));
+    }
+    net->dirty_queue_read = 0;
+    net->dirty_queue_write = 0;
+    net->dirty_queue_count = 0;
+    net->dirty_region_count = 0;
+
+    if (net->retransmit_queued)
+    {
+        memset(net->retransmit_queued, 0, (size_t)server->total_tiles * sizeof(*net->retransmit_queued));
+    }
+    if (net->retransmit_requested_generation)
+    {
+        memset(net->retransmit_requested_generation, 0, (size_t)server->total_tiles * sizeof(*net->retransmit_requested_generation));
+    }
+    if (net->retransmit_queue_enqueued_ns)
+    {
+        memset(net->retransmit_queue_enqueued_ns, 0, (size_t)server->total_tiles * sizeof(*net->retransmit_queue_enqueued_ns));
+    }
+    net->retransmit_queue_count = 0;
+
+    if (net->summary_dirty_tiles)
+    {
+        memset(net->summary_dirty_tiles, 0, (size_t)server->total_tiles * sizeof(*net->summary_dirty_tiles));
+    }
+    net->summary_dirty_count = 0;
 }
 
 static void wd_stream_mark_dirty_top_region_locked(struct wd_server* server, uint16_t base_tile_id);
@@ -3602,8 +3655,17 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
     if (net->stream_policy.tile_refresh_pending || net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY)
     {
+        const bool recovering_from_video = net->stream_policy.tile_refresh_pending ||
+                                           net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY;
+        if (recovering_from_video && net->video_tcp_fd >= 0 && net->video_tx)
+        {
+            (void)wd_stream_queue_video_control_frame_locked(server, WD_VIDEO_FRAME_END_OF_STREAM);
+        }
+        wd_stream_collapse_tile_queues_for_video_locked(server);
         wd_stream_invalidate_all_tiles_locked(server);
         net->stream_policy.tile_refresh_pending = false;
+        WD_LOG_INFO("stream mode ownership: tile-recovery owner=tiles fresh_udp_tiles=full-refresh tile_repair=enabled video_eos=%s",
+                    recovering_from_video ? "sent" : "no");
         wd_stream_policy_set_mode_locked(&net->stream_policy, WD_STREAM_MODE_TILES,
                                          "full tile refresh after video", 0.0, 0.0, 0.0,
                                          net->video_tcp_fd >= 0, wd_video_encoder_available(net->video_encoder));
@@ -3626,12 +3688,13 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
 
     if (wd_stream_mode_video_owns_display(net->stream_policy.stream_mode))
     {
-        /* Video mode owns the display. Keep dirty work queued so future video
-         * frames have a fresh framebuffer source, but do not spend UDP budget
-         * on fresh tiles or retransmits while the H.265 TCP stream is active. */
+        /* Video mode owns the display. The compositor framebuffer is already
+         * current; collapse tile work to a future full-refresh-on-exit marker
+         * instead of accumulating stale dirty/retransmit/summary queues. */
         wd_stream_note_mode_frame_locked(net, dirty_frame_tiles, pending_tiles_at_frame_start,
                                          server->total_tiles, false);
-        server->scene_dirty = net->dirty_region_count > 0;
+        wd_stream_collapse_tile_queues_for_video_locked(server);
+        server->scene_dirty = true;
         pthread_mutex_unlock(&net->lock);
         return true;
     }
@@ -4288,6 +4351,20 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->client_video_decoder_resets += src->client_video_decoder_resets;
     dst->client_video_decode_samples += src->client_video_decode_samples;
     dst->client_video_decode_sum_ns += src->client_video_decode_sum_ns;
+    dst->client_video_messages_rx += src->client_video_messages_rx;
+    dst->client_video_data_frames_rx += src->client_video_data_frames_rx;
+    dst->client_video_invalid_frames_rx += src->client_video_invalid_frames_rx;
+    dst->client_video_stale_frames_dropped += src->client_video_stale_frames_dropped;
+    if (src->client_video_last_frame_id_rx > dst->client_video_last_frame_id_rx)
+    {
+        dst->client_video_last_frame_id_rx = src->client_video_last_frame_id_rx;
+    }
+    if (src->client_video_last_frame_id_presented > dst->client_video_last_frame_id_presented)
+    {
+        dst->client_video_last_frame_id_presented = src->client_video_last_frame_id_presented;
+    }
+    dst->client_video_present_latency_samples += src->client_video_present_latency_samples;
+    dst->client_video_present_latency_sum_ns += src->client_video_present_latency_sum_ns;
     dst->retx_req_rx += src->retx_req_rx;
     dst->retx_tiles_req += src->retx_tiles_req;
     dst->retx_req_ignored_live += src->retx_req_ignored_live;
@@ -4654,22 +4731,31 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      wd_avg_ms(s.client_input_present_sum_ns, s.client_input_present_samples));
     }
 
-    if (s.client_video_frames_rx != 0 || s.client_video_frames_decoded != 0 ||
+    if (s.client_video_messages_rx != 0 || s.client_video_data_frames_rx != 0 ||
+        s.client_video_frames_rx != 0 || s.client_video_frames_decoded != 0 ||
         s.client_video_frames_presented != 0 || s.client_video_decode_failed != 0 ||
         s.client_video_publish_failed != 0 || s.client_video_control_frames_rx != 0 ||
+        s.client_video_invalid_frames_rx != 0 || s.client_video_stale_frames_dropped != 0 ||
         s.client_video_need_keyframe_drops != 0 || s.client_video_decoder_resets != 0)
     {
-        WD_LOG_DEBUG("client-video/min: rx=%llu decoded=%llu presented=%llu control=%llu kib=%.1f decode_avg_ms=%.2f decode_failed=%llu publish_failed=%llu need_keyframe_drops=%llu resets=%llu",
+        WD_LOG_DEBUG("client-video/min: messages=%llu data=%llu legacy_rx=%llu decoded=%llu presented=%llu control=%llu invalid=%llu stale_drop=%llu kib=%.1f decode_avg_ms=%.2f present_age_avg_ms=%.2f decode_failed=%llu publish_failed=%llu need_keyframe_drops=%llu resets=%llu last_rx=%llu last_presented=%llu",
+                     (unsigned long long)s.client_video_messages_rx,
+                     (unsigned long long)s.client_video_data_frames_rx,
                      (unsigned long long)s.client_video_frames_rx,
                      (unsigned long long)s.client_video_frames_decoded,
                      (unsigned long long)s.client_video_frames_presented,
                      (unsigned long long)s.client_video_control_frames_rx,
+                     (unsigned long long)s.client_video_invalid_frames_rx,
+                     (unsigned long long)s.client_video_stale_frames_dropped,
                      (double)s.client_video_bytes_rx / 1024.0,
                      wd_avg_ms(s.client_video_decode_sum_ns, s.client_video_decode_samples),
+                     wd_avg_ms(s.client_video_present_latency_sum_ns, s.client_video_present_latency_samples),
                      (unsigned long long)s.client_video_decode_failed,
                      (unsigned long long)s.client_video_publish_failed,
                      (unsigned long long)s.client_video_need_keyframe_drops,
-                     (unsigned long long)s.client_video_decoder_resets);
+                     (unsigned long long)s.client_video_decoder_resets,
+                     (unsigned long long)s.client_video_last_frame_id_rx,
+                     (unsigned long long)s.client_video_last_frame_id_presented);
     }
 
     bool control_activity = s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 || s.tcp_input_channel_rx != 0 ||

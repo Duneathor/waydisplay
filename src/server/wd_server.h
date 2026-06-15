@@ -302,6 +302,14 @@ struct wd_stats {
     uint64_t client_video_decoder_resets;
     uint64_t client_video_decode_samples;
     uint64_t client_video_decode_sum_ns;
+    uint64_t client_video_messages_rx;
+    uint64_t client_video_data_frames_rx;
+    uint64_t client_video_invalid_frames_rx;
+    uint64_t client_video_stale_frames_dropped;
+    uint64_t client_video_last_frame_id_rx;
+    uint64_t client_video_last_frame_id_presented;
+    uint64_t client_video_present_latency_samples;
+    uint64_t client_video_present_latency_sum_ns;
 
     uint64_t retx_req_rx;
     uint64_t retx_tiles_req;

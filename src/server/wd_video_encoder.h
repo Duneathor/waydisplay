@@ -30,7 +30,9 @@ struct wd_video_encoder_input_xrgb8888 {
 
 struct wd_video_encoder_packet {
     struct wd_video_frame_payload_header header;
-    const uint8_t*                       data;
+
+    /* Owned by the encoder and valid until the next encode/reset/destroy call. */
+    const uint8_t* data;
 };
 
 bool wd_video_encoder_create(struct wd_video_encoder** out_encoder);
