@@ -112,6 +112,7 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->link_good_seconds             = 0;
     policy->link_loss_seconds             = 0;
     policy->multipacket_loss_cooldown_seconds = 0;
+    policy->client_render_visible = true;
     wd_stream_policy_reset_tokens(policy);
 }
 
@@ -138,6 +139,7 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->link_good_seconds = 0;
     policy->link_loss_seconds = 0;
     policy->multipacket_loss_cooldown_seconds = 0;
+    policy->client_render_visible = true;
     if (policy->limited_udp_bytes_per_second == 0)
     {
         policy->limited_udp_bytes_per_second = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
@@ -261,6 +263,23 @@ static uint16_t wd_stream_policy_effective_fps_locked(const struct wd_stream_pol
 }
 
 
+static uint16_t wd_stream_policy_output_fps_locked(const struct wd_stream_policy* policy) {
+    uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
+
+    if (policy && !policy->client_render_visible && fps > WD_STREAM_HIDDEN_CLIENT_FPS)
+    {
+        fps = WD_STREAM_HIDDEN_CLIENT_FPS;
+    }
+
+    if (fps < WD_STREAM_FPS_MIN)
+    {
+        fps = WD_STREAM_FPS_MIN;
+    }
+
+    return fps;
+}
+
+
 static bool wd_stream_client_packet_loss_sample(const struct wd_stats* stats) {
     if (!stats || stats->client_stats_rx == 0 || stats->client_udp_packets_rx < WD_STREAM_CLIENT_COMPLETION_MIN_PACKETS)
     {
@@ -269,6 +288,42 @@ static bool wd_stream_client_packet_loss_sample(const struct wd_stats* stats) {
 
     return stats->client_completed_packets * 100ull <
            stats->client_udp_packets_rx * (uint64_t)WD_STREAM_CLIENT_COMPLETION_LOSS_PERCENT;
+}
+
+static bool wd_stream_client_render_pressure_sample(const struct wd_stream_policy* policy, const struct wd_stats* stats) {
+    if (!policy || !stats || stats->client_stats_rx == 0)
+    {
+        return false;
+    }
+
+    if (stats->client_render_hidden_reports != 0 || stats->client_render_visible_reports == 0)
+    {
+        return false;
+    }
+
+    const uint16_t effective_fps = wd_stream_policy_effective_fps_locked(policy);
+    const bool client_video_activity = stats->client_tiles_completed != 0 || stats->client_udp_bytes_rx != 0 ||
+                                       stats->client_present_samples != 0;
+
+    if (stats->client_present_samples != 0 &&
+        stats->client_present_sum_ns / stats->client_present_samples >= WD_STREAM_CLIENT_PRESENT_PRESSURE_NS)
+    {
+        return true;
+    }
+
+    if (effective_fps != 0 && client_video_activity &&
+        stats->client_render_frames * 100ull <
+            (uint64_t)effective_fps * (uint64_t)stats->client_stats_rx * WD_STREAM_CLIENT_RENDER_FPS_PRESSURE_PERCENT)
+    {
+        return true;
+    }
+
+    /* Input-to-present latency is useful telemetry, but it includes server
+     * scheduling, application damage behavior, link/repair delays, and pending
+     * input-sequence correlation.  Do not treat it as local client render
+     * pressure or a fast loopback client can be downshifted for stale input
+     * latency even while present/render time is healthy. */
+    return false;
 }
 
 static bool wd_stream_client_reporting_tile_loss_locked(const struct wd_stream_policy* policy, const struct wd_stats* stats) {
@@ -318,7 +373,8 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
             policy->effective_target_fps = (uint16_t)new_fps;
             policy->last_frame_send_ns = 0;
             stats->frame_rate_downshifts++;
-            WD_LOG_INFO("stream frame rate down: %u -> %u fps due to UDP send pressure", old_fps, (unsigned)new_fps);
+            WD_LOG_INFO("stream frame rate down: %u -> %u fps due to %s", old_fps, (unsigned)new_fps,
+                        send_pressure ? "UDP send pressure" : "client render pressure");
         }
         return;
     }
@@ -437,7 +493,17 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
         return;
     }
 
+    if (stats->client_render_hidden_reports != 0)
+    {
+        policy->client_render_visible = false;
+    }
+    else if (stats->client_render_visible_reports != 0)
+    {
+        policy->client_render_visible = true;
+    }
+
     const bool send_pressure = stats->udp_send_pressure_drops != 0;
+    const bool client_render_pressure = wd_stream_client_render_pressure_sample(policy, stats);
     const bool client_packet_loss = wd_stream_client_packet_loss_sample(stats);
     const bool client_tile_repair = stats->client_partial_tiles_timed_out != 0 || stats->client_retx_requests_tx != 0;
 
@@ -455,7 +521,7 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
      * it must not shrink the byte budget or frame rate by itself.  Otherwise a
      * few stale/superseded repair requests can force the sender into many more
      * tiny tiles, which creates the downward spiral seen on small-MTU links. */
-    wd_stream_policy_update_frame_rate_locked(policy, stats, send_pressure, send_pressure);
+    wd_stream_policy_update_frame_rate_locked(policy, stats, send_pressure || client_render_pressure, send_pressure);
     wd_stream_policy_update_limited_rate_locked(policy, stats, send_pressure);
 }
 
@@ -487,7 +553,7 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
 
     bool should = false;
 
-    uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
+    uint16_t fps = wd_stream_policy_output_fps_locked(policy);
     uint64_t interval_ns = WD_NSEC_PER_SEC / fps;
 
     if (policy->last_frame_send_ns == 0 || now_ns - policy->last_frame_send_ns >= interval_ns)
@@ -3190,9 +3256,8 @@ static bool wd_stream_send_generation_summary_kind_locked(struct wd_server* serv
     {
         for (uint16_t i = 0; i < server->total_tiles; ++i)
         {
-            entries[entry_count].tile_id           = i;
-            entries[entry_count].tile_generation   = net->tiles[i].generation;
-            entries[entry_count].tile_timestamp_ns = net->tiles[i].timestamp_ns;
+            entries[entry_count].tile_id         = i;
+            entries[entry_count].tile_generation = net->tiles[i].generation;
             entry_count++;
         }
     }
@@ -3206,9 +3271,8 @@ static bool wd_stream_send_generation_summary_kind_locked(struct wd_server* serv
                 continue;
             }
 
-            entries[entry_count].tile_id           = tile_id;
-            entries[entry_count].tile_generation   = net->tiles[tile_id].generation;
-            entries[entry_count].tile_timestamp_ns = net->tiles[tile_id].timestamp_ns;
+            entries[entry_count].tile_id         = tile_id;
+            entries[entry_count].tile_generation = net->tiles[tile_id].generation;
             entry_count++;
         }
     }
@@ -3375,10 +3439,21 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->client_udp_interarrival_sum_ns += src->client_udp_interarrival_sum_ns;
     dst->client_udp_interarrival_jitter_samples += src->client_udp_interarrival_jitter_samples;
     dst->client_udp_interarrival_jitter_sum_ns += src->client_udp_interarrival_jitter_sum_ns;
+    dst->client_render_visible_reports += src->client_render_visible_reports;
+    dst->client_render_hidden_reports += src->client_render_hidden_reports;
     if (src->client_udp_interarrival_max_ns > dst->client_udp_interarrival_max_ns)
     {
         dst->client_udp_interarrival_max_ns = src->client_udp_interarrival_max_ns;
     }
+    dst->client_render_frames += src->client_render_frames;
+    dst->client_present_samples += src->client_present_samples;
+    dst->client_present_sum_ns += src->client_present_sum_ns;
+    if (src->client_present_max_ns > dst->client_present_max_ns)
+    {
+        dst->client_present_max_ns = src->client_present_max_ns;
+    }
+    dst->client_input_present_samples += src->client_input_present_samples;
+    dst->client_input_present_sum_ns += src->client_input_present_sum_ns;
     dst->retx_req_rx += src->retx_req_rx;
     dst->retx_tiles_req += src->retx_tiles_req;
     dst->retx_req_ignored_live += src->retx_req_ignored_live;
@@ -3493,6 +3568,8 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     uint64_t limited_udp_kib_per_second = net->stream_policy.limited_udp_bytes_per_second / 1024ull;
     uint16_t target_fps = net->stream_policy.target_fps;
     uint16_t effective_target_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
+    uint16_t output_fps = wd_stream_policy_output_fps_locked(&net->stream_policy);
+    bool client_render_visible = net->stream_policy.client_render_visible;
     uint16_t tile_width = server->tile_width;
     uint16_t tile_height = server->tile_height;
     bool input_channel_connected = net->input_tcp_fd >= 0;
@@ -3512,20 +3589,24 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
 
     bool state_changed = !stats_log->have_prev_state ||
                          stats_log->prev_target_fps != target_fps || stats_log->prev_effective_fps != effective_target_fps ||
+                         stats_log->prev_output_fps != output_fps || stats_log->prev_client_render_visible != client_render_visible ||
                          stats_log->prev_limited_kib != limited_udp_kib_per_second || stats_log->prev_tile_width != tile_width ||
                          stats_log->prev_tile_height != tile_height || stats_log->prev_input_channel != input_channel_connected ||
                          stats_log->prev_selection_channel != selection_channel_connected;
 
     if (state_changed)
     {
-        WD_LOG_DEBUG("state: target_fps=%u effective_fps=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s",
-                     (unsigned)target_fps, (unsigned)effective_target_fps,
+        WD_LOG_DEBUG("state: target_fps=%u effective_fps=%u output_fps=%u client_visible=%s udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s",
+                     (unsigned)target_fps, (unsigned)effective_target_fps, (unsigned)output_fps,
+                     client_render_visible ? "yes" : "no",
                      (unsigned long long)limited_udp_kib_per_second, (unsigned)tile_width, (unsigned)tile_height,
                      input_channel_connected ? "yes" : "no", selection_channel_connected ? "yes" : "no");
 
         stats_log->have_prev_state = true;
         stats_log->prev_target_fps = target_fps;
         stats_log->prev_effective_fps = effective_target_fps;
+        stats_log->prev_output_fps = output_fps;
+        stats_log->prev_client_render_visible = client_render_visible;
         stats_log->prev_limited_kib = limited_udp_kib_per_second;
         stats_log->prev_tile_width = tile_width;
         stats_log->prev_tile_height = tile_height;
@@ -3624,16 +3705,25 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
 
     bool client_activity = s.client_tiles_completed != 0 || s.client_udp_bytes_rx != 0 || s.client_partial_tiles_timed_out != 0 ||
                            s.client_old_generation_tiles != 0 || s.client_retx_requests_tx != 0 ||
-                           s.client_udp_interarrival_samples != 0;
+                           s.client_udp_interarrival_samples != 0 || s.client_render_frames != 0 ||
+                           s.client_present_samples != 0 || s.client_input_present_samples != 0 ||
+                           s.client_render_visible_reports != 0 || s.client_render_hidden_reports != 0;
     if (client_activity)
     {
-        WD_LOG_DEBUG("client/min: reports=%llu completed=%llu udp_kib=%.1f partial_timeouts=%llu old_gen=%llu retx_req_tx=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f",
-                     (unsigned long long)s.client_stats_rx, (unsigned long long)s.client_tiles_completed,
+        WD_LOG_DEBUG("client/min: reports=%llu visible=%llu hidden=%llu completed=%llu udp_kib=%.1f partial_timeouts=%llu old_gen=%llu retx_req_tx=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f render_frames=%llu present_avg_ms=%.2f present_max_ms=%.2f input_present_avg_ms=%.2f",
+                     (unsigned long long)s.client_stats_rx,
+                     (unsigned long long)s.client_render_visible_reports,
+                     (unsigned long long)s.client_render_hidden_reports,
+                     (unsigned long long)s.client_tiles_completed,
                      (double)s.client_udp_bytes_rx / 1024.0, (unsigned long long)s.client_partial_tiles_timed_out,
                      (unsigned long long)s.client_old_generation_tiles, (unsigned long long)s.client_retx_requests_tx,
                      wd_avg_ms(s.client_udp_interarrival_sum_ns, s.client_udp_interarrival_samples),
                      wd_avg_ms(s.client_udp_interarrival_jitter_sum_ns, s.client_udp_interarrival_jitter_samples),
-                     (double)s.client_udp_interarrival_max_ns / 1000000.0);
+                     (double)s.client_udp_interarrival_max_ns / 1000000.0,
+                     (unsigned long long)s.client_render_frames,
+                     wd_avg_ms(s.client_present_sum_ns, s.client_present_samples),
+                     (double)s.client_present_max_ns / 1000000.0,
+                     wd_avg_ms(s.client_input_present_sum_ns, s.client_input_present_samples));
     }
 
     bool control_activity = s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 || s.tcp_input_channel_rx != 0 ||

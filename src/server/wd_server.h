@@ -257,6 +257,14 @@ struct wd_stats {
     uint64_t client_udp_interarrival_jitter_samples;
     uint64_t client_udp_interarrival_jitter_sum_ns;
     uint64_t client_udp_interarrival_max_ns;
+    uint64_t client_render_visible_reports;
+    uint64_t client_render_hidden_reports;
+    uint64_t client_render_frames;
+    uint64_t client_present_samples;
+    uint64_t client_present_sum_ns;
+    uint64_t client_present_max_ns;
+    uint64_t client_input_present_samples;
+    uint64_t client_input_present_sum_ns;
 
     uint64_t retx_req_rx;
     uint64_t retx_tiles_req;
@@ -360,6 +368,8 @@ struct wd_stats_log_state {
     bool            have_prev_state;
     uint16_t        prev_target_fps;
     uint16_t        prev_effective_fps;
+    uint16_t        prev_output_fps;
+    bool            prev_client_render_visible;
     uint64_t        prev_limited_kib;
     uint16_t        prev_tile_width;
     uint16_t        prev_tile_height;
@@ -381,6 +391,7 @@ struct wd_stream_policy {
     uint32_t link_good_seconds;
     uint32_t link_loss_seconds;
     uint32_t multipacket_loss_cooldown_seconds;
+    bool     client_render_visible;
     double   limited_udp_byte_tokens;
     uint64_t last_limited_udp_byte_refill_ns;
 };

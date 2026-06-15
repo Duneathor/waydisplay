@@ -18,6 +18,7 @@ void usage(const char* argv0) {
                  "  --fps <N>                   Target adaptive render/discovery FPS, default 30\n"
                  "  --size <WxH>                 Request remote display size\n"
                  "  --rate-kib <N>               Cap adaptive UDP tile budget in KiB/s\n"
+                 "  --no-vsync                   Create the SDL renderer without present-vsync\n"
                  "  --limited-rate-kib <N>       Deprecated alias for --rate-kib\n"
                  "  --wan                        Shorthand for --rate-kib 4096\n\n"
                  "Examples:\n"
@@ -145,6 +146,10 @@ int main(int argc, char** argv) {
             }
 
             ++i;
+        }
+        else if (std::strcmp(argv[i], "--no-vsync") == 0)
+        {
+            stream_config.disable_vsync = true;
         }
         else if (std::strcmp(argv[i], "--wan") == 0)
         {

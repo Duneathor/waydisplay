@@ -1662,10 +1662,27 @@ void* wd_net_thread_main(void* arg) {
                         net->stats.client_udp_interarrival_sum_ns += cs.udp_interarrival_sum_ns;
                         net->stats.client_udp_interarrival_jitter_samples += cs.udp_interarrival_jitter_samples;
                         net->stats.client_udp_interarrival_jitter_sum_ns += cs.udp_interarrival_jitter_sum_ns;
+                        if ((cs.flags & WD_CLIENT_STATS_RENDER_VISIBLE) != 0)
+                        {
+                            net->stats.client_render_visible_reports++;
+                        }
+                        else
+                        {
+                            net->stats.client_render_hidden_reports++;
+                        }
                         if (cs.udp_interarrival_max_ns > net->stats.client_udp_interarrival_max_ns)
                         {
                             net->stats.client_udp_interarrival_max_ns = cs.udp_interarrival_max_ns;
                         }
+                        net->stats.client_render_frames += cs.render_frames;
+                        net->stats.client_present_samples += cs.present_samples;
+                        net->stats.client_present_sum_ns += cs.present_sum_ns;
+                        if (cs.present_max_ns > net->stats.client_present_max_ns)
+                        {
+                            net->stats.client_present_max_ns = cs.present_max_ns;
+                        }
+                        net->stats.client_input_present_samples += cs.input_present_samples;
+                        net->stats.client_input_present_sum_ns += cs.input_present_sum_ns;
                         pthread_mutex_unlock(&net->lock);
                     }
                 }

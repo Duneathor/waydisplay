@@ -92,6 +92,11 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.summary_retx_queued += src.summary_retx_queued;
     dst.summary_retx_deferred += src.summary_retx_deferred;
     dst.summary_retx_throttled += src.summary_retx_throttled;
+    dst.summary_retx_stale_dropped += src.summary_retx_stale_dropped;
+    dst.summary_retx_pressure_dropped += src.summary_retx_pressure_dropped;
+    dst.summary_promote_passes += src.summary_promote_passes;
+    dst.summary_promote_scanned += src.summary_promote_scanned;
+    dst.summary_promote_candidates += src.summary_promote_candidates;
     dst.summary_to_retx_samples += src.summary_to_retx_samples;
     dst.summary_to_retx_sum_ns += src.summary_to_retx_sum_ns;
     dst.keys += src.keys;
@@ -126,6 +131,9 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.sdl_texture_full_uploads += src.sdl_texture_full_uploads;
     dst.sdl_texture_partial_uploads += src.sdl_texture_partial_uploads;
     dst.sdl_texture_dirty_rects += src.sdl_texture_dirty_rects;
+    dst.sdl_texture_source_dirty_rects += src.sdl_texture_source_dirty_rects;
+    dst.sdl_texture_coalesced_dirty_rects += src.sdl_texture_coalesced_dirty_rects;
+    dst.sdl_texture_bounds_uploads += src.sdl_texture_bounds_uploads;
     dst.sdl_texture_upload_pixels += src.sdl_texture_upload_pixels;
     dst.sdl_texture_upload_samples += src.sdl_texture_upload_samples;
     dst.sdl_texture_upload_sum_ns += src.sdl_texture_upload_sum_ns;
@@ -882,6 +890,11 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t summary_retx_queued = logged.summary_retx_queued;
     const uint64_t summary_retx_deferred = logged.summary_retx_deferred;
     const uint64_t summary_retx_throttled = logged.summary_retx_throttled;
+    const uint64_t summary_retx_stale_dropped = logged.summary_retx_stale_dropped;
+    const uint64_t summary_retx_pressure_dropped = logged.summary_retx_pressure_dropped;
+    const uint64_t summary_promote_passes = logged.summary_promote_passes;
+    const uint64_t summary_promote_scanned = logged.summary_promote_scanned;
+    const uint64_t summary_promote_candidates = logged.summary_promote_candidates;
     const uint64_t summary_to_retx_samples = logged.summary_to_retx_samples;
     const uint64_t summary_to_retx_sum_ns = logged.summary_to_retx_sum_ns;
     const uint64_t keys = logged.keys;
@@ -916,6 +929,9 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t sdl_texture_full_uploads = logged.sdl_texture_full_uploads;
     const uint64_t sdl_texture_partial_uploads = logged.sdl_texture_partial_uploads;
     const uint64_t sdl_texture_dirty_rects = logged.sdl_texture_dirty_rects;
+    const uint64_t sdl_texture_source_dirty_rects = logged.sdl_texture_source_dirty_rects;
+    const uint64_t sdl_texture_coalesced_dirty_rects = logged.sdl_texture_coalesced_dirty_rects;
+    const uint64_t sdl_texture_bounds_uploads = logged.sdl_texture_bounds_uploads;
     const uint64_t sdl_texture_upload_pixels = logged.sdl_texture_upload_pixels;
     const uint64_t sdl_texture_upload_samples = logged.sdl_texture_upload_samples;
     const uint64_t sdl_texture_upload_sum_ns = logged.sdl_texture_upload_sum_ns;
@@ -951,13 +967,21 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
 
     const bool repair_activity = partial_timeouts != 0 || partial_missing_packets != 0 || partial_retx_queued != 0 ||
                                  summaries != 0 || retx != 0 || summary_retx_queued != 0 || summary_retx_deferred != 0 ||
-                                 summary_retx_throttled != 0 || summary_to_retx_samples != 0 || retx_response_samples != 0;
+                                 summary_retx_throttled != 0 || summary_retx_stale_dropped != 0 ||
+                                 summary_retx_pressure_dropped != 0 || summary_promote_passes != 0 ||
+                                 summary_to_retx_samples != 0 || retx_response_samples != 0;
     if (repair_activity)
     {
-        WD_LOG_DEBUG("[client repair/min] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu summary_throttled=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
+        WD_LOG_DEBUG("[client repair/min] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu summary_throttled=%llu stale_drop=%llu pressure_drop=%llu summary_promote=%llu summary_scan=%llu summary_candidates=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
                      static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
                      static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(summary_retx_deferred),
-                     static_cast<unsigned long long>(summary_retx_throttled), static_cast<unsigned long long>(partial_timeouts),
+                     static_cast<unsigned long long>(summary_retx_throttled),
+                     static_cast<unsigned long long>(summary_retx_stale_dropped),
+                     static_cast<unsigned long long>(summary_retx_pressure_dropped),
+                     static_cast<unsigned long long>(summary_promote_passes),
+                     static_cast<unsigned long long>(summary_promote_scanned),
+                     static_cast<unsigned long long>(summary_promote_candidates),
+                     static_cast<unsigned long long>(partial_timeouts),
                      static_cast<unsigned long long>(partial_missing_packets), static_cast<unsigned long long>(partial_retx_queued),
                      avg_ms(summary_to_retx_sum_ns, summary_to_retx_samples),
                      avg_ms(retx_response_sum_ns, retx_response_samples));
@@ -1003,11 +1027,14 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
 
     if (sdl_render_frames != 0 || sdl_texture_upload_samples != 0 || sdl_present_samples != 0)
     {
-        WD_LOG_DEBUG("[client render/min] frames=%llu texture_full=%llu texture_partial=%llu dirty_rects=%llu upload_mpix=%.2f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
+        WD_LOG_DEBUG("[client render/min] frames=%llu texture_full=%llu texture_partial=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu upload_mpix=%.2f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
                      static_cast<unsigned long long>(sdl_render_frames),
                      static_cast<unsigned long long>(sdl_texture_full_uploads),
                      static_cast<unsigned long long>(sdl_texture_partial_uploads),
                      static_cast<unsigned long long>(sdl_texture_dirty_rects),
+                     static_cast<unsigned long long>(sdl_texture_source_dirty_rects),
+                     static_cast<unsigned long long>(sdl_texture_coalesced_dirty_rects),
+                     static_cast<unsigned long long>(sdl_texture_bounds_uploads),
                      static_cast<double>(sdl_texture_upload_pixels) / 1000000.0,
                      avg_ms(sdl_texture_upload_sum_ns, sdl_texture_upload_samples),
                      static_cast<double>(sdl_texture_upload_max_ns) / 1000000.0,
@@ -1044,6 +1071,11 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t summary_retx_queued      = take_stat(state.stats.summary_retx_tiles_queued);
     const uint64_t summary_retx_deferred    = take_stat(state.stats.summary_retx_tiles_deferred);
     const uint64_t summary_retx_throttled   = take_stat(state.stats.summary_retx_tiles_throttled);
+    const uint64_t summary_retx_stale_dropped = take_stat(state.stats.summary_retx_tiles_stale_dropped);
+    const uint64_t summary_retx_pressure_dropped = take_stat(state.stats.summary_retx_pressure_dropped);
+    const uint64_t summary_promote_passes   = take_stat(state.stats.summary_promote_passes);
+    const uint64_t summary_promote_scanned  = take_stat(state.stats.summary_promote_scanned);
+    const uint64_t summary_promote_candidates = take_stat(state.stats.summary_promote_candidates);
     const uint64_t summary_to_retx_samples  = take_stat(state.stats.summary_to_retx_samples);
     const uint64_t summary_to_retx_sum_ns   = take_stat(state.stats.summary_to_retx_sum_ns);
     const uint64_t keys                     = take_stat(state.stats.tcp_keyboard_tx);
@@ -1079,6 +1111,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t sdl_texture_full_uploads   = take_stat(state.stats.sdl_texture_full_uploads);
     const uint64_t sdl_texture_partial_uploads = take_stat(state.stats.sdl_texture_partial_uploads);
     const uint64_t sdl_texture_dirty_rects    = take_stat(state.stats.sdl_texture_dirty_rects);
+    const uint64_t sdl_texture_source_dirty_rects = take_stat(state.stats.sdl_texture_source_dirty_rects);
+    const uint64_t sdl_texture_coalesced_dirty_rects = take_stat(state.stats.sdl_texture_coalesced_dirty_rects);
+    const uint64_t sdl_texture_bounds_uploads = take_stat(state.stats.sdl_texture_bounds_uploads);
     const uint64_t sdl_texture_upload_pixels  = take_stat(state.stats.sdl_texture_upload_pixels);
     const uint64_t sdl_texture_upload_samples = take_stat(state.stats.sdl_texture_upload_samples);
     const uint64_t sdl_texture_upload_sum_ns  = take_stat(state.stats.sdl_texture_upload_sum_ns);
@@ -1113,6 +1148,11 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.summary_retx_queued = summary_retx_queued;
     sample.summary_retx_deferred = summary_retx_deferred;
     sample.summary_retx_throttled = summary_retx_throttled;
+    sample.summary_retx_stale_dropped = summary_retx_stale_dropped;
+    sample.summary_retx_pressure_dropped = summary_retx_pressure_dropped;
+    sample.summary_promote_passes = summary_promote_passes;
+    sample.summary_promote_scanned = summary_promote_scanned;
+    sample.summary_promote_candidates = summary_promote_candidates;
     sample.summary_to_retx_samples = summary_to_retx_samples;
     sample.summary_to_retx_sum_ns = summary_to_retx_sum_ns;
     sample.keys = keys;
@@ -1147,6 +1187,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.sdl_texture_full_uploads = sdl_texture_full_uploads;
     sample.sdl_texture_partial_uploads = sdl_texture_partial_uploads;
     sample.sdl_texture_dirty_rects = sdl_texture_dirty_rects;
+    sample.sdl_texture_source_dirty_rects = sdl_texture_source_dirty_rects;
+    sample.sdl_texture_coalesced_dirty_rects = sdl_texture_coalesced_dirty_rects;
+    sample.sdl_texture_bounds_uploads = sdl_texture_bounds_uploads;
     sample.sdl_texture_upload_pixels = sdl_texture_upload_pixels;
     sample.sdl_texture_upload_samples = sdl_texture_upload_samples;
     sample.sdl_texture_upload_sum_ns = sdl_texture_upload_sum_ns;
@@ -1166,6 +1209,10 @@ void sample_client_stats(ClientState& state, bool log_stats) {
             std::lock_guard<std::mutex> lock(state.config_mutex);
             feedback.session_id = state.config.session_id;
         }
+        if (state.render_feedback_visible.load(std::memory_order_relaxed))
+        {
+            feedback.flags |= WD_CLIENT_STATS_RENDER_VISIBLE;
+        }
         feedback.udp_packets_rx             = udp_packets;
         feedback.udp_bytes_rx               = udp_bytes;
         feedback.udp_tiles_completed        = completed;
@@ -1178,6 +1225,12 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         feedback.udp_interarrival_jitter_samples = udp_jitter_samples;
         feedback.udp_interarrival_jitter_sum_ns  = udp_jitter_sum_ns;
         feedback.udp_interarrival_max_ns    = udp_interarrival_max_ns;
+        feedback.render_frames              = sdl_render_frames;
+        feedback.present_samples            = sdl_present_samples;
+        feedback.present_sum_ns             = sdl_present_sum_ns;
+        feedback.present_max_ns             = sdl_present_max_ns;
+        feedback.input_present_samples      = input_seq_present_samples;
+        feedback.input_present_sum_ns       = input_seq_present_sum_ns;
         if (feedback.session_id != 0)
         {
             client_send_stats(state, feedback);
@@ -1235,6 +1288,52 @@ bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, uint16_t tile_widt
     return true;
 }
 
+void clear_completed_repair_tracking_locked(ClientState& state, uint32_t base_id) {
+    if (base_id >= state.displayed_generation.size())
+    {
+        return;
+    }
+
+    const uint64_t displayed = state.displayed_generation[base_id];
+    if (base_id < state.retx_queued_generation.size() && state.retx_queued_generation[base_id] != 0 &&
+        state.retx_queued_generation[base_id] <= displayed)
+    {
+        state.retx_queued_generation[base_id] = 0;
+    }
+    if (base_id < state.retx_inflight_generation.size() && state.retx_inflight_generation[base_id] != 0 &&
+        state.retx_inflight_generation[base_id] <= displayed)
+    {
+        state.retx_inflight_generation[base_id] = 0;
+        if (base_id < state.retx_inflight_since_ns.size())
+        {
+            state.retx_inflight_since_ns[base_id] = 0;
+        }
+    }
+    if (base_id < state.retx_last_requested_generation.size() && state.retx_last_requested_generation[base_id] != 0 &&
+        state.retx_last_requested_generation[base_id] <= displayed)
+    {
+        state.retx_last_requested_generation[base_id] = 0;
+        if (base_id < state.retx_last_request_ns.size())
+        {
+            state.retx_last_request_ns[base_id] = 0;
+        }
+    }
+    if (base_id < state.retx_summary_pending_generation.size() && state.retx_summary_pending_generation[base_id] != 0 &&
+        state.retx_summary_pending_generation[base_id] <= displayed)
+    {
+        if (state.retx_summary_pending_count > 0)
+        {
+            state.retx_summary_pending_count--;
+        }
+        state.retx_summary_pending_generation[base_id] = 0;
+        if (base_id < state.retx_summary_pending_since_ns.size())
+        {
+            state.retx_summary_pending_since_ns[base_id] = 0;
+        }
+        state.stats.summary_retx_tiles_stale_dropped.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 void mark_completed_base_generations(ClientState& state, const CompletedTile& completed) {
     if (state.config.tile_width == 0 || state.config.tile_height == 0 || completed.tile_width == 0 || completed.tile_height == 0)
     {
@@ -1278,6 +1377,7 @@ void mark_completed_base_generations(ClientState& state, const CompletedTile& co
             {
                 state.displayed_generation[base_id] = completed.generation;
             }
+            clear_completed_repair_tracking_locked(state, base_id);
         }
     }
 }
@@ -1365,7 +1465,8 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
     }
 
     {
-        std::lock_guard<std::mutex> lock(state.generation_mutex);
+        std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
+        std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
         mark_completed_base_generations(state, completed);
     }
 
@@ -1511,7 +1612,12 @@ void udp_reader_main(ClientState* state) {
             std::lock_guard<std::mutex> processing_lock(state->udp_processing_mutex);
             reassembler.expire_stale_entries(*state);
         }
-        client_promote_deferred_summary_retransmits(*state);
+        const uint64_t summary_promote_now_ns = wd_now_ns();
+        if (state->next_summary_promote_ns == 0 || summary_promote_now_ns >= state->next_summary_promote_ns)
+        {
+            client_promote_deferred_summary_retransmits(*state);
+            state->next_summary_promote_ns = summary_promote_now_ns + WD_CLIENT_SUMMARY_PROMOTE_INTERVAL_NS;
+        }
 
         if (!client_flush_retransmit_requests(*state))
         {
@@ -1744,6 +1850,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         state.retx_inflight_since_ns         = std::move(new_retx_inflight_since_ns);
         state.retx_summary_pending_generation = std::move(new_retx_summary_pending_generation);
         state.retx_summary_pending_since_ns   = std::move(new_retx_summary_pending_since_ns);
+        state.retx_summary_pending_count = 0;
+        state.next_summary_promote_ns = 0;
         state.summary_large_repair_not_before_ns = 0;
         state.summary_repair_loss_signal_until_ns.store(0, std::memory_order_relaxed);
         state.udp_recv_buffer                = std::move(new_udp_recv_buffer);
@@ -1796,6 +1904,119 @@ bool should_upload_full_texture(ClientState& state, const std::vector<ClientDirt
     const uint64_t dirty_pixels = dirty_rect_pixel_count(rects);
     return dirty_pixels * 100ull >= frame_pixels * static_cast<uint64_t>(WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_PERCENT);
 }
+bool clamp_dirty_rect(const ClientDirtyRect& in, uint32_t frame_width, uint32_t frame_height, ClientDirtyRect& out) {
+    if (in.w == 0 || in.h == 0 || in.x >= frame_width || in.y >= frame_height)
+    {
+        return false;
+    }
+
+    const uint32_t visible_width  = std::min<uint32_t>(in.w, frame_width - in.x);
+    const uint32_t visible_height = std::min<uint32_t>(in.h, frame_height - in.y);
+    if (visible_width == 0 || visible_height == 0 || visible_width > UINT16_MAX || visible_height > UINT16_MAX)
+    {
+        return false;
+    }
+
+    out.x = in.x;
+    out.y = in.y;
+    out.w = static_cast<uint16_t>(visible_width);
+    out.h = static_cast<uint16_t>(visible_height);
+    return true;
+}
+
+ClientDirtyRect bounding_dirty_rect(const std::vector<ClientDirtyRect>& rects) {
+    uint32_t min_x = UINT32_MAX;
+    uint32_t min_y = UINT32_MAX;
+    uint32_t max_x = 0;
+    uint32_t max_y = 0;
+
+    for (const ClientDirtyRect& rect : rects)
+    {
+        min_x = std::min<uint32_t>(min_x, rect.x);
+        min_y = std::min<uint32_t>(min_y, rect.y);
+        max_x = std::max<uint32_t>(max_x, static_cast<uint32_t>(rect.x) + rect.w);
+        max_y = std::max<uint32_t>(max_y, static_cast<uint32_t>(rect.y) + rect.h);
+    }
+
+    ClientDirtyRect out{};
+    if (min_x == UINT32_MAX || min_y == UINT32_MAX || max_x <= min_x || max_y <= min_y)
+    {
+        return out;
+    }
+
+    out.x = static_cast<uint16_t>(min_x);
+    out.y = static_cast<uint16_t>(min_y);
+    out.w = static_cast<uint16_t>(std::min<uint32_t>(max_x - min_x, UINT16_MAX));
+    out.h = static_cast<uint16_t>(std::min<uint32_t>(max_y - min_y, UINT16_MAX));
+    return out;
+}
+
+void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t frame_width, uint32_t frame_height,
+                                  bool& used_bounds_upload) {
+    used_bounds_upload = false;
+    if (rects.empty())
+    {
+        return;
+    }
+
+    std::vector<ClientDirtyRect> clamped;
+    clamped.reserve(rects.size());
+    for (const ClientDirtyRect& rect : rects)
+    {
+        ClientDirtyRect visible{};
+        if (clamp_dirty_rect(rect, frame_width, frame_height, visible))
+        {
+            clamped.push_back(visible);
+        }
+    }
+
+    if (clamped.empty())
+    {
+        rects.clear();
+        return;
+    }
+
+    std::sort(clamped.begin(), clamped.end(), [](const ClientDirtyRect& a, const ClientDirtyRect& b) {
+        if (a.y != b.y)
+        {
+            return a.y < b.y;
+        }
+        if (a.h != b.h)
+        {
+            return a.h < b.h;
+        }
+        return a.x < b.x;
+    });
+
+    rects.clear();
+    rects.reserve(clamped.size());
+    for (const ClientDirtyRect& rect : clamped)
+    {
+        if (!rects.empty())
+        {
+            ClientDirtyRect& prev = rects.back();
+            const uint32_t prev_end_x = static_cast<uint32_t>(prev.x) + prev.w;
+            const uint32_t rect_end_x = static_cast<uint32_t>(rect.x) + rect.w;
+            if (prev.y == rect.y && prev.h == rect.h && rect.x <= prev_end_x)
+            {
+                prev.w = static_cast<uint16_t>(std::min<uint32_t>(std::max(prev_end_x, rect_end_x) - prev.x, UINT16_MAX));
+                continue;
+            }
+        }
+        rects.push_back(rect);
+    }
+
+    if (rects.size() > WD_CLIENT_DIRTY_RECT_BOUNDS_UPLOAD_THRESHOLD)
+    {
+        const ClientDirtyRect bounds = bounding_dirty_rect(rects);
+        if (bounds.w != 0 && bounds.h != 0)
+        {
+            rects.assign(1, bounds);
+            used_bounds_upload = true;
+        }
+    }
+}
+
 
 void record_texture_upload_stats(ClientState& state, uint64_t started_ns, uint64_t pixels) {
     const uint64_t elapsed_ns = wd_now_ns() - started_ns;
@@ -1908,6 +2129,21 @@ void release_forwarded_keyboard_keys(ClientState& state) {
     }
 
     g_suppress_paste_v_keyup = false;
+}
+
+
+bool window_render_feedback_visible(SDL_Window* window) {
+    if (!window)
+    {
+        return true;
+    }
+
+    const uint32_t flags = SDL_GetWindowFlags(window);
+    return (flags & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) == 0;
+}
+
+void update_render_feedback_visibility(ClientState& state, SDL_Window* window) {
+    state.render_feedback_visible.store(window_render_feedback_visible(window), std::memory_order_relaxed);
 }
 
 void handle_sdl_event(ClientState& state, const SDL_Event& event) {
@@ -2104,10 +2340,18 @@ int run_sdl_viewer(ClientState& state) {
 
     SDL_SetWindowMinimumSize(window, WD_CLIENT_MIN_WINDOW_WIDTH, WD_CLIENT_MIN_WINDOW_HEIGHT);
     update_window_size(window);
+    update_render_feedback_visibility(state, window);
 
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
 
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    uint32_t renderer_flags = SDL_RENDERER_ACCELERATED;
+    if (!state.stream_config.disable_vsync)
+    {
+        renderer_flags |= SDL_RENDERER_PRESENTVSYNC;
+    }
+    WD_LOG_INFO("SDL renderer vsync: %s", state.stream_config.disable_vsync ? "disabled" : "enabled");
+
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, renderer_flags);
 
     if (!renderer)
     {
@@ -2175,6 +2419,11 @@ int run_sdl_viewer(ClientState& state) {
                 break;
             }
 
+            if (event.type == SDL_WINDOWEVENT)
+            {
+                update_render_feedback_visibility(state, window);
+            }
+
             if (event.type == SDL_WINDOWEVENT &&
                 (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || event.window.event == SDL_WINDOWEVENT_RESIZED))
             {
@@ -2239,7 +2488,23 @@ int run_sdl_viewer(ClientState& state) {
                     dirty_rects.swap(state.pending_dirty_rects);
                 }
 
+                bool used_bounds_upload = false;
+                const uint64_t source_dirty_rect_count = dirty_rects.size();
+                if (!texture_needs_full_upload)
+                {
+                    coalesce_dirty_texture_rects(dirty_rects, frame_width, frame_height, used_bounds_upload);
+                }
+
                 const bool upload_full = texture_needs_full_upload || should_upload_full_texture(state, dirty_rects);
+                if (source_dirty_rect_count != 0)
+                {
+                    state.stats.sdl_texture_source_dirty_rects.fetch_add(source_dirty_rect_count, std::memory_order_relaxed);
+                    state.stats.sdl_texture_coalesced_dirty_rects.fetch_add(dirty_rects.size(), std::memory_order_relaxed);
+                    if (used_bounds_upload)
+                    {
+                        state.stats.sdl_texture_bounds_uploads.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
                 if (upload_full)
                 {
                     std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
@@ -2317,7 +2582,10 @@ int run_sdl_viewer(ClientState& state) {
             }
         }
 
-        SDL_Delay(WD_CLIENT_FRAME_DELAY_MS);
+        if (!frame_dirty && !state.frame_dirty.load(std::memory_order_acquire))
+        {
+            SDL_Delay(WD_CLIENT_FRAME_DELAY_MS);
+        }
     }
 
     state.running.store(false, std::memory_order_relaxed);

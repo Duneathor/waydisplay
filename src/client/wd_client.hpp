@@ -38,6 +38,7 @@ struct ClientAsyncUdpStatsSeen {
 struct ClientStreamConfig {
     uint16_t target_fps                 = WD_CLIENT_DEFAULT_TARGET_FPS;
     uint32_t limited_udp_kib_per_second = 0;
+    bool     disable_vsync              = false;
 };
 
 struct ClientDirtyRect {
@@ -81,6 +82,11 @@ struct ClientStats {
     std::atomic<uint64_t> summary_retx_tiles_queued{0};
     std::atomic<uint64_t> summary_retx_tiles_deferred{0};
     std::atomic<uint64_t> summary_retx_tiles_throttled{0};
+    std::atomic<uint64_t> summary_retx_tiles_stale_dropped{0};
+    std::atomic<uint64_t> summary_retx_pressure_dropped{0};
+    std::atomic<uint64_t> summary_promote_passes{0};
+    std::atomic<uint64_t> summary_promote_scanned{0};
+    std::atomic<uint64_t> summary_promote_candidates{0};
     std::atomic<uint64_t> summary_to_retx_samples{0};
     std::atomic<uint64_t> summary_to_retx_sum_ns{0};
     std::atomic<uint64_t> tcp_keyboard_tx{0};
@@ -112,6 +118,9 @@ struct ClientStats {
     std::atomic<uint64_t> sdl_texture_full_uploads{0};
     std::atomic<uint64_t> sdl_texture_partial_uploads{0};
     std::atomic<uint64_t> sdl_texture_dirty_rects{0};
+    std::atomic<uint64_t> sdl_texture_source_dirty_rects{0};
+    std::atomic<uint64_t> sdl_texture_coalesced_dirty_rects{0};
+    std::atomic<uint64_t> sdl_texture_bounds_uploads{0};
     std::atomic<uint64_t> sdl_texture_upload_pixels{0};
     std::atomic<uint64_t> sdl_texture_upload_samples{0};
     std::atomic<uint64_t> sdl_texture_upload_sum_ns{0};
@@ -147,6 +156,11 @@ struct ClientStatsSnapshot {
     uint64_t summary_retx_queued = 0;
     uint64_t summary_retx_deferred = 0;
     uint64_t summary_retx_throttled = 0;
+    uint64_t summary_retx_stale_dropped = 0;
+    uint64_t summary_retx_pressure_dropped = 0;
+    uint64_t summary_promote_passes = 0;
+    uint64_t summary_promote_scanned = 0;
+    uint64_t summary_promote_candidates = 0;
     uint64_t summary_to_retx_samples = 0;
     uint64_t summary_to_retx_sum_ns = 0;
     uint64_t keys = 0;
@@ -181,6 +195,9 @@ struct ClientStatsSnapshot {
     uint64_t sdl_texture_full_uploads = 0;
     uint64_t sdl_texture_partial_uploads = 0;
     uint64_t sdl_texture_dirty_rects = 0;
+    uint64_t sdl_texture_source_dirty_rects = 0;
+    uint64_t sdl_texture_coalesced_dirty_rects = 0;
+    uint64_t sdl_texture_bounds_uploads = 0;
     uint64_t sdl_texture_upload_pixels = 0;
     uint64_t sdl_texture_upload_samples = 0;
     uint64_t sdl_texture_upload_sum_ns = 0;
@@ -277,6 +294,8 @@ struct ClientState {
     uint64_t                        retx_inflight_grace_ns = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
     std::atomic<uint64_t>             summary_retransmit_grace_ns{WD_LINK_SUMMARY_GRACE_DEFAULT_NS};
     std::atomic<uint64_t>             retransmit_rerequest_interval_ns{WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS};
+    uint32_t                        retx_summary_pending_count = 0;
+    uint64_t                        next_summary_promote_ns = 0;
     uint64_t                        summary_large_repair_not_before_ns = 0;
     std::atomic<uint64_t>             summary_repair_loss_signal_until_ns{0};
 
@@ -299,6 +318,7 @@ struct ClientState {
     std::atomic<bool>     pending_cursor_shape_dirty{true};
 
     std::atomic<uint64_t>          next_input_sequence{1};
+    std::atomic<bool>              render_feedback_visible{true};
     std::mutex                    input_timestamp_mutex;
     std::deque<ClientInputEventStamp> recent_input_timestamps;
 

@@ -943,6 +943,12 @@ bool receive_server_config(ClientState& state) {
 }
 
 
+struct SummaryRepairCandidate {
+    uint16_t tile_id;
+    uint64_t generation;
+    uint64_t pending_since_ns;
+};
+
 void ensure_retransmit_tracking_locked(ClientState& state, uint16_t total_tiles) {
     if (state.retx_queued_generation.size() != total_tiles)
     {
@@ -964,14 +970,90 @@ void ensure_retransmit_tracking_locked(ClientState& state, uint16_t total_tiles)
     {
         state.retx_inflight_since_ns.assign(total_tiles, 0);
     }
+
+    bool reset_summary_pending = false;
     if (state.retx_summary_pending_generation.size() != total_tiles)
     {
         state.retx_summary_pending_generation.assign(total_tiles, 0);
+        reset_summary_pending = true;
     }
     if (state.retx_summary_pending_since_ns.size() != total_tiles)
     {
         state.retx_summary_pending_since_ns.assign(total_tiles, 0);
+        reset_summary_pending = true;
     }
+    if (reset_summary_pending)
+    {
+        state.retx_summary_pending_count = 0;
+    }
+}
+
+void clear_summary_pending_locked(ClientState& state, uint16_t tile_id) {
+    if (tile_id >= state.retx_summary_pending_generation.size() || tile_id >= state.retx_summary_pending_since_ns.size())
+    {
+        return;
+    }
+
+    if (state.retx_summary_pending_generation[tile_id] != 0 || state.retx_summary_pending_since_ns[tile_id] != 0)
+    {
+        if (state.retx_summary_pending_count > 0)
+        {
+            state.retx_summary_pending_count--;
+        }
+    }
+
+    state.retx_summary_pending_generation[tile_id] = 0;
+    state.retx_summary_pending_since_ns[tile_id] = 0;
+}
+
+void set_summary_pending_locked(ClientState& state, uint16_t tile_id, uint64_t generation, uint64_t now_ns) {
+    if (generation == 0 || tile_id >= state.retx_summary_pending_generation.size() ||
+        tile_id >= state.retx_summary_pending_since_ns.size())
+    {
+        return;
+    }
+
+    if (state.retx_summary_pending_generation[tile_id] == 0 && state.retx_summary_pending_since_ns[tile_id] == 0)
+    {
+        state.retx_summary_pending_count++;
+    }
+    state.retx_summary_pending_generation[tile_id] = generation;
+    state.retx_summary_pending_since_ns[tile_id] = now_ns;
+}
+
+bool client_repair_pressure_high_locked(const ClientState& state, uint16_t total_tiles) {
+    if (total_tiles == 0)
+    {
+        return false;
+    }
+
+    const uint64_t pressure_tiles = std::max<uint64_t>(WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES,
+                                                       (uint64_t)total_tiles * WD_CLIENT_REPAIR_PRESSURE_PERCENT / 100ull);
+    return state.retx_queue.size() >= pressure_tiles || state.retx_summary_pending_count >= pressure_tiles;
+}
+
+size_t cap_repair_candidates_under_pressure_locked(ClientState& state, uint16_t total_tiles,
+                                                   std::vector<SummaryRepairCandidate>& candidates) {
+    if (!client_repair_pressure_high_locked(state, total_tiles) || candidates.size() <= WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES)
+    {
+        return 0;
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const SummaryRepairCandidate& a, const SummaryRepairCandidate& b) {
+        if (a.generation != b.generation)
+        {
+            return a.generation > b.generation;
+        }
+        return a.pending_since_ns > b.pending_since_ns;
+    });
+
+    const size_t dropped = candidates.size() - WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES;
+    for (size_t i = WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES; i < candidates.size(); ++i)
+    {
+        clear_summary_pending_locked(state, candidates[i].tile_id);
+    }
+    candidates.resize(WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES);
+    return dropped;
 }
 
 bool queue_retransmit_tile_locked(ClientState& state, uint16_t tile_id, uint64_t generation, uint16_t total_tiles) {
@@ -994,12 +1076,6 @@ bool queue_retransmit_tile_locked(ClientState& state, uint16_t tile_id, uint64_t
 
     return true;
 }
-
-struct SummaryRepairCandidate {
-    uint16_t tile_id;
-    uint64_t generation;
-    uint64_t pending_since_ns;
-};
 
 void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
     if (payload_size < sizeof(wd_tile_summary_payload_header))
@@ -1058,8 +1134,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
             if (entry.tile_generation <= state.displayed_generation[entry.tile_id])
             {
-                state.retx_summary_pending_generation[entry.tile_id] = 0;
-                state.retx_summary_pending_since_ns[entry.tile_id]  = 0;
+                clear_summary_pending_locked(state, entry.tile_id);
                 continue;
             }
 
@@ -1069,8 +1144,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             {
                 if (state.retx_summary_pending_generation[entry.tile_id] < entry.tile_generation)
                 {
-                    state.retx_summary_pending_generation[entry.tile_id] = entry.tile_generation;
-                    state.retx_summary_pending_since_ns[entry.tile_id]  = now_ns;
+                    set_summary_pending_locked(state, entry.tile_id, entry.tile_generation, now_ns);
                     newly_deferred_from_summary++;
                 }
                 continue;
@@ -1082,8 +1156,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             {
                 if (state.retx_summary_pending_generation[entry.tile_id] < entry.tile_generation)
                 {
-                    state.retx_summary_pending_generation[entry.tile_id] = entry.tile_generation;
-                    state.retx_summary_pending_since_ns[entry.tile_id]  = now_ns;
+                    set_summary_pending_locked(state, entry.tile_id, entry.tile_generation, now_ns);
                     newly_deferred_from_summary++;
                 }
                 continue;
@@ -1098,8 +1171,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
              */
             if (state.retx_summary_pending_generation[entry.tile_id] < entry.tile_generation)
             {
-                state.retx_summary_pending_generation[entry.tile_id] = entry.tile_generation;
-                state.retx_summary_pending_since_ns[entry.tile_id]  = now_ns;
+                set_summary_pending_locked(state, entry.tile_id, entry.tile_generation, now_ns);
                 newly_deferred_from_summary++;
                 continue;
             }
@@ -1125,6 +1197,12 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             return;
         }
 
+        const size_t pressure_dropped = cap_repair_candidates_under_pressure_locked(state, total_tiles, candidates);
+        if (pressure_dropped != 0)
+        {
+            state.stats.summary_retx_pressure_dropped.fetch_add(pressure_dropped, std::memory_order_relaxed);
+        }
+
         if (large_summary_repair_batch_locked(state, total_tiles, candidates.size(), min_candidate_age_ns, now_ns, true))
         {
             return;
@@ -1143,8 +1221,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
                     summary_to_retx_local_sum_ns += now_ns - candidate.pending_since_ns;
                     summary_to_retx_local_samples++;
                 }
-                state.retx_summary_pending_generation[candidate.tile_id] = 0;
-                state.retx_summary_pending_since_ns[candidate.tile_id]  = 0;
+                clear_summary_pending_locked(state, candidate.tile_id);
                 newly_queued_from_summary++;
             }
         }
@@ -1174,10 +1251,17 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
     }
 
     ensure_retransmit_tracking_locked(state, total_tiles);
+    if (state.retx_summary_pending_count == 0)
+    {
+        return;
+    }
+
+    state.stats.summary_promote_passes.fetch_add(1, std::memory_order_relaxed);
+    state.stats.summary_promote_scanned.fetch_add(total_tiles, std::memory_order_relaxed);
 
     const uint64_t now_ns = wd_now_ns();
     std::vector<SummaryRepairCandidate> candidates;
-    candidates.reserve(total_tiles);
+    candidates.reserve(state.retx_summary_pending_count);
     uint64_t min_candidate_age_ns = UINT64_MAX;
 
     for (uint16_t tile_id = 0; tile_id < total_tiles; ++tile_id)
@@ -1192,8 +1276,8 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
 
         if (state.displayed_generation[tile_id] >= generation)
         {
-            state.retx_summary_pending_generation[tile_id] = 0;
-            state.retx_summary_pending_since_ns[tile_id]  = 0;
+            clear_summary_pending_locked(state, tile_id);
+            state.stats.summary_retx_tiles_stale_dropped.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
 
@@ -1224,6 +1308,14 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
         return;
     }
 
+    state.stats.summary_promote_candidates.fetch_add(candidates.size(), std::memory_order_relaxed);
+
+    const size_t pressure_dropped = cap_repair_candidates_under_pressure_locked(state, total_tiles, candidates);
+    if (pressure_dropped != 0)
+    {
+        state.stats.summary_retx_pressure_dropped.fetch_add(pressure_dropped, std::memory_order_relaxed);
+    }
+
     if (large_summary_repair_batch_locked(state, total_tiles, candidates.size(), min_candidate_age_ns, now_ns, true))
     {
         return;
@@ -1242,8 +1334,7 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
                 summary_to_retx_local_sum_ns += now_ns - candidate.pending_since_ns;
                 summary_to_retx_local_samples++;
             }
-            state.retx_summary_pending_generation[candidate.tile_id] = 0;
-            state.retx_summary_pending_since_ns[candidate.tile_id]  = 0;
+            clear_summary_pending_locked(state, candidate.tile_id);
             newly_queued++;
         }
     }
@@ -1476,6 +1567,8 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         state.retx_inflight_since_ns.assign(state.tile_count(), 0);
         state.retx_summary_pending_generation.assign(state.tile_count(), 0);
         state.retx_summary_pending_since_ns.assign(state.tile_count(), 0);
+        state.retx_summary_pending_count = 0;
+        state.next_summary_promote_ns = 0;
         state.summary_large_repair_not_before_ns = 0;
         state.summary_repair_loss_signal_until_ns.store(0, std::memory_order_relaxed);
     }

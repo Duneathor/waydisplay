@@ -12,7 +12,6 @@
 #include <wlr/types/wlr_primary_selection.h>
 #include <xkbcommon/xkbcommon.h>
 
-#define WD_PASTE_MAX_TEXT_BYTES (64u * 1024u)
 
 struct wd_remote_data_source {
     struct wlr_data_source source;
@@ -256,7 +255,7 @@ static bool payload_to_text_copy(uint8_t expected_session_id, const uint8_t* pay
 
     if (header.session_id != expected_session_id ||
         (header.mime_type != WD_SELECTION_MIME_TEXT_UTF8 && header.mime_type != WD_SELECTION_MIME_TEXT_PLAIN) ||
-        header.data_size > WD_PASTE_MAX_TEXT_BYTES)
+        header.data_size > WD_SELECTION_MAX_TEXT_BYTES)
     {
         return false;
     }
