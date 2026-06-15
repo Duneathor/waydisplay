@@ -2,6 +2,7 @@
 
 #include "client_async_tcp.hpp"
 #include "client_async_udp.hpp"
+#include "video_decoder.hpp"
 
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
@@ -41,6 +42,20 @@ constexpr uint32_t CLIENT_ASYNC_TCP_RING_ENTRIES = 64;
 constexpr uint64_t CLIENT_ASYNC_TCP_MAX_PENDING_BYTES = 1024ull * 1024ull;
 constexpr uint32_t CLIENT_ASYNC_UDP_RING_ENTRIES = 256;
 constexpr size_t CLIENT_ASYNC_UDP_PACKET_SLACK = 512u;
+
+const char* video_mode_name(uint8_t mode) {
+    switch (mode)
+    {
+    case WD_VIDEO_MODE_AUTO:
+        return "auto";
+    case WD_VIDEO_MODE_OFF:
+        return "off";
+    case WD_VIDEO_MODE_FORCE:
+        return "force";
+    default:
+        return "unknown";
+    }
+}
 
 uint64_t clamp_retransmit_grace_ns(uint64_t ns) {
     return std::max(RETRANSMIT_GRACE_MIN_NS, std::min(RETRANSMIT_GRACE_MAX_NS, ns));
@@ -610,6 +625,34 @@ bool open_selection_tcp_socket(ClientState& state) {
     return true;
 }
 
+bool open_video_tcp_socket(ClientState& state) {
+    if (!state.video_stream_negotiated)
+    {
+        return false;
+    }
+
+    int fd = connect_tcp_fd(state, "connect video TCP");
+    if (fd < 0)
+    {
+        return false;
+    }
+
+    wd_video_channel_hello_payload hello{};
+    hello.session_id      = state.config.session_id;
+    hello.video_codecs    = state.video_codecs;
+    hello.video_transport = state.video_transport;
+
+    if (!wd_send_tcp_message(fd, WD_MSG_VIDEO_CHANNEL_HELLO, &hello, sizeof(hello)))
+    {
+        ::close(fd);
+        return false;
+    }
+
+    state.video_tcp_fd = fd;
+    log_tcp_channel_endpoint("video", state.video_tcp_fd);
+    return true;
+}
+
 bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
     if (payload_size < sizeof(wd_mtu_probe_start_payload))
     {
@@ -840,6 +883,22 @@ bool receive_server_config(ClientState& state) {
     hello.desired_width               = state.desired_width;
     hello.desired_height              = state.desired_height;
     hello.limited_udp_kib_per_second  = state.stream_config.limited_udp_kib_per_second;
+    const bool video_allowed = state.stream_config.video_mode != WD_VIDEO_MODE_OFF;
+    const bool video_decoder_available = client_video_decoder_available(state.video_decoder);
+    hello.capabilities                = video_allowed && video_decoder_available ? WD_CLIENT_CAP_VIDEO_STREAM : 0;
+    hello.video_codecs                = video_allowed && video_decoder_available ? WD_VIDEO_CODEC_H265 : 0;
+    hello.video_transport             = video_allowed && video_decoder_available ? WD_VIDEO_TRANSPORT_TCP : 0;
+    hello.video_mode                  = state.stream_config.video_mode;
+    hello.video_min_dirty_percent     = state.stream_config.video_min_dirty_percent;
+    hello.video_enter_seconds         = state.stream_config.video_enter_seconds;
+    hello.video_bitrate_kib_per_second = state.stream_config.video_bitrate_kib_per_second;
+
+    WD_LOG_INFO("video mode control: mode=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u decoder=%s",
+                video_mode_name(state.stream_config.video_mode),
+                static_cast<unsigned>(state.stream_config.video_bitrate_kib_per_second),
+                static_cast<unsigned>(state.stream_config.video_min_dirty_percent),
+                static_cast<unsigned>(state.stream_config.video_enter_seconds),
+                video_decoder_available ? "yes" : "no");
 
     if (!wd_send_tcp_message(state.tcp_fd, WD_MSG_CLIENT_HELLO, &hello, sizeof(hello)))
     {
@@ -932,7 +991,17 @@ bool receive_server_config(ClientState& state) {
         state.config.udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
 
+    state.video_stream_negotiated = (state.config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0 &&
+                                    (state.config.video_codecs & WD_VIDEO_CODEC_H265) != 0 &&
+                                    state.config.video_transport == WD_VIDEO_TRANSPORT_TCP;
+    state.video_codecs = state.video_stream_negotiated ? state.config.video_codecs : 0;
+    state.video_transport = state.video_stream_negotiated ? state.config.video_transport : 0;
+
     WD_LOG_INFO("UDP payload target: %u", state.config.udp_payload_target);
+    WD_LOG_INFO("video stream negotiation: %s codec=%s transport=%s",
+                state.video_stream_negotiated ? "enabled" : "unavailable",
+                state.video_stream_negotiated ? "h265" : "none",
+                state.video_stream_negotiated ? "tcp" : "none");
     WD_LOG_INFO("link timers: rtt=%ums summary_grace=%ums rerequest=%ums inflight=%ums reassembly=%ums summary_delta=%u/%ums",
                 state.config.link_rtt_ms, state.config.summary_retransmit_grace_ms,
                 state.config.retransmit_rerequest_ms, state.config.retransmit_inflight_grace_ms,
@@ -1424,6 +1493,17 @@ void store_cursor_shape(ClientState& state, const uint8_t* payload, uint32_t pay
     }
 }
 
+
+void reset_video_decoder(ClientState& state, const char* reason) {
+    std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
+    client_video_decoder_reset(state.video_decoder);
+    state.video_decoder_needs_keyframe = true;
+    if (reason)
+    {
+        WD_LOG_INFO("video decoder reset: reason=%s", reason);
+    }
+}
+
 void store_server_config_update(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
     if (!payload || payload_size < sizeof(wd_server_config_payload))
     {
@@ -1449,9 +1529,219 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
 
     apply_link_timers_from_config(state, config);
 
-    std::lock_guard<std::mutex> lock(state.config_mutex);
-    state.pending_config       = config;
-    state.pending_config_valid = true;
+    const bool new_video_stream_negotiated = (config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0 &&
+                                             (config.video_codecs & WD_VIDEO_CODEC_H265) != 0 &&
+                                             config.video_transport == WD_VIDEO_TRANSPORT_TCP;
+    const uint32_t new_video_codecs = new_video_stream_negotiated ? config.video_codecs : 0;
+    const uint16_t new_video_transport = new_video_stream_negotiated ? config.video_transport : 0;
+
+    bool reset_video = false;
+    {
+        std::lock_guard<std::mutex> lock(state.config_mutex);
+        const bool have_current_config = state.config.session_id != 0;
+        reset_video = have_current_config &&
+                      (state.config.session_id != config.session_id || state.config.width != config.width ||
+                       state.config.height != config.height || state.video_codecs != new_video_codecs ||
+                       state.video_transport != new_video_transport);
+
+        state.video_stream_negotiated = new_video_stream_negotiated;
+        state.video_codecs = new_video_codecs;
+        state.video_transport = new_video_transport;
+        state.pending_config       = config;
+        state.pending_config_valid = true;
+    }
+
+    if (reset_video)
+    {
+        reset_video_decoder(state, "server config update");
+    }
+}
+
+
+bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_t payload_size,
+                             ClientVideoPacket& packet, bool& control_frame) {
+    control_frame = false;
+    if (!payload || payload_size < sizeof(wd_video_frame_payload_header))
+    {
+        return false;
+    }
+
+    std::memcpy(&packet.header, payload, sizeof(packet.header));
+    if (packet.header.codec != WD_VIDEO_CODEC_H265 ||
+        !wd_video_frame_payload_size_is_valid(&packet.header, payload_size))
+    {
+        return false;
+    }
+
+    control_frame = (packet.header.flags & (WD_VIDEO_FRAME_END_OF_STREAM | WD_VIDEO_FRAME_RESIZE)) != 0;
+    if (packet.header.data_size == 0 && !control_frame)
+    {
+        return false;
+    }
+
+    uint8_t  session_id = 0;
+    uint16_t width      = 0;
+    uint16_t height     = 0;
+    {
+        std::lock_guard<std::mutex> lock(state.config_mutex);
+        session_id = state.config.session_id;
+        width      = state.config.width;
+        height     = state.config.height;
+    }
+
+    if (packet.header.session_id != session_id)
+    {
+        return false;
+    }
+
+    if ((packet.header.width != width || packet.header.height != height) && !control_frame)
+    {
+        reset_video_decoder(state, "video frame geometry mismatch");
+        return false;
+    }
+
+    packet.data = wd_video_frame_payload_data(payload, payload_size);
+    return true;
+}
+
+
+bool publish_decoded_video_frame(ClientState& state, const ClientDecodedVideoFrame& frame) {
+    if (!frame.pixels || frame.width == 0 || frame.height == 0 || frame.stride_pixels < frame.width)
+    {
+        return false;
+    }
+
+    uint16_t config_width  = 0;
+    uint16_t config_height = 0;
+    {
+        std::lock_guard<std::mutex> lock(state.config_mutex);
+        config_width  = state.config.width;
+        config_height = state.config.height;
+    }
+
+    if (frame.width != config_width || frame.height != config_height)
+    {
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
+        const size_t expected_pixels = static_cast<size_t>(frame.width) * frame.height;
+        if (state.framebuffer.size() != expected_pixels)
+        {
+            state.framebuffer.assign(expected_pixels, 0xff000000u);
+        }
+
+        for (uint32_t y = 0; y < frame.height; ++y)
+        {
+            const uint32_t* src = frame.pixels + static_cast<size_t>(y) * frame.stride_pixels;
+            uint32_t* dst = state.framebuffer.data() + static_cast<size_t>(y) * frame.width;
+            std::memcpy(dst, src, static_cast<size_t>(frame.width) * WD_BYTES_PER_PIXEL);
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
+        state.pending_dirty_rects.clear();
+        state.pending_dirty_rects.push_back(ClientDirtyRect{0, 0, config_width, config_height});
+        state.pending_dirty_rect_count.store(state.pending_dirty_rects.size(), std::memory_order_release);
+    }
+
+    state.frame_dirty.store(true, std::memory_order_release);
+    return true;
+}
+
+void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
+    ClientVideoPacket packet{};
+    bool control_frame = false;
+    if (!video_payload_to_packet(state, payload, payload_size, packet, control_frame))
+    {
+        return;
+    }
+
+    if ((packet.header.flags & WD_VIDEO_FRAME_RESIZE) != 0)
+    {
+        reset_video_decoder(state, "video resize control frame");
+        if (packet.header.data_size == 0)
+        {
+            return;
+        }
+    }
+    else if ((packet.header.flags & WD_VIDEO_FRAME_END_OF_STREAM) != 0)
+    {
+        reset_video_decoder(state, "video end-of-stream");
+        if (packet.header.data_size == 0)
+        {
+            return;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
+    if (state.video_decoder_needs_keyframe && (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
+    {
+        return;
+    }
+
+    ClientVideoDecoderConfig config{};
+    config.session_id = packet.header.session_id;
+    config.width      = packet.header.width;
+    config.height     = packet.header.height;
+    config.target_fps = state.stream_config.target_fps;
+    config.codec      = packet.header.codec;
+
+    if (!client_video_decoder_configure(state.video_decoder, config))
+    {
+        state.video_decoder_needs_keyframe = true;
+        return;
+    }
+
+    ClientDecodedVideoFrame frame{};
+    if (!client_video_decoder_decode_h265(state.video_decoder, packet, &frame))
+    {
+        state.video_decoder_needs_keyframe = true;
+        return;
+    }
+
+    if (!publish_decoded_video_frame(state, frame))
+    {
+        state.video_decoder_needs_keyframe = true;
+        return;
+    }
+
+    state.video_decoder_needs_keyframe = false;
+}
+
+void video_tcp_reader_main(ClientState* state) {
+    while (state->running.load(std::memory_order_relaxed))
+    {
+        uint16_t message_type = 0;
+        uint8_t* payload      = nullptr;
+        uint32_t payload_size = 0;
+
+        if (!wd_recv_tcp_message(state->video_tcp_fd, &message_type, &payload, &payload_size))
+        {
+            break;
+        }
+
+        if (message_type == WD_MSG_VIDEO_FRAME)
+        {
+            handle_video_frame(*state, payload, payload_size);
+        }
+        else if (message_type == WD_MSG_ERROR)
+        {
+            WD_LOG_ERROR("server sent MSG_ERROR on video TCP channel");
+        }
+
+        std::free(payload);
+    }
+
+    reset_video_decoder(*state, "video TCP channel closed");
+    if (state->video_tcp_fd >= 0)
+    {
+        ::close(state->video_tcp_fd);
+        state->video_tcp_fd = -1;
+    }
+    WD_LOG_INFO("video TCP channel closed");
 }
 
 void tcp_reader_main(ClientState* state) {
@@ -1516,6 +1806,14 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
     state.pending_cursor_shape.store(WD_CURSOR_SHAPE_DEFAULT, std::memory_order_relaxed);
     state.pending_cursor_shape_dirty.store(true, std::memory_order_release);
 
+    if (!client_video_decoder_create(&state.video_decoder))
+    {
+        WD_LOG_WARN("failed to create H.265 video decoder skeleton");
+    }
+    WD_LOG_INFO("H.265 video decoder: backend=%s available=%s",
+                client_video_decoder_backend_name(state.video_decoder),
+                client_video_decoder_available(state.video_decoder) ? "yes" : "no");
+
     if (!open_udp_socket(state))
     {
         client_disconnect(state);
@@ -1552,6 +1850,15 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
     else
     {
             WD_LOG_INFO("selection TCP channel: unavailable, using control TCP");
+    }
+
+    if (open_video_tcp_socket(state))
+    {
+            WD_LOG_INFO("video TCP channel: enabled");
+    }
+    else if (state.video_stream_negotiated)
+    {
+            WD_LOG_INFO("video TCP channel: unavailable");
     }
 
     state.framebuffer.assign(state.framebuffer_pixels(), 0xff202020u);
@@ -1599,10 +1906,18 @@ void client_disconnect(ClientState& state) {
     {
         ::shutdown(state.selection_tcp_fd, SHUT_RDWR);
     }
+    if (state.video_tcp_fd >= 0)
+    {
+        ::shutdown(state.video_tcp_fd, SHUT_RDWR);
+    }
 
     if (state.tcp_thread.joinable())
     {
         state.tcp_thread.join();
+    }
+    if (state.video_thread.joinable())
+    {
+        state.video_thread.join();
     }
 
     client_reap_async_sends(state);
@@ -1610,6 +1925,13 @@ void client_disconnect(ClientState& state) {
     destroy_client_tcp_sender(state.selection_tcp_sender);
     destroy_client_tcp_sender(state.control_tcp_sender);
     destroy_client_udp_receiver(state);
+    {
+        std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
+        client_video_decoder_reset(state.video_decoder);
+        client_video_decoder_destroy(state.video_decoder);
+        state.video_decoder = nullptr;
+        state.video_decoder_needs_keyframe = true;
+    }
 
     if (state.udp_fd >= 0)
     {
@@ -1631,6 +1953,11 @@ void client_disconnect(ClientState& state) {
     {
         ::close(state.selection_tcp_fd);
         state.selection_tcp_fd = -1;
+    }
+    if (state.video_tcp_fd >= 0)
+    {
+        ::close(state.video_tcp_fd);
+        state.video_tcp_fd = -1;
     }
 }
 
@@ -1672,6 +1999,10 @@ bool client_start_tcp_reader(ClientState& state) {
     }
 
     state.tcp_thread = std::thread(tcp_reader_main, &state);
+    if (state.video_tcp_fd >= 0)
+    {
+        state.video_thread = std::thread(video_tcp_reader_main, &state);
+    }
     return true;
 }
 

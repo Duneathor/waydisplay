@@ -19,9 +19,47 @@ option(WAYDISPLAY_BUILD_LEGACY_PROTO "Build the old monolithic prototype" OFF)
 option(WAYDISPLAY_ENABLE_LOGGING "Enable WayDisplay runtime logging" ON)
 option(WAYDISPLAY_ENABLE_DEBUG_LOGGING "Enable WayDisplay debug-level logging" OFF)
 option(WAYDISPLAY_ENABLE_XWAYLAND "Enable Xwayland support in the wlroots server" ON)
+option(WAYDISPLAY_ENABLE_H265_SERVER_ENCODER "Enable H.265 server encoder backends when available" ON)
+option(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER "Enable H.265 client decoder backends when available" ON)
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
+
+
+# -----------------------------------------------------------------------------
+# Optional H.265 video codec backends
+# -----------------------------------------------------------------------------
+
+set(WAYDISPLAY_HAVE_H265_SERVER_ENCODER FALSE)
+set(WAYDISPLAY_HAVE_H265_CLIENT_DECODER FALSE)
+
+if(WAYDISPLAY_ENABLE_H265_SERVER_ENCODER)
+    pkg_check_modules(FFMPEG_H265_ENCODER QUIET IMPORTED_TARGET
+        libavcodec
+        libavutil
+        libswscale
+    )
+
+    if(FFMPEG_H265_ENCODER_FOUND)
+        set(WAYDISPLAY_HAVE_H265_SERVER_ENCODER TRUE)
+    else()
+        message(STATUS "H.265 server encoder backend disabled: libavcodec/libavutil/libswscale not found")
+    endif()
+endif()
+
+if(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER)
+    pkg_check_modules(FFMPEG_H265_DECODER QUIET IMPORTED_TARGET
+        libavcodec
+        libavutil
+        libswscale
+    )
+
+    if(FFMPEG_H265_DECODER_FOUND)
+        set(WAYDISPLAY_HAVE_H265_CLIENT_DECODER TRUE)
+    else()
+        message(STATUS "H.265 client decoder backend disabled: libavcodec/libavutil/libswscale not found")
+    endif()
+endif()
 
 function(waydisplay_apply_common_warnings target_name)
     target_compile_options(${target_name} PRIVATE
@@ -97,6 +135,7 @@ if(WAYDISPLAY_BUILD_CLIENT_SDL)
         src/client/client_async_tcp.cpp
         src/client/client_async_udp.cpp
         src/client/tile_reassembly.cpp
+        src/client/video_decoder.cpp
         src/client/sdl_input.cpp
         src/client/sdl_viewer.cpp
     )
@@ -107,12 +146,22 @@ if(WAYDISPLAY_BUILD_CLIENT_SDL)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/client
     )
 
+    target_compile_definitions(waydisplay_client_sdl PRIVATE
+        WAYDISPLAY_HAVE_H265_CLIENT_DECODER=$<BOOL:${WAYDISPLAY_HAVE_H265_CLIENT_DECODER}>
+    )
+
     target_link_libraries(waydisplay_client_sdl PRIVATE
         waydisplay_common
         PkgConfig::SDL3
         PkgConfig::LIBURING
         Threads::Threads
     )
+
+    if(WAYDISPLAY_HAVE_H265_CLIENT_DECODER)
+        target_link_libraries(waydisplay_client_sdl PRIVATE
+            PkgConfig::FFMPEG_H265_DECODER
+        )
+    endif()
 endif()
 
 # -----------------------------------------------------------------------------
@@ -247,6 +296,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/wd_async_tcp.c
             src/server/wd_async_udp.c
             src/server/wd_stream.c
+            src/server/wd_video_encoder.c
             src/server/wd_keyboard.c
             src/server/wd_keyboard_shortcuts_inhibit.c
             src/server/wd_clipboard.c
@@ -272,6 +322,8 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
         target_compile_definitions(waydisplay_server_wlroots PRIVATE
             WLR_USE_UNSTABLE
             WAYDISPLAY_ENABLE_XWAYLAND=$<BOOL:${WAYDISPLAY_ENABLE_XWAYLAND}>
+            WAYDISPLAY_ENABLE_H265_SERVER_ENCODER=$<BOOL:${WAYDISPLAY_ENABLE_H265_SERVER_ENCODER}>
+            WAYDISPLAY_HAVE_H265_SERVER_ENCODER=$<BOOL:${WAYDISPLAY_HAVE_H265_SERVER_ENCODER}>
         )
 
         target_include_directories(waydisplay_server_wlroots PRIVATE
@@ -289,6 +341,12 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             PkgConfig::LIBURING
             Threads::Threads
         )
+
+        if(WAYDISPLAY_HAVE_H265_SERVER_ENCODER)
+            target_link_libraries(waydisplay_server_wlroots PRIVATE
+                PkgConfig::FFMPEG_H265_ENCODER
+            )
+        endif()
     else()
         message(WARNING
             "Skipping waydisplay_server_wlroots because one or more dependencies were not found.\n"
@@ -341,6 +399,10 @@ message(STATUS "  WAYDISPLAY_BUILD_LEGACY_PROTO=${WAYDISPLAY_BUILD_LEGACY_PROTO}
 message(STATUS "  WAYDISPLAY_ENABLE_LOGGING=${WAYDISPLAY_ENABLE_LOGGING}")
 message(STATUS "  WAYDISPLAY_ENABLE_DEBUG_LOGGING=${WAYDISPLAY_ENABLE_DEBUG_LOGGING}")
 message(STATUS "  WAYDISPLAY_ENABLE_XWAYLAND=${WAYDISPLAY_ENABLE_XWAYLAND}")
+message(STATUS "  WAYDISPLAY_ENABLE_H265_SERVER_ENCODER=${WAYDISPLAY_ENABLE_H265_SERVER_ENCODER}")
+message(STATUS "  WAYDISPLAY_ENABLE_H265_CLIENT_DECODER=${WAYDISPLAY_ENABLE_H265_CLIENT_DECODER}")
+message(STATUS "  WAYDISPLAY_HAVE_H265_SERVER_ENCODER=${WAYDISPLAY_HAVE_H265_SERVER_ENCODER}")
+message(STATUS "  WAYDISPLAY_HAVE_H265_CLIENT_DECODER=${WAYDISPLAY_HAVE_H265_CLIENT_DECODER}")
 
 if(DEFINED WAYDISPLAY_WLROOTS_MODULE)
     message(STATUS "  WAYDISPLAY_WLROOTS_MODULE=${WAYDISPLAY_WLROOTS_MODULE}")

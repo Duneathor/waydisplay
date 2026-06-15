@@ -78,6 +78,7 @@ extern "C" {
 #define WD_PRESSED_KEY_CAP   256
 
 struct wd_server;
+struct wd_video_encoder;
 
 struct wd_view {
     struct wd_server* server;
@@ -229,6 +230,14 @@ struct wd_stats {
     uint64_t tile_choice_uncompressed_wire_sum;
     uint64_t tile_choice_chosen_wire_sum;
     uint64_t tile_choice_saved_wire_sum;
+
+    uint64_t stream_mode_frame_samples;
+    uint64_t stream_mode_dirty_coverage_per_mille_sum;
+    uint64_t stream_mode_dirty_coverage_per_mille_peak;
+    uint64_t stream_mode_pending_coverage_per_mille_sum;
+    uint64_t stream_mode_pending_coverage_per_mille_peak;
+    uint64_t stream_mode_budget_pressure_frames;
+
     uint64_t tile_size_128x64_sent;
     uint64_t tile_size_64x64_sent;
     uint64_t tile_size_32x32_sent;
@@ -243,6 +252,21 @@ struct wd_stats {
     uint64_t tcp_selection_channel_rx;
     uint64_t tcp_selection_channel_accepted;
     uint64_t tcp_selection_channel_closed;
+    uint64_t tcp_video_channel_rx;
+    uint64_t tcp_video_channel_accepted;
+    uint64_t tcp_video_channel_closed;
+
+    uint64_t video_keyframe_attempts;
+    uint64_t video_keyframes_tx;
+    uint64_t video_tcp_bytes_tx;
+    uint64_t video_encode_ns;
+    uint64_t video_encode_failed;
+    uint64_t video_tcp_send_failed;
+    uint64_t video_keyframe_skipped_pending;
+    uint64_t video_control_frames_tx;
+    uint64_t video_end_of_stream_tx;
+    uint64_t video_resize_resets;
+    uint64_t video_resets;
 
     uint64_t client_stats_rx;
     uint64_t client_udp_packets_rx;
@@ -363,6 +387,14 @@ struct wd_stats {
     uint64_t retx_req_stale_generation;
 };
 
+enum wd_stream_mode {
+    WD_STREAM_MODE_TILES = 0,
+    WD_STREAM_MODE_VIDEO_CANDIDATE = 1,
+    WD_STREAM_MODE_VIDEO_READY = 2,
+    WD_STREAM_MODE_VIDEO_ACTIVE = 3,
+    WD_STREAM_MODE_TILE_RECOVERY = 4,
+};
+
 struct wd_stats_log_state {
     struct wd_stats totals;
     bool            have_prev_state;
@@ -375,15 +407,32 @@ struct wd_stats_log_state {
     uint16_t        prev_tile_height;
     bool            prev_input_channel;
     bool            prev_selection_channel;
+    bool            prev_video_channel;
+    bool            prev_video_negotiated;
+    bool            prev_video_encoder;
+    uint8_t         prev_video_mode;
+    uint8_t         prev_video_min_dirty_percent;
+    uint16_t        prev_video_enter_seconds;
+    uint32_t        prev_video_bitrate_kib;
+    enum wd_stream_mode prev_stream_mode;
 };
 
 struct wd_stream_policy {
     uint16_t target_fps;
     uint16_t effective_target_fps;
 
+    enum wd_stream_mode stream_mode;
+    uint8_t video_mode;
+    uint8_t video_min_dirty_percent;
+    uint16_t video_enter_seconds;
+    uint32_t video_bitrate_kib_per_second;
+    uint32_t video_candidate_seconds;
+    uint32_t tile_recovery_seconds;
+
     uint32_t frame_rate_good_seconds;
 
     uint64_t last_frame_send_ns;
+    uint64_t last_video_frame_send_ns;
 
     uint64_t limited_udp_bytes_per_second;
     uint64_t limited_udp_rate_floor;
@@ -444,6 +493,7 @@ struct wd_net_state {
 
     bool encoder_batch_active;
     void* encoder_pool;
+    struct wd_video_encoder* video_encoder;
 
     uint16_t* dirty_queue;
     bool*     dirty_queued;
@@ -469,6 +519,7 @@ struct wd_net_state {
     bool     pending_cursor_shape_dirty;
 
     struct wd_async_tcp_sender* control_tx;
+    struct wd_async_tcp_sender* video_tx;
     struct wd_async_udp_sender* udp_tx;
     uint64_t                    control_tx_failed_seen;
     uint64_t                    control_tx_queued_seen;
@@ -484,11 +535,16 @@ struct wd_net_state {
     int tcp_fd;
     int input_tcp_fd;
     int selection_tcp_fd;
+    int video_tcp_fd;
     int udp_fd;
 
     uint16_t tcp_port;
     uint8_t session_id;
     bool    config_update_pending;
+
+    bool     video_stream_negotiated;
+    uint32_t video_codecs;
+    uint16_t video_transport;
 
     struct sockaddr_in      client_udp_addr;
     struct wd_stream_policy stream_policy;
@@ -743,6 +799,7 @@ void wd_server_mark_view_dirty(struct wd_view* view);
 void wd_server_mark_view_move_dirty(struct wd_view* view, int old_x, int old_y);
 bool wd_server_set_tile_size(struct wd_server* server, uint16_t tile_width, uint16_t tile_height);
 bool wd_server_reconfigure_tile_size_locked(struct wd_server* server, uint16_t tile_width, uint16_t tile_height);
+void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, bool notify_client, bool resize);
 bool wd_server_send_current_config_locked(struct wd_server* server);
 bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t height);
 bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint32_t height);

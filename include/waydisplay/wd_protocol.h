@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 17u
+#define WD_PROTOCOL_VERSION 19u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -44,6 +44,8 @@ enum wd_message_type {
     WD_MSG_CLIENT_STATS            = 19,
     WD_MSG_LINK_PROBE_PING         = 20,
     WD_MSG_LINK_PROBE_PONG         = 21,
+    WD_MSG_VIDEO_CHANNEL_HELLO     = 22,
+    WD_MSG_VIDEO_FRAME             = 23,
     WD_MSG_ERROR                   = 255,
 };
 
@@ -69,6 +71,37 @@ enum wd_pixel_format {
 
 enum wd_compression_mode {
     WD_COMPRESSION_ZSTD = 1,
+};
+
+enum wd_client_capability {
+    WD_CLIENT_CAP_VIDEO_STREAM = 1u << 0,
+};
+
+enum wd_video_codec {
+    WD_VIDEO_CODEC_H265 = 1u << 0,
+};
+
+enum wd_video_transport {
+    WD_VIDEO_TRANSPORT_TCP = 1,
+};
+
+enum wd_video_mode {
+    WD_VIDEO_MODE_AUTO  = 0,
+    WD_VIDEO_MODE_OFF   = 1,
+    WD_VIDEO_MODE_FORCE = 2,
+};
+
+#define WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT 60u
+#define WD_VIDEO_MIN_DIRTY_PERCENT_MAX     100u
+#define WD_VIDEO_ENTER_SECONDS_DEFAULT     3u
+#define WD_VIDEO_ENTER_SECONDS_MAX         60u
+
+
+enum wd_video_frame_flags {
+    WD_VIDEO_FRAME_CONFIG        = 1u << 0,
+    WD_VIDEO_FRAME_KEYFRAME      = 1u << 1,
+    WD_VIDEO_FRAME_RESIZE        = 1u << 2,
+    WD_VIDEO_FRAME_END_OF_STREAM = 1u << 3,
 };
 
 enum wd_cursor_shape {
@@ -125,11 +158,33 @@ struct wd_client_hello_payload {
      * and do not raise the server-selected throughput-probe ceiling.
      */
     uint32_t limited_udp_kib_per_second;
+
+    /* Bitmask from enum wd_client_capability. */
+    uint32_t capabilities;
+
+    /* Bitmask from enum wd_video_codec. 0 means no video-stream codec. */
+    uint32_t video_codecs;
+
+    /* Preferred enum wd_video_transport value for a future video stream. */
+    uint16_t video_transport;
+
+    /* enum wd_video_mode: auto/off/force. */
+    uint8_t video_mode;
+
+    /* Dirty coverage threshold for auto video-mode entry. 0 means default. */
+    uint8_t video_min_dirty_percent;
+
+    /* Seconds the auto video criteria must remain stable. 0 means default. */
+    uint16_t video_enter_seconds;
+
+    /* Target video encoder bitrate in KiB/s. 0 means derive from link budget. */
+    uint32_t video_bitrate_kib_per_second;
 };
 
 enum wd_server_capability {
     WD_SERVER_CAP_INPUT_CHANNEL     = 1u << 0,
     WD_SERVER_CAP_SELECTION_CHANNEL = 1u << 1,
+    WD_SERVER_CAP_VIDEO_STREAM      = 1u << 2,
 };
 
 struct wd_server_config_payload {
@@ -146,6 +201,10 @@ struct wd_server_config_payload {
     uint16_t zstd_level;
     uint16_t udp_payload_target;
     uint32_t capabilities;
+
+    /* Negotiated video-stream parameters. Valid only with WD_SERVER_CAP_VIDEO_STREAM. */
+    uint32_t video_codecs;
+    uint16_t video_transport;
 
     /* Conservative link-profile timers derived by the server's connect-time
      * probe. Values are milliseconds; 0 means use the compiled default. */
@@ -234,6 +293,32 @@ struct wd_input_channel_hello_payload {
 struct wd_selection_channel_hello_payload {
     uint8_t session_id;
 };
+
+struct wd_video_channel_hello_payload {
+    uint8_t session_id;
+    uint32_t video_codecs;
+    uint16_t video_transport;
+};
+
+struct wd_video_frame_payload_header {
+    uint8_t session_id;
+
+    /* enum wd_video_codec bit value; first implementation is WD_VIDEO_CODEC_H265. */
+    uint32_t codec;
+
+    /* Bitmask from enum wd_video_frame_flags. */
+    uint16_t flags;
+
+    uint64_t frame_id;
+    uint64_t pts_usec;
+    uint16_t width;
+    uint16_t height;
+
+    /* Bytes following this header in the same WD_MSG_VIDEO_FRAME payload. */
+    uint32_t data_size;
+};
+
+#define WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES (64u * 1024u * 1024u)
 
 struct wd_keyboard_event_payload {
     uint8_t session_id;
@@ -727,7 +812,7 @@ WD_PACKED_END
 #if defined(__cplusplus)
 static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 36, "unexpected wd_udp_tile_packet_header size");
-static_assert(sizeof(struct wd_client_hello_payload) == 12, "unexpected wd_client_hello_payload size");
+static_assert(sizeof(struct wd_client_hello_payload) == 30, "unexpected wd_client_hello_payload size");
 static_assert(sizeof(struct wd_tile_generation_entry) == 10, "unexpected wd_tile_generation_entry size");
 static_assert(sizeof(struct wd_tile_summary_payload_header) == 12, "unexpected wd_tile_summary_payload_header size");
 static_assert(sizeof(struct wd_retransmit_request_payload_header) == 3, "unexpected wd_retransmit_request_payload_header size");
@@ -741,13 +826,15 @@ static_assert(sizeof(struct wd_retransmit_entry) == 10, "unexpected wd_retransmi
 static_assert(sizeof(struct wd_client_stats_payload) == 149, "unexpected wd_client_stats_payload size");
 static_assert(sizeof(struct wd_input_channel_hello_payload) == 1, "unexpected wd_input_channel_hello_payload size");
 static_assert(sizeof(struct wd_selection_channel_hello_payload) == 1, "unexpected wd_selection_channel_hello_payload size");
+static_assert(sizeof(struct wd_video_channel_hello_payload) == 7, "unexpected wd_video_channel_hello_payload size");
+static_assert(sizeof(struct wd_video_frame_payload_header) == 31, "unexpected wd_video_frame_payload_header size");
 static_assert(sizeof(struct wd_selection_payload_header) == 7, "unexpected wd_selection_payload_header size");
 static_assert(sizeof(struct wd_cursor_shape_payload) == 3, "unexpected wd_cursor_shape_payload size");
 static_assert(sizeof(struct wd_display_resize_payload) == 5, "unexpected wd_display_resize_payload size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 36, "unexpected wd_udp_tile_packet_header size");
-_Static_assert(sizeof(struct wd_client_hello_payload) == 12, "unexpected wd_client_hello_payload size");
+_Static_assert(sizeof(struct wd_client_hello_payload) == 30, "unexpected wd_client_hello_payload size");
 _Static_assert(sizeof(struct wd_tile_generation_entry) == 10, "unexpected wd_tile_generation_entry size");
 _Static_assert(sizeof(struct wd_tile_summary_payload_header) == 12, "unexpected wd_tile_summary_payload_header size");
 _Static_assert(sizeof(struct wd_retransmit_request_payload_header) == 3, "unexpected wd_retransmit_request_payload_header size");
@@ -761,10 +848,40 @@ _Static_assert(sizeof(struct wd_retransmit_entry) == 10, "unexpected wd_retransm
 _Static_assert(sizeof(struct wd_client_stats_payload) == 149, "unexpected wd_client_stats_payload size");
 _Static_assert(sizeof(struct wd_input_channel_hello_payload) == 1, "unexpected wd_input_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_selection_channel_hello_payload) == 1, "unexpected wd_selection_channel_hello_payload size");
+_Static_assert(sizeof(struct wd_video_channel_hello_payload) == 7, "unexpected wd_video_channel_hello_payload size");
+_Static_assert(sizeof(struct wd_video_frame_payload_header) == 31, "unexpected wd_video_frame_payload_header size");
 _Static_assert(sizeof(struct wd_selection_payload_header) == 7, "unexpected wd_selection_payload_header size");
 _Static_assert(sizeof(struct wd_cursor_shape_payload) == 3, "unexpected wd_cursor_shape_payload size");
 _Static_assert(sizeof(struct wd_display_resize_payload) == 5, "unexpected wd_display_resize_payload size");
 #endif
+
+
+static inline bool wd_video_frame_payload_size_is_valid(const struct wd_video_frame_payload_header* header,
+                                                        uint32_t tcp_payload_size) {
+    if (!header || tcp_payload_size < sizeof(*header))
+    {
+        return false;
+    }
+
+    const uint32_t max_data_size = WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES;
+    const uint32_t expected_data_size = tcp_payload_size - (uint32_t)sizeof(*header);
+    return header->data_size == expected_data_size && header->data_size <= max_data_size;
+}
+
+static inline const uint8_t* wd_video_frame_payload_data(const void* payload, uint32_t tcp_payload_size) {
+    if (!payload || tcp_payload_size < sizeof(struct wd_video_frame_payload_header))
+    {
+        return NULL;
+    }
+
+    const struct wd_video_frame_payload_header* header = (const struct wd_video_frame_payload_header*)payload;
+    if (!wd_video_frame_payload_size_is_valid(header, tcp_payload_size))
+    {
+        return NULL;
+    }
+
+    return (const uint8_t*)payload + sizeof(*header);
+}
 
 #ifdef __cplusplus
 }

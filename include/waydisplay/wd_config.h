@@ -112,6 +112,8 @@ extern "C" {
 #define WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND     (25ull * 1024ull)
 #define WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND     (1000ull * 1024ull * 1024ull * 1024ull)
 #define WD_LIMITED_MODE_THROUGHPUT_SAFETY_PERCENT    85u
+#define WD_VIDEO_DEFAULT_BITRATE_KIB_PER_SECOND       8192u
+#define WD_VIDEO_DERIVED_BITRATE_MAX_KIB_PER_SECOND   50000u
 
 /* Stream link health policy.  Tile size is not adapted globally: each dirty
  * tile is encoded at the largest supported wire size that satisfies the

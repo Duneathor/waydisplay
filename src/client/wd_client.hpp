@@ -15,6 +15,7 @@ namespace waydisplay {
 
 struct ClientAsyncTcpSender;
 struct ClientAsyncUdpReceiver;
+struct ClientVideoDecoder;
 
 struct ClientAsyncTcpStatsSeen {
     uint64_t queued            = 0;
@@ -36,9 +37,13 @@ struct ClientAsyncUdpStatsSeen {
 };
 
 struct ClientStreamConfig {
-    uint16_t target_fps                 = WD_CLIENT_DEFAULT_TARGET_FPS;
-    uint32_t limited_udp_kib_per_second = 0;
-    bool     disable_vsync              = false;
+    uint16_t target_fps                    = WD_CLIENT_DEFAULT_TARGET_FPS;
+    uint32_t limited_udp_kib_per_second    = 0;
+    uint8_t  video_mode                    = WD_VIDEO_MODE_AUTO;
+    uint8_t  video_min_dirty_percent       = WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT;
+    uint16_t video_enter_seconds           = WD_VIDEO_ENTER_SECONDS_DEFAULT;
+    uint32_t video_bitrate_kib_per_second  = 0;
+    bool     disable_vsync                 = false;
 };
 
 struct ClientDirtyRect {
@@ -228,12 +233,16 @@ struct ClientState {
     int tcp_fd           = -1;
     int input_tcp_fd     = -1;
     int selection_tcp_fd = -1;
+    int video_tcp_fd     = -1;
     int udp_fd           = -1;
 
     ClientAsyncTcpSender* control_tcp_sender   = nullptr;
     ClientAsyncTcpSender* input_tcp_sender     = nullptr;
     ClientAsyncTcpSender* selection_tcp_sender = nullptr;
     ClientAsyncUdpReceiver* udp_receiver       = nullptr;
+    ClientVideoDecoder*     video_decoder      = nullptr;
+    std::mutex              video_decoder_mutex;
+    bool                    video_decoder_needs_keyframe = true;
     std::mutex            async_tcp_stats_mutex;
     ClientAsyncTcpStatsSeen control_tcp_seen{};
     ClientAsyncTcpStatsSeen input_tcp_seen{};
@@ -247,6 +256,10 @@ struct ClientState {
     uint16_t    desired_height  = 0;
 
     ClientStreamConfig stream_config;
+
+    bool     video_stream_negotiated = false;
+    uint32_t video_codecs            = 0;
+    uint16_t video_transport         = 0;
 
     wd_server_config_payload config{};
 
@@ -330,6 +343,7 @@ struct ClientState {
     ClientStats         stats;
     ClientStatsLogState stats_log;
     std::thread         tcp_thread;
+    std::thread         video_thread;
 };
 
 } // namespace waydisplay

@@ -3,6 +3,7 @@
 #include "wd_server.h"
 #include "wd_async_tcp.h"
 #include "wd_async_udp.h"
+#include "wd_video_encoder.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -18,6 +19,20 @@
 #include <poll.h>
 #include <unistd.h>
 
+
+static const char* wd_video_mode_name(uint8_t mode) {
+    switch (mode)
+    {
+    case WD_VIDEO_MODE_AUTO:
+        return "auto";
+    case WD_VIDEO_MODE_OFF:
+        return "off";
+    case WD_VIDEO_MODE_FORCE:
+        return "force";
+    default:
+        return "unknown";
+    }
+}
 
 static void wd_format_sockaddr_in(const struct sockaddr_in* addr, char* buf, size_t buf_size) {
     char ip[INET_ADDRSTRLEN];
@@ -284,9 +299,12 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->tcp_fd               = -1;
     net->input_tcp_fd         = -1;
     net->selection_tcp_fd     = -1;
+    net->video_tcp_fd         = -1;
     net->listen_fd            = -1;
     net->control_tx           = NULL;
+    net->video_tx             = NULL;
     net->udp_tx               = NULL;
+    net->video_encoder        = NULL;
     net->udp_fd               = -1;
     net->session_id           = 0;
     net->dirty_region_rng = 0;
@@ -311,9 +329,21 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     {
         wd_async_tcp_sender_set_max_pending_bytes(net->control_tx, 4ull * 1024ull * 1024ull);
     }
+    if (!wd_async_tcp_sender_create(&net->video_tx, 32))
+    {
+        net->video_tx = NULL;
+    }
+    else
+    {
+        wd_async_tcp_sender_set_max_pending_bytes(net->video_tx, 8ull * 1024ull * 1024ull);
+    }
     if (!wd_async_udp_sender_create(&net->udp_tx, 4096))
     {
         net->udp_tx = NULL;
+    }
+    if (!wd_video_encoder_create(&net->video_encoder))
+    {
+        net->video_encoder = NULL;
     }
     if (!net->dirty_regions || !net->dirty_region_queued || !net->dirty_epochs || !net->dirty_queue || !net->dirty_queued ||
         !net->dirty_queue_enqueued_ns || !net->retransmit_queue ||
@@ -333,9 +363,13 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         free(net->summary_dirty_tiles);
         free(net->summary_dirty_queue);
         wd_async_tcp_sender_destroy(net->control_tx);
+        wd_async_tcp_sender_destroy(net->video_tx);
         wd_async_udp_sender_destroy(net->udp_tx);
+        wd_video_encoder_destroy(net->video_encoder);
         net->control_tx                  = NULL;
+        net->video_tx                    = NULL;
         net->udp_tx                      = NULL;
+        net->video_encoder               = NULL;
         net->dirty_regions               = NULL;
         net->dirty_region_queued         = NULL;
         net->dirty_region_count          = 0;
@@ -394,6 +428,11 @@ void wd_net_destroy(struct wd_server* server) {
         close(net->selection_tcp_fd);
         net->selection_tcp_fd = -1;
     }
+    if (net->video_tcp_fd >= 0)
+    {
+        close(net->video_tcp_fd);
+        net->video_tcp_fd = -1;
+    }
 
     if (net->udp_fd >= 0)
     {
@@ -402,9 +441,13 @@ void wd_net_destroy(struct wd_server* server) {
     }
 
     wd_async_tcp_sender_destroy(net->control_tx);
+    wd_async_tcp_sender_destroy(net->video_tx);
     wd_async_udp_sender_destroy(net->udp_tx);
+    wd_video_encoder_destroy(net->video_encoder);
     net->control_tx = NULL;
+    net->video_tx = NULL;
     net->udp_tx = NULL;
+    net->video_encoder = NULL;
 
     free(net->dirty_regions);
     net->dirty_regions = NULL;
@@ -901,6 +944,12 @@ static void wd_server_fill_config(struct wd_server* server, uint8_t session_id, 
     cfg->zstd_level         = WD_ZSTD_LEVEL;
     cfg->udp_payload_target = udp_payload_target;
     cfg->capabilities       = WD_SERVER_CAP_INPUT_CHANNEL | WD_SERVER_CAP_SELECTION_CHANNEL;
+    if (server->net.video_stream_negotiated)
+    {
+        cfg->capabilities |= WD_SERVER_CAP_VIDEO_STREAM;
+        cfg->video_codecs    = server->net.video_codecs;
+        cfg->video_transport = server->net.video_transport;
+    }
     cfg->link_rtt_ms        = wd_ns_to_ms_ceil_u16(server->net.link_rtt_ns);
     cfg->summary_retransmit_grace_ms  = wd_ns_to_ms_ceil_u16(server->net.summary_retransmit_grace_ns);
     cfg->retransmit_rerequest_ms      = wd_ns_to_ms_ceil_u16(server->net.retransmit_rerequest_ns);
@@ -1006,7 +1055,8 @@ static void wd_server_handle_pointer_message(struct wd_server* server, const str
     }
 }
 
-static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_id, int* input_tcp_fd, int* selection_tcp_fd) {
+static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_id, int* input_tcp_fd, int* selection_tcp_fd,
+                                     int* video_tcp_fd) {
     struct wd_net_state* net = &server->net;
 
     struct sockaddr_in peer_addr;
@@ -1058,6 +1108,21 @@ static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_i
             accepted          = true;
         }
     }
+    else if (type == WD_MSG_VIDEO_CHANNEL_HELLO && payload_size >= sizeof(struct wd_video_channel_hello_payload) &&
+             video_tcp_fd && *video_tcp_fd < 0)
+    {
+        struct wd_video_channel_hello_payload hello;
+        memset(&hello, 0, sizeof(hello));
+        memcpy(&hello, payload, sizeof(hello));
+
+        if (hello.session_id == session_id && net->video_stream_negotiated &&
+            (hello.video_codecs & net->video_codecs & WD_VIDEO_CODEC_H265) != 0 &&
+            hello.video_transport == net->video_transport)
+        {
+            *video_tcp_fd = fd;
+            accepted      = true;
+        }
+    }
 
     free(payload);
 
@@ -1071,14 +1136,20 @@ static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_i
     return true;
 }
 
-static void wd_accept_optional_aux_channels(struct wd_server* server, uint8_t session_id, int* input_tcp_fd, int* selection_tcp_fd) {
+static void wd_accept_optional_aux_channels(struct wd_server* server, uint8_t session_id, int* input_tcp_fd, int* selection_tcp_fd,
+                                            int* video_tcp_fd) {
     struct wd_net_state* net = &server->net;
     const uint64_t       deadline_ns = wd_now_ns() + 500ull * 1000ull * 1000ull;
 
     *input_tcp_fd     = -1;
     *selection_tcp_fd = -1;
+    if (video_tcp_fd)
+    {
+        *video_tcp_fd = -1;
+    }
 
-    while ((*input_tcp_fd < 0 || *selection_tcp_fd < 0) && wd_now_ns() < deadline_ns)
+    while ((*input_tcp_fd < 0 || *selection_tcp_fd < 0 ||
+            (video_tcp_fd && net->video_stream_negotiated && *video_tcp_fd < 0)) && wd_now_ns() < deadline_ns)
     {
         uint64_t now_ns = wd_now_ns();
         if (now_ns >= deadline_ns)
@@ -1109,7 +1180,7 @@ static void wd_accept_optional_aux_channels(struct wd_server* server, uint8_t se
             break;
         }
 
-        (void)wd_accept_aux_channel_fd(server, session_id, input_tcp_fd, selection_tcp_fd);
+        (void)wd_accept_aux_channel_fd(server, session_id, input_tcp_fd, selection_tcp_fd, video_tcp_fd);
     }
 }
 
@@ -1261,6 +1332,10 @@ void* wd_net_thread_main(void* arg) {
             }
         }
 
+        const bool client_video_tcp_h265 = (hello.capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0 &&
+                                           (hello.video_codecs & WD_VIDEO_CODEC_H265) != 0 &&
+                                           hello.video_transport == WD_VIDEO_TRANSPORT_TCP;
+
         struct wd_server_config_payload cfg;
         uint8_t                         session_id = 0;
 
@@ -1291,9 +1366,24 @@ void* wd_net_thread_main(void* arg) {
 
         pthread_mutex_lock(&net->lock);
         net->udp_payload_target = selected_udp_payload;
+        net->video_stream_negotiated = client_video_tcp_h265;
+        net->video_codecs = client_video_tcp_h265 ? WD_VIDEO_CODEC_H265 : 0;
+        net->video_transport = client_video_tcp_h265 ? WD_VIDEO_TRANSPORT_TCP : 0;
         wd_stream_policy_set_limited_udp_byte_rate(&net->stream_policy, selected_limited_udp_rate);
         wd_stream_policy_apply_client_hello(&net->stream_policy, &hello);
+        WD_LOG_INFO("video mode control: mode=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u negotiated=%s",
+                    wd_video_mode_name(net->stream_policy.video_mode),
+                    net->stream_policy.video_bitrate_kib_per_second,
+                    net->stream_policy.video_min_dirty_percent,
+                    net->stream_policy.video_enter_seconds,
+                    client_video_tcp_h265 ? "yes" : "no");
         pthread_mutex_unlock(&net->lock);
+
+        if (client_video_tcp_h265 && !wd_video_encoder_available(net->video_encoder))
+        {
+            WD_LOG_INFO("video stream negotiated but H.265 encoder backend is unavailable; backend=%s",
+                        wd_video_encoder_backend_name(net->video_encoder));
+        }
 
         run_tcp_link_probe(server, tcp_fd);
 
@@ -1308,7 +1398,8 @@ void* wd_net_thread_main(void* arg) {
 
         int input_tcp_fd     = -1;
         int selection_tcp_fd = -1;
-        wd_accept_optional_aux_channels(server, cfg.session_id, &input_tcp_fd, &selection_tcp_fd);
+        int video_tcp_fd     = -1;
+        wd_accept_optional_aux_channels(server, cfg.session_id, &input_tcp_fd, &selection_tcp_fd, &video_tcp_fd);
 
         wd_clear_tcp_receive_timeout(tcp_fd);
 
@@ -1317,6 +1408,7 @@ void* wd_net_thread_main(void* arg) {
         net->tcp_fd           = tcp_fd;
         net->input_tcp_fd     = input_tcp_fd;
         net->selection_tcp_fd = selection_tcp_fd;
+        net->video_tcp_fd     = video_tcp_fd;
         if (input_tcp_fd >= 0)
         {
             net->stats.tcp_input_channel_accepted++;
@@ -1324,6 +1416,10 @@ void* wd_net_thread_main(void* arg) {
         if (selection_tcp_fd >= 0)
         {
             net->stats.tcp_selection_channel_accepted++;
+        }
+        if (video_tcp_fd >= 0)
+        {
+            net->stats.tcp_video_channel_accepted++;
         }
         net->client_udp_addr      = client_udp_addr;
         net->client_connected     = true;
@@ -1407,9 +1503,11 @@ void* wd_net_thread_main(void* arg) {
             wd_format_socket_endpoint(net->udp_fd, false, udp_local, sizeof(udp_local));
             wd_format_sockaddr_in(&client_udp_addr, udp_remote, sizeof(udp_remote));
 
-            WD_LOG_INFO("client connected; control_tcp=%s<->%s udp=%s->%s input_channel=%s selection_channel=%s display=%ux%u tile=%ux%u fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
+            WD_LOG_INFO("client connected; control_tcp=%s<->%s udp=%s->%s input_channel=%s selection_channel=%s video_channel=%s video_stream=%s video_codec=%s video_transport=%s display=%ux%u tile=%ux%u fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
                         control_local, control_remote, udp_local, udp_remote, input_tcp_fd >= 0 ? "yes" : "no",
-                        selection_tcp_fd >= 0 ? "yes" : "no", server->display_width, server->display_height,
+                        selection_tcp_fd >= 0 ? "yes" : "no", video_tcp_fd >= 0 ? "yes" : "no", client_video_tcp_h265 ? "yes" : "no",
+                        client_video_tcp_h265 ? "h265" : "none", client_video_tcp_h265 ? "tcp" : "none",
+                        server->display_width, server->display_height,
                         server->tile_width, server->tile_height, hello.target_fps, hello.limited_udp_kib_per_second,
                         (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
 
@@ -1421,19 +1519,25 @@ void* wd_net_thread_main(void* arg) {
             {
                 wd_log_tcp_channel_endpoint("selection", selection_tcp_fd);
             }
+            if (video_tcp_fd >= 0)
+            {
+                wd_log_tcp_channel_endpoint("video", video_tcp_fd);
+            }
         }
 
 
         while (net->running)
         {
-            struct pollfd pfds[4];
+            struct pollfd pfds[5];
             nfds_t        nfds            = 0;
             nfds_t        control_pfd_idx = 0;
             nfds_t        input_pfd_idx   = 0;
             nfds_t        select_pfd_idx  = 0;
+            nfds_t        video_pfd_idx   = 0;
             nfds_t        listen_pfd_idx  = 0;
             bool          have_input_pfd  = false;
             bool          have_select_pfd = false;
+            bool          have_video_pfd  = false;
             bool          have_listen_pfd = false;
 
             memset(pfds, 0, sizeof(pfds));
@@ -1460,7 +1564,17 @@ void* wd_net_thread_main(void* arg) {
                 nfds++;
             }
 
-            if (input_tcp_fd < 0 || selection_tcp_fd < 0)
+            if (video_tcp_fd >= 0)
+            {
+                video_pfd_idx         = nfds;
+                have_video_pfd        = true;
+                pfds[nfds].fd         = video_tcp_fd;
+                pfds[nfds].events     = POLLIN;
+                nfds++;
+            }
+
+            if (input_tcp_fd < 0 || selection_tcp_fd < 0 ||
+                (client_video_tcp_h265 && video_tcp_fd < 0))
             {
                 listen_pfd_idx        = nfds;
                 have_listen_pfd       = true;
@@ -1485,8 +1599,9 @@ void* wd_net_thread_main(void* arg) {
             {
                 int old_input_fd     = input_tcp_fd;
                 int old_selection_fd = selection_tcp_fd;
+                int old_video_fd     = video_tcp_fd;
 
-                (void)wd_accept_aux_channel_fd(server, cfg.session_id, &input_tcp_fd, &selection_tcp_fd);
+                (void)wd_accept_aux_channel_fd(server, cfg.session_id, &input_tcp_fd, &selection_tcp_fd, &video_tcp_fd);
 
                 if (input_tcp_fd >= 0 && old_input_fd < 0)
                 {
@@ -1504,6 +1619,15 @@ void* wd_net_thread_main(void* arg) {
                     net->stats.tcp_selection_channel_accepted++;
                     pthread_mutex_unlock(&net->lock);
                     wd_log_tcp_channel_endpoint("late selection", selection_tcp_fd);
+                }
+
+                if (video_tcp_fd >= 0 && old_video_fd < 0)
+                {
+                    pthread_mutex_lock(&net->lock);
+                    net->video_tcp_fd = video_tcp_fd;
+                    net->stats.tcp_video_channel_accepted++;
+                    pthread_mutex_unlock(&net->lock);
+                    wd_log_tcp_channel_endpoint("late video", video_tcp_fd);
                 }
             }
 
@@ -1577,6 +1701,35 @@ void* wd_net_thread_main(void* arg) {
                     }
 
                     free(selection_payload);
+                }
+            }
+
+            if (have_video_pfd && (pfds[video_pfd_idx].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))
+            {
+                uint16_t video_type         = 0;
+                uint8_t* video_payload      = NULL;
+                uint32_t video_payload_size = 0;
+
+                if (!wd_recv_tcp_message(video_tcp_fd, &video_type, &video_payload, &video_payload_size))
+                {
+                    close(video_tcp_fd);
+                    video_tcp_fd = -1;
+
+                    pthread_mutex_lock(&net->lock);
+                    if (net->video_tcp_fd >= 0)
+                    {
+                        net->video_tcp_fd = -1;
+                        net->stats.tcp_video_channel_closed++;
+                        wd_stream_video_reset_locked(server, "video channel closed", false, false);
+                    }
+                    pthread_mutex_unlock(&net->lock);
+                }
+                else
+                {
+                    pthread_mutex_lock(&net->lock);
+                    net->stats.tcp_video_channel_rx++;
+                    pthread_mutex_unlock(&net->lock);
+                    free(video_payload);
                 }
             }
 
@@ -1750,9 +1903,17 @@ void* wd_net_thread_main(void* arg) {
         {
             net->selection_tcp_fd = -1;
         }
+        if (net->video_tcp_fd == video_tcp_fd)
+        {
+            net->video_tcp_fd = -1;
+        }
 
         net->client_connected    = false;
         net->config_update_pending = false;
+        wd_stream_video_reset_locked(server, "client disconnected", false, false);
+        net->video_stream_negotiated = false;
+        net->video_codecs = 0;
+        net->video_transport = 0;
         net->key_queue_count     = 0;
         net->pointer_queue_count = 0;
         net->key_state_reset_pending = true;
@@ -1780,6 +1941,11 @@ void* wd_net_thread_main(void* arg) {
             close(selection_tcp_fd);
             selection_tcp_fd = -1;
         }
+        if (video_tcp_fd >= 0)
+        {
+            close(video_tcp_fd);
+            video_tcp_fd = -1;
+        }
 
         WD_LOG_INFO("client disconnected; waiting for reconnect");
     }
@@ -1787,6 +1953,7 @@ void* wd_net_thread_main(void* arg) {
     wd_close_fd(&net->tcp_fd);
     wd_close_fd(&net->input_tcp_fd);
     wd_close_fd(&net->selection_tcp_fd);
+    wd_close_fd(&net->video_tcp_fd);
     wd_close_fd(&net->udp_fd);
     wd_close_fd(&net->listen_fd);
 

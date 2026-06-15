@@ -178,6 +178,7 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
     }
 
     wd_async_tcp_sender_reap(server->net.control_tx);
+    wd_async_tcp_sender_reap(server->net.video_tx);
     wd_async_udp_sender_reap(server->net.udp_tx);
 
     if (server->net.control_tx)
@@ -928,6 +929,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     server->net.summary_dirty_count    = 0;
     server->last_summary_ns            = 0;
     server->last_delta_summary_ns      = 0;
+    wd_stream_video_reset_locked(server, "display resize", true, true);
     wd_server_advance_stream_session_locked(server);
     wd_stream_invalidate_all_tiles_locked(server);
 

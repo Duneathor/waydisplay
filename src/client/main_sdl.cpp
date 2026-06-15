@@ -21,6 +21,10 @@ void usage(const char* argv0) {
                  "  --size <WxH>                 Request remote display size\n"
                  "  --rate-kib <N>               Cap adaptive UDP tile budget in KiB/s\n"
                  "  --no-vsync                   Create the SDL Vulkan renderer without present-vsync\n"
+                 "  --video <auto|off|force>      Select video-mode policy, default auto\n"
+                 "  --video-bitrate-kib <N>       Target video encoder bitrate in KiB/s, default link budget\n"
+                 "  --video-min-dirty-percent <N> Dirty coverage needed for auto video mode, default 60\n"
+                 "  --video-enter-seconds <N>     Seconds auto criteria must remain stable, default 3\n"
                  "  --limited-rate-kib <N>       Deprecated alias for --rate-kib\n"
                  "  --wan                        Shorthand for --rate-kib 4096\n\n"
                  "Examples:\n"
@@ -64,6 +68,31 @@ bool parse_u32(const char* text, uint32_t& out) {
 
     out = static_cast<uint32_t>(value);
     return true;
+}
+
+bool parse_video_mode(const char* text, uint8_t& out) {
+    if (!text)
+    {
+        return false;
+    }
+
+    if (std::strcmp(text, "auto") == 0)
+    {
+        out = WD_VIDEO_MODE_AUTO;
+        return true;
+    }
+    if (std::strcmp(text, "off") == 0)
+    {
+        out = WD_VIDEO_MODE_OFF;
+        return true;
+    }
+    if (std::strcmp(text, "force") == 0)
+    {
+        out = WD_VIDEO_MODE_FORCE;
+        return true;
+    }
+
+    return false;
 }
 
 bool parse_size(const char* text, uint16_t& width, uint16_t& height) {
@@ -152,6 +181,51 @@ int main(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--no-vsync") == 0)
         {
             stream_config.disable_vsync = true;
+        }
+        else if (std::strcmp(argv[i], "--video") == 0)
+        {
+            if (i + 1 >= argc || !parse_video_mode(argv[i + 1], stream_config.video_mode))
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            ++i;
+        }
+        else if (std::strcmp(argv[i], "--video-bitrate-kib") == 0)
+        {
+            if (i + 1 >= argc || !parse_u32(argv[i + 1], stream_config.video_bitrate_kib_per_second) ||
+                stream_config.video_bitrate_kib_per_second == 0)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            ++i;
+        }
+        else if (std::strcmp(argv[i], "--video-min-dirty-percent") == 0)
+        {
+            uint32_t percent = 0;
+            if (i + 1 >= argc || !parse_u32(argv[i + 1], percent) ||
+                percent > WD_VIDEO_MIN_DIRTY_PERCENT_MAX)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+            stream_config.video_min_dirty_percent = static_cast<uint8_t>(percent);
+
+            ++i;
+        }
+        else if (std::strcmp(argv[i], "--video-enter-seconds") == 0)
+        {
+            if (i + 1 >= argc || !parse_u16(argv[i + 1], stream_config.video_enter_seconds) ||
+                stream_config.video_enter_seconds > WD_VIDEO_ENTER_SECONDS_MAX)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            ++i;
         }
         else if (std::strcmp(argv[i], "--wan") == 0)
         {
