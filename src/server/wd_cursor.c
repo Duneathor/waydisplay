@@ -233,7 +233,7 @@ static void handle_cursor_shape_request(struct wl_listener* listener, void* data
 
     if (changed)
     {
-        WD_LOG_DEBUG("WayDisplay: client requested cursor-shape=%s mapped=%u", wlr_cursor_shape_v1_name(event->shape), shape);
+        WD_LOG_DEBUG("client requested cursor-shape=%s mapped=%u", wlr_cursor_shape_v1_name(event->shape), shape);
     }
 }
 
@@ -262,7 +262,7 @@ static void handle_request_set_cursor(struct wl_listener* listener, void* data) 
     if (!wd_cursor_request_client_has_pointer_focus(server, event->seat_client))
     {
         server->net.stats.cursor_set_cursor_rejected++;
-        WD_LOG_DEBUG("WayDisplay: rejected wl_pointer.set_cursor from unfocused client");
+        WD_LOG_DEBUG("rejected wl_pointer.set_cursor from unfocused client");
         return;
     }
 
@@ -296,7 +296,7 @@ bool wd_cursor_init(struct wd_server* server) {
     server->cursor_shape_manager = wlr_cursor_shape_manager_v1_create(server->display, 1);
     if (!server->cursor_shape_manager)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create cursor-shape manager");
+        WD_LOG_ERROR("failed to create cursor-shape manager");
         return false;
     }
 
@@ -308,7 +308,7 @@ bool wd_cursor_init(struct wd_server* server) {
     server->request_set_cursor.notify = handle_request_set_cursor;
     wl_signal_add(&server->seat->events.request_set_cursor, &server->request_set_cursor);
 
-    WD_LOG_DEBUG("WayDisplay: cursor-shape and wl_pointer.set_cursor enabled");
+    WD_LOG_DEBUG("cursor-shape and wl_pointer.set_cursor enabled");
     return true;
 }
 

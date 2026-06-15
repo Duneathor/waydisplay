@@ -1,6 +1,7 @@
 #include "client_net.hpp"
 #include "sdl_viewer.hpp"
 #include "wd_client.hpp"
+#include "waydisplay/wd_log.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -111,7 +112,7 @@ int main(int argc, char** argv) {
     {
         if (std::strcmp(argv[i], "--mode") == 0)
         {
-            std::fprintf(stderr, "--mode was removed; WayDisplay always uses adaptive max-rate streaming now.\n");
+            WD_LOG_ERROR("--mode was removed; WayDisplay always uses adaptive max-rate streaming now.");
             return 1;
         }
         else if (std::strcmp(argv[i], "--fps") == 0)

@@ -59,7 +59,7 @@ bool wd_wlroots_init(struct wd_server* server) {
     server->compositor = wlr_compositor_create(server->display, 5, server->renderer);
     if (!server->compositor)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create compositor global");
+        WD_LOG_ERROR("failed to create compositor global");
         return false;
     }
 
@@ -68,14 +68,14 @@ bool wd_wlroots_init(struct wd_server* server) {
     server->viewporter = wlr_viewporter_create(server->display);
     if (!server->viewporter)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create wp_viewporter global");
+        WD_LOG_ERROR("failed to create wp_viewporter global");
         return false;
     }
 
     server->output_layout = wlr_output_layout_create(server->display);
     if (!server->output_layout)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create output layout");
+        WD_LOG_ERROR("failed to create output layout");
         return false;
     }
 
@@ -86,14 +86,14 @@ bool wd_wlroots_init(struct wd_server* server) {
     server->xdg_output_manager = wlr_xdg_output_manager_v1_create(server->display, server->output_layout);
     if (!server->xdg_output_manager)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create xdg-output manager");
+        WD_LOG_ERROR("failed to create xdg-output manager");
         return false;
     }
 
     server->fractional_scale_manager = wlr_fractional_scale_manager_v1_create(server->display, 1);
     if (!server->fractional_scale_manager)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create fractional scale manager");
+        WD_LOG_ERROR("failed to create fractional scale manager");
         return false;
     }
 
@@ -257,7 +257,7 @@ bool wd_wlroots_create_headless_output(struct wd_server* server) {
     server->output_destroy.notify = output_handle_destroy;
     wl_signal_add(&server->output->events.destroy, &server->output_destroy);
 
-    WD_LOG_INFO("WayDisplay: created headless output %ux%u", server->display_width, server->display_height);
+    WD_LOG_INFO("created headless output %ux%u", server->display_width, server->display_height);
 
     return true;
 }
@@ -296,7 +296,7 @@ bool wd_wlroots_resize_headless_output(struct wd_server* server) {
         wlr_scene_output_set_position(server->scene_output, 0, 0);
     }
 
-    WD_LOG_INFO("WayDisplay: resized headless output to %ux%u", server->display_width, server->display_height);
+    WD_LOG_INFO("resized headless output to %ux%u", server->display_width, server->display_height);
 
     return true;
 }

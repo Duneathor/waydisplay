@@ -99,7 +99,7 @@ static void xdg_wm_dialog_handle_get_xdg_dialog(struct wl_client* client, struct
 
     if (!view)
     {
-        WD_LOG_DEBUG("WayDisplay: xdg-dialog for unknown toplevel resource=%p", (void*)toplevel_resource);
+        WD_LOG_DEBUG("xdg-dialog for unknown toplevel resource=%p", (void*)toplevel_resource);
         return;
     }
 
@@ -137,11 +137,11 @@ bool wd_xdg_dialog_init(struct wd_server* server) {
     server->xdg_dialog_manager_global = wl_global_create(server->display, &xdg_wm_dialog_v1_interface, 1, server, bind_xdg_dialog_manager);
     if (!server->xdg_dialog_manager_global)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create xdg-dialog manager");
+        WD_LOG_ERROR("failed to create xdg-dialog manager");
         return false;
     }
 
-    WD_LOG_INFO("WayDisplay: xdg-dialog enabled");
+    WD_LOG_INFO("xdg-dialog enabled");
     return true;
 }
 

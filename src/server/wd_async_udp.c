@@ -1,6 +1,7 @@
 #include "wd_async_udp.h"
 
 #include "waydisplay/wd_config.h"
+#include "waydisplay/wd_log.h"
 #include "waydisplay/wd_protocol.h"
 
 #include <liburing.h>
@@ -421,7 +422,7 @@ void wd_async_udp_sender_destroy(struct wd_async_udp_sender* sender) {
 
     if (!wd_async_udp_sender_drain(sender))
     {
-        fprintf(stderr, "WayDisplay [warn]: async UDP sender destroy timed out; leaking pending ring buffers safely\n");
+        WD_LOG_WARN("async UDP sender destroy timed out; leaking pending ring buffers safely");
         return;
     }
     wd_async_udp_sender_fail_unsubmitted(sender);

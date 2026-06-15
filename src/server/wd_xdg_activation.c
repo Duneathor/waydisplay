@@ -74,7 +74,7 @@ static void handle_request_activate(struct wl_listener* listener, void* data) {
 
     if (!view)
     {
-        WD_LOG_DEBUG("WayDisplay: xdg-activation requested unknown surface=%p", (void*)event->surface);
+        WD_LOG_DEBUG("xdg-activation requested unknown surface=%p", (void*)event->surface);
         return;
     }
 
@@ -85,7 +85,7 @@ static void handle_request_activate(struct wl_listener* listener, void* data) {
          * The map handler already focuses new mapped toplevels, so there is no
          * extra pending-activation state needed here yet.
          */
-        WD_LOG_DEBUG("WayDisplay: xdg-activation requested unmapped view=%p", (void*)view);
+        WD_LOG_DEBUG("xdg-activation requested unmapped view=%p", (void*)view);
         return;
     }
 
@@ -95,7 +95,7 @@ static void handle_request_activate(struct wl_listener* listener, void* data) {
     {
         const char* token_name = wlr_xdg_activation_token_v1_get_name(event->token);
 
-        WD_LOG_DEBUG("WayDisplay: xdg-activation focused view=%p token=%s", (void*)view, token_name ? token_name : "(null)");
+        WD_LOG_DEBUG("xdg-activation focused view=%p token=%s", (void*)view, token_name ? token_name : "(null)");
 
         /*
          * Do not destroy event->token here. wlroots owns activation token
@@ -108,7 +108,7 @@ static void handle_request_activate(struct wl_listener* listener, void* data) {
     }
     else
     {
-        WD_LOG_DEBUG("WayDisplay: xdg-activation focused view=%p without token", (void*)view);
+        WD_LOG_DEBUG("xdg-activation focused view=%p without token", (void*)view);
     }
 }
 
@@ -121,7 +121,7 @@ bool wd_xdg_activation_init(struct wd_server* server) {
     server->xdg_activation = wlr_xdg_activation_v1_create(server->display);
     if (!server->xdg_activation)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create xdg-activation manager");
+        WD_LOG_ERROR("failed to create xdg-activation manager");
         return false;
     }
 
@@ -135,7 +135,7 @@ bool wd_xdg_activation_init(struct wd_server* server) {
     server->request_activate.notify = handle_request_activate;
     wl_signal_add(&server->xdg_activation->events.request_activate, &server->request_activate);
 
-    WD_LOG_INFO("WayDisplay: xdg-activation enabled");
+    WD_LOG_INFO("xdg-activation enabled");
     return true;
 }
 

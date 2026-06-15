@@ -281,7 +281,7 @@ static void notify_pointer_enter_if_needed(struct wd_server* server, struct wlr_
         return;
     }
 
-    WD_LOG_DEBUG("WayDisplay: pointer enter old_surface=%p new_surface=%p sx=%.1f sy=%.1f", old_surface ? (void*)old_surface : NULL,
+    WD_LOG_DEBUG("pointer enter old_surface=%p new_surface=%p sx=%.1f sy=%.1f", old_surface ? (void*)old_surface : NULL,
                  surface ? (void*)surface : NULL, sx, sy);
     wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
 }
@@ -339,7 +339,7 @@ static void pointer_button_grab_reset(struct wd_server* server, const char* reas
 
     if (had_grab)
     {
-        WD_LOG_DEBUG("WayDisplay: pointer button grab %s surface=%p view=%p count=%u buttons=0x%x", reason ? reason : "clear",
+        WD_LOG_DEBUG("pointer button grab %s surface=%p view=%p count=%u buttons=0x%x", reason ? reason : "clear",
                      (void*)server->pointer_button_grab_surface, (void*)server->pointer_button_grab_view,
                      (unsigned)server->pointer_button_grab_count, (unsigned)server->pointer_button_grab_buttons);
         if (completed)
@@ -411,7 +411,7 @@ static void pointer_button_grab_begin(struct wd_server* server, struct wd_view* 
 
     server->net.stats.pointer_button_grab_started++;
 
-    WD_LOG_DEBUG("WayDisplay: pointer button grab begin surface=%p view=%p layout=%.1f %.1f sx=%.1f sy=%.1f button=0x%x",
+    WD_LOG_DEBUG("pointer button grab begin surface=%p view=%p layout=%.1f %.1f sx=%.1f sy=%.1f button=0x%x",
                  (void*)surface, (void*)view, lx, ly, sx, sy, button);
 }
 
@@ -423,7 +423,7 @@ void wd_pointer_begin_move(struct wd_server* server, struct wd_view* view) {
 
     if (view->fullscreen || view->maximized)
     {
-        WD_LOG_DEBUG("WayDisplay: ignoring move of %s view", view->fullscreen ? "fullscreen" : "maximized");
+        WD_LOG_DEBUG("ignoring move of %s view", view->fullscreen ? "fullscreen" : "maximized");
         return;
     }
 
@@ -435,7 +435,7 @@ void wd_pointer_begin_move(struct wd_server* server, struct wd_view* view) {
     server->move_grab.view_y = view->y;
     wd_cursor_set_shape(server, WD_CURSOR_SHAPE_MOVE);
 
-    WD_LOG_DEBUG("WayDisplay: begin move view=%p at pointer %.1f %.1f view=%d %d", (void*)view, server->pointer_x, server->pointer_y,
+    WD_LOG_DEBUG("begin move view=%p at pointer %.1f %.1f view=%d %d", (void*)view, server->pointer_x, server->pointer_y,
                  view->x, view->y);
 }
 
@@ -466,7 +466,7 @@ void wd_pointer_end_move(struct wd_server* server) {
         return;
     }
 
-    WD_LOG_DEBUG("WayDisplay: end move");
+    WD_LOG_DEBUG("end move");
 
     if (server->move_grab.view)
     {
@@ -485,7 +485,7 @@ void wd_pointer_begin_resize(struct wd_server* server, struct wd_view* view, uin
 
     if (view->fullscreen || view->maximized)
     {
-        WD_LOG_DEBUG("WayDisplay: ignoring resize of %s view", view->fullscreen ? "fullscreen" : "maximized");
+        WD_LOG_DEBUG("ignoring resize of %s view", view->fullscreen ? "fullscreen" : "maximized");
         return;
     }
 
@@ -517,7 +517,7 @@ void wd_pointer_begin_resize(struct wd_server* server, struct wd_view* view, uin
         wlr_xdg_toplevel_set_resizing(view->xdg_surface->toplevel, true);
     }
 
-    WD_LOG_DEBUG("WayDisplay: begin resize view=%p edges=0x%x pointer %.1f %.1f "
+    WD_LOG_DEBUG("begin resize view=%p edges=0x%x pointer %.1f %.1f "
                  "view=%d %d size=%ux%u",
                  (void*)view, edges, server->pointer_x, server->pointer_y, view->x, view->y, server->resize_grab.view_width,
                  server->resize_grab.view_height);
@@ -628,7 +628,7 @@ void wd_pointer_end_resize(struct wd_server* server) {
         wlr_xdg_toplevel_set_resizing(server->resize_grab.view->xdg_surface->toplevel, false);
     }
 
-    WD_LOG_DEBUG("WayDisplay: end resize");
+    WD_LOG_DEBUG("end resize");
 
     if (server->resize_grab.view)
     {
@@ -816,7 +816,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
 
                 if (target_changed || (moved_enough && old_enough))
                 {
-                    WD_LOG_DEBUG("WayDisplay: pointer motion target none at layout %.1f %.1f", lx, ly);
+                    WD_LOG_DEBUG("pointer motion target none at layout %.1f %.1f", lx, ly);
                     last_logged_motion_surface = NULL;
                     last_logged_motion_view    = NULL;
                     last_logged_motion_x       = ilx;
@@ -827,7 +827,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
 
             if (event->event_type == WD_POINTER_EVENT_BUTTON && event->button == WD_BTN_RIGHT)
             {
-                WD_LOG_DEBUG("WayDisplay: right click %s had no target at layout %.1f %.1f "
+                WD_LOG_DEBUG("right click %s had no target at layout %.1f %.1f "
                              "mods=0x%x",
                              event->button_state == WD_POINTER_BUTTON_PRESSED ? "press" : "release", lx, ly, event->modifiers);
             }
@@ -848,7 +848,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
 
             if (target_changed || (moved_enough && old_enough))
             {
-                WD_LOG_DEBUG("WayDisplay: pointer motion target layout %.1f %.1f "
+                WD_LOG_DEBUG("pointer motion target layout %.1f %.1f "
                              "surface=%p view=%p sx=%.1f sy=%.1f",
                              lx, ly, (void*)target_surface, (void*)target_view, sx, sy);
                 last_logged_motion_surface = target_surface;
@@ -861,7 +861,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
 
         if (event->event_type == WD_POINTER_EVENT_BUTTON && event->button == WD_BTN_RIGHT)
         {
-            WD_LOG_DEBUG("WayDisplay: right click target %s at layout %.1f %.1f "
+            WD_LOG_DEBUG("right click target %s at layout %.1f %.1f "
                          "surface=%p view=%p sx=%.1f sy=%.1f state=%s mods=0x%x",
                          event->button_state == WD_POINTER_BUTTON_PRESSED ? "press" : "release", lx, ly, (void*)target_surface,
                          (void*)target_view, sx, sy, event->button_state == WD_POINTER_BUTTON_PRESSED ? "pressed" : "released",
@@ -966,7 +966,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
 
             if (event->button == WD_BTN_RIGHT)
             {
-                WD_LOG_DEBUG("WayDisplay: notifying seat right click %s "
+                WD_LOG_DEBUG("notifying seat right click %s "
                              "button=0x%x time=%u surface=%p sx=%.1f sy=%.1f",
                              event->button_state == WD_POINTER_BUTTON_PRESSED ? "press" : "release", event->button, time_msec,
                              (void*)target_surface, sx, sy);

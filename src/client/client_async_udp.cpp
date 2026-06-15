@@ -1,4 +1,5 @@
 #include "client_async_udp.hpp"
+#include "waydisplay/wd_log.h"
 
 #include <liburing.h>
 
@@ -335,7 +336,7 @@ ClientAsyncUdpReceiver* client_async_udp_receiver_create(int fd, uint32_t entrie
         {
             if (!drain_destroy_locked(receiver))
             {
-                std::fprintf(stderr, "WayDisplay [warn]: client UDP io_uring setup timed out during drain; leaking receiver safely\n");
+                WD_LOG_WARN("client UDP io_uring setup timed out during drain; leaking receiver safely");
                 return nullptr;
             }
             io_uring_queue_exit(&receiver->ring);
@@ -358,7 +359,7 @@ void client_async_udp_receiver_destroy(ClientAsyncUdpReceiver* receiver) {
         std::lock_guard<std::mutex> lock(receiver->mutex);
         if (!drain_destroy_locked(receiver))
         {
-            std::fprintf(stderr, "WayDisplay [warn]: client UDP io_uring destroy timed out; leaking pending ring buffers safely\n");
+            WD_LOG_WARN("client UDP io_uring destroy timed out; leaking pending ring buffers safely");
             return;
         }
         if (receiver->ring_ready)

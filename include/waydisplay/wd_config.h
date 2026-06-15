@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "waydisplay/wd_time.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -38,6 +40,13 @@ extern "C" {
 #define WD_MIN_PROBED_UDP_PAYLOAD        512u
 #define WD_THROUGHPUT_PROBE_TARGET_BYTES (8u * 1024u * 1024u)
 #define WD_THROUGHPUT_PROBE_DURATION_MS  750u
+
+/* Logging and statistics cadence. */
+#define WD_STATS_SAMPLE_INTERVAL_NS          WD_NSEC_PER_SEC
+#define WD_STATS_LOG_INTERVAL_NS             (60ull * WD_STATS_SAMPLE_INTERVAL_NS)
+#define WD_LOG_RATE_LIMIT_INTERVAL_NS        WD_STATS_SAMPLE_INTERVAL_NS
+#define WD_SERVER_STATS_HEALTH_INTERVAL_NS   WD_STATS_SAMPLE_INTERVAL_NS
+#define WD_CLIENT_STATS_FEEDBACK_INTERVAL_NS WD_STATS_SAMPLE_INTERVAL_NS
 
 /* Tile generation summary cadence.
  *
@@ -79,7 +88,7 @@ extern "C" {
 
 #define WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS       200000000ull
 #define WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS   WD_GENERATION_SUMMARY_CLEAN_DELTA_INTERVAL_NS
-#define WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS       1000000000ull
+#define WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS       WD_NSEC_PER_SEC
 
 #define WD_LINK_SUMMARY_BUDGET_PERCENT              5u
 #define WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS         50000000ull
@@ -88,7 +97,7 @@ extern "C" {
 #define WD_LINK_STALE_REPAIR_BACKOFF_MULTIPLIER     2u
 #define WD_LINK_LARGE_SUMMARY_REPAIR_PERCENT        25u
 #define WD_LINK_LARGE_SUMMARY_REPAIR_LOSS_SIGNAL_NS 2000000000ull
-#define WD_LINK_LARGE_SUMMARY_REPAIR_COOLDOWN_NS    1000000000ull
+#define WD_LINK_LARGE_SUMMARY_REPAIR_COOLDOWN_NS    WD_NSEC_PER_SEC
 
 /* Stream policy defaults. */
 #define WD_DEFAULT_PARTIAL_FPS                     60u
@@ -122,7 +131,6 @@ extern "C" {
 
 /* Client interaction/render-loop tuning. */
 #define WD_CLIENT_DEFAULT_TARGET_FPS           WD_DEFAULT_PARTIAL_FPS
-#define WD_CLIENT_STATS_INTERVAL_NS            1000000000ull
 #define WD_CLIENT_RESIZE_DEBOUNCE_NS           150000000ull
 #define WD_CLIENT_FRAME_DELAY_MS               8
 #define WD_CLIENT_MIN_WINDOW_WIDTH             64

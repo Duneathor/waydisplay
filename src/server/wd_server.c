@@ -135,7 +135,7 @@ static bool launch_startup_command(struct wd_server* server) {
         _exit(127);
     }
 
-    WD_LOG_INFO("WayDisplay: launched app pid=%d command=%s", pid, server->startup_command);
+    WD_LOG_INFO("launched app pid=%d command=%s", pid, server->startup_command);
 
     return true;
 }
@@ -342,14 +342,20 @@ static int server_frame_timer(void* data) {
         pthread_mutex_unlock(&server->net.lock);
     }
 
-    if (t - server->last_stats_ns > 1000000000ull)
+    if (t - server->last_stats_ns >= WD_SERVER_STATS_HEALTH_INTERVAL_NS)
     {
+        const bool log_stats = server->last_stats_log_ns == 0 || t - server->last_stats_log_ns >= WD_STATS_LOG_INTERVAL_NS;
+
         pthread_mutex_lock(&server->net.lock);
         wd_server_reap_and_sample_async_locked(server);
         pthread_mutex_unlock(&server->net.lock);
 
-        wd_stream_print_and_reset_stats(server);
+        wd_stream_sample_and_maybe_log_stats(server, log_stats);
         server->last_stats_ns = t;
+        if (log_stats)
+        {
+            server->last_stats_log_ns = t;
+        }
     }
 
     wl_event_source_timer_update(server->frame_timer, 8);
@@ -982,8 +988,9 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
         return false;
     }
 
-    server->last_summary_ns = wd_now_ns();
-    server->last_stats_ns   = wd_now_ns();
+    server->last_summary_ns   = wd_now_ns();
+    server->last_stats_ns     = server->last_summary_ns;
+    server->last_stats_log_ns = server->last_summary_ns;
 
     server->socket_name = wl_display_add_socket_auto(server->display);
     if (!server->socket_name)
@@ -1005,7 +1012,7 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
 
     if (!server->frame_timer)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create frame timer");
+        WD_LOG_ERROR("failed to create frame timer");
         return false;
     }
 
@@ -1013,7 +1020,7 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
 
     setenv("WAYLAND_DISPLAY", server->socket_name, 1);
 
-    WD_LOG_INFO("WayDisplay: running on WAYLAND_DISPLAY=%s", server->socket_name);
+    WD_LOG_INFO("running on WAYLAND_DISPLAY=%s", server->socket_name);
 
     return true;
 }

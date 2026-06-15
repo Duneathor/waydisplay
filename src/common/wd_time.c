@@ -11,7 +11,7 @@ uint64_t wd_now_ns(void) {
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
 
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    return (uint64_t)ts.tv_sec * WD_NSEC_PER_SEC + (uint64_t)ts.tv_nsec;
 }
 
 uint32_t wd_now_ms32(void) {

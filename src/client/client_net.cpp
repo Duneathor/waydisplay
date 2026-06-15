@@ -4,6 +4,7 @@
 #include "client_async_udp.hpp"
 
 #include "waydisplay/wd_config.h"
+#include "waydisplay/wd_log.h"
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_time.h"
@@ -266,15 +267,14 @@ void log_tcp_channel_endpoint(const char* channel, int fd) {
 
     format_socket_endpoint(fd, false, local, sizeof(local));
     format_socket_endpoint(fd, true, remote, sizeof(remote));
-    std::printf("WayDisplay [info]: %s TCP channel connected local=%s remote=%s\n", channel, local, remote);
+    WD_LOG_INFO("%s TCP channel connected local=%s remote=%s", channel, local, remote);
 }
 
 void log_udp_endpoint(const ClientState& state) {
     char local[64]{};
 
     format_socket_endpoint(state.udp_fd, false, local, sizeof(local));
-    std::printf("WayDisplay [info]: UDP receive endpoint local=%s requested_port=%u fd=%d\n", local,
-                state.client_udp_port, state.udp_fd);
+    WD_LOG_INFO("UDP receive endpoint local=%s requested_port=%u fd=%d", local, state.client_udp_port, state.udp_fd);
 }
 
 ClientAsyncTcpSender* create_client_tcp_sender(const char* label) {
@@ -282,8 +282,7 @@ ClientAsyncTcpSender* create_client_tcp_sender(const char* label) {
                                                                   CLIENT_ASYNC_TCP_MAX_PENDING_BYTES);
     if (!sender)
     {
-        std::fprintf(stderr, "WayDisplay [warn]: io_uring TCP sender unavailable for %s channel; using synchronous sends\n",
-                     label ? label : "unknown");
+        WD_LOG_WARN("io_uring TCP sender unavailable for %s channel; using synchronous sends", label ? label : "unknown");
     }
     return sender;
 }
@@ -313,14 +312,13 @@ ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state) {
     {
         if (state.udp_fd >= 0 && wd_set_nonblocking(state.udp_fd) < 0)
         {
-            std::perror("restore UDP nonblocking");
+            WD_LOG_ERROR("restore UDP nonblocking failed: %s", std::strerror(errno));
         }
-        std::fprintf(stderr, "WayDisplay [warn]: io_uring UDP receiver unavailable; using synchronous recv fallback\n");
+        WD_LOG_WARN("io_uring UDP receiver unavailable; using synchronous recv fallback");
     }
     else
     {
-        std::printf("WayDisplay [info]: UDP io_uring receive enabled entries=%u buffer=%zu\n",
-                    CLIENT_ASYNC_UDP_RING_ENTRIES, packet_bytes);
+        WD_LOG_INFO("UDP io_uring receive enabled entries=%u buffer=%zu", CLIENT_ASYNC_UDP_RING_ENTRIES, packet_bytes);
     }
     return receiver;
 }
@@ -470,7 +468,7 @@ bool set_socket_rcvbuf(int fd, int requested_bytes) {
 
     if (::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &requested_bytes, sizeof(requested_bytes)) != 0)
     {
-        std::perror("setsockopt SO_RCVBUF");
+        WD_LOG_ERROR("setsockopt SO_RCVBUF failed: %s", std::strerror(errno));
         return false;
     }
 
@@ -479,7 +477,7 @@ bool set_socket_rcvbuf(int fd, int requested_bytes) {
 
     if (::getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &actual_bytes, &actual_len) == 0)
     {
-        std::printf("UDP receive buffer: requested=%d actual=%d\n", requested_bytes, actual_bytes);
+        WD_LOG_INFO("UDP receive buffer: requested=%d actual=%d", requested_bytes, actual_bytes);
     }
 
     return true;
@@ -489,7 +487,7 @@ bool open_udp_socket(ClientState& state) {
     state.udp_fd = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (state.udp_fd < 0)
     {
-        std::perror("socket UDP");
+        WD_LOG_ERROR("socket UDP failed: %s", std::strerror(errno));
         return false;
     }
 
@@ -500,7 +498,7 @@ bool open_udp_socket(ClientState& state) {
 
     if (::bind(state.udp_fd, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) < 0)
     {
-        std::perror("bind UDP");
+        WD_LOG_ERROR("bind UDP failed: %s", std::strerror(errno));
         ::close(state.udp_fd);
         state.udp_fd = -1;
         return false;
@@ -508,7 +506,7 @@ bool open_udp_socket(ClientState& state) {
 
     if (wd_set_nonblocking(state.udp_fd) < 0)
     {
-        std::perror("set UDP nonblocking");
+        WD_LOG_ERROR("set UDP nonblocking failed: %s", std::strerror(errno));
         ::close(state.udp_fd);
         state.udp_fd = -1;
         return false;
@@ -524,7 +522,7 @@ int connect_tcp_fd(const ClientState& state, const char* label) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
     {
-        std::perror(label);
+        WD_LOG_ERROR("%s failed: %s", label ? label : "TCP socket", std::strerror(errno));
         return -1;
     }
 
@@ -534,14 +532,14 @@ int connect_tcp_fd(const ClientState& state, const char* label) {
 
     if (::inet_pton(AF_INET, state.server_host.c_str(), &addr.sin_addr) != 1)
     {
-        std::fprintf(stderr, "invalid IPv4 address: %s\n", state.server_host.c_str());
+        WD_LOG_ERROR("invalid IPv4 address: %s", state.server_host.c_str());
         ::close(fd);
         return -1;
     }
 
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
     {
-        std::perror(label);
+        WD_LOG_ERROR("%s failed: %s", label ? label : "TCP socket", std::strerror(errno));
         ::close(fd);
         return -1;
     }
@@ -845,7 +843,7 @@ bool receive_server_config(ClientState& state) {
 
     if (!wd_send_tcp_message(state.tcp_fd, WD_MSG_CLIENT_HELLO, &hello, sizeof(hello)))
     {
-        std::fprintf(stderr, "failed to send CLIENT_HELLO\n");
+        WD_LOG_ERROR("failed to send CLIENT_HELLO");
         return false;
     }
 
@@ -857,7 +855,7 @@ bool receive_server_config(ClientState& state) {
 
         if (!wd_recv_tcp_message(state.tcp_fd, &message_type, &payload, &payload_size))
         {
-            std::fprintf(stderr, "failed to receive SERVER_CONFIG\n");
+            WD_LOG_ERROR("failed to receive SERVER_CONFIG");
             return false;
         }
 
@@ -868,7 +866,7 @@ bool receive_server_config(ClientState& state) {
 
             if (!ok)
             {
-                std::fprintf(stderr, "failed UDP MTU probe\n");
+                WD_LOG_ERROR("failed UDP MTU probe");
                 return false;
             }
 
@@ -882,7 +880,7 @@ bool receive_server_config(ClientState& state) {
 
             if (!ok)
             {
-                std::fprintf(stderr, "failed UDP throughput probe\n");
+                WD_LOG_ERROR("failed UDP throughput probe");
                 return false;
             }
 
@@ -896,7 +894,7 @@ bool receive_server_config(ClientState& state) {
 
             if (!ok)
             {
-                std::fprintf(stderr, "failed TCP link probe\n");
+                WD_LOG_ERROR("failed TCP link probe");
                 return false;
             }
 
@@ -911,7 +909,7 @@ bool receive_server_config(ClientState& state) {
             break;
         }
 
-        std::fprintf(stderr, "unexpected TCP message while waiting for SERVER_CONFIG: %u\n", message_type);
+        WD_LOG_ERROR("unexpected TCP message while waiting for SERVER_CONFIG: %u", message_type);
         std::free(payload);
         return false;
     }
@@ -923,9 +921,7 @@ bool receive_server_config(ClientState& state) {
         expected_tiles != state.config.total_tiles || state.config.pixel_format != WD_PIXEL_FORMAT_XRGB8888 ||
         state.config.compression_mode != WD_COMPRESSION_ZSTD)
     {
-        std::fprintf(stderr,
-                     "invalid or unsupported server config\n"
-                     "server: %ux%u tiles=%ux%u total=%u pixel=%u compression=%u\n",
+        WD_LOG_ERROR("invalid or unsupported server config: server=%ux%u tiles=%ux%u total=%u pixel=%u compression=%u",
                      state.config.width, state.config.height, state.config.tile_width, state.config.tile_height, state.config.total_tiles,
                      state.config.pixel_format, state.config.compression_mode);
         return false;
@@ -936,8 +932,8 @@ bool receive_server_config(ClientState& state) {
         state.config.udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
 
-    std::printf("UDP payload target: %u\n", state.config.udp_payload_target);
-    std::printf("link timers: rtt=%ums summary_grace=%ums rerequest=%ums inflight=%ums reassembly=%ums summary_delta=%u/%ums\n",
+    WD_LOG_INFO("UDP payload target: %u", state.config.udp_payload_target);
+    WD_LOG_INFO("link timers: rtt=%ums summary_grace=%ums rerequest=%ums inflight=%ums reassembly=%ums summary_delta=%u/%ums",
                 state.config.link_rtt_ms, state.config.summary_retransmit_grace_ms,
                 state.config.retransmit_rerequest_ms, state.config.retransmit_inflight_grace_ms,
                 state.config.tile_reassembly_timeout_ms, state.config.active_summary_interval_ms,
@@ -1408,7 +1404,7 @@ void tcp_reader_main(ClientState* state) {
         }
         else if (message_type == WD_MSG_ERROR)
         {
-            std::fprintf(stderr, "server sent MSG_ERROR\n");
+            WD_LOG_ERROR("server sent MSG_ERROR");
         }
 
         std::free(payload);
@@ -1457,20 +1453,20 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
 
     if (open_input_tcp_socket(state))
     {
-        std::printf("input TCP channel: enabled\n");
+            WD_LOG_INFO("input TCP channel: enabled");
     }
     else
     {
-        std::printf("input TCP channel: unavailable, using control TCP\n");
+            WD_LOG_INFO("input TCP channel: unavailable, using control TCP");
     }
 
     if (open_selection_tcp_socket(state))
     {
-        std::printf("selection TCP channel: enabled\n");
+            WD_LOG_INFO("selection TCP channel: enabled");
     }
     else
     {
-        std::printf("selection TCP channel: unavailable, using control TCP\n");
+            WD_LOG_INFO("selection TCP channel: unavailable, using control TCP");
     }
 
     state.framebuffer.assign(state.framebuffer_pixels(), 0xff202020u);
@@ -1495,7 +1491,7 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
 
     state.running.store(true, std::memory_order_relaxed);
 
-    std::printf("connected: session=%u display=%ux%u tiles=%ux%u total=%u\n", state.config.session_id, state.config.width,
+    WD_LOG_INFO("connected: session=%u display=%ux%u tiles=%ux%u total=%u", state.config.session_id, state.config.width,
                 state.config.height, state.config.tiles_x, state.config.tiles_y, state.config.total_tiles);
 
     return true;
@@ -1574,11 +1570,11 @@ bool client_disable_async_udp_receiver(ClientState& state) {
 
     if (state.udp_fd >= 0 && wd_set_nonblocking(state.udp_fd) < 0)
     {
-        std::perror("restore UDP nonblocking");
+        WD_LOG_ERROR("restore UDP nonblocking failed: %s", std::strerror(errno));
         return false;
     }
 
-    std::fprintf(stderr, "WayDisplay [warn]: UDP io_uring receive failed; falling back to synchronous recv\n");
+    WD_LOG_WARN("UDP io_uring receive failed; falling back to synchronous recv");
     return true;
 }
 
@@ -1676,7 +1672,7 @@ bool client_send_selection_text(ClientState& state, uint16_t message_type, const
     const size_t text_len = std::strlen(text);
     if (text_len > WD_SELECTION_MAX_TEXT_BYTES)
     {
-        std::fprintf(stderr, "selection text too large: %zu bytes, max %u\n", text_len, WD_SELECTION_MAX_TEXT_BYTES);
+        WD_LOG_ERROR("selection text too large: %zu bytes, max %u", text_len, WD_SELECTION_MAX_TEXT_BYTES);
         return false;
     }
 

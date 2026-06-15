@@ -1,6 +1,7 @@
 #include "client_async_tcp.hpp"
 
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_log.h"
 
 #include <liburing.h>
 
@@ -435,7 +436,7 @@ void client_async_tcp_sender_destroy(ClientAsyncTcpSender* sender) {
         std::lock_guard<std::mutex> lock(sender->mutex);
         if (!drain_locked(sender))
         {
-            std::fprintf(stderr, "WayDisplay [warn]: client async TCP sender destroy timed out; leaking pending ring buffers safely\n");
+            WD_LOG_WARN("client async TCP sender destroy timed out; leaking pending ring buffers safely");
             return;
         }
         fail_unsubmitted_locked(sender);

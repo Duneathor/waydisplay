@@ -1,6 +1,7 @@
 #include "wd_async_tcp.h"
 
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_log.h"
 
 #include <errno.h>
 #include <liburing.h>
@@ -531,7 +532,7 @@ void wd_async_tcp_sender_destroy(struct wd_async_tcp_sender* sender) {
 
     if (!wd_async_tcp_sender_drain(sender))
     {
-        fprintf(stderr, "WayDisplay [warn]: async TCP sender destroy timed out; leaking pending ring buffers safely\n");
+        WD_LOG_WARN("async TCP sender destroy timed out; leaking pending ring buffers safely");
         return;
     }
     wd_async_tcp_sender_fail_unsubmitted(sender);

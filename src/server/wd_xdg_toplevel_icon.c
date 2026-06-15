@@ -63,7 +63,7 @@ static void handle_set_xdg_toplevel_icon(struct wl_listener* listener, void* dat
     struct wd_view* view = view_from_xdg_toplevel(server, event->toplevel);
     if (!view)
     {
-        WD_LOG_DEBUG("WayDisplay: xdg-toplevel-icon for unknown toplevel=%p", (void*)event->toplevel);
+        WD_LOG_DEBUG("xdg-toplevel-icon for unknown toplevel=%p", (void*)event->toplevel);
         return;
     }
 
@@ -77,12 +77,12 @@ static void handle_set_xdg_toplevel_icon(struct wl_listener* listener, void* dat
     {
         view->toplevel_icon = wlr_xdg_toplevel_icon_v1_ref(event->icon);
 
-        WD_LOG_DEBUG("WayDisplay: xdg-toplevel-icon set view=%p name=%s buffers=%zu", (void*)view,
+        WD_LOG_DEBUG("xdg-toplevel-icon set view=%p name=%s buffers=%zu", (void*)view,
                      view->toplevel_icon->name ? view->toplevel_icon->name : "(none)", icon_buffer_count(view->toplevel_icon));
     }
     else
     {
-        WD_LOG_DEBUG("WayDisplay: xdg-toplevel-icon cleared view=%p", (void*)view);
+        WD_LOG_DEBUG("xdg-toplevel-icon cleared view=%p", (void*)view);
     }
 }
 
@@ -95,7 +95,7 @@ bool wd_xdg_toplevel_icon_init(struct wd_server* server) {
     server->xdg_toplevel_icon_manager = wlr_xdg_toplevel_icon_manager_v1_create(server->display, 1);
     if (!server->xdg_toplevel_icon_manager)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create xdg-toplevel-icon manager");
+        WD_LOG_ERROR("failed to create xdg-toplevel-icon manager");
         return false;
     }
 
@@ -115,7 +115,7 @@ bool wd_xdg_toplevel_icon_init(struct wd_server* server) {
     server->set_xdg_toplevel_icon.notify = handle_set_xdg_toplevel_icon;
     wl_signal_add(&server->xdg_toplevel_icon_manager->events.set_icon, &server->set_xdg_toplevel_icon);
 
-    WD_LOG_INFO("WayDisplay: xdg-toplevel-icon enabled");
+    WD_LOG_INFO("xdg-toplevel-icon enabled");
     return true;
 }
 

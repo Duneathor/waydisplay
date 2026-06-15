@@ -15,7 +15,6 @@
 #include <unistd.h>
 
 
-#define WD_UDP_SEND_PRESSURE_LOG_INTERVAL_NS 1000000000ull
 #define WD_ENCODER_MAX_THREADS 4u
 #define WD_ENCODER_BATCH_JOBS 256u
 #define WD_ENCODER_MAX_RESULTS_PER_JOB 32u
@@ -319,7 +318,7 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
             policy->effective_target_fps = (uint16_t)new_fps;
             policy->last_frame_send_ns = 0;
             stats->frame_rate_downshifts++;
-            WD_LOG_INFO("WayDisplay: stream frame rate down: %u -> %u fps due to UDP send pressure", old_fps, (unsigned)new_fps);
+            WD_LOG_INFO("stream frame rate down: %u -> %u fps due to UDP send pressure", old_fps, (unsigned)new_fps);
         }
         return;
     }
@@ -358,7 +357,7 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
         policy->effective_target_fps = (uint16_t)new_fps;
         policy->last_frame_send_ns = 0;
         stats->frame_rate_upshifts++;
-        WD_LOG_INFO("WayDisplay: stream frame rate up: %u -> %u fps", old_fps, (unsigned)new_fps);
+        WD_LOG_INFO("stream frame rate up: %u -> %u fps", old_fps, (unsigned)new_fps);
     }
 }
 
@@ -393,7 +392,7 @@ static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy*
         if (policy->limited_udp_bytes_per_second != old_rate)
         {
             stats->rate_decreases++;
-            WD_LOG_INFO("WayDisplay: stream byte budget down: %llu -> %llu KiB/s due to UDP send pressure",
+            WD_LOG_INFO("stream byte budget down: %llu -> %llu KiB/s due to UDP send pressure",
                         (unsigned long long)(old_rate / 1024ull),
                         (unsigned long long)(policy->limited_udp_bytes_per_second / 1024ull));
         }
@@ -426,7 +425,7 @@ static void wd_stream_policy_update_limited_rate_locked(struct wd_stream_policy*
     if (policy->limited_udp_bytes_per_second != old_rate)
     {
         stats->rate_increases++;
-        WD_LOG_INFO("WayDisplay: stream byte budget up: %llu -> %llu KiB/s",
+        WD_LOG_INFO("stream byte budget up: %llu -> %llu KiB/s",
                     (unsigned long long)(old_rate / 1024ull),
                     (unsigned long long)(policy->limited_udp_bytes_per_second / 1024ull));
     }
@@ -489,7 +488,7 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
     bool should = false;
 
     uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
-    uint64_t interval_ns = 1000000000ull / fps;
+    uint64_t interval_ns = WD_NSEC_PER_SEC / fps;
 
     if (policy->last_frame_send_ns == 0 || now_ns - policy->last_frame_send_ns >= interval_ns)
     {
@@ -688,16 +687,15 @@ static void wd_note_udp_send_pressure_locked(struct wd_net_state* net, int send_
     net->stats.udp_send_pressure_drops++;
 
     uint64_t now = wd_now_ns();
-    if (net->udp_send_pressure_log_ns != 0 && now - net->udp_send_pressure_log_ns < WD_UDP_SEND_PRESSURE_LOG_INTERVAL_NS)
+    if (!wd_log_rate_limit_should_log(&net->udp_send_pressure_log_ns, now, WD_LOG_RATE_LIMIT_INTERVAL_NS))
     {
         return;
     }
 
     uint64_t drops = net->udp_send_pressure_drops;
     net->udp_send_pressure_drops = 0;
-    net->udp_send_pressure_log_ns = now;
 
-    WD_LOG_DEBUG("WayDisplay: dropped %llu UDP tile packets under send pressure: %s", (unsigned long long)drops, strerror(send_errno));
+    WD_LOG_DEBUG("dropped %llu UDP tile packets under send pressure: %s", (unsigned long long)drops, strerror(send_errno));
 }
 
 
@@ -1178,7 +1176,7 @@ static bool wd_stream_send_tile_payload_sized_locked(struct wd_server* server, u
                     break;
                 }
 
-                WD_LOG_ERROR("WayDisplay: sendto failed: %s", strerror(errno));
+                WD_LOG_ERROR("sendto failed: %s", strerror(errno));
                 return false;
             }
 
@@ -3316,6 +3314,154 @@ bool wd_stream_send_pending_generation_summary_locked(struct wd_server* server) 
     return wd_stream_send_generation_summary_kind_locked(server, false);
 }
 
+static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src) {
+    if (!dst || !src)
+    {
+        return;
+    }
+
+    dst->dirty_tiles += src->dirty_tiles;
+    dst->udp_tiles_sent += src->udp_tiles_sent;
+    dst->udp_fresh_tiles_sent += src->udp_fresh_tiles_sent;
+    dst->udp_retx_tiles_sent += src->udp_retx_tiles_sent;
+    dst->udp_compressed_tiles_sent += src->udp_compressed_tiles_sent;
+    dst->udp_uncompressed_tiles_sent += src->udp_uncompressed_tiles_sent;
+    dst->udp_compressed_tile_bytes_sent += src->udp_compressed_tile_bytes_sent;
+    dst->udp_uncompressed_tile_bytes_sent += src->udp_uncompressed_tile_bytes_sent;
+    dst->udp_packets_sent += src->udp_packets_sent;
+    dst->udp_bytes_sent += src->udp_bytes_sent;
+    dst->udp_send_pressure_drops += src->udp_send_pressure_drops;
+    dst->tile_choice_compressed += src->tile_choice_compressed;
+    dst->tile_choice_uncompressed += src->tile_choice_uncompressed;
+    dst->tile_choice_compressed_payload_sum += src->tile_choice_compressed_payload_sum;
+    dst->tile_choice_uncompressed_payload_sum += src->tile_choice_uncompressed_payload_sum;
+    dst->tile_choice_compressed_wire_sum += src->tile_choice_compressed_wire_sum;
+    dst->tile_choice_uncompressed_wire_sum += src->tile_choice_uncompressed_wire_sum;
+    dst->tile_choice_chosen_wire_sum += src->tile_choice_chosen_wire_sum;
+    dst->tile_choice_saved_wire_sum += src->tile_choice_saved_wire_sum;
+    dst->tile_size_128x64_sent += src->tile_size_128x64_sent;
+    dst->tile_size_64x64_sent += src->tile_size_64x64_sent;
+    dst->tile_size_32x32_sent += src->tile_size_32x32_sent;
+    dst->tile_size_16x16_sent += src->tile_size_16x16_sent;
+    dst->tcp_hello_rx += src->tcp_hello_rx;
+    dst->tcp_config_tx += src->tcp_config_tx;
+    dst->tcp_summary_tx += src->tcp_summary_tx;
+    dst->tcp_input_channel_rx += src->tcp_input_channel_rx;
+    dst->tcp_input_channel_accepted += src->tcp_input_channel_accepted;
+    dst->tcp_input_channel_closed += src->tcp_input_channel_closed;
+    dst->tcp_selection_channel_rx += src->tcp_selection_channel_rx;
+    dst->tcp_selection_channel_accepted += src->tcp_selection_channel_accepted;
+    dst->tcp_selection_channel_closed += src->tcp_selection_channel_closed;
+    dst->client_stats_rx += src->client_stats_rx;
+    dst->client_udp_packets_rx += src->client_udp_packets_rx;
+    dst->client_udp_bytes_rx += src->client_udp_bytes_rx;
+    dst->client_tiles_completed += src->client_tiles_completed;
+    dst->client_completed_packets += src->client_completed_packets;
+    dst->client_partial_tiles_timed_out += src->client_partial_tiles_timed_out;
+    dst->client_old_generation_tiles += src->client_old_generation_tiles;
+    dst->client_retx_requests_tx += src->client_retx_requests_tx;
+    dst->client_udp_interarrival_samples += src->client_udp_interarrival_samples;
+    dst->client_udp_interarrival_sum_ns += src->client_udp_interarrival_sum_ns;
+    dst->client_udp_interarrival_jitter_samples += src->client_udp_interarrival_jitter_samples;
+    dst->client_udp_interarrival_jitter_sum_ns += src->client_udp_interarrival_jitter_sum_ns;
+    if (src->client_udp_interarrival_max_ns > dst->client_udp_interarrival_max_ns)
+    {
+        dst->client_udp_interarrival_max_ns = src->client_udp_interarrival_max_ns;
+    }
+    dst->retx_req_rx += src->retx_req_rx;
+    dst->retx_tiles_req += src->retx_tiles_req;
+    dst->retx_req_ignored_live += src->retx_req_ignored_live;
+    dst->key_events_rx += src->key_events_rx;
+    dst->key_events_injected += src->key_events_injected;
+    dst->key_events_dropped += src->key_events_dropped;
+    dst->key_state_duplicate_presses += src->key_state_duplicate_presses;
+    dst->key_state_release_without_press += src->key_state_release_without_press;
+    dst->keyboard_enter_events += src->keyboard_enter_events;
+    dst->pointer_events_rx += src->pointer_events_rx;
+    dst->pointer_events_injected += src->pointer_events_injected;
+    dst->pointer_events_dropped += src->pointer_events_dropped;
+    dst->pointer_button_grab_started += src->pointer_button_grab_started;
+    dst->pointer_button_grab_ended += src->pointer_button_grab_ended;
+    dst->pointer_button_grab_cleared += src->pointer_button_grab_cleared;
+    dst->pointer_button_grab_surface_destroyed += src->pointer_button_grab_surface_destroyed;
+    dst->xdg_move_invalid_serial += src->xdg_move_invalid_serial;
+    dst->xdg_resize_invalid_serial += src->xdg_resize_invalid_serial;
+    dst->popup_explicit_scene_trees += src->popup_explicit_scene_trees;
+    dst->popup_explicit_scene_tree_failures += src->popup_explicit_scene_tree_failures;
+    dst->cursor_shape_requests += src->cursor_shape_requests;
+    dst->cursor_shape_tx += src->cursor_shape_tx;
+    dst->cursor_shape_coalesced += src->cursor_shape_coalesced;
+    dst->cursor_set_cursor_requests += src->cursor_set_cursor_requests;
+    dst->cursor_set_cursor_rejected += src->cursor_set_cursor_rejected;
+    dst->cursor_set_cursor_hidden += src->cursor_set_cursor_hidden;
+    dst->cursor_set_cursor_fallback += src->cursor_set_cursor_fallback;
+    dst->input_net_latency_samples += src->input_net_latency_samples;
+    dst->input_net_latency_sum_ns += src->input_net_latency_sum_ns;
+    dst->input_queue_latency_samples += src->input_queue_latency_samples;
+    dst->input_queue_latency_sum_ns += src->input_queue_latency_sum_ns;
+    dst->input_to_summary_samples += src->input_to_summary_samples;
+    dst->input_to_summary_sum_ns += src->input_to_summary_sum_ns;
+    dst->input_to_first_fresh_tile_samples += src->input_to_first_fresh_tile_samples;
+    dst->input_to_first_fresh_tile_sum_ns += src->input_to_first_fresh_tile_sum_ns;
+    dst->tcp_summary_full_tx += src->tcp_summary_full_tx;
+    dst->tcp_summary_delta_tx += src->tcp_summary_delta_tx;
+    dst->tcp_summary_delta_tiles += src->tcp_summary_delta_tiles;
+    dst->tcp_summary_coalesced += src->tcp_summary_coalesced;
+    dst->tcp_summary_budget_interval_ns += src->tcp_summary_budget_interval_ns;
+    dst->tcp_summary_repair_backoff += src->tcp_summary_repair_backoff;
+    dst->tcp_control_bytes_sent += src->tcp_control_bytes_sent;
+    dst->tcp_control_bytes_refunded += src->tcp_control_bytes_refunded;
+    dst->tcp_budget_blocked += src->tcp_budget_blocked;
+    dst->tcp_async_send_failed += src->tcp_async_send_failed;
+    dst->tcp_async_queue_overflow += src->tcp_async_queue_overflow;
+    dst->tcp_async_queued += src->tcp_async_queued;
+    dst->tcp_async_completed += src->tcp_async_completed;
+    dst->tcp_async_completion_failed += src->tcp_async_completion_failed;
+    dst->tcp_async_partial_resubmits += src->tcp_async_partial_resubmits;
+    if (src->tcp_async_inflight_max > dst->tcp_async_inflight_max)
+    {
+        dst->tcp_async_inflight_max = src->tcp_async_inflight_max;
+    }
+    dst->udp_async_send_failed += src->udp_async_send_failed;
+    dst->udp_async_queued += src->udp_async_queued;
+    dst->udp_async_completed += src->udp_async_completed;
+    dst->udp_async_completion_failed += src->udp_async_completion_failed;
+    dst->udp_async_fallback_sync += src->udp_async_fallback_sync;
+    if (src->udp_async_inflight_max > dst->udp_async_inflight_max)
+    {
+        dst->udp_async_inflight_max = src->udp_async_inflight_max;
+    }
+    dst->rate_decreases += src->rate_decreases;
+    dst->rate_increases += src->rate_increases;
+    dst->frame_rate_downshifts += src->frame_rate_downshifts;
+    dst->frame_rate_upshifts += src->frame_rate_upshifts;
+    dst->dirty_region_probes += src->dirty_region_probes;
+    dst->dirty_region_hits += src->dirty_region_hits;
+    dst->dirty_budget_blocked += src->dirty_budget_blocked;
+    dst->partial_tile_sends += src->partial_tile_sends;
+    dst->partial_tile_packets_sent += src->partial_tile_packets_sent;
+    dst->dirty_detect_ns += src->dirty_detect_ns;
+    dst->dirty_region_select_ns += src->dirty_region_select_ns;
+    dst->tile_encode_ns += src->tile_encode_ns;
+    dst->summary_build_ns += src->summary_build_ns;
+    dst->udp_send_ns += src->udp_send_ns;
+    dst->encode_jobs_submitted += src->encode_jobs_submitted;
+    dst->encode_jobs_completed += src->encode_jobs_completed;
+    dst->encode_jobs_stale += src->encode_jobs_stale;
+    dst->encode_worker_ns += src->encode_worker_ns;
+    dst->encode_wait_ns += src->encode_wait_ns;
+    dst->encode_batches += src->encode_batches;
+    dst->encode_worker_threads += src->encode_worker_threads;
+    dst->encode_thread_wakeups += src->encode_thread_wakeups;
+    dst->dirty_tiles_stale_skipped += src->dirty_tiles_stale_skipped;
+    dst->retx_tiles_superseded_by_fresh += src->retx_tiles_superseded_by_fresh;
+    dst->dirty_queue_age_samples += src->dirty_queue_age_samples;
+    dst->dirty_queue_age_sum_ns += src->dirty_queue_age_sum_ns;
+    dst->retx_queue_age_samples += src->retx_queue_age_samples;
+    dst->retx_queue_age_sum_ns += src->retx_queue_age_sum_ns;
+    dst->retx_req_stale_generation += src->retx_req_stale_generation;
+}
+
 static double wd_avg_ms(uint64_t sum_ns, uint64_t samples) {
     if (samples == 0)
     {
@@ -3325,7 +3471,7 @@ static double wd_avg_ms(uint64_t sum_ns, uint64_t samples) {
     return (double)sum_ns / (double)samples / 1000000.0;
 }
 
-void wd_stream_print_and_reset_stats(struct wd_server* server) {
+void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_stats) {
     struct wd_net_state* net = &server->net;
 
     pthread_mutex_lock(&net->lock);
@@ -3343,36 +3489,37 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
 
     pthread_mutex_unlock(&net->lock);
 
-    static bool     have_prev_state = false;
-    static uint16_t prev_target_fps = 0;
-    static uint16_t prev_effective_fps = 0;
-    static uint64_t prev_limited_kib = 0;
-    static uint16_t prev_tile_width = 0;
-    static uint16_t prev_tile_height = 0;
-    static bool     prev_input_channel = false;
-    static bool     prev_selection_channel = false;
+    struct wd_stats_log_state* stats_log = &server->stats_log;
+    wd_stats_accumulate(&stats_log->totals, &s);
+    if (!log_stats)
+    {
+        return;
+    }
 
-    bool state_changed = !have_prev_state ||
-                         prev_target_fps != target_fps || prev_effective_fps != effective_target_fps ||
-                         prev_limited_kib != limited_udp_kib_per_second || prev_tile_width != tile_width ||
-                         prev_tile_height != tile_height || prev_input_channel != input_channel_connected ||
-                         prev_selection_channel != selection_channel_connected;
+    s = stats_log->totals;
+    memset(&stats_log->totals, 0, sizeof(stats_log->totals));
+
+    bool state_changed = !stats_log->have_prev_state ||
+                         stats_log->prev_target_fps != target_fps || stats_log->prev_effective_fps != effective_target_fps ||
+                         stats_log->prev_limited_kib != limited_udp_kib_per_second || stats_log->prev_tile_width != tile_width ||
+                         stats_log->prev_tile_height != tile_height || stats_log->prev_input_channel != input_channel_connected ||
+                         stats_log->prev_selection_channel != selection_channel_connected;
 
     if (state_changed)
     {
-        WD_LOG_DEBUG("WayDisplay state/s: target_fps=%u effective_fps=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s",
+        WD_LOG_DEBUG("state: target_fps=%u effective_fps=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s",
                      (unsigned)target_fps, (unsigned)effective_target_fps,
                      (unsigned long long)limited_udp_kib_per_second, (unsigned)tile_width, (unsigned)tile_height,
                      input_channel_connected ? "yes" : "no", selection_channel_connected ? "yes" : "no");
 
-        have_prev_state = true;
-        prev_target_fps = target_fps;
-        prev_effective_fps = effective_target_fps;
-        prev_limited_kib = limited_udp_kib_per_second;
-        prev_tile_width = tile_width;
-        prev_tile_height = tile_height;
-        prev_input_channel = input_channel_connected;
-        prev_selection_channel = selection_channel_connected;
+        stats_log->have_prev_state = true;
+        stats_log->prev_target_fps = target_fps;
+        stats_log->prev_effective_fps = effective_target_fps;
+        stats_log->prev_limited_kib = limited_udp_kib_per_second;
+        stats_log->prev_tile_width = tile_width;
+        stats_log->prev_tile_height = tile_height;
+        stats_log->prev_input_channel = input_channel_connected;
+        stats_log->prev_selection_channel = selection_channel_connected;
     }
 
     bool video_activity = s.dirty_tiles != 0 || s.dirty_tiles_stale_skipped != 0 || s.udp_tiles_sent != 0 ||
@@ -3389,7 +3536,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     if (video_activity)
     {
         uint64_t choices = s.tile_choice_compressed + s.tile_choice_uncompressed;
-        WD_LOG_DEBUG("WayDisplay video/s: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu async_queued=%llu async_completed=%llu async_failed=%llu async_completion_failed=%llu async_fallback=%llu async_inflight_max=%llu dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f tile_sizes=128x64:%llu,64x64:%llu,32x32:%llu,16x16:%llu encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_batches=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
+        WD_LOG_DEBUG("video/min: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu async_queued=%llu async_completed=%llu async_failed=%llu async_completion_failed=%llu async_fallback=%llu async_inflight_max=%llu dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f tile_sizes=128x64:%llu,64x64:%llu,32x32:%llu,16x16:%llu encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_batches=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
                      (unsigned long long)s.dirty_tiles, (unsigned long long)s.dirty_tiles_stale_skipped,
                      (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_fresh_tiles_sent,
                      (unsigned long long)s.udp_retx_tiles_sent, (unsigned long long)s.udp_packets_sent,
@@ -3451,7 +3598,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                            s.frame_rate_downshifts != 0 || s.frame_rate_upshifts != 0;
     if (repair_activity)
     {
-        WD_LOG_DEBUG("WayDisplay repair/s: summaries=%llu full=%llu delta=%llu delta_tiles=%llu summary_coalesced=%llu summary_interval_ms=%llu repair_backoff=%llu retx_req=%llu retx_tiles=%llu stale_gen=%llu ignored_live=%llu superseded=%llu rate_down=%llu rate_up=%llu fps_down=%llu fps_up=%llu",
+        WD_LOG_DEBUG("repair/min: summaries=%llu full=%llu delta=%llu delta_tiles=%llu summary_coalesced=%llu summary_interval_ms=%llu repair_backoff=%llu retx_req=%llu retx_tiles=%llu stale_gen=%llu ignored_live=%llu superseded=%llu rate_down=%llu rate_up=%llu fps_down=%llu fps_up=%llu",
                      (unsigned long long)s.tcp_summary_tx, (unsigned long long)s.tcp_summary_full_tx,
                      (unsigned long long)s.tcp_summary_delta_tx, (unsigned long long)s.tcp_summary_delta_tiles,
                      (unsigned long long)s.tcp_summary_coalesced,
@@ -3469,7 +3616,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                            s.client_udp_interarrival_samples != 0;
     if (client_activity)
     {
-        WD_LOG_DEBUG("WayDisplay client/s: reports=%llu completed=%llu udp_kib=%.1f partial_timeouts=%llu old_gen=%llu retx_req_tx=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f",
+        WD_LOG_DEBUG("client/min: reports=%llu completed=%llu udp_kib=%.1f partial_timeouts=%llu old_gen=%llu retx_req_tx=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f",
                      (unsigned long long)s.client_stats_rx, (unsigned long long)s.client_tiles_completed,
                      (double)s.client_udp_bytes_rx / 1024.0, (unsigned long long)s.client_partial_tiles_timed_out,
                      (unsigned long long)s.client_old_generation_tiles, (unsigned long long)s.client_retx_requests_tx,
@@ -3487,7 +3634,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                             s.tcp_control_bytes_sent != 0 || s.tcp_control_bytes_refunded != 0 || s.tcp_budget_blocked != 0;
     if (control_activity)
     {
-        WD_LOG_DEBUG("WayDisplay control/s: hello=%llu config=%llu input_rx=%llu input_accepted=%llu input_closed=%llu selection_rx=%llu selection_accepted=%llu selection_closed=%llu async_queued=%llu async_completed=%llu async_send_failed=%llu async_completion_failed=%llu async_overflow=%llu async_partial=%llu async_inflight_max=%llu tcp_kib=%.1f tcp_refund_kib=%.1f tcp_budget_blocked=%llu",
+        WD_LOG_DEBUG("control/min: hello=%llu config=%llu input_rx=%llu input_accepted=%llu input_closed=%llu selection_rx=%llu selection_accepted=%llu selection_closed=%llu async_queued=%llu async_completed=%llu async_send_failed=%llu async_completion_failed=%llu async_overflow=%llu async_partial=%llu async_inflight_max=%llu tcp_kib=%.1f tcp_refund_kib=%.1f tcp_budget_blocked=%llu",
                      (unsigned long long)s.tcp_hello_rx, (unsigned long long)s.tcp_config_tx,
                      (unsigned long long)s.tcp_input_channel_rx, (unsigned long long)s.tcp_input_channel_accepted,
                      (unsigned long long)s.tcp_input_channel_closed, (unsigned long long)s.tcp_selection_channel_rx,
@@ -3513,7 +3660,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                           s.input_to_summary_samples != 0 || s.input_to_first_fresh_tile_samples != 0;
     if (input_activity)
     {
-        WD_LOG_DEBUG("WayDisplay input/s: key_rx=%llu key_injected=%llu key_dropped=%llu dup_press=%llu release_without_press=%llu keyboard_enter=%llu pointer_rx=%llu pointer_injected=%llu pointer_dropped=%llu grabs_start=%llu grabs_end=%llu grabs_clear=%llu grab_surface_destroyed=%llu queue_avg_ms=%.2f input_to_summary_avg_ms=%.2f input_to_first_tile_avg_ms=%.2f",
+        WD_LOG_DEBUG("input/min: key_rx=%llu key_injected=%llu key_dropped=%llu dup_press=%llu release_without_press=%llu keyboard_enter=%llu pointer_rx=%llu pointer_injected=%llu pointer_dropped=%llu grabs_start=%llu grabs_end=%llu grabs_clear=%llu grab_surface_destroyed=%llu queue_avg_ms=%.2f input_to_summary_avg_ms=%.2f input_to_first_tile_avg_ms=%.2f",
                      (unsigned long long)s.key_events_rx, (unsigned long long)s.key_events_injected,
                      (unsigned long long)s.key_events_dropped, (unsigned long long)s.key_state_duplicate_presses,
                      (unsigned long long)s.key_state_release_without_press, (unsigned long long)s.keyboard_enter_events,
@@ -3534,7 +3681,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                                s.cursor_set_cursor_fallback != 0;
     if (compositor_activity)
     {
-        WD_LOG_DEBUG("WayDisplay compositor/s: xdg_move_bad_serial=%llu xdg_resize_bad_serial=%llu popup_scene=%llu popup_scene_fail=%llu cursor_shape=%llu cursor_shape_tx=%llu cursor_shape_coalesced=%llu cursor_set=%llu cursor_reject=%llu cursor_hidden=%llu cursor_fallback=%llu",
+        WD_LOG_DEBUG("compositor/min: xdg_move_bad_serial=%llu xdg_resize_bad_serial=%llu popup_scene=%llu popup_scene_fail=%llu cursor_shape=%llu cursor_shape_tx=%llu cursor_shape_coalesced=%llu cursor_set=%llu cursor_reject=%llu cursor_hidden=%llu cursor_fallback=%llu",
                      (unsigned long long)s.xdg_move_invalid_serial, (unsigned long long)s.xdg_resize_invalid_serial,
                      (unsigned long long)s.popup_explicit_scene_trees, (unsigned long long)s.popup_explicit_scene_tree_failures,
                      (unsigned long long)s.cursor_shape_requests, (unsigned long long)s.cursor_shape_tx,

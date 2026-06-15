@@ -355,6 +355,18 @@ struct wd_stats {
     uint64_t retx_req_stale_generation;
 };
 
+struct wd_stats_log_state {
+    struct wd_stats totals;
+    bool            have_prev_state;
+    uint16_t        prev_target_fps;
+    uint16_t        prev_effective_fps;
+    uint64_t        prev_limited_kib;
+    uint16_t        prev_tile_width;
+    uint16_t        prev_tile_height;
+    bool            prev_input_channel;
+    bool            prev_selection_channel;
+};
+
 struct wd_stream_policy {
     uint16_t target_fps;
     uint16_t effective_target_fps;
@@ -608,9 +620,11 @@ struct wd_server {
     uint32_t                             remote_primary_text_size;
     struct wlr_primary_selection_source* remote_primary_source;
 
-    uint64_t last_summary_ns;
-    uint64_t last_delta_summary_ns;
-    uint64_t last_stats_ns;
+    uint64_t                  last_summary_ns;
+    uint64_t                  last_delta_summary_ns;
+    uint64_t                  last_stats_ns;
+    uint64_t                  last_stats_log_ns;
+    struct wd_stats_log_state stats_log;
 
     uint32_t* framebuffer_xrgb8888;
     uint64_t framebuffer_generation;
@@ -702,7 +716,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server);
 bool wd_stream_send_generation_summary_locked(struct wd_server* server);
 bool wd_stream_send_pending_generation_summary_locked(struct wd_server* server);
 bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id, uint64_t requested_generation);
-void wd_stream_print_and_reset_stats(struct wd_server* server);
+void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_stats);
 bool wd_stream_try_consume_tcp_control_budget_locked(struct wd_net_state* net, uint32_t bytes, uint64_t now_ns);
 void wd_stream_account_tcp_control_bytes_locked(struct wd_net_state* net, uint32_t bytes);
 

@@ -416,11 +416,11 @@ static void handle_xwayland_ready(struct wl_listener* listener, void* data) {
     if (server->xwayland->display_name)
     {
         setenv("DISPLAY", server->xwayland->display_name, 1);
-        WD_LOG_INFO("WayDisplay: Xwayland ready on DISPLAY=%s", server->xwayland->display_name);
+        WD_LOG_INFO("Xwayland ready on DISPLAY=%s", server->xwayland->display_name);
     }
     else
     {
-        WD_LOG_INFO("WayDisplay: Xwayland ready");
+        WD_LOG_INFO("Xwayland ready");
     }
 }
 
@@ -447,7 +447,7 @@ static void handle_xwayland_surface_map(struct wl_listener* listener, void* data
 
     xwayland_view_mark_mapped(view, true);
 
-    WD_LOG_DEBUG("WayDisplay: Xwayland surface mapped view=%p geom=%dx%d+%d+%d title=%s class=%s", (void*)view,
+    WD_LOG_DEBUG("Xwayland surface mapped view=%p geom=%dx%d+%d+%d title=%s class=%s", (void*)view,
                  (int)view->xwayland_surface->width, (int)view->xwayland_surface->height, (int)view->xwayland_surface->x,
                  (int)view->xwayland_surface->y, view->title ? view->title : "", view->app_id ? view->app_id : "");
 }
@@ -589,7 +589,7 @@ static void xwayland_view_associate(struct wd_view* view) {
         xwayland_mark_scene_dirty(view);
     }
 
-    WD_LOG_DEBUG("WayDisplay: Xwayland associated view=%p scene_tree=%p mapped=%d managed=%d override_redirect=%d parent=%p",
+    WD_LOG_DEBUG("Xwayland associated view=%p scene_tree=%p mapped=%d managed=%d override_redirect=%d parent=%p",
                  (void*)view, (void*)view->scene_tree, view->mapped ? 1 : 0, xwayland_view_is_managed(view) ? 1 : 0,
                  view->xwayland_surface->override_redirect ? 1 : 0, (void*)view->xwayland_surface->parent);
 }
@@ -622,7 +622,7 @@ static void handle_xwayland_map_request(struct wl_listener* listener, void* data
     xwayland_view_mark_mapped(view, view->scene_tree != NULL);
     xwayland_view_configure_current_geometry(view);
 
-    WD_LOG_DEBUG("WayDisplay: Xwayland map request view=%p requested=%dx%d+%d+%d configured=%ux%u "
+    WD_LOG_DEBUG("Xwayland map request view=%p requested=%dx%d+%d+%d configured=%ux%u "
                  "pending_associate=%d",
                  (void*)view, (int)view->xwayland_surface->width, (int)view->xwayland_surface->height, (int)view->xwayland_surface->x,
                  (int)view->xwayland_surface->y, (unsigned)xwayland_configure_width(view, view->xwayland_surface->width),
@@ -945,7 +945,7 @@ static void handle_new_xwayland_surface(struct wl_listener* listener, void* data
         xwayland_view_associate(view);
     }
 
-    WD_LOG_DEBUG("WayDisplay: new Xwayland shell surface view=%p", (void*)view);
+    WD_LOG_DEBUG("new Xwayland shell surface view=%p", (void*)view);
 }
 
 bool wd_xwayland_view_decoration_at(struct wd_view* view, double sx, double sy) {
@@ -994,7 +994,7 @@ bool wd_xwayland_init(struct wd_server* server) {
     server->xwayland = wlr_xwayland_create(server->display, server->compositor, true);
     if (!server->xwayland)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create Xwayland");
+        WD_LOG_ERROR("failed to create Xwayland");
         return false;
     }
 
@@ -1009,11 +1009,11 @@ bool wd_xwayland_init(struct wd_server* server) {
 
     if (server->xwayland->display_name)
     {
-        WD_LOG_INFO("WayDisplay: Xwayland enabled on DISPLAY=%s", server->xwayland->display_name);
+        WD_LOG_INFO("Xwayland enabled on DISPLAY=%s", server->xwayland->display_name);
     }
     else
     {
-        WD_LOG_INFO("WayDisplay: Xwayland enabled");
+        WD_LOG_INFO("Xwayland enabled");
     }
 
     return true;

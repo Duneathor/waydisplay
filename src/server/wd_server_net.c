@@ -75,7 +75,7 @@ static void wd_log_tcp_channel_endpoint(const char* channel, int fd) {
 
     wd_format_socket_endpoint(fd, false, local, sizeof(local));
     wd_format_socket_endpoint(fd, true, remote, sizeof(remote));
-    WD_LOG_INFO("WayDisplay: %s TCP channel connected local=%s remote=%s", channel, local, remote);
+    WD_LOG_INFO("%s TCP channel connected local=%s remote=%s", channel, local, remote);
 }
 
 static uint64_t wd_clamp_u64(uint64_t value, uint64_t min_value, uint64_t max_value) {
@@ -553,7 +553,7 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
     int probe_udp_fd = wd_create_udp_mtu_probe_socket();
     if (probe_udp_fd < 0)
     {
-        WD_LOG_INFO("WayDisplay: UDP MTU probe could not force DF; using default UDP payload target: %u", WD_UDP_PAYLOAD_TARGET);
+        WD_LOG_INFO("UDP MTU probe could not force DF; using default UDP payload target: %u", WD_UDP_PAYLOAD_TARGET);
         wd_udp_socket_disable_df_best_effort(net->udp_fd);
         return WD_UDP_PAYLOAD_TARGET;
     }
@@ -641,7 +641,7 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
         result = WD_UDP_PAYLOAD_TARGET;
     }
 
-    WD_LOG_INFO("WayDisplay: UDP payload target selected by probe: %u", result);
+    WD_LOG_INFO("UDP payload target selected by probe: %u", result);
 
     return result;
 }
@@ -779,7 +779,7 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
 
     free(payload);
 
-    WD_LOG_INFO("WayDisplay: adaptive UDP byte budget selected by throughput probe: %llu KiB/s sent=%u recv=%u",
+    WD_LOG_INFO("adaptive UDP byte budget selected by throughput probe: %llu KiB/s sent=%u recv=%u",
                 (unsigned long long)(limited_rate / 1024ull), packets_sent, packets_received);
 
     return limited_rate;
@@ -841,7 +841,7 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
     {
         wd_net_derive_link_profile(net, WD_LINK_RTT_DEFAULT_NS, 0);
         wd_net_update_summary_cadence_for_budget(server);
-        WD_LOG_INFO("WayDisplay: TCP link RTT probe unavailable; using conservative defaults rtt=%u ms summary_delta=%llu/%llu ms",
+        WD_LOG_INFO("TCP link RTT probe unavailable; using conservative defaults rtt=%u ms summary_delta=%llu/%llu ms",
                     (unsigned)(WD_LINK_RTT_DEFAULT_NS / 1000000ull),
                     (unsigned long long)(net->active_summary_interval_ns / 1000000ull),
                     (unsigned long long)(net->clean_summary_interval_ns / 1000000ull));
@@ -872,7 +872,7 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
     wd_net_derive_link_profile(net, avg_ns, jitter_ns);
     wd_net_update_summary_cadence_for_budget(server);
 
-    WD_LOG_INFO("WayDisplay: TCP link profile rtt=%llu ms jitter=%llu ms summary_grace=%llu ms rerequest=%llu ms reassembly=%llu ms summary_delta=%llu/%llu ms samples=%u",
+    WD_LOG_INFO("TCP link profile rtt=%llu ms jitter=%llu ms summary_grace=%llu ms rerequest=%llu ms reassembly=%llu ms summary_delta=%llu/%llu ms samples=%u",
                 (unsigned long long)(net->link_rtt_ns / 1000000ull),
                 (unsigned long long)(net->link_jitter_ns / 1000000ull),
                 (unsigned long long)(net->summary_retransmit_grace_ns / 1000000ull),
@@ -993,7 +993,7 @@ static void wd_server_handle_pointer_message(struct wd_server* server, const str
     {
         if (pointer.event_type == WD_POINTER_EVENT_BUTTON && pointer.button == 0x111)
         {
-            WD_LOG_DEBUG("WayDisplay: received right click %s from client "
+            WD_LOG_DEBUG("received right click %s from client "
                          "x=%u y=%u mods=0x%x timestamp=%" PRIu64,
                          pointer.button_state == WD_POINTER_BUTTON_PRESSED ? "press" : "release", pointer.x, pointer.y,
                          pointer.modifiers, pointer.client_timestamp_ns);
@@ -1118,7 +1118,7 @@ void* wd_net_thread_main(void* arg) {
     net->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (net->listen_fd < 0)
     {
-        WD_LOG_ERROR("WayDisplay: TCP socket failed: %s", strerror(errno));
+        WD_LOG_ERROR("TCP socket failed: %s", strerror(errno));
         return NULL;
     }
 
@@ -1134,14 +1134,14 @@ void* wd_net_thread_main(void* arg) {
 
     if (bind(net->listen_fd, (struct sockaddr*)&bind_addr, sizeof(bind_addr)) < 0)
     {
-        WD_LOG_ERROR("WayDisplay: bind TCP failed: %s", strerror(errno));
+        WD_LOG_ERROR("bind TCP failed: %s", strerror(errno));
         wd_close_fd(&net->listen_fd);
         return NULL;
     }
 
     if (listen(net->listen_fd, 3) < 0)
     {
-        WD_LOG_ERROR("WayDisplay: listen failed: %s", strerror(errno));
+        WD_LOG_ERROR("listen failed: %s", strerror(errno));
         wd_close_fd(&net->listen_fd);
         return NULL;
     }
@@ -1149,7 +1149,7 @@ void* wd_net_thread_main(void* arg) {
     net->udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (net->udp_fd < 0)
     {
-        WD_LOG_ERROR("WayDisplay: UDP socket failed: %s", strerror(errno));
+        WD_LOG_ERROR("UDP socket failed: %s", strerror(errno));
         wd_close_fd(&net->listen_fd);
         return NULL;
     }
@@ -1161,12 +1161,12 @@ void* wd_net_thread_main(void* arg) {
     udp_bind_addr.sin_port        = htons(0);
     if (bind(net->udp_fd, (struct sockaddr*)&udp_bind_addr, sizeof(udp_bind_addr)) < 0)
     {
-        WD_LOG_ERROR("WayDisplay: bind UDP sender failed: %s", strerror(errno));
+        WD_LOG_ERROR("bind UDP sender failed: %s", strerror(errno));
     }
 
     if (wd_set_nonblocking(net->udp_fd) < 0)
     {
-        WD_LOG_ERROR("WayDisplay: failed to make UDP socket nonblocking: %s", strerror(errno));
+        WD_LOG_ERROR("failed to make UDP socket nonblocking: %s", strerror(errno));
     }
 
     wd_udp_socket_disable_df_best_effort(net->udp_fd);
@@ -1177,14 +1177,14 @@ void* wd_net_thread_main(void* arg) {
 
         wd_format_socket_endpoint(net->listen_fd, false, tcp_local, sizeof(tcp_local));
         wd_format_socket_endpoint(net->udp_fd, false, udp_local, sizeof(udp_local));
-        WD_LOG_INFO("WayDisplay: network listening tcp=%s udp_sender=%s tcp_fd=%d udp_fd=%d", tcp_local, udp_local,
+        WD_LOG_INFO("network listening tcp=%s udp_sender=%s tcp_fd=%d udp_fd=%d", tcp_local, udp_local,
                     net->listen_fd, net->udp_fd);
     }
 
     int sndbuf = WD_UDP_SOCKET_BUFFER_BYTES;
     if (setsockopt(net->udp_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0)
     {
-        WD_LOG_ERROR("WayDisplay: setsockopt SO_SNDBUF failed: %s", strerror(errno));
+        WD_LOG_ERROR("setsockopt SO_SNDBUF failed: %s", strerror(errno));
     }
     else
     {
@@ -1193,7 +1193,7 @@ void* wd_net_thread_main(void* arg) {
 
         if (getsockopt(net->udp_fd, SOL_SOCKET, SO_SNDBUF, &actual, &actual_len) == 0)
         {
-            WD_LOG_INFO("WayDisplay: UDP send buffer requested=%d actual=%d", sndbuf, actual);
+            WD_LOG_INFO("UDP send buffer requested=%d actual=%d", sndbuf, actual);
         }
     }
 
@@ -1216,7 +1216,7 @@ void* wd_net_thread_main(void* arg) {
                 continue;
             }
 
-            WD_LOG_ERROR("WayDisplay: accept failed: %s", strerror(errno));
+            WD_LOG_ERROR("accept failed: %s", strerror(errno));
             continue;
         }
 
@@ -1229,7 +1229,7 @@ void* wd_net_thread_main(void* arg) {
         if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size) || type != WD_MSG_CLIENT_HELLO ||
             payload_size < sizeof(struct wd_client_hello_payload))
         {
-            WD_LOG_ERROR("WayDisplay: invalid client hello");
+            WD_LOG_ERROR("invalid client hello");
             free(payload);
             close(tcp_fd);
             continue;
@@ -1243,7 +1243,7 @@ void* wd_net_thread_main(void* arg) {
 
         if (hello.client_udp_port == 0)
         {
-            WD_LOG_ERROR("WayDisplay: rejected client hello with UDP port 0");
+            WD_LOG_ERROR("rejected client hello with UDP port 0");
             close(tcp_fd);
             continue;
         }
@@ -1253,7 +1253,7 @@ void* wd_net_thread_main(void* arg) {
             if (hello.desired_width == 0 || hello.desired_height == 0 ||
                 !wd_server_request_display_size(server, hello.desired_width, hello.desired_height))
             {
-                WD_LOG_ERROR("WayDisplay: rejected requested client display size %ux%u", hello.desired_width, hello.desired_height);
+                WD_LOG_ERROR("rejected requested client display size %ux%u", hello.desired_width, hello.desired_height);
                 close(tcp_fd);
                 continue;
             }
@@ -1299,7 +1299,7 @@ void* wd_net_thread_main(void* arg) {
 
         if (!wd_send_tcp_message(tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg)))
         {
-            WD_LOG_ERROR("WayDisplay: failed to send server config");
+            WD_LOG_ERROR("failed to send server config");
             close(tcp_fd);
             continue;
         }
@@ -1404,7 +1404,7 @@ void* wd_net_thread_main(void* arg) {
             wd_format_socket_endpoint(net->udp_fd, false, udp_local, sizeof(udp_local));
             wd_format_sockaddr_in(&client_udp_addr, udp_remote, sizeof(udp_remote));
 
-            WD_LOG_INFO("WayDisplay: client connected; control_tcp=%s<->%s udp=%s->%s input_channel=%s selection_channel=%s display=%ux%u tile=%ux%u fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
+            WD_LOG_INFO("client connected; control_tcp=%s<->%s udp=%s->%s input_channel=%s selection_channel=%s display=%ux%u tile=%ux%u fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
                         control_local, control_remote, udp_local, udp_remote, input_tcp_fd >= 0 ? "yes" : "no",
                         selection_tcp_fd >= 0 ? "yes" : "no", server->display_width, server->display_height,
                         server->tile_width, server->tile_height, hello.target_fps, hello.limited_udp_kib_per_second,
@@ -1692,11 +1692,11 @@ void* wd_net_thread_main(void* arg) {
                             }
                             wd_server_fill_config(server, cfg.session_id, selected_udp_payload, &cfg);
 
-                            WD_LOG_INFO("WayDisplay: client resized display to %ux%u", server->display_width, server->display_height);
+                            WD_LOG_INFO("client resized display to %ux%u", server->display_width, server->display_height);
                         }
                         else
                         {
-                            WD_LOG_ERROR("WayDisplay: rejected display resize to %ux%u", resize.width, resize.height);
+                            WD_LOG_ERROR("rejected display resize to %ux%u", resize.width, resize.height);
                         }
                     }
                 }
@@ -1757,7 +1757,7 @@ void* wd_net_thread_main(void* arg) {
             selection_tcp_fd = -1;
         }
 
-        WD_LOG_INFO("WayDisplay: client disconnected; waiting for reconnect");
+        WD_LOG_INFO("client disconnected; waiting for reconnect");
     }
 
     wd_close_fd(&net->tcp_fd);

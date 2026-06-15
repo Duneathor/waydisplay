@@ -66,6 +66,64 @@ struct ContextMenu {
     int  hover = -1;
 };
 
+void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot& src) {
+    dst.udp_packets += src.udp_packets;
+    dst.udp_bytes += src.udp_bytes;
+    dst.udp_interarrival_samples += src.udp_interarrival_samples;
+    dst.udp_interarrival_sum_ns += src.udp_interarrival_sum_ns;
+    dst.udp_jitter_samples += src.udp_jitter_samples;
+    dst.udp_jitter_sum_ns += src.udp_jitter_sum_ns;
+    dst.udp_interarrival_max_ns = std::max(dst.udp_interarrival_max_ns, src.udp_interarrival_max_ns);
+    dst.invalid += src.invalid;
+    dst.ignored_probe += src.ignored_probe;
+    dst.stale_session += src.stale_session;
+    dst.old_gen += src.old_gen;
+    dst.completed += src.completed;
+    dst.completed_compressed += src.completed_compressed;
+    dst.completed_packets += src.completed_packets;
+    dst.partial_timeouts += src.partial_timeouts;
+    dst.partial_missing_packets += src.partial_missing_packets;
+    dst.partial_retx_queued += src.partial_retx_queued;
+    dst.retx_response_samples += src.retx_response_samples;
+    dst.retx_response_sum_ns += src.retx_response_sum_ns;
+    dst.timeout_updates += src.timeout_updates;
+    dst.summaries += src.summaries;
+    dst.retx += src.retx;
+    dst.summary_retx_queued += src.summary_retx_queued;
+    dst.summary_retx_deferred += src.summary_retx_deferred;
+    dst.summary_retx_throttled += src.summary_retx_throttled;
+    dst.summary_to_retx_samples += src.summary_to_retx_samples;
+    dst.summary_to_retx_sum_ns += src.summary_to_retx_sum_ns;
+    dst.keys += src.keys;
+    dst.pointer += src.pointer;
+    dst.input_events += src.input_events;
+    dst.input_channel_events += src.input_channel_events;
+    dst.input_fallback_events += src.input_fallback_events;
+    dst.selection_channel_events += src.selection_channel_events;
+    dst.selection_fallback_events += src.selection_fallback_events;
+    dst.tcp_async_queued += src.tcp_async_queued;
+    dst.tcp_async_completed += src.tcp_async_completed;
+    dst.tcp_async_failed += src.tcp_async_failed;
+    dst.tcp_async_overflow += src.tcp_async_overflow;
+    dst.tcp_async_partial += src.tcp_async_partial;
+    dst.tcp_async_coalesced += src.tcp_async_coalesced;
+    dst.tcp_async_inflight_max = std::max(dst.tcp_async_inflight_max, src.tcp_async_inflight_max);
+    dst.udp_async_posted += src.udp_async_posted;
+    dst.udp_async_completed += src.udp_async_completed;
+    dst.udp_async_failed += src.udp_async_failed;
+    dst.udp_async_submit_failed += src.udp_async_submit_failed;
+    dst.udp_async_cancels += src.udp_async_cancels;
+    dst.udp_async_inflight_max = std::max(dst.udp_async_inflight_max, src.udp_async_inflight_max);
+    dst.tile_assembly_samples += src.tile_assembly_samples;
+    dst.tile_assembly_sum_ns += src.tile_assembly_sum_ns;
+    dst.tile_present_samples += src.tile_present_samples;
+    dst.tile_present_sum_ns += src.tile_present_sum_ns;
+    dst.input_to_present_samples += src.input_to_present_samples;
+    dst.input_to_present_sum_ns += src.input_to_present_sum_ns;
+    dst.input_seq_present_samples += src.input_seq_present_samples;
+    dst.input_seq_present_sum_ns += src.input_seq_present_sum_ns;
+}
+
 const std::array<ContextMenuItem, 5> CONTEXT_MENU_ITEMS{{
     {"COPY FROM REMOTE", ContextMenuAction::Disabled, false},
     {"PASTE TO REMOTE", ContextMenuAction::Disabled, false},
@@ -787,7 +845,142 @@ bool take_input_timestamp(ClientState& state, uint64_t sequence, uint64_t& times
     return false;
 }
 
-void print_client_stats(ClientState& state) {
+void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& logged) {
+    const uint64_t udp_packets = logged.udp_packets;
+    const uint64_t udp_bytes = logged.udp_bytes;
+    const uint64_t udp_interarrival_samples = logged.udp_interarrival_samples;
+    const uint64_t udp_interarrival_sum_ns = logged.udp_interarrival_sum_ns;
+    const uint64_t udp_jitter_samples = logged.udp_jitter_samples;
+    const uint64_t udp_jitter_sum_ns = logged.udp_jitter_sum_ns;
+    const uint64_t udp_interarrival_max_ns = logged.udp_interarrival_max_ns;
+    const uint64_t invalid = logged.invalid;
+    const uint64_t ignored_probe = logged.ignored_probe;
+    const uint64_t stale_session = logged.stale_session;
+    const uint64_t old_gen = logged.old_gen;
+    const uint64_t completed = logged.completed;
+    const uint64_t completed_compressed = logged.completed_compressed;
+    const uint64_t completed_packets = logged.completed_packets;
+    const uint64_t partial_timeouts = logged.partial_timeouts;
+    const uint64_t partial_missing_packets = logged.partial_missing_packets;
+    const uint64_t partial_retx_queued = logged.partial_retx_queued;
+    const uint64_t retx_response_samples = logged.retx_response_samples;
+    const uint64_t retx_response_sum_ns = logged.retx_response_sum_ns;
+    const uint64_t timeout_updates = logged.timeout_updates;
+    const uint64_t summaries = logged.summaries;
+    const uint64_t retx = logged.retx;
+    const uint64_t summary_retx_queued = logged.summary_retx_queued;
+    const uint64_t summary_retx_deferred = logged.summary_retx_deferred;
+    const uint64_t summary_retx_throttled = logged.summary_retx_throttled;
+    const uint64_t summary_to_retx_samples = logged.summary_to_retx_samples;
+    const uint64_t summary_to_retx_sum_ns = logged.summary_to_retx_sum_ns;
+    const uint64_t keys = logged.keys;
+    const uint64_t pointer = logged.pointer;
+    const uint64_t input_events = logged.input_events;
+    const uint64_t input_channel_events = logged.input_channel_events;
+    const uint64_t input_fallback_events = logged.input_fallback_events;
+    const uint64_t selection_channel_events = logged.selection_channel_events;
+    const uint64_t selection_fallback_events = logged.selection_fallback_events;
+    const uint64_t tcp_async_queued = logged.tcp_async_queued;
+    const uint64_t tcp_async_completed = logged.tcp_async_completed;
+    const uint64_t tcp_async_failed = logged.tcp_async_failed;
+    const uint64_t tcp_async_overflow = logged.tcp_async_overflow;
+    const uint64_t tcp_async_partial = logged.tcp_async_partial;
+    const uint64_t tcp_async_coalesced = logged.tcp_async_coalesced;
+    const uint64_t tcp_async_inflight_max = logged.tcp_async_inflight_max;
+    const uint64_t udp_async_posted = logged.udp_async_posted;
+    const uint64_t udp_async_completed = logged.udp_async_completed;
+    const uint64_t udp_async_failed = logged.udp_async_failed;
+    const uint64_t udp_async_submit_failed = logged.udp_async_submit_failed;
+    const uint64_t udp_async_cancels = logged.udp_async_cancels;
+    const uint64_t udp_async_inflight_max = logged.udp_async_inflight_max;
+    const uint64_t tile_assembly_samples = logged.tile_assembly_samples;
+    const uint64_t tile_assembly_sum_ns = logged.tile_assembly_sum_ns;
+    const uint64_t tile_present_samples = logged.tile_present_samples;
+    const uint64_t tile_present_sum_ns = logged.tile_present_sum_ns;
+    const uint64_t input_to_present_samples = logged.input_to_present_samples;
+    const uint64_t input_to_present_sum_ns = logged.input_to_present_sum_ns;
+    const uint64_t input_seq_present_samples = logged.input_seq_present_samples;
+    const uint64_t input_seq_present_sum_ns = logged.input_seq_present_sum_ns;
+    const uint64_t udp_gap_pressure_ms = state.udp_gap_pressure_ns.load(std::memory_order_relaxed) / 1000000ull;
+
+    const bool udp_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 ||
+                              ignored_probe != 0 || stale_session != 0 || udp_async_posted != 0 ||
+                              udp_async_completed != 0 || udp_async_failed != 0 || udp_async_submit_failed != 0 ||
+                              udp_async_cancels != 0 || udp_async_inflight_max != 0;
+    if (udp_activity)
+    {
+        WD_LOG_DEBUG("[client udp/min] pkts=%llu kib=%.1f completed=%llu invalid=%llu probe=%llu stale_session=%llu old_gen=%llu async_recv_submitted=%llu async_recv_completed=%llu async_recv_failed=%llu async_recv_submit_failed=%llu async_recv_cancels=%llu async_recv_inflight_max=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f kib_per_tile=%.2f compressed_kib_per_tile=%.2f pkts_per_tile=%.2f",
+                     static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0,
+                     static_cast<unsigned long long>(completed), static_cast<unsigned long long>(invalid),
+                     static_cast<unsigned long long>(ignored_probe), static_cast<unsigned long long>(stale_session),
+                     static_cast<unsigned long long>(old_gen),
+                     static_cast<unsigned long long>(udp_async_posted),
+                     static_cast<unsigned long long>(udp_async_completed),
+                     static_cast<unsigned long long>(udp_async_failed),
+                     static_cast<unsigned long long>(udp_async_submit_failed),
+                     static_cast<unsigned long long>(udp_async_cancels),
+                     static_cast<unsigned long long>(udp_async_inflight_max),
+                     avg_ms(udp_interarrival_sum_ns, udp_interarrival_samples),
+                     avg_ms(udp_jitter_sum_ns, udp_jitter_samples), static_cast<double>(udp_interarrival_max_ns) / 1000000.0,
+                     completed ? (static_cast<double>(udp_bytes) / 1024.0) / static_cast<double>(completed) : 0.0,
+                     completed ? (static_cast<double>(completed_compressed) / 1024.0) / static_cast<double>(completed) : 0.0,
+                     completed ? static_cast<double>(completed_packets) / static_cast<double>(completed) : 0.0);
+    }
+
+    const bool repair_activity = partial_timeouts != 0 || partial_missing_packets != 0 || partial_retx_queued != 0 ||
+                                 summaries != 0 || retx != 0 || summary_retx_queued != 0 || summary_retx_deferred != 0 ||
+                                 summary_retx_throttled != 0 || summary_to_retx_samples != 0 || retx_response_samples != 0;
+    if (repair_activity)
+    {
+        WD_LOG_DEBUG("[client repair/min] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu summary_throttled=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
+                     static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
+                     static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(summary_retx_deferred),
+                     static_cast<unsigned long long>(summary_retx_throttled), static_cast<unsigned long long>(partial_timeouts),
+                     static_cast<unsigned long long>(partial_missing_packets), static_cast<unsigned long long>(partial_retx_queued),
+                     avg_ms(summary_to_retx_sum_ns, summary_to_retx_samples),
+                     avg_ms(retx_response_sum_ns, retx_response_samples));
+    }
+
+    const bool input_activity = keys != 0 || pointer != 0 || input_events != 0 || input_channel_events != 0 ||
+                                input_fallback_events != 0 || selection_channel_events != 0 || selection_fallback_events != 0 ||
+                                tcp_async_coalesced != 0;
+    if (input_activity)
+    {
+        WD_LOG_DEBUG("[client input/min] keys=%llu pointer_queued=%llu pointer_coalesced=%llu input_events_queued=%llu input_channel=%llu input_fallback=%llu selection_channel=%llu selection_fallback=%llu",
+                     static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
+                     static_cast<unsigned long long>(tcp_async_coalesced), static_cast<unsigned long long>(input_events),
+                     static_cast<unsigned long long>(input_channel_events), static_cast<unsigned long long>(input_fallback_events),
+                     static_cast<unsigned long long>(selection_channel_events), static_cast<unsigned long long>(selection_fallback_events));
+    }
+
+    const bool tcp_async_activity = tcp_async_queued != 0 || tcp_async_completed != 0 || tcp_async_failed != 0 ||
+                                    tcp_async_overflow != 0 || tcp_async_partial != 0 || tcp_async_coalesced != 0 || tcp_async_inflight_max != 0;
+    if (tcp_async_activity)
+    {
+        WD_LOG_DEBUG("[client tcp_async/min] queued=%llu completed=%llu failed=%llu overflow=%llu partial=%llu coalesced=%llu inflight_max=%llu",
+                     static_cast<unsigned long long>(tcp_async_queued), static_cast<unsigned long long>(tcp_async_completed),
+                     static_cast<unsigned long long>(tcp_async_failed), static_cast<unsigned long long>(tcp_async_overflow),
+                     static_cast<unsigned long long>(tcp_async_partial), static_cast<unsigned long long>(tcp_async_coalesced),
+                     static_cast<unsigned long long>(tcp_async_inflight_max));
+    }
+
+    uint64_t timeout_ms = state.tile_reassembly_timeout_ns.load(std::memory_order_relaxed) / 1000000ull;
+    const bool latency_activity = timeout_updates != 0 || timeout_ms != state.stats_log.prev_timeout_ms ||
+                                  udp_gap_pressure_ms != state.stats_log.prev_udp_gap_pressure_ms || tile_assembly_samples != 0 ||
+                                  tile_present_samples != 0 || input_to_present_samples != 0 || input_seq_present_samples != 0;
+    if (latency_activity)
+    {
+        WD_LOG_DEBUG("[client latency/min] tile_assembly_avg_ms=%.2f reassembly_timeout_ms=%llu udp_gap_pressure_ms=%llu timeout_updates=%llu tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f input_seq_to_present_avg_ms=%.2f",
+                     avg_ms(tile_assembly_sum_ns, tile_assembly_samples), static_cast<unsigned long long>(timeout_ms),
+                     static_cast<unsigned long long>(udp_gap_pressure_ms),
+                     static_cast<unsigned long long>(timeout_updates), avg_ms(tile_present_sum_ns, tile_present_samples),
+                     avg_ms(input_to_present_sum_ns, input_to_present_samples), avg_ms(input_seq_present_sum_ns, input_seq_present_samples));
+        state.stats_log.prev_timeout_ms = timeout_ms;
+        state.stats_log.prev_udp_gap_pressure_ms = udp_gap_pressure_ms;
+    }
+}
+
+void sample_client_stats(ClientState& state, bool log_stats) {
     client_reap_async_sends(state);
 
     const uint64_t udp_packets              = take_stat(state.stats.udp_packets_rx);
@@ -847,6 +1040,64 @@ void print_client_stats(ClientState& state) {
     const uint64_t input_seq_present_samples = take_stat(state.stats.input_sequence_present_latency_samples);
     const uint64_t input_seq_present_sum_ns  = take_stat(state.stats.input_sequence_present_latency_sum_ns);
 
+    ClientStatsSnapshot sample{};
+    sample.udp_packets = udp_packets;
+    sample.udp_bytes = udp_bytes;
+    sample.udp_interarrival_samples = udp_interarrival_samples;
+    sample.udp_interarrival_sum_ns = udp_interarrival_sum_ns;
+    sample.udp_jitter_samples = udp_jitter_samples;
+    sample.udp_jitter_sum_ns = udp_jitter_sum_ns;
+    sample.udp_interarrival_max_ns = udp_interarrival_max_ns;
+    sample.invalid = invalid;
+    sample.ignored_probe = ignored_probe;
+    sample.stale_session = stale_session;
+    sample.old_gen = old_gen;
+    sample.completed = completed;
+    sample.completed_compressed = completed_compressed;
+    sample.completed_packets = completed_packets;
+    sample.partial_timeouts = partial_timeouts;
+    sample.partial_missing_packets = partial_missing_packets;
+    sample.partial_retx_queued = partial_retx_queued;
+    sample.retx_response_samples = retx_response_samples;
+    sample.retx_response_sum_ns = retx_response_sum_ns;
+    sample.timeout_updates = timeout_updates;
+    sample.summaries = summaries;
+    sample.retx = retx;
+    sample.summary_retx_queued = summary_retx_queued;
+    sample.summary_retx_deferred = summary_retx_deferred;
+    sample.summary_retx_throttled = summary_retx_throttled;
+    sample.summary_to_retx_samples = summary_to_retx_samples;
+    sample.summary_to_retx_sum_ns = summary_to_retx_sum_ns;
+    sample.keys = keys;
+    sample.pointer = pointer;
+    sample.input_events = input_events;
+    sample.input_channel_events = input_channel_events;
+    sample.input_fallback_events = input_fallback_events;
+    sample.selection_channel_events = selection_channel_events;
+    sample.selection_fallback_events = selection_fallback_events;
+    sample.tcp_async_queued = tcp_async_queued;
+    sample.tcp_async_completed = tcp_async_completed;
+    sample.tcp_async_failed = tcp_async_failed;
+    sample.tcp_async_overflow = tcp_async_overflow;
+    sample.tcp_async_partial = tcp_async_partial;
+    sample.tcp_async_coalesced = tcp_async_coalesced;
+    sample.tcp_async_inflight_max = tcp_async_inflight_max;
+    sample.udp_async_posted = udp_async_posted;
+    sample.udp_async_completed = udp_async_completed;
+    sample.udp_async_failed = udp_async_failed;
+    sample.udp_async_submit_failed = udp_async_submit_failed;
+    sample.udp_async_cancels = udp_async_cancels;
+    sample.udp_async_inflight_max = udp_async_inflight_max;
+    sample.tile_assembly_samples = tile_assembly_samples;
+    sample.tile_assembly_sum_ns = tile_assembly_sum_ns;
+    sample.tile_present_samples = tile_present_samples;
+    sample.tile_present_sum_ns = tile_present_sum_ns;
+    sample.input_to_present_samples = input_to_present_samples;
+    sample.input_to_present_sum_ns = input_to_present_sum_ns;
+    sample.input_seq_present_samples = input_seq_present_samples;
+    sample.input_seq_present_sum_ns = input_seq_present_sum_ns;
+    client_stats_accumulate(state.stats_log.totals, sample);
+
     const bool feedback_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || partial_timeouts != 0 ||
                                    invalid != 0 || old_gen != 0 || retx != 0 || udp_interarrival_samples != 0;
 
@@ -876,85 +1127,14 @@ void print_client_stats(ClientState& state) {
     }
 
     update_udp_gap_pressure(state, udp_interarrival_max_ns, udp_interarrival_samples, udp_packets);
-    const uint64_t udp_gap_pressure_ms = state.udp_gap_pressure_ns.load(std::memory_order_relaxed) / 1000000ull;
-
-    const bool udp_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 ||
-                              ignored_probe != 0 || stale_session != 0 || udp_async_posted != 0 ||
-                              udp_async_completed != 0 || udp_async_failed != 0 || udp_async_submit_failed != 0 ||
-                              udp_async_cancels != 0 || udp_async_inflight_max != 0;
-    if (udp_activity)
+    if (!log_stats)
     {
-        WD_LOG_DEBUG("[client udp/s] pkts=%llu kib=%.1f completed=%llu invalid=%llu probe=%llu stale_session=%llu old_gen=%llu async_recv_submitted=%llu async_recv_completed=%llu async_recv_failed=%llu async_recv_submit_failed=%llu async_recv_cancels=%llu async_recv_inflight_max=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f kib_per_tile=%.2f compressed_kib_per_tile=%.2f pkts_per_tile=%.2f",
-                     static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0,
-                     static_cast<unsigned long long>(completed), static_cast<unsigned long long>(invalid),
-                     static_cast<unsigned long long>(ignored_probe), static_cast<unsigned long long>(stale_session),
-                     static_cast<unsigned long long>(old_gen),
-                     static_cast<unsigned long long>(udp_async_posted),
-                     static_cast<unsigned long long>(udp_async_completed),
-                     static_cast<unsigned long long>(udp_async_failed),
-                     static_cast<unsigned long long>(udp_async_submit_failed),
-                     static_cast<unsigned long long>(udp_async_cancels),
-                     static_cast<unsigned long long>(udp_async_inflight_max),
-                     avg_ms(udp_interarrival_sum_ns, udp_interarrival_samples),
-                     avg_ms(udp_jitter_sum_ns, udp_jitter_samples), static_cast<double>(udp_interarrival_max_ns) / 1000000.0,
-                     completed ? (static_cast<double>(udp_bytes) / 1024.0) / static_cast<double>(completed) : 0.0,
-                     completed ? (static_cast<double>(completed_compressed) / 1024.0) / static_cast<double>(completed) : 0.0,
-                     completed ? static_cast<double>(completed_packets) / static_cast<double>(completed) : 0.0);
+        return;
     }
 
-    const bool repair_activity = partial_timeouts != 0 || partial_missing_packets != 0 || partial_retx_queued != 0 ||
-                                 summaries != 0 || retx != 0 || summary_retx_queued != 0 || summary_retx_deferred != 0 ||
-                                 summary_retx_throttled != 0 || summary_to_retx_samples != 0 || retx_response_samples != 0;
-    if (repair_activity)
-    {
-        WD_LOG_DEBUG("[client repair/s] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu summary_throttled=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
-                     static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
-                     static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(summary_retx_deferred),
-                     static_cast<unsigned long long>(summary_retx_throttled), static_cast<unsigned long long>(partial_timeouts),
-                     static_cast<unsigned long long>(partial_missing_packets), static_cast<unsigned long long>(partial_retx_queued),
-                     avg_ms(summary_to_retx_sum_ns, summary_to_retx_samples),
-                     avg_ms(retx_response_sum_ns, retx_response_samples));
-    }
-
-    const bool input_activity = keys != 0 || pointer != 0 || input_events != 0 || input_channel_events != 0 ||
-                                input_fallback_events != 0 || selection_channel_events != 0 || selection_fallback_events != 0 ||
-                                tcp_async_coalesced != 0;
-    if (input_activity)
-    {
-        WD_LOG_DEBUG("[client input/s] keys=%llu pointer_queued=%llu pointer_coalesced=%llu input_events_queued=%llu input_channel=%llu input_fallback=%llu selection_channel=%llu selection_fallback=%llu",
-                     static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
-                     static_cast<unsigned long long>(tcp_async_coalesced), static_cast<unsigned long long>(input_events),
-                     static_cast<unsigned long long>(input_channel_events), static_cast<unsigned long long>(input_fallback_events),
-                     static_cast<unsigned long long>(selection_channel_events), static_cast<unsigned long long>(selection_fallback_events));
-    }
-
-    const bool tcp_async_activity = tcp_async_queued != 0 || tcp_async_completed != 0 || tcp_async_failed != 0 ||
-                                    tcp_async_overflow != 0 || tcp_async_partial != 0 || tcp_async_coalesced != 0 || tcp_async_inflight_max != 0;
-    if (tcp_async_activity)
-    {
-        WD_LOG_DEBUG("[client tcp_async/s] queued=%llu completed=%llu failed=%llu overflow=%llu partial=%llu coalesced=%llu inflight_max=%llu",
-                     static_cast<unsigned long long>(tcp_async_queued), static_cast<unsigned long long>(tcp_async_completed),
-                     static_cast<unsigned long long>(tcp_async_failed), static_cast<unsigned long long>(tcp_async_overflow),
-                     static_cast<unsigned long long>(tcp_async_partial), static_cast<unsigned long long>(tcp_async_coalesced),
-                     static_cast<unsigned long long>(tcp_async_inflight_max));
-    }
-
-    static uint64_t prev_timeout_ms = 0;
-    static uint64_t prev_udp_gap_pressure_ms = 0;
-    uint64_t timeout_ms = state.tile_reassembly_timeout_ns.load(std::memory_order_relaxed) / 1000000ull;
-    const bool latency_activity = timeout_updates != 0 || timeout_ms != prev_timeout_ms ||
-                                  udp_gap_pressure_ms != prev_udp_gap_pressure_ms || tile_assembly_samples != 0 ||
-                                  tile_present_samples != 0 || input_to_present_samples != 0 || input_seq_present_samples != 0;
-    if (latency_activity)
-    {
-        WD_LOG_DEBUG("[client latency/s] tile_assembly_avg_ms=%.2f reassembly_timeout_ms=%llu udp_gap_pressure_ms=%llu timeout_updates=%llu tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f input_seq_to_present_avg_ms=%.2f",
-                     avg_ms(tile_assembly_sum_ns, tile_assembly_samples), static_cast<unsigned long long>(timeout_ms),
-                     static_cast<unsigned long long>(udp_gap_pressure_ms),
-                     static_cast<unsigned long long>(timeout_updates), avg_ms(tile_present_sum_ns, tile_present_samples),
-                     avg_ms(input_to_present_sum_ns, input_to_present_samples), avg_ms(input_seq_present_sum_ns, input_seq_present_samples));
-        prev_timeout_ms = timeout_ms;
-        prev_udp_gap_pressure_ms = udp_gap_pressure_ms;
-    }
+    const ClientStatsSnapshot logged = state.stats_log.totals;
+    state.stats_log.totals = {};
+    log_client_stats_snapshot(state, logged);
 }
 
 bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
@@ -1194,7 +1374,7 @@ bool drain_udp_sync_locked(ClientState& state, TileReassembler& reassembler) {
                 continue;
             }
 
-            std::perror("recv UDP");
+            WD_LOG_ERROR("recv UDP failed: %s", std::strerror(errno));
             return false;
         }
 
@@ -1266,7 +1446,7 @@ void udp_reader_main(ClientState* state) {
 
         if (!client_flush_retransmit_requests(*state))
         {
-            std::fprintf(stderr, "failed to send retransmit request\n");
+            WD_LOG_ERROR("failed to send retransmit request");
             state->running.store(false, std::memory_order_relaxed);
             break;
         }
@@ -1470,7 +1650,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
 
     if (!new_texture)
     {
-        std::fprintf(stderr, "SDL_CreateTexture after resize failed: %s\n", SDL_GetError());
+        WD_LOG_ERROR("SDL_CreateTexture after resize failed: %s", SDL_GetError());
         state.running.store(false, std::memory_order_relaxed);
         return false;
     }
@@ -1522,7 +1702,7 @@ bool client_send_keyboard_key_checked(ClientState& state, uint16_t evdev_key_cod
         return true;
     }
 
-    std::fprintf(stderr, "failed to send keyboard event evdev=%u pressed=%u\n", evdev_key_code, pressed ? 1 : 0);
+    WD_LOG_ERROR("failed to send keyboard event evdev=%u pressed=%u", evdev_key_code, pressed ? 1 : 0);
     state.running.store(false, std::memory_order_relaxed);
     return false;
 }
@@ -1622,7 +1802,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
 
         if (!client_send_pointer_event(state, pointer))
         {
-            std::fprintf(stderr, "failed to send pointer motion\n");
+            WD_LOG_ERROR("failed to send pointer motion");
             state.running.store(false, std::memory_order_relaxed);
         }
 
@@ -1660,7 +1840,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
 
         if (!client_send_pointer_event(state, pointer))
         {
-            std::fprintf(stderr, "failed to send pointer button\n");
+            WD_LOG_ERROR("failed to send pointer button");
             state.running.store(false, std::memory_order_relaxed);
         }
 
@@ -1692,7 +1872,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
 
             if (!client_send_pointer_event(state, pointer))
             {
-                std::fprintf(stderr, "failed to send vertical pointer axis\n");
+                WD_LOG_ERROR("failed to send vertical pointer axis");
                 state.running.store(false, std::memory_order_relaxed);
             }
         }
@@ -1711,7 +1891,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
 
             if (!client_send_pointer_event(state, pointer))
             {
-                std::fprintf(stderr, "failed to send horizontal pointer axis\n");
+                WD_LOG_ERROR("failed to send horizontal pointer axis");
                 state.running.store(false, std::memory_order_relaxed);
             }
         }
@@ -1727,7 +1907,7 @@ int run_sdl_viewer(ClientState& state) {
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0)
     {
-        std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        WD_LOG_ERROR("SDL_Init failed: %s", SDL_GetError());
         return 1;
     }
 
@@ -1736,7 +1916,7 @@ int run_sdl_viewer(ClientState& state) {
 
     if (!window)
     {
-        std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+        WD_LOG_ERROR("SDL_CreateWindow failed: %s", SDL_GetError());
         SDL_Quit();
         return 1;
     }
@@ -1750,7 +1930,7 @@ int run_sdl_viewer(ClientState& state) {
 
     if (!renderer)
     {
-        std::fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
+        WD_LOG_ERROR("SDL_CreateRenderer failed: %s", SDL_GetError());
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
@@ -1763,7 +1943,7 @@ int run_sdl_viewer(ClientState& state) {
 
     if (!texture)
     {
-        std::fprintf(stderr, "SDL_CreateTexture failed: %s\n", SDL_GetError());
+        WD_LOG_ERROR("SDL_CreateTexture failed: %s", SDL_GetError());
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
         SDL_Quit();
@@ -1773,6 +1953,7 @@ int run_sdl_viewer(ClientState& state) {
     std::thread udp_thread(udp_reader_main, &state);
 
     uint64_t              last_stats_ns           = wd_now_ns();
+    uint64_t              last_stats_log_ns       = last_stats_ns;
     bool                  frame_dirty             = true;
     uint16_t              last_requested_width    = state.config.width;
     uint16_t              last_requested_height   = state.config.height;
@@ -1854,7 +2035,7 @@ int run_sdl_viewer(ClientState& state) {
 
                 if (!client_send_display_resize(state, last_requested_width, last_requested_height))
                 {
-                    std::fprintf(stderr, "failed to send display resize request\n");
+                    WD_LOG_ERROR("failed to send display resize request");
                 }
             }
         }
@@ -1877,7 +2058,7 @@ int run_sdl_viewer(ClientState& state) {
 
             if (!texture_updated)
             {
-                std::fprintf(stderr, "failed to update SDL texture: %s\n", SDL_GetError());
+                WD_LOG_ERROR("failed to update SDL texture: %s", SDL_GetError());
                 state.running.store(false, std::memory_order_relaxed);
                 break;
             }
@@ -1925,10 +2106,15 @@ int run_sdl_viewer(ClientState& state) {
         }
 
         const uint64_t now = wd_now_ns();
-        if (now - last_stats_ns >= WD_CLIENT_STATS_INTERVAL_NS)
+        if (now - last_stats_ns >= WD_CLIENT_STATS_FEEDBACK_INTERVAL_NS)
         {
-            print_client_stats(state);
+            const bool log_stats = now - last_stats_log_ns >= WD_STATS_LOG_INTERVAL_NS;
+            sample_client_stats(state, log_stats);
             last_stats_ns = now;
+            if (log_stats)
+            {
+                last_stats_log_ns = now;
+            }
         }
 
         SDL_Delay(WD_CLIENT_FRAME_DELAY_MS);

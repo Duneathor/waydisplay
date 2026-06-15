@@ -20,17 +20,17 @@ bool wd_xdg_foreign_init(struct wd_server* server) {
     server->xdg_foreign_registry = wlr_xdg_foreign_registry_create(server->display);
     if (!server->xdg_foreign_registry)
     {
-        WD_LOG_ERROR("WayDisplay: failed to create xdg-foreign registry");
+        WD_LOG_ERROR("failed to create xdg-foreign registry");
         return false;
     }
 
     if (!wlr_xdg_foreign_v2_create(server->display, server->xdg_foreign_registry))
     {
-        WD_LOG_ERROR("WayDisplay: failed to create xdg-foreign v2 manager");
+        WD_LOG_ERROR("failed to create xdg-foreign v2 manager");
         return false;
     }
 
-    WD_LOG_INFO("WayDisplay: xdg-foreign v2 enabled");
+    WD_LOG_INFO("xdg-foreign v2 enabled");
     return true;
 }
 

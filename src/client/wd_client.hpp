@@ -102,6 +102,70 @@ struct ClientStats {
     std::atomic<uint64_t> latest_input_event_timestamp_ns{0};
 };
 
+struct ClientStatsSnapshot {
+    uint64_t udp_packets = 0;
+    uint64_t udp_bytes = 0;
+    uint64_t udp_interarrival_samples = 0;
+    uint64_t udp_interarrival_sum_ns = 0;
+    uint64_t udp_jitter_samples = 0;
+    uint64_t udp_jitter_sum_ns = 0;
+    uint64_t udp_interarrival_max_ns = 0;
+    uint64_t invalid = 0;
+    uint64_t ignored_probe = 0;
+    uint64_t stale_session = 0;
+    uint64_t old_gen = 0;
+    uint64_t completed = 0;
+    uint64_t completed_compressed = 0;
+    uint64_t completed_packets = 0;
+    uint64_t partial_timeouts = 0;
+    uint64_t partial_missing_packets = 0;
+    uint64_t partial_retx_queued = 0;
+    uint64_t retx_response_samples = 0;
+    uint64_t retx_response_sum_ns = 0;
+    uint64_t timeout_updates = 0;
+    uint64_t summaries = 0;
+    uint64_t retx = 0;
+    uint64_t summary_retx_queued = 0;
+    uint64_t summary_retx_deferred = 0;
+    uint64_t summary_retx_throttled = 0;
+    uint64_t summary_to_retx_samples = 0;
+    uint64_t summary_to_retx_sum_ns = 0;
+    uint64_t keys = 0;
+    uint64_t pointer = 0;
+    uint64_t input_events = 0;
+    uint64_t input_channel_events = 0;
+    uint64_t input_fallback_events = 0;
+    uint64_t selection_channel_events = 0;
+    uint64_t selection_fallback_events = 0;
+    uint64_t tcp_async_queued = 0;
+    uint64_t tcp_async_completed = 0;
+    uint64_t tcp_async_failed = 0;
+    uint64_t tcp_async_overflow = 0;
+    uint64_t tcp_async_partial = 0;
+    uint64_t tcp_async_coalesced = 0;
+    uint64_t tcp_async_inflight_max = 0;
+    uint64_t udp_async_posted = 0;
+    uint64_t udp_async_completed = 0;
+    uint64_t udp_async_failed = 0;
+    uint64_t udp_async_submit_failed = 0;
+    uint64_t udp_async_cancels = 0;
+    uint64_t udp_async_inflight_max = 0;
+    uint64_t tile_assembly_samples = 0;
+    uint64_t tile_assembly_sum_ns = 0;
+    uint64_t tile_present_samples = 0;
+    uint64_t tile_present_sum_ns = 0;
+    uint64_t input_to_present_samples = 0;
+    uint64_t input_to_present_sum_ns = 0;
+    uint64_t input_seq_present_samples = 0;
+    uint64_t input_seq_present_sum_ns = 0;
+};
+
+struct ClientStatsLogState {
+    ClientStatsSnapshot totals{};
+    uint64_t            prev_timeout_ms          = 0;
+    uint64_t            prev_udp_gap_pressure_ms = 0;
+};
+
 struct ClientInputEventStamp {
     uint64_t sequence     = 0;
     uint64_t timestamp_ns = 0;
@@ -206,8 +270,9 @@ struct ClientState {
     std::mutex                    input_timestamp_mutex;
     std::deque<ClientInputEventStamp> recent_input_timestamps;
 
-    ClientStats stats;
-    std::thread tcp_thread;
+    ClientStats         stats;
+    ClientStatsLogState stats_log;
+    std::thread         tcp_thread;
 };
 
 } // namespace waydisplay

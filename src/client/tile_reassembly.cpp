@@ -1,6 +1,7 @@
 #include "tile_reassembly.hpp"
 
 #include "waydisplay/wd_config.h"
+#include "waydisplay/wd_log.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
@@ -600,7 +601,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
 
         if (!ok)
         {
-            std::fprintf(stderr, "failed to decompress tile %u generation %llu\n", entry.tile_id,
+            WD_LOG_ERROR("failed to decompress tile %u generation %llu", entry.tile_id,
                          static_cast<unsigned long long>(entry.generation));
 
             wd_udp_tile_packet_decoded clear_header{};

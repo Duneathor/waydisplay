@@ -178,10 +178,9 @@ static bool readback_buffer_data_ptr_xrgb8888(struct wd_server* server, struct w
         static uint64_t last_log_ns = 0;
         uint64_t        now         = wd_now_ns();
 
-        if (now - last_log_ns > 1000000000ull)
+        if (wd_log_rate_limit_should_log(&last_log_ns, now, WD_LOG_RATE_LIMIT_INTERVAL_NS))
         {
-            WD_LOG_ERROR("WayDisplay: data-ptr readback unsupported DRM format 0x%08x", format);
-            last_log_ns = now;
+            WD_LOG_ERROR("data-ptr readback unsupported DRM format 0x%08x", format);
         }
         break;
     }
@@ -237,10 +236,9 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
         static uint64_t last_log_ns = 0;
         uint64_t        now         = wd_now_ns();
 
-        if (now - last_log_ns > 1000000000ull)
+        if (wd_log_rate_limit_should_log(&last_log_ns, now, WD_LOG_RATE_LIMIT_INTERVAL_NS))
         {
-            WD_LOG_ERROR("WayDisplay: wlr_scene_output_build_state failed");
-            last_log_ns = now;
+            WD_LOG_ERROR("wlr_scene_output_build_state failed");
         }
 
         goto out;
@@ -268,10 +266,9 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
         static uint64_t last_log_ns = 0;
         uint64_t        now         = wd_now_ns();
 
-        if (now - last_log_ns > 1000000000ull)
+        if (wd_log_rate_limit_should_log(&last_log_ns, now, WD_LOG_RATE_LIMIT_INTERVAL_NS))
         {
-            WD_LOG_ERROR("WayDisplay: invalid readback buffer size %dx%d", state.buffer->width, state.buffer->height);
-            last_log_ns = now;
+            WD_LOG_ERROR("invalid readback buffer size %dx%d", state.buffer->width, state.buffer->height);
         }
 
         goto commit_only;
@@ -301,10 +298,9 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
 
         uint64_t now = wd_now_ns();
 
-        if (now - last_log_ns > 1000000000ull)
+        if (wd_log_rate_limit_should_log(&last_log_ns, now, WD_LOG_RATE_LIMIT_INTERVAL_NS))
         {
-            WD_LOG_ERROR("WayDisplay: wlr_texture_from_buffer failed for buffer %dx%d", state.buffer->width, state.buffer->height);
-            last_log_ns = now;
+            WD_LOG_ERROR("wlr_texture_from_buffer failed for buffer %dx%d", state.buffer->width, state.buffer->height);
         }
 
         goto commit_only;
@@ -332,12 +328,11 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
         static uint64_t last_log_ns = 0;
         uint64_t        now         = wd_now_ns();
 
-        if (now - last_log_ns > 1000000000ull)
+        if (wd_log_rate_limit_should_log(&last_log_ns, now, WD_LOG_RATE_LIMIT_INTERVAL_NS))
         {
-            WD_LOG_ERROR("WayDisplay: wlr_texture_read_pixels(XRGB8888) failed; preferred DRM "
+            WD_LOG_ERROR("wlr_texture_read_pixels(XRGB8888) failed; preferred DRM "
                          "format is 0x%08x",
                          preferred);
-            last_log_ns = now;
         }
 
         wlr_texture_destroy(texture);
@@ -355,10 +350,9 @@ commit_only:
             static uint64_t last_log_ns = 0;
             uint64_t        now         = wd_now_ns();
 
-            if (now - last_log_ns > 1000000000ull)
+            if (wd_log_rate_limit_should_log(&last_log_ns, now, WD_LOG_RATE_LIMIT_INTERVAL_NS))
             {
-                WD_LOG_ERROR("WayDisplay: wlr_output_commit_state failed");
-                last_log_ns = now;
+                WD_LOG_ERROR("wlr_output_commit_state failed");
             }
 
             readback_ok = false;
