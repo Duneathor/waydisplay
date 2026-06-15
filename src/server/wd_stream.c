@@ -112,6 +112,7 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->link_good_seconds             = 0;
     policy->link_loss_seconds             = 0;
     policy->multipacket_loss_cooldown_seconds = 0;
+    policy->client_render_pressure_seconds = 0;
     policy->client_render_visible = true;
     wd_stream_policy_reset_tokens(policy);
 }
@@ -139,6 +140,7 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->link_good_seconds = 0;
     policy->link_loss_seconds = 0;
     policy->multipacket_loss_cooldown_seconds = 0;
+    policy->client_render_pressure_seconds = 0;
     policy->client_render_visible = true;
     if (policy->limited_udp_bytes_per_second == 0)
     {
@@ -501,7 +503,17 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
     }
 
     const bool send_pressure = stats->udp_send_pressure_drops != 0;
-    const bool client_render_pressure = wd_stream_client_render_pressure_sample(policy, stats);
+    const bool client_render_pressure_sample = wd_stream_client_render_pressure_sample(policy, stats);
+    if (!policy->client_render_visible || !client_render_pressure_sample)
+    {
+        policy->client_render_pressure_seconds = 0;
+    }
+    else if (policy->client_render_pressure_seconds < UINT32_MAX)
+    {
+        policy->client_render_pressure_seconds++;
+    }
+    const bool client_render_pressure = policy->client_render_pressure_seconds >= WD_STREAM_CLIENT_RENDER_PRESSURE_SECONDS_TO_DECREASE;
+    const bool client_render_pressure_warming = client_render_pressure_sample && !client_render_pressure;
     const bool client_packet_loss = wd_stream_client_packet_loss_sample(stats);
     const bool client_tile_repair = stats->client_partial_tiles_timed_out != 0 || stats->client_retx_requests_tx != 0;
 
@@ -519,7 +531,19 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
      * it must not shrink the byte budget or frame rate by itself.  Otherwise a
      * few stale/superseded repair requests can force the sender into many more
      * tiny tiles, which creates the downward spiral seen on small-MTU links. */
-    wd_stream_policy_update_frame_rate_locked(policy, stats, send_pressure || client_render_pressure, send_pressure);
+    if (client_render_pressure_warming && !send_pressure)
+    {
+        /* Client render samples are quantized to the one-second feedback cadence.
+         * A capped client can occasionally report one short sample below the
+         * threshold because the sample window and local present interval are not
+         * phase-aligned.  Hold the current FPS while this warms up instead of
+         * ratcheting down or immediately counting it as a good second. */
+        policy->frame_rate_good_seconds = 0;
+    }
+    else
+    {
+        wd_stream_policy_update_frame_rate_locked(policy, stats, send_pressure || client_render_pressure, send_pressure);
+    }
     wd_stream_policy_update_limited_rate_locked(policy, stats, send_pressure);
 }
 

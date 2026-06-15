@@ -115,6 +115,8 @@ struct ClientStats {
     std::atomic<uint64_t> latest_input_event_timestamp_ns{0};
 
     std::atomic<uint64_t> sdl_render_frames{0};
+    std::atomic<uint64_t> sdl_remote_frames{0};
+    std::atomic<uint64_t> sdl_empty_remote_wakeups{0};
     std::atomic<uint64_t> sdl_texture_full_uploads{0};
     std::atomic<uint64_t> sdl_texture_partial_uploads{0};
     std::atomic<uint64_t> sdl_texture_dirty_rects{0};
@@ -192,6 +194,8 @@ struct ClientStatsSnapshot {
     uint64_t input_seq_present_samples = 0;
     uint64_t input_seq_present_sum_ns = 0;
     uint64_t sdl_render_frames = 0;
+    uint64_t sdl_remote_frames = 0;
+    uint64_t sdl_empty_remote_wakeups = 0;
     uint64_t sdl_texture_full_uploads = 0;
     uint64_t sdl_texture_partial_uploads = 0;
     uint64_t sdl_texture_dirty_rects = 0;
@@ -252,6 +256,7 @@ struct ClientState {
     std::mutex udp_processing_mutex;
     std::mutex framebuffer_mutex;
     std::atomic<bool> frame_dirty{false};
+    std::atomic<uint64_t> pending_dirty_rect_count{0};
     std::mutex dirty_rect_mutex;
     std::vector<ClientDirtyRect> pending_dirty_rects;
     std::atomic<uint64_t> client_config_generation{1};

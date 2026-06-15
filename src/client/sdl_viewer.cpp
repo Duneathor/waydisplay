@@ -183,6 +183,8 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.input_seq_present_samples += src.input_seq_present_samples;
     dst.input_seq_present_sum_ns += src.input_seq_present_sum_ns;
     dst.sdl_render_frames += src.sdl_render_frames;
+    dst.sdl_remote_frames += src.sdl_remote_frames;
+    dst.sdl_empty_remote_wakeups += src.sdl_empty_remote_wakeups;
     dst.sdl_texture_full_uploads += src.sdl_texture_full_uploads;
     dst.sdl_texture_partial_uploads += src.sdl_texture_partial_uploads;
     dst.sdl_texture_dirty_rects += src.sdl_texture_dirty_rects;
@@ -981,6 +983,8 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t input_seq_present_samples = logged.input_seq_present_samples;
     const uint64_t input_seq_present_sum_ns = logged.input_seq_present_sum_ns;
     const uint64_t sdl_render_frames = logged.sdl_render_frames;
+    const uint64_t sdl_remote_frames = logged.sdl_remote_frames;
+    const uint64_t sdl_empty_remote_wakeups = logged.sdl_empty_remote_wakeups;
     const uint64_t sdl_texture_full_uploads = logged.sdl_texture_full_uploads;
     const uint64_t sdl_texture_partial_uploads = logged.sdl_texture_partial_uploads;
     const uint64_t sdl_texture_dirty_rects = logged.sdl_texture_dirty_rects;
@@ -1082,8 +1086,10 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
 
     if (sdl_render_frames != 0 || sdl_texture_upload_samples != 0 || sdl_present_samples != 0)
     {
-        WD_LOG_DEBUG("[client render/min] frames=%llu texture_full=%llu texture_partial=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu upload_mpix=%.2f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
+        WD_LOG_DEBUG("[client render/min] frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu upload_mpix=%.2f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
                      static_cast<unsigned long long>(sdl_render_frames),
+                     static_cast<unsigned long long>(sdl_remote_frames),
+                     static_cast<unsigned long long>(sdl_empty_remote_wakeups),
                      static_cast<unsigned long long>(sdl_texture_full_uploads),
                      static_cast<unsigned long long>(sdl_texture_partial_uploads),
                      static_cast<unsigned long long>(sdl_texture_dirty_rects),
@@ -1163,6 +1169,8 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t input_seq_present_samples = take_stat(state.stats.input_sequence_present_latency_samples);
     const uint64_t input_seq_present_sum_ns  = take_stat(state.stats.input_sequence_present_latency_sum_ns);
     const uint64_t sdl_render_frames          = take_stat(state.stats.sdl_render_frames);
+    const uint64_t sdl_remote_frames          = take_stat(state.stats.sdl_remote_frames);
+    const uint64_t sdl_empty_remote_wakeups   = take_stat(state.stats.sdl_empty_remote_wakeups);
     const uint64_t sdl_texture_full_uploads   = take_stat(state.stats.sdl_texture_full_uploads);
     const uint64_t sdl_texture_partial_uploads = take_stat(state.stats.sdl_texture_partial_uploads);
     const uint64_t sdl_texture_dirty_rects    = take_stat(state.stats.sdl_texture_dirty_rects);
@@ -1239,6 +1247,8 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.input_seq_present_samples = input_seq_present_samples;
     sample.input_seq_present_sum_ns = input_seq_present_sum_ns;
     sample.sdl_render_frames = sdl_render_frames;
+    sample.sdl_remote_frames = sdl_remote_frames;
+    sample.sdl_empty_remote_wakeups = sdl_empty_remote_wakeups;
     sample.sdl_texture_full_uploads = sdl_texture_full_uploads;
     sample.sdl_texture_partial_uploads = sdl_texture_partial_uploads;
     sample.sdl_texture_dirty_rects = sdl_texture_dirty_rects;
@@ -1517,6 +1527,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
     {
         std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
         state.pending_dirty_rects.push_back(dirty_rect);
+        state.pending_dirty_rect_count.store(state.pending_dirty_rects.size(), std::memory_order_release);
     }
 
     {
@@ -1681,7 +1692,7 @@ void udp_reader_main(ClientState* state) {
             break;
         }
 
-        if (!state->frame_dirty.load(std::memory_order_acquire))
+        if (state->pending_dirty_rect_count.load(std::memory_order_acquire) == 0)
         {
             SDL_Delay(1);
         }
@@ -1896,6 +1907,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         state.config               = config;
         state.framebuffer          = std::move(new_framebuffer);
         state.pending_dirty_rects.clear();
+        state.pending_dirty_rect_count.store(0, std::memory_order_release);
         state.displayed_generation = std::move(new_displayed_generation);
         state.retx_queue.clear();
         state.retx_queued_generation          = std::move(new_retx_queued_generation);
@@ -2532,14 +2544,14 @@ int run_sdl_viewer(ClientState& state) {
 
         const bool local_frame_dirty = frame_dirty || texture_needs_full_upload;
         bool       remote_frame_dirty = false;
+        bool       remote_texture_updated = false;
 
-        if (local_frame_dirty || state.frame_dirty.load(std::memory_order_acquire))
+        const bool remote_dirty_pending = state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0;
+        if (local_frame_dirty || remote_dirty_pending)
         {
             const uint64_t present_check_ns = wd_now_ns();
-            if (local_frame_dirty || client_local_present_due(state, last_present_ns, present_check_ns))
-            {
-                remote_frame_dirty = state.frame_dirty.exchange(false, std::memory_order_acq_rel);
-            }
+            remote_frame_dirty = remote_dirty_pending &&
+                                 (local_frame_dirty || client_local_present_due(state, last_present_ns, present_check_ns));
         }
 
         if (local_frame_dirty || remote_frame_dirty)
@@ -2554,11 +2566,17 @@ int run_sdl_viewer(ClientState& state) {
                 {
                     std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
                     dirty_rects.swap(state.pending_dirty_rects);
+                    state.pending_dirty_rect_count.store(0, std::memory_order_release);
                 }
 
                 bool used_bounds_upload = false;
                 const uint64_t source_dirty_rect_count = dirty_rects.size();
-                if (!texture_needs_full_upload)
+                if (remote_frame_dirty && !texture_needs_full_upload && source_dirty_rect_count == 0)
+                {
+                    state.stats.sdl_empty_remote_wakeups.fetch_add(1, std::memory_order_relaxed);
+                    remote_frame_dirty = false;
+                }
+                if (!texture_needs_full_upload && source_dirty_rect_count != 0)
                 {
                     coalesce_dirty_texture_rects(dirty_rects, frame_width, frame_height, used_bounds_upload);
                 }
@@ -2577,6 +2595,7 @@ int run_sdl_viewer(ClientState& state) {
                 {
                     std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
                     state.pending_dirty_rects.clear();
+                    state.pending_dirty_rect_count.store(0, std::memory_order_release);
                 }
                 const bool texture_updated = upload_full ? upload_full_texture(state, texture, frame_width, frame_height)
                                                          : upload_dirty_texture_rects(state, texture, dirty_rects, frame_width, frame_height);
@@ -2587,15 +2606,23 @@ int run_sdl_viewer(ClientState& state) {
                     state.running.store(false, std::memory_order_relaxed);
                     break;
                 }
+                remote_texture_updated = remote_frame_dirty && source_dirty_rect_count != 0;
             }
 
-            SDL_RenderClear(renderer);
-            SDL_RenderCopy(renderer, texture, nullptr, &g_content_rect);
-            render_context_menu(renderer, context_menu);
+            const bool should_present = local_frame_dirty || remote_texture_updated;
+            if (should_present)
+            {
+                SDL_RenderClear(renderer);
+                SDL_RenderCopy(renderer, texture, nullptr, &g_content_rect);
+                render_context_menu(renderer, context_menu);
             const uint64_t present_started_ns = wd_now_ns();
             SDL_RenderPresent(renderer);
             const uint64_t present_elapsed_ns = wd_now_ns() - present_started_ns;
             state.stats.sdl_render_frames.fetch_add(1, std::memory_order_relaxed);
+            if (remote_texture_updated)
+            {
+                state.stats.sdl_remote_frames.fetch_add(1, std::memory_order_relaxed);
+            }
             state.stats.sdl_present_samples.fetch_add(1, std::memory_order_relaxed);
             state.stats.sdl_present_sum_ns.fetch_add(present_elapsed_ns, std::memory_order_relaxed);
             record_atomic_max(state.stats.sdl_present_max_ns, present_elapsed_ns);
@@ -2635,8 +2662,9 @@ int run_sdl_viewer(ClientState& state) {
                 state.stats.input_to_present_latency_sum_ns.fetch_add(present_ns - input_timestamp_ns, std::memory_order_relaxed);
             }
 
-            frame_dirty = false;
-            texture_needs_full_upload = false;
+                frame_dirty = false;
+                texture_needs_full_upload = false;
+            }
         }
 
         const uint64_t now = wd_now_ns();
@@ -2651,7 +2679,8 @@ int run_sdl_viewer(ClientState& state) {
             }
         }
 
-        if (!frame_dirty && !state.frame_dirty.load(std::memory_order_acquire))
+        const bool pending_remote_dirty = state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0;
+        if (!frame_dirty && !pending_remote_dirty)
         {
             SDL_Delay(WD_CLIENT_FRAME_DELAY_MS);
         }

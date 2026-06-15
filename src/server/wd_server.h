@@ -391,6 +391,7 @@ struct wd_stream_policy {
     uint32_t link_good_seconds;
     uint32_t link_loss_seconds;
     uint32_t multipacket_loss_cooldown_seconds;
+    uint32_t client_render_pressure_seconds;
     bool     client_render_visible;
     double   limited_udp_byte_tokens;
     uint64_t last_limited_udp_byte_refill_ns;
