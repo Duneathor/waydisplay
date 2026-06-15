@@ -336,7 +336,7 @@ static bool wd_stream_client_reporting_tile_loss_locked(const struct wd_stream_p
 }
 
 static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool frame_pressure,
-                                                       bool send_pressure) {
+                                                       bool strong_pressure, const char* pressure_reason) {
     if (!policy || !stats)
     {
         return;
@@ -357,7 +357,7 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
     {
         policy->frame_rate_good_seconds = 0;
 
-        uint32_t decrease_percent = send_pressure ? WD_STREAM_FPS_PRESSURE_DECREASE_PERCENT : WD_STREAM_FPS_DECREASE_PERCENT;
+        uint32_t decrease_percent = strong_pressure ? WD_STREAM_FPS_PRESSURE_DECREASE_PERCENT : WD_STREAM_FPS_DECREASE_PERCENT;
         uint32_t new_fps = ((uint32_t)old_fps * decrease_percent) / 100u;
         if (new_fps >= old_fps && old_fps > WD_STREAM_FPS_MIN)
         {
@@ -374,7 +374,7 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
             policy->last_frame_send_ns = 0;
             stats->frame_rate_downshifts++;
             WD_LOG_INFO("stream frame rate down: %u -> %u fps due to %s", old_fps, (unsigned)new_fps,
-                        send_pressure ? "UDP send pressure" : "client render pressure");
+                        pressure_reason ? pressure_reason : "stream pressure");
         }
         return;
     }
@@ -503,6 +503,18 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
     }
 
     const bool send_pressure = stats->udp_send_pressure_drops != 0;
+    /*
+     * dirty_budget_blocked means the sender had fresh dirty work ready, but
+     * the configured/probed UDP byte budget could not admit the next tile.
+     * That is different from socket send pressure: the link may be healthy,
+     * but the requested FPS is too high for the available stream budget and
+     * frame size.  Treat it as frame-rate pressure so the sender accumulates
+     * more byte tokens per output frame instead of visually dribbling partial
+     * frame coverage at the nominal FPS.  Keep byte-budget adaptation tied to
+     * real UDP send pressure below.
+     */
+    const bool budget_frame_pressure = stats->dirty_budget_blocked != 0 &&
+                                       (stats->dirty_tiles != 0 || stats->udp_fresh_tiles_sent != 0);
     const bool client_render_pressure_sample = wd_stream_client_render_pressure_sample(policy, stats);
     if (!policy->client_render_visible || !client_render_pressure_sample)
     {
@@ -531,7 +543,7 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
      * it must not shrink the byte budget or frame rate by itself.  Otherwise a
      * few stale/superseded repair requests can force the sender into many more
      * tiny tiles, which creates the downward spiral seen on small-MTU links. */
-    if (client_render_pressure_warming && !send_pressure)
+    if (client_render_pressure_warming && !send_pressure && !budget_frame_pressure)
     {
         /* Client render samples are quantized to the one-second feedback cadence.
          * A capped client can occasionally report one short sample below the
@@ -542,7 +554,23 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
     }
     else
     {
-        wd_stream_policy_update_frame_rate_locked(policy, stats, send_pressure || client_render_pressure, send_pressure);
+        const bool stream_frame_pressure = send_pressure || budget_frame_pressure;
+        const char* pressure_reason = NULL;
+        if (send_pressure)
+        {
+            pressure_reason = "UDP send pressure";
+        }
+        else if (budget_frame_pressure)
+        {
+            pressure_reason = "UDP budget pressure";
+        }
+        else if (client_render_pressure)
+        {
+            pressure_reason = "client render pressure";
+        }
+
+        wd_stream_policy_update_frame_rate_locked(policy, stats, stream_frame_pressure || client_render_pressure,
+                                                  stream_frame_pressure, pressure_reason);
     }
     wd_stream_policy_update_limited_rate_locked(policy, stats, send_pressure);
 }
