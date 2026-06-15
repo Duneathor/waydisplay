@@ -1,5 +1,7 @@
 #include "video_decoder.hpp"
 
+#include "waydisplay/wd_log.h"
+
 #include <cstring>
 #include <cstdlib>
 #include <new>
@@ -45,6 +47,8 @@ struct ClientVideoDecoder {
     bool              vaapi_requested = false;
     bool              vaapi_required = false;
     bool              using_vaapi = false;
+    bool              vaapi_auto_disabled = false;
+    bool              vaapi_disable_logged = false;
 #endif
 };
 
@@ -104,6 +108,29 @@ AVPixelFormat select_decoder_hw_format(AVCodecContext* codec_ctx, const AVPixelF
 }
 #endif
 
+bool mark_vaapi_auto_failed(ClientVideoDecoder* decoder, const char* reason) {
+#if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+    if (!decoder || decoder->vaapi_required || !decoder->vaapi_requested)
+    {
+        return false;
+    }
+
+    decoder->vaapi_auto_disabled = true;
+    decoder->using_vaapi = false;
+    if (!decoder->vaapi_disable_logged)
+    {
+        WD_LOG_WARN("VAAPI video decode failed%s%s; falling back to software HEVC decode",
+                    reason && *reason ? ": " : "", reason && *reason ? reason : "");
+        decoder->vaapi_disable_logged = true;
+    }
+    return true;
+#else
+    (void)decoder;
+    (void)reason;
+    return false;
+#endif
+}
+
 bool transfer_hw_frame_if_needed(ClientVideoDecoder* decoder, AVFrame** frame) {
     if (!decoder || !frame || !*frame)
     {
@@ -118,12 +145,14 @@ bool transfer_hw_frame_if_needed(ClientVideoDecoder* decoder, AVFrame** frame) {
             decoder->sw_frame = av_frame_alloc();
             if (!decoder->sw_frame)
             {
+                mark_vaapi_auto_failed(decoder, "software transfer frame allocation failed");
                 return false;
             }
         }
         av_frame_unref(decoder->sw_frame);
         if (av_hwframe_transfer_data(decoder->sw_frame, *frame, 0) < 0)
         {
+            mark_vaapi_auto_failed(decoder, "hardware frame transfer failed");
             return false;
         }
         *frame = decoder->sw_frame;
@@ -287,6 +316,15 @@ const char* client_video_decoder_backend_name(const ClientVideoDecoder* decoder)
     return "none";
 }
 
+bool client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* decoder) {
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER && WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+    return decoder && decoder->vaapi_auto_disabled;
+#else
+    (void)decoder;
+    return false;
+#endif
+}
+
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {
     if (!decoder || config.codec != WD_VIDEO_CODEC_H265 || config.width == 0 || config.height == 0 ||
         config.coded_width < config.width || config.coded_height < config.height)
@@ -326,8 +364,9 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
     decoder->codec_ctx->thread_count = 1;
 
 #if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
-    decoder->vaapi_requested = config.hwdecode_mode != WD_CLIENT_VIDEO_HWDECODE_OFF;
     decoder->vaapi_required = config.hwdecode_mode == WD_CLIENT_VIDEO_HWDECODE_VAAPI;
+    decoder->vaapi_requested = config.hwdecode_mode != WD_CLIENT_VIDEO_HWDECODE_OFF &&
+                               (decoder->vaapi_required || !decoder->vaapi_auto_disabled);
     if (decoder->vaapi_requested)
     {
         const AVHWDeviceType vaapi_type = av_hwdevice_find_type_by_name("vaapi");
@@ -361,6 +400,15 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
 
     if (avcodec_open2(decoder->codec_ctx, decoder->codec, nullptr) < 0)
     {
+#if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+        const bool retry_software = decoder->vaapi_requested && !decoder->vaapi_required &&
+                                    mark_vaapi_auto_failed(decoder, "hardware decoder open failed");
+        if (retry_software)
+        {
+            release_decoder_backend(decoder);
+            return client_video_decoder_configure(decoder, config);
+        }
+#endif
         release_decoder_backend(decoder);
         return false;
     }
@@ -427,6 +475,7 @@ bool client_video_decoder_decode_h265(ClientVideoDecoder* decoder, const ClientV
         }
         if (rc != AVERROR(EAGAIN))
         {
+            mark_vaapi_auto_failed(decoder, "hardware packet submit failed");
             av_packet_unref(decoder->packet);
             return false;
         }
@@ -441,6 +490,7 @@ bool client_video_decoder_decode_h265(ClientVideoDecoder* decoder, const ClientV
             }
             if (rc < 0)
             {
+                mark_vaapi_auto_failed(decoder, "hardware frame receive failed");
                 av_packet_unref(decoder->packet);
                 return false;
             }
@@ -471,6 +521,7 @@ bool client_video_decoder_decode_h265(ClientVideoDecoder* decoder, const ClientV
         }
         if (rc < 0)
         {
+            mark_vaapi_auto_failed(decoder, "hardware frame receive failed");
             return false;
         }
         got_frame = true;

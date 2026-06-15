@@ -27,6 +27,7 @@ void usage(const char* argv0) {
                  "  --video-enter-seconds <N>     Seconds auto criteria must remain stable, default 3\n"
                  "  --video-exit-dirty-percent <N> Dirty coverage to leave video mode, default 30\n"
                  "  --video-exit-seconds <N>      Seconds exit criteria must remain stable, default 30\n"
+                 "  --video-hwdecode <off|auto|vaapi> Optional H.265 hardware decode, default off\n"
                  "  --limited-rate-kib <N>       Deprecated alias for --rate-kib\n"
                  "  --wan                        Shorthand for --rate-kib 4096\n\n"
                  "Examples:\n"

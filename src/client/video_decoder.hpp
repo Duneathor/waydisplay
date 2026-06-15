@@ -16,7 +16,7 @@ struct ClientVideoDecoderConfig {
     uint16_t coded_height = 0;
     uint16_t target_fps   = 0;
     uint32_t codec        = 0;
-    uint8_t  hwdecode_mode = WD_CLIENT_VIDEO_HWDECODE_AUTO;
+    uint8_t  hwdecode_mode = WD_CLIENT_VIDEO_HWDECODE_OFF;
 };
 
 struct ClientVideoPacket {
@@ -39,6 +39,7 @@ void client_video_decoder_reset(ClientVideoDecoder* decoder);
 
 bool        client_video_decoder_available(const ClientVideoDecoder* decoder);
 const char* client_video_decoder_backend_name(const ClientVideoDecoder* decoder);
+bool        client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* decoder);
 
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config);
 bool client_video_decoder_decode_h265(ClientVideoDecoder* decoder, const ClientVideoPacket& packet,

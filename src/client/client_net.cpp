@@ -1764,6 +1764,10 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
             state.stats.video_decode_sum_ns.fetch_add(decode_elapsed_ns, std::memory_order_relaxed);
             state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
             state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
+            if (client_video_decoder_hwdecode_failed_auto(state.video_decoder))
+            {
+                client_video_decoder_reset(state.video_decoder);
+            }
             state.video_decoder_needs_keyframe = true;
             return;
         }
