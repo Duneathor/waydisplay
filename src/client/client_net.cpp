@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <arpa/inet.h>
 #include <cstdio>
@@ -99,6 +100,55 @@ uint64_t retransmit_inflight_grace_ns_locked(const ClientState& state) {
                                                           WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS));
     }
     return inflight_ns;
+}
+
+uint64_t summary_clean_interval_ns_locked(const ClientState& state) {
+    return clamp_timer_ns(ms_to_ns(state.config.clean_summary_interval_ms,
+                                   WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS),
+                          WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS,
+                          WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS);
+}
+
+uint64_t large_summary_repair_grace_ns_locked(const ClientState& state) {
+    return std::max({summary_retransmit_grace_ns(state),
+                     retransmit_rerequest_interval_ns(state),
+                     summary_clean_interval_ns_locked(state)});
+}
+
+bool recent_concrete_repair_loss_signal(const ClientState& state, uint64_t now_ns) {
+    const uint64_t until_ns = state.summary_repair_loss_signal_until_ns.load(std::memory_order_relaxed);
+    return until_ns != 0 && now_ns < until_ns;
+}
+
+bool large_summary_repair_batch_locked(ClientState& state, uint16_t total_tiles, size_t candidate_count, uint64_t min_candidate_age_ns,
+                                       uint64_t now_ns, bool record_suppressed) {
+    if (total_tiles == 0 || candidate_count == 0 ||
+        candidate_count * 100ull < static_cast<uint64_t>(total_tiles) * WD_LINK_LARGE_SUMMARY_REPAIR_PERCENT)
+    {
+        return false;
+    }
+
+    if (recent_concrete_repair_loss_signal(state, now_ns))
+    {
+        return false;
+    }
+
+    const uint64_t large_grace_ns = large_summary_repair_grace_ns_locked(state);
+    const bool blocked = min_candidate_age_ns < large_grace_ns ||
+                         (state.summary_large_repair_not_before_ns != 0 && now_ns < state.summary_large_repair_not_before_ns);
+
+    if (blocked)
+    {
+        if (record_suppressed)
+        {
+            state.stats.summary_retx_tiles_throttled.fetch_add(candidate_count, std::memory_order_relaxed);
+        }
+        return true;
+    }
+
+    const uint64_t cooldown_ns = std::max<uint64_t>(WD_LINK_LARGE_SUMMARY_REPAIR_COOLDOWN_NS, summary_clean_interval_ns_locked(state));
+    state.summary_large_repair_not_before_ns = now_ns + cooldown_ns;
+    return false;
 }
 
 void apply_link_timers_from_config(ClientState& state, const wd_server_config_payload& config) {
@@ -949,6 +999,12 @@ bool queue_retransmit_tile_locked(ClientState& state, uint16_t tile_id, uint64_t
     return true;
 }
 
+struct SummaryRepairCandidate {
+    uint16_t tile_id;
+    uint64_t generation;
+    uint64_t pending_since_ns;
+};
+
 void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
     if (payload_size < sizeof(wd_tile_summary_payload_header))
     {
@@ -990,10 +1046,10 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
         ensure_retransmit_tracking_locked(state, total_tiles);
 
-        uint64_t newly_queued_from_summary = 0;
         uint64_t newly_deferred_from_summary = 0;
-        uint64_t summary_to_retx_local_sum_ns = 0;
-        uint64_t summary_to_retx_local_samples = 0;
+        std::vector<SummaryRepairCandidate> candidates;
+        candidates.reserve(summary.tile_count);
+        uint64_t min_candidate_age_ns = UINT64_MAX;
 
         for (uint16_t i = 0; i < summary.tile_count; ++i)
         {
@@ -1052,29 +1108,49 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
                 continue;
             }
 
-            if (state.retx_summary_pending_since_ns[entry.tile_id] != 0 &&
-                now_ns - state.retx_summary_pending_since_ns[entry.tile_id] < summary_retransmit_grace_ns(state))
+            const uint64_t pending_since_ns = state.retx_summary_pending_since_ns[entry.tile_id];
+            if (pending_since_ns != 0 && now_ns - pending_since_ns < summary_retransmit_grace_ns(state))
             {
                 continue;
             }
 
-            if (queue_retransmit_tile_locked(state, entry.tile_id, entry.tile_generation, total_tiles))
-            {
-                uint64_t pending_since_ns = state.retx_summary_pending_since_ns[entry.tile_id];
-                if (pending_since_ns != 0 && now_ns >= pending_since_ns)
-                {
-                    summary_to_retx_local_sum_ns += now_ns - pending_since_ns;
-                    summary_to_retx_local_samples++;
-                }
-                state.retx_summary_pending_generation[entry.tile_id] = 0;
-                state.retx_summary_pending_since_ns[entry.tile_id]  = 0;
-                newly_queued_from_summary++;
-            }
+            const uint64_t candidate_age_ns = pending_since_ns != 0 && now_ns >= pending_since_ns ? now_ns - pending_since_ns : 0;
+            min_candidate_age_ns = std::min(min_candidate_age_ns, candidate_age_ns);
+            candidates.push_back({entry.tile_id, entry.tile_generation, pending_since_ns});
         }
 
         if (newly_deferred_from_summary != 0)
         {
             state.stats.summary_retx_tiles_deferred.fetch_add(newly_deferred_from_summary, std::memory_order_relaxed);
+        }
+
+        if (candidates.empty())
+        {
+            return;
+        }
+
+        if (large_summary_repair_batch_locked(state, total_tiles, candidates.size(), min_candidate_age_ns, now_ns, true))
+        {
+            return;
+        }
+
+        uint64_t newly_queued_from_summary = 0;
+        uint64_t summary_to_retx_local_sum_ns = 0;
+        uint64_t summary_to_retx_local_samples = 0;
+
+        for (const SummaryRepairCandidate& candidate : candidates)
+        {
+            if (queue_retransmit_tile_locked(state, candidate.tile_id, candidate.generation, total_tiles))
+            {
+                if (candidate.pending_since_ns != 0 && now_ns >= candidate.pending_since_ns)
+                {
+                    summary_to_retx_local_sum_ns += now_ns - candidate.pending_since_ns;
+                    summary_to_retx_local_samples++;
+                }
+                state.retx_summary_pending_generation[candidate.tile_id] = 0;
+                state.retx_summary_pending_since_ns[candidate.tile_id]  = 0;
+                newly_queued_from_summary++;
+            }
         }
 
         if (newly_queued_from_summary != 0)
@@ -1104,9 +1180,9 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
     ensure_retransmit_tracking_locked(state, total_tiles);
 
     const uint64_t now_ns = wd_now_ns();
-    uint64_t newly_queued = 0;
-    uint64_t summary_to_retx_local_sum_ns = 0;
-    uint64_t summary_to_retx_local_samples = 0;
+    std::vector<SummaryRepairCandidate> candidates;
+    candidates.reserve(total_tiles);
+    uint64_t min_candidate_age_ns = UINT64_MAX;
 
     for (uint16_t tile_id = 0; tile_id < total_tiles; ++tile_id)
     {
@@ -1142,15 +1218,36 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
             continue;
         }
 
-        if (queue_retransmit_tile_locked(state, tile_id, generation, total_tiles))
+        const uint64_t candidate_age_ns = now_ns >= since_ns ? now_ns - since_ns : 0;
+        min_candidate_age_ns = std::min(min_candidate_age_ns, candidate_age_ns);
+        candidates.push_back({tile_id, generation, since_ns});
+    }
+
+    if (candidates.empty())
+    {
+        return;
+    }
+
+    if (large_summary_repair_batch_locked(state, total_tiles, candidates.size(), min_candidate_age_ns, now_ns, true))
+    {
+        return;
+    }
+
+    uint64_t newly_queued = 0;
+    uint64_t summary_to_retx_local_sum_ns = 0;
+    uint64_t summary_to_retx_local_samples = 0;
+
+    for (const SummaryRepairCandidate& candidate : candidates)
+    {
+        if (queue_retransmit_tile_locked(state, candidate.tile_id, candidate.generation, total_tiles))
         {
-            if (now_ns >= since_ns)
+            if (now_ns >= candidate.pending_since_ns)
             {
-                summary_to_retx_local_sum_ns += now_ns - since_ns;
+                summary_to_retx_local_sum_ns += now_ns - candidate.pending_since_ns;
                 summary_to_retx_local_samples++;
             }
-            state.retx_summary_pending_generation[tile_id] = 0;
-            state.retx_summary_pending_since_ns[tile_id]  = 0;
+            state.retx_summary_pending_generation[candidate.tile_id] = 0;
+            state.retx_summary_pending_since_ns[candidate.tile_id]  = 0;
             newly_queued++;
         }
     }
@@ -1389,6 +1486,8 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         state.retx_inflight_since_ns.assign(state.tile_count(), 0);
         state.retx_summary_pending_generation.assign(state.tile_count(), 0);
         state.retx_summary_pending_since_ns.assign(state.tile_count(), 0);
+        state.summary_large_repair_not_before_ns = 0;
+        state.summary_repair_loss_signal_until_ns.store(0, std::memory_order_relaxed);
     }
 
     state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + state.config.udp_payload_target + 512, 0);

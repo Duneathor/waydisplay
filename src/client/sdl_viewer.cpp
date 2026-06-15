@@ -814,6 +814,7 @@ void print_client_stats(ClientState& state) {
     const uint64_t retx                     = take_stat(state.stats.tcp_retx_requests_tx);
     const uint64_t summary_retx_queued      = take_stat(state.stats.summary_retx_tiles_queued);
     const uint64_t summary_retx_deferred    = take_stat(state.stats.summary_retx_tiles_deferred);
+    const uint64_t summary_retx_throttled   = take_stat(state.stats.summary_retx_tiles_throttled);
     const uint64_t summary_to_retx_samples  = take_stat(state.stats.summary_to_retx_samples);
     const uint64_t summary_to_retx_sum_ns   = take_stat(state.stats.summary_to_retx_sum_ns);
     const uint64_t keys                     = take_stat(state.stats.tcp_keyboard_tx);
@@ -903,13 +904,13 @@ void print_client_stats(ClientState& state) {
 
     const bool repair_activity = partial_timeouts != 0 || partial_missing_packets != 0 || partial_retx_queued != 0 ||
                                  summaries != 0 || retx != 0 || summary_retx_queued != 0 || summary_retx_deferred != 0 ||
-                                 summary_to_retx_samples != 0 || retx_response_samples != 0;
+                                 summary_retx_throttled != 0 || summary_to_retx_samples != 0 || retx_response_samples != 0;
     if (repair_activity)
     {
-        WD_LOG_DEBUG("[client repair/s] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
+        WD_LOG_DEBUG("[client repair/s] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu summary_throttled=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
                      static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
                      static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(summary_retx_deferred),
-                     static_cast<unsigned long long>(partial_timeouts),
+                     static_cast<unsigned long long>(summary_retx_throttled), static_cast<unsigned long long>(partial_timeouts),
                      static_cast<unsigned long long>(partial_missing_packets), static_cast<unsigned long long>(partial_retx_queued),
                      avg_ms(summary_to_retx_sum_ns, summary_to_retx_samples),
                      avg_ms(retx_response_sum_ns, retx_response_samples));
@@ -1492,6 +1493,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         state.retx_inflight_since_ns         = std::move(new_retx_inflight_since_ns);
         state.retx_summary_pending_generation = std::move(new_retx_summary_pending_generation);
         state.retx_summary_pending_since_ns   = std::move(new_retx_summary_pending_since_ns);
+        state.summary_large_repair_not_before_ns = 0;
+        state.summary_repair_loss_signal_until_ns.store(0, std::memory_order_relaxed);
         state.udp_recv_buffer                = std::move(new_udp_recv_buffer);
         state.client_config_generation.fetch_add(1, std::memory_order_release);
         state.frame_dirty.store(true, std::memory_order_release);

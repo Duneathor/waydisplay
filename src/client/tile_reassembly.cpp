@@ -357,6 +357,9 @@ void TileReassembler::expire_entry(ClientState& state, Entry& entry) {
 
     const uint64_t missing_packets = count_missing_packets(entry);
 
+    const uint64_t now_ns = wd_now_ns();
+    state.summary_repair_loss_signal_until_ns.store(now_ns + WD_LINK_LARGE_SUMMARY_REPAIR_LOSS_SIGNAL_NS, std::memory_order_relaxed);
+
     state.stats.partial_tiles_timed_out.fetch_add(1, std::memory_order_relaxed);
     state.stats.partial_tile_missing_packets.fetch_add(missing_packets, std::memory_order_relaxed);
     reduce_tile_reassembly_timeout_after_loss(state);

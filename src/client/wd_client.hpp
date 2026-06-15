@@ -73,6 +73,7 @@ struct ClientStats {
     std::atomic<uint64_t> tcp_retx_requests_tx{0};
     std::atomic<uint64_t> summary_retx_tiles_queued{0};
     std::atomic<uint64_t> summary_retx_tiles_deferred{0};
+    std::atomic<uint64_t> summary_retx_tiles_throttled{0};
     std::atomic<uint64_t> summary_to_retx_samples{0};
     std::atomic<uint64_t> summary_to_retx_sum_ns{0};
     std::atomic<uint64_t> tcp_keyboard_tx{0};
@@ -180,6 +181,8 @@ struct ClientState {
     uint64_t                        retx_inflight_grace_ns = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
     std::atomic<uint64_t>             summary_retransmit_grace_ns{WD_LINK_SUMMARY_GRACE_DEFAULT_NS};
     std::atomic<uint64_t>             retransmit_rerequest_interval_ns{WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS};
+    uint64_t                        summary_large_repair_not_before_ns = 0;
+    std::atomic<uint64_t>             summary_repair_loss_signal_until_ns{0};
 
     std::mutex            tile_reassembly_timeout_mutex;
     double                tile_reassembly_ewma_ns       = 0.0;
