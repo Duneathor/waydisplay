@@ -140,6 +140,8 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->video_bitrate_kib_per_second  = 0;
     policy->video_candidate_seconds       = 0;
     policy->tile_recovery_seconds         = 0;
+    policy->video_client_failure_seconds  = 0;
+    policy->tile_refresh_pending          = false;
     policy->frame_rate_good_seconds       = 0;
     policy->limited_udp_bytes_per_second  = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
     policy->limited_udp_rate_floor        = WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND;
@@ -196,6 +198,8 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->video_bitrate_kib_per_second = hello->video_bitrate_kib_per_second;
     policy->video_candidate_seconds = 0;
     policy->tile_recovery_seconds = 0;
+    policy->video_client_failure_seconds = 0;
+    policy->tile_refresh_pending = false;
     policy->frame_rate_good_seconds = 0;
     policy->link_good_seconds = 0;
     policy->link_loss_seconds = 0;
@@ -270,6 +274,47 @@ static const char* wd_stream_mode_name(enum wd_stream_mode mode) {
     }
 }
 
+static bool wd_stream_mode_uses_video_frames(enum wd_stream_mode mode) {
+    return mode == WD_STREAM_MODE_VIDEO_READY || mode == WD_STREAM_MODE_VIDEO_ACTIVE;
+}
+
+static bool wd_stream_mode_video_owns_display(enum wd_stream_mode mode) {
+    return mode == WD_STREAM_MODE_VIDEO_ACTIVE;
+}
+
+static const char* wd_stream_mode_owner_name(enum wd_stream_mode mode) {
+    return wd_stream_mode_video_owns_display(mode) ? "video" : "tiles";
+}
+
+static void wd_stream_policy_restore_target_fps_locked(struct wd_stream_policy* policy, const char* reason) {
+    if (!policy)
+    {
+        return;
+    }
+
+    if (policy->target_fps == 0)
+    {
+        policy->target_fps = WD_DEFAULT_PARTIAL_FPS;
+    }
+
+    uint16_t old_fps = policy->effective_target_fps != 0 ? policy->effective_target_fps : policy->target_fps;
+    if (old_fps == policy->target_fps)
+    {
+        policy->effective_target_fps = policy->target_fps;
+        policy->frame_rate_good_seconds = 0;
+        return;
+    }
+
+    policy->effective_target_fps = policy->target_fps;
+    policy->frame_rate_good_seconds = 0;
+    policy->client_render_pressure_seconds = 0;
+    policy->last_frame_send_ns = 0;
+    policy->last_video_frame_send_ns = 0;
+
+    WD_LOG_INFO("stream frame rate reset: %u -> %u fps due to %s",
+                (unsigned)old_fps, (unsigned)policy->target_fps, reason ? reason : "stream mode change");
+}
+
 static void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_stream_mode mode,
                                              const char* reason, double dirty_avg_pct, double dirty_peak_pct,
                                              double budget_pressure_pct, bool video_channel_connected,
@@ -281,6 +326,16 @@ static void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, en
 
     enum wd_stream_mode old_mode = policy->stream_mode;
     policy->stream_mode = mode;
+
+    if (wd_stream_mode_video_owns_display(old_mode) && !wd_stream_mode_video_owns_display(mode))
+    {
+        policy->tile_refresh_pending = true;
+    }
+
+    if (wd_stream_mode_uses_video_frames(mode) && !wd_stream_mode_uses_video_frames(old_mode))
+    {
+        wd_stream_policy_restore_target_fps_locked(policy, "video mode entry");
+    }
 
     WD_LOG_INFO("stream mode state: %s -> %s reason=%s dirty_avg_pct=%.1f dirty_peak_pct=%.1f budget_pressure_pct=%.1f video_channel=%s video_encoder=%s",
                 wd_stream_mode_name(old_mode), wd_stream_mode_name(mode), reason ? reason : "unspecified",
@@ -337,7 +392,8 @@ static void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
         policy->tile_recovery_seconds = 0;
         if (policy->stream_mode != WD_STREAM_MODE_TILES)
         {
-            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILES,
+            wd_stream_policy_set_mode_locked(policy,
+                                             wd_stream_mode_video_owns_display(policy->stream_mode) ? WD_STREAM_MODE_TILE_RECOVERY : WD_STREAM_MODE_TILES,
                                              video_disabled ? "video disabled" : "video unavailable",
                                              dirty_avg_pct, dirty_peak_pct, budget_pressure_pct, video_channel_connected,
                                              video_encoder_available);
@@ -406,7 +462,7 @@ static void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
 
     if (policy->tile_recovery_seconds >= exit_seconds)
     {
-        wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILES, "tile exit criteria stable",
+        wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILE_RECOVERY, "tile exit criteria stable",
                                          dirty_avg_pct, dirty_peak_pct, budget_pressure_pct, video_channel_connected,
                                          video_encoder_available);
         policy->tile_recovery_seconds = 0;
@@ -578,8 +634,10 @@ static bool wd_stream_queue_video_control_frame_locked(struct wd_server* server,
     header.codec      = WD_VIDEO_CODEC_H265;
     header.flags      = flags;
     header.pts_usec   = wd_now_ns() / 1000ull;
-    header.width      = (uint16_t)server->display_width;
-    header.height     = (uint16_t)server->display_height;
+    header.width        = (uint16_t)server->display_width;
+    header.height       = (uint16_t)server->display_height;
+    header.coded_width  = (uint16_t)server->display_width;
+    header.coded_height = (uint16_t)server->display_height;
 
     const bool queued = wd_async_tcp_send_message(net->video_tx, net->video_tcp_fd, WD_MSG_VIDEO_FRAME,
                                                   &header, (uint32_t)sizeof(header));
@@ -620,7 +678,9 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
         (void)wd_stream_queue_video_control_frame_locked(server, flags);
     }
 
+    pthread_mutex_lock(&net->video_encoder_lock);
     wd_video_encoder_reset(net->video_encoder);
+    pthread_mutex_unlock(&net->video_encoder_lock);
     net->stream_policy.last_video_frame_send_ns = 0;
     net->stream_policy.video_candidate_seconds = 0;
     net->stream_policy.tile_recovery_seconds = 0;
@@ -645,7 +705,7 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
     }
 }
 
-static bool wd_stream_try_send_video_keyframe_locked(struct wd_server* server, uint64_t now_ns) {
+static bool wd_stream_try_send_video_frame_locked(struct wd_server* server, uint64_t now_ns) {
     if (!server || !server->framebuffer_xrgb8888)
     {
         return false;
@@ -672,76 +732,155 @@ static bool wd_stream_try_send_video_keyframe_locked(struct wd_server* server, u
         return false;
     }
 
-    net->stats.video_keyframe_attempts++;
-
-    struct wd_video_encoder_config config;
-    memset(&config, 0, sizeof(config));
-    config.session_id = net->session_id;
-    config.width = server->display_width;
-    config.height = server->display_height;
-    config.target_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
-    config.bitrate_kib_per_second = wd_stream_video_bitrate_kib_locked(&net->stream_policy);
-    config.codec = WD_VIDEO_CODEC_H265;
-
-    const uint64_t encode_start_ns = wd_now_ns();
-    if (!wd_video_encoder_configure(net->video_encoder, &config) ||
-        !wd_video_encoder_request_keyframe(net->video_encoder))
+    const uint32_t width = server->display_width;
+    const uint32_t height = server->display_height;
+    if (width == 0 || height == 0 || width > UINT16_MAX || height > UINT16_MAX)
     {
         net->stats.video_encode_failed++;
         return false;
     }
 
+    const size_t pixel_count = (size_t)width * (size_t)height;
+    if (height != 0 && pixel_count / height != width)
+    {
+        net->stats.video_encode_failed++;
+        return false;
+    }
+
+    uint32_t* snapshot = malloc(pixel_count * sizeof(*snapshot));
+    if (!snapshot)
+    {
+        net->stats.video_encode_failed++;
+        return false;
+    }
+    memcpy(snapshot, server->framebuffer_xrgb8888, pixel_count * sizeof(*snapshot));
+
+    net->stats.video_frame_attempts++;
+    const bool request_keyframe = net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY;
+    if (request_keyframe)
+    {
+        net->stats.video_keyframe_attempts++;
+    }
+
+    const uint8_t session_id = net->session_id;
+    const uint16_t target_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
+    const uint32_t bitrate_kib = wd_stream_video_bitrate_kib_locked(&net->stream_policy);
+    const int video_tcp_fd = net->video_tcp_fd;
+
+    pthread_mutex_unlock(&net->lock);
+
+    struct wd_video_encoder_config config;
+    memset(&config, 0, sizeof(config));
+    config.session_id = session_id;
+    config.width = width;
+    config.height = height;
+    config.target_fps = target_fps;
+    config.bitrate_kib_per_second = bitrate_kib;
+    config.codec = WD_VIDEO_CODEC_H265;
+
     struct wd_video_encoder_input_xrgb8888 input;
     memset(&input, 0, sizeof(input));
-    input.pixels = server->framebuffer_xrgb8888;
-    input.width = server->display_width;
-    input.height = server->display_height;
-    input.stride_pixels = server->display_width;
+    input.pixels = snapshot;
+    input.width = width;
+    input.height = height;
+    input.stride_pixels = width;
     input.pts_usec = now_ns / 1000ull;
 
     struct wd_video_encoder_packet packet;
     memset(&packet, 0, sizeof(packet));
-    if (!wd_video_encoder_encode_xrgb8888(net->video_encoder, &input, &packet))
+
+    const uint64_t encode_start_ns = wd_now_ns();
+    bool encoded = false;
+    bool no_output = false;
+    bool encode_payload_invalid = false;
+    uint8_t* payload = NULL;
+    uint32_t payload_size = 0;
+    struct wd_video_frame_payload_header header;
+    memset(&header, 0, sizeof(header));
+
+    pthread_mutex_lock(&net->video_encoder_lock);
+    if (wd_video_encoder_configure(net->video_encoder, &config) &&
+        (!request_keyframe || wd_video_encoder_request_keyframe(net->video_encoder)))
     {
-        net->stats.video_encode_ns += wd_now_ns() - encode_start_ns;
+        encoded = wd_video_encoder_encode_xrgb8888(net->video_encoder, &input, &packet);
+        no_output = encoded && (!packet.data || packet.header.data_size == 0);
+        if (encoded && !no_output)
+        {
+            header = packet.header;
+            header.session_id = session_id;
+            header.codec = WD_VIDEO_CODEC_H265;
+            header.pts_usec = input.pts_usec;
+            header.width = (uint16_t)width;
+            header.height = (uint16_t)height;
+            if (header.coded_width == 0)
+            {
+                header.coded_width = header.width;
+            }
+            if (header.coded_height == 0)
+            {
+                header.coded_height = header.height;
+            }
+
+            const uint64_t payload_size64 = (uint64_t)sizeof(header) + (uint64_t)header.data_size;
+            if (header.data_size > WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES || payload_size64 > UINT32_MAX)
+            {
+                encode_payload_invalid = true;
+            }
+            else
+            {
+                payload = malloc((size_t)payload_size64);
+                if (!payload)
+                {
+                    encode_payload_invalid = true;
+                }
+                else
+                {
+                    payload_size = (uint32_t)payload_size64;
+                    memcpy(payload, &header, sizeof(header));
+                    memcpy(payload + sizeof(header), packet.data, header.data_size);
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&net->video_encoder_lock);
+
+    free(snapshot);
+    const uint64_t encode_ns = wd_now_ns() - encode_start_ns;
+
+    pthread_mutex_lock(&net->lock);
+    net->stats.video_encode_ns += encode_ns;
+
+    if (!encoded || encode_payload_invalid)
+    {
+        free(payload);
         net->stats.video_encode_failed++;
         return false;
     }
-    net->stats.video_encode_ns += wd_now_ns() - encode_start_ns;
 
-    struct wd_video_frame_payload_header header = packet.header;
-    header.session_id = net->session_id;
-    header.codec = WD_VIDEO_CODEC_H265;
-    header.flags |= WD_VIDEO_FRAME_KEYFRAME;
-    header.pts_usec = input.pts_usec;
-    header.width = server->display_width;
-    header.height = server->display_height;
-
-    if (!packet.data || header.data_size == 0 || header.data_size > WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES)
+    if (no_output)
     {
-        net->stats.video_encode_failed++;
         return false;
     }
 
-    const uint64_t payload_size64 = (uint64_t)sizeof(header) + (uint64_t)header.data_size;
-    if (payload_size64 > UINT32_MAX)
+    if (net->session_id != session_id || net->video_tcp_fd != video_tcp_fd ||
+        !net->video_stream_negotiated || !net->video_tx ||
+        (net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_READY &&
+         net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_ACTIVE))
     {
-        net->stats.video_encode_failed++;
+        free(payload);
         return false;
     }
 
-    uint8_t* payload = malloc((size_t)payload_size64);
-    if (!payload)
+    wd_async_tcp_sender_reap(net->video_tx);
+    if (wd_async_tcp_sender_has_message_type(net->video_tx, WD_MSG_VIDEO_FRAME))
     {
-        net->stats.video_encode_failed++;
+        free(payload);
+        net->stats.video_keyframe_skipped_pending++;
         return false;
     }
-
-    memcpy(payload, &header, sizeof(header));
-    memcpy(payload + sizeof(header), packet.data, header.data_size);
 
     const bool queued = wd_async_tcp_send_message(net->video_tx, net->video_tcp_fd, WD_MSG_VIDEO_FRAME,
-                                                  payload, (uint32_t)payload_size64);
+                                                  payload, payload_size);
     free(payload);
 
     if (!queued)
@@ -751,8 +890,12 @@ static bool wd_stream_try_send_video_keyframe_locked(struct wd_server* server, u
         return false;
     }
 
-    net->stats.video_keyframes_tx++;
-    net->stats.video_tcp_bytes_tx += payload_size64;
+    net->stats.video_frames_tx++;
+    if ((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0)
+    {
+        net->stats.video_keyframes_tx++;
+    }
+    net->stats.video_tcp_bytes_tx += payload_size;
     net->stream_policy.last_video_frame_send_ns = now_ns;
 
     if (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY)
@@ -1011,6 +1154,49 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
     const bool client_packet_loss = wd_stream_client_packet_loss_sample(stats);
     const bool client_tile_repair = stats->client_partial_tiles_timed_out != 0 || stats->client_retx_requests_tx != 0;
 
+    const bool video_frame_mode = wd_stream_mode_uses_video_frames(policy->stream_mode);
+
+    if (video_frame_mode)
+    {
+        const bool client_saw_video = stats->client_video_frames_rx != 0 || stats->client_video_control_frames_rx != 0;
+        const bool client_presented_video = stats->client_video_frames_presented != 0;
+        const bool client_reported_video_failure = stats->client_video_decode_failed != 0 ||
+                                                   stats->client_video_publish_failed != 0 ||
+                                                   stats->client_video_need_keyframe_drops != 0;
+
+        if (stats->video_frames_tx != 0 && stats->client_stats_rx != 0 &&
+            ((client_saw_video && !client_presented_video) || client_reported_video_failure))
+        {
+            if (policy->video_client_failure_seconds < UINT32_MAX)
+            {
+                policy->video_client_failure_seconds++;
+            }
+        }
+        else
+        {
+            policy->video_client_failure_seconds = 0;
+        }
+
+        if (policy->video_client_failure_seconds >= 3)
+        {
+            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILE_RECOVERY,
+                                             "client video decode/present failure", 0.0, 0.0, 0.0,
+                                             true, true);
+            policy->video_client_failure_seconds = 0;
+            return;
+        }
+
+        policy->multipacket_loss_cooldown_seconds = 0;
+        policy->link_loss_seconds = 0;
+        policy->link_good_seconds = 0;
+        policy->client_render_pressure_seconds = 0;
+        if (policy->effective_target_fps != policy->target_fps)
+        {
+            wd_stream_policy_restore_target_fps_locked(policy, "video mode frame pacing");
+        }
+        return;
+    }
+
     if (client_tile_repair || client_packet_loss)
     {
         policy->multipacket_loss_cooldown_seconds = WD_STREAM_MULTIPACKET_LOSS_COOLDOWN_SECONDS;
@@ -1037,12 +1223,13 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
     else
     {
         const bool stream_frame_pressure = send_pressure || budget_frame_pressure;
+        const bool tile_frame_pressure = stream_frame_pressure;
         const char* pressure_reason = NULL;
-        if (send_pressure)
+        if (!video_frame_mode && send_pressure)
         {
             pressure_reason = "UDP send pressure";
         }
-        else if (budget_frame_pressure)
+        else if (!video_frame_mode && budget_frame_pressure)
         {
             pressure_reason = "UDP budget pressure";
         }
@@ -1051,8 +1238,8 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
             pressure_reason = "client render pressure";
         }
 
-        wd_stream_policy_update_frame_rate_locked(policy, stats, stream_frame_pressure || client_render_pressure,
-                                                  stream_frame_pressure, pressure_reason);
+        wd_stream_policy_update_frame_rate_locked(policy, stats, tile_frame_pressure || client_render_pressure,
+                                                  tile_frame_pressure, pressure_reason);
     }
     wd_stream_policy_update_limited_rate_locked(policy, stats, send_pressure);
 }
@@ -3413,6 +3600,15 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         return true;
     }
 
+    if (net->stream_policy.tile_refresh_pending || net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY)
+    {
+        wd_stream_invalidate_all_tiles_locked(server);
+        net->stream_policy.tile_refresh_pending = false;
+        wd_stream_policy_set_mode_locked(&net->stream_policy, WD_STREAM_MODE_TILES,
+                                         "full tile refresh after video", 0.0, 0.0, 0.0,
+                                         net->video_tcp_fd >= 0, wd_video_encoder_available(net->video_encoder));
+    }
+
     /*
      * Normal send pass. New/reconnected clients are handled through the same
      * dirty-tile pipeline by invalidating tile state and marking the
@@ -3426,7 +3622,19 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     const uint16_t pending_tiles_at_frame_start = net->dirty_queue_count;
     const uint64_t dirty_budget_blocked_at_frame_start = net->stats.dirty_budget_blocked;
 
-    (void)wd_stream_try_send_video_keyframe_locked(server, now);
+    (void)wd_stream_try_send_video_frame_locked(server, now);
+
+    if (wd_stream_mode_video_owns_display(net->stream_policy.stream_mode))
+    {
+        /* Video mode owns the display. Keep dirty work queued so future video
+         * frames have a fresh framebuffer source, but do not spend UDP budget
+         * on fresh tiles or retransmits while the H.265 TCP stream is active. */
+        wd_stream_note_mode_frame_locked(net, dirty_frame_tiles, pending_tiles_at_frame_start,
+                                         server->total_tiles, false);
+        server->scene_dirty = net->dirty_region_count > 0;
+        pthread_mutex_unlock(&net->lock);
+        return true;
+    }
 
     const bool client_loss = wd_stream_client_reporting_tile_loss_locked(&net->stream_policy, &net->stats);
     if (client_loss && net->retransmit_queue_count > 0)
@@ -3670,7 +3878,10 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         }
     }
 
-    wd_stream_send_retransmits_locked(server, now);
+    if (!wd_stream_mode_video_owns_display(net->stream_policy.stream_mode))
+    {
+        wd_stream_send_retransmits_locked(server, now);
+    }
 
     const bool budget_pressure_this_frame = net->stats.dirty_budget_blocked != dirty_budget_blocked_at_frame_start;
     wd_stream_note_mode_frame_locked(net, dirty_frame_tiles, pending_tiles_at_frame_start,
@@ -3958,10 +4169,18 @@ static bool wd_stream_send_generation_summary_kind_locked(struct wd_server* serv
 }
 
 bool wd_stream_send_generation_summary_locked(struct wd_server* server) {
+    if (server && wd_stream_mode_video_owns_display(server->net.stream_policy.stream_mode))
+    {
+        return false;
+    }
     return wd_stream_send_generation_summary_kind_locked(server, true);
 }
 
 bool wd_stream_send_pending_generation_summary_locked(struct wd_server* server) {
+    if (server && wd_stream_mode_video_owns_display(server->net.stream_policy.stream_mode))
+    {
+        return false;
+    }
     return wd_stream_send_generation_summary_kind_locked(server, false);
 }
 
@@ -4018,6 +4237,8 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->tcp_video_channel_rx += src->tcp_video_channel_rx;
     dst->tcp_video_channel_accepted += src->tcp_video_channel_accepted;
     dst->tcp_video_channel_closed += src->tcp_video_channel_closed;
+    dst->video_frame_attempts += src->video_frame_attempts;
+    dst->video_frames_tx += src->video_frames_tx;
     dst->video_keyframe_attempts += src->video_keyframe_attempts;
     dst->video_keyframes_tx += src->video_keyframes_tx;
     dst->video_tcp_bytes_tx += src->video_tcp_bytes_tx;
@@ -4056,6 +4277,17 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     }
     dst->client_input_present_samples += src->client_input_present_samples;
     dst->client_input_present_sum_ns += src->client_input_present_sum_ns;
+    dst->client_video_frames_rx += src->client_video_frames_rx;
+    dst->client_video_bytes_rx += src->client_video_bytes_rx;
+    dst->client_video_frames_decoded += src->client_video_frames_decoded;
+    dst->client_video_frames_presented += src->client_video_frames_presented;
+    dst->client_video_decode_failed += src->client_video_decode_failed;
+    dst->client_video_publish_failed += src->client_video_publish_failed;
+    dst->client_video_control_frames_rx += src->client_video_control_frames_rx;
+    dst->client_video_need_keyframe_drops += src->client_video_need_keyframe_drops;
+    dst->client_video_decoder_resets += src->client_video_decoder_resets;
+    dst->client_video_decode_samples += src->client_video_decode_samples;
+    dst->client_video_decode_sum_ns += src->client_video_decode_sum_ns;
     dst->retx_req_rx += src->retx_req_rx;
     dst->retx_tiles_req += src->retx_tiles_req;
     dst->retx_req_ignored_live += src->retx_req_ignored_live;
@@ -4221,9 +4453,12 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
 
     if (state_changed)
     {
-        WD_LOG_DEBUG("state: target_fps=%u effective_fps=%u output_fps=%u client_visible=%s stream_mode=%s video_mode=%s video_bitrate_kib=%u video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s video_negotiated=%s video_channel=%s video_encoder=%s",
+        WD_LOG_DEBUG("state: target_fps=%u effective_fps=%u output_fps=%u client_visible=%s stream_mode=%s owner=%s fresh_udp_tiles=%s tile_repair=%s video_mode=%s video_bitrate_kib=%u video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s video_negotiated=%s video_channel=%s video_encoder=%s",
                      (unsigned)target_fps, (unsigned)effective_target_fps, (unsigned)output_fps,
                      client_render_visible ? "yes" : "no", wd_stream_mode_name(stream_mode),
+                     wd_stream_mode_owner_name(stream_mode),
+                     wd_stream_mode_video_owns_display(stream_mode) ? "paused" : "enabled",
+                     wd_stream_mode_video_owns_display(stream_mode) ? "paused" : "enabled",
                      wd_video_mode_name(video_mode), (unsigned)video_bitrate_kib,
                      (unsigned)video_min_dirty_percent, (unsigned)video_enter_seconds,
                      (unsigned)video_exit_dirty_percent, (unsigned)video_exit_seconds,
@@ -4349,15 +4584,18 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      (unsigned long long)s.encode_thread_wakeups);
     }
 
-    bool video_stream_activity = s.video_keyframe_attempts != 0 || s.video_keyframes_tx != 0 ||
+    bool video_stream_activity = s.video_frame_attempts != 0 || s.video_frames_tx != 0 ||
+                                 s.video_keyframe_attempts != 0 || s.video_keyframes_tx != 0 ||
                                  s.video_tcp_bytes_tx != 0 || s.video_encode_failed != 0 ||
                                  s.video_tcp_send_failed != 0 || s.video_keyframe_skipped_pending != 0 ||
                                  s.video_control_frames_tx != 0 || s.video_end_of_stream_tx != 0 ||
                                  s.video_resize_resets != 0 || s.video_resets != 0;
     if (video_stream_activity)
     {
-        WD_LOG_DEBUG("video-stream/min: mode=%s configured_bitrate_kib=%u keyframe_attempts=%llu keyframes_tx=%llu control_tx=%llu eos_tx=%llu tcp_kib=%.1f encode_ms=%.2f encode_failed=%llu tcp_send_failed=%llu skipped_pending=%llu resets=%llu resize_resets=%llu",
+        WD_LOG_DEBUG("video-stream/min: mode=%s configured_bitrate_kib=%u frame_attempts=%llu frames_tx=%llu keyframe_attempts=%llu keyframes_tx=%llu control_tx=%llu eos_tx=%llu tcp_kib=%.1f encode_ms=%.2f encode_failed=%llu tcp_send_failed=%llu skipped_pending=%llu resets=%llu resize_resets=%llu",
                      wd_video_mode_name(video_mode), (unsigned)video_bitrate_kib,
+                     (unsigned long long)s.video_frame_attempts,
+                     (unsigned long long)s.video_frames_tx,
                      (unsigned long long)s.video_keyframe_attempts,
                      (unsigned long long)s.video_keyframes_tx,
                      (unsigned long long)s.video_control_frames_tx,
@@ -4414,6 +4652,24 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      wd_avg_ms(s.client_present_sum_ns, s.client_present_samples),
                      (double)s.client_present_max_ns / 1000000.0,
                      wd_avg_ms(s.client_input_present_sum_ns, s.client_input_present_samples));
+    }
+
+    if (s.client_video_frames_rx != 0 || s.client_video_frames_decoded != 0 ||
+        s.client_video_frames_presented != 0 || s.client_video_decode_failed != 0 ||
+        s.client_video_publish_failed != 0 || s.client_video_control_frames_rx != 0 ||
+        s.client_video_need_keyframe_drops != 0 || s.client_video_decoder_resets != 0)
+    {
+        WD_LOG_DEBUG("client-video/min: rx=%llu decoded=%llu presented=%llu control=%llu kib=%.1f decode_avg_ms=%.2f decode_failed=%llu publish_failed=%llu need_keyframe_drops=%llu resets=%llu",
+                     (unsigned long long)s.client_video_frames_rx,
+                     (unsigned long long)s.client_video_frames_decoded,
+                     (unsigned long long)s.client_video_frames_presented,
+                     (unsigned long long)s.client_video_control_frames_rx,
+                     (double)s.client_video_bytes_rx / 1024.0,
+                     wd_avg_ms(s.client_video_decode_sum_ns, s.client_video_decode_samples),
+                     (unsigned long long)s.client_video_decode_failed,
+                     (unsigned long long)s.client_video_publish_failed,
+                     (unsigned long long)s.client_video_need_keyframe_drops,
+                     (unsigned long long)s.client_video_decoder_resets);
     }
 
     bool control_activity = s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 || s.tcp_input_channel_rx != 0 ||

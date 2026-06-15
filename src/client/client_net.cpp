@@ -1502,6 +1502,7 @@ void reset_video_decoder(ClientState& state, const char* reason) {
     std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
     client_video_decoder_reset(state.video_decoder);
     state.video_decoder_needs_keyframe = true;
+    state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
     if (reason)
     {
         WD_LOG_INFO("video decoder reset: reason=%s", reason);
@@ -1578,6 +1579,10 @@ bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_
     }
 
     control_frame = (packet.header.flags & (WD_VIDEO_FRAME_END_OF_STREAM | WD_VIDEO_FRAME_RESIZE)) != 0;
+    if (control_frame)
+    {
+        state.stats.video_control_frames_rx.fetch_add(1, std::memory_order_relaxed);
+    }
     if (packet.header.data_size == 0 && !control_frame)
     {
         return false;
@@ -1598,7 +1603,8 @@ bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_
         return false;
     }
 
-    if ((packet.header.width != width || packet.header.height != height) && !control_frame)
+    if (((packet.header.width != width || packet.header.height != height) ||
+         packet.header.coded_width < packet.header.width || packet.header.coded_height < packet.header.height) && !control_frame)
     {
         reset_video_decoder(state, "video frame geometry mismatch");
         return false;
@@ -1665,7 +1671,13 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
 
     if ((packet.header.flags & WD_VIDEO_FRAME_RESIZE) != 0)
     {
-        reset_video_decoder(state, "video resize control frame");
+        /* The following SERVER_CONFIG carries the authoritative session and
+         * geometry. Avoid a duplicate decoder teardown here; just require the
+         * next video payload after the config reset to be a keyframe. */
+        {
+            std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
+            state.video_decoder_needs_keyframe = true;
+        }
         if (packet.header.data_size == 0)
         {
             return;
@@ -1683,6 +1695,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
     std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
     if (state.video_decoder_needs_keyframe && (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
     {
+        state.stats.video_need_keyframe_drops.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -1696,22 +1709,36 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
     if (!client_video_decoder_configure(state.video_decoder, config))
     {
         state.video_decoder_needs_keyframe = true;
+        state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
     ClientDecodedVideoFrame frame{};
+    const uint64_t decode_start_ns = wd_now_ns();
     if (!client_video_decoder_decode_h265(state.video_decoder, packet, &frame))
     {
+        state.stats.video_decode_sum_ns.fetch_add(wd_now_ns() - decode_start_ns, std::memory_order_relaxed);
+        state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
+        state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
         state.video_decoder_needs_keyframe = true;
         return;
     }
+    state.stats.video_decode_sum_ns.fetch_add(wd_now_ns() - decode_start_ns, std::memory_order_relaxed);
+    state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
+    if (!frame.pixels)
+    {
+        return;
+    }
+    state.stats.video_frames_decoded.fetch_add(1, std::memory_order_relaxed);
 
     if (!publish_decoded_video_frame(state, frame))
     {
+        state.stats.video_publish_failed.fetch_add(1, std::memory_order_relaxed);
         state.video_decoder_needs_keyframe = true;
         return;
     }
 
+    state.stats.video_frames_presented.fetch_add(1, std::memory_order_relaxed);
     state.video_decoder_needs_keyframe = false;
 }
 
@@ -1729,6 +1756,8 @@ void video_tcp_reader_main(ClientState* state) {
 
         if (message_type == WD_MSG_VIDEO_FRAME)
         {
+            state->stats.video_frames_rx.fetch_add(1, std::memory_order_relaxed);
+            state->stats.video_bytes_rx.fetch_add(payload_size, std::memory_order_relaxed);
             handle_video_frame(*state, payload, payload_size);
         }
         else if (message_type == WD_MSG_ERROR)

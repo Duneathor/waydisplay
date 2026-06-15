@@ -110,6 +110,17 @@ struct ClientStats {
     std::atomic<uint64_t> tcp_async_partial{0};
     std::atomic<uint64_t> tcp_async_coalesced{0};
     std::atomic<uint64_t> tcp_async_inflight_max{0};
+    std::atomic<uint64_t> video_frames_rx{0};
+    std::atomic<uint64_t> video_bytes_rx{0};
+    std::atomic<uint64_t> video_frames_decoded{0};
+    std::atomic<uint64_t> video_frames_presented{0};
+    std::atomic<uint64_t> video_decode_failed{0};
+    std::atomic<uint64_t> video_publish_failed{0};
+    std::atomic<uint64_t> video_control_frames_rx{0};
+    std::atomic<uint64_t> video_need_keyframe_drops{0};
+    std::atomic<uint64_t> video_decoder_resets{0};
+    std::atomic<uint64_t> video_decode_samples{0};
+    std::atomic<uint64_t> video_decode_sum_ns{0};
 
     std::atomic<uint64_t> tile_assembly_samples{0};
     std::atomic<uint64_t> tile_assembly_sum_ns{0};
@@ -186,6 +197,17 @@ struct ClientStatsSnapshot {
     uint64_t tcp_async_partial = 0;
     uint64_t tcp_async_coalesced = 0;
     uint64_t tcp_async_inflight_max = 0;
+    uint64_t video_frames_rx = 0;
+    uint64_t video_bytes_rx = 0;
+    uint64_t video_frames_decoded = 0;
+    uint64_t video_frames_presented = 0;
+    uint64_t video_decode_failed = 0;
+    uint64_t video_publish_failed = 0;
+    uint64_t video_control_frames_rx = 0;
+    uint64_t video_need_keyframe_drops = 0;
+    uint64_t video_decoder_resets = 0;
+    uint64_t video_decode_samples = 0;
+    uint64_t video_decode_sum_ns = 0;
     uint64_t udp_async_posted = 0;
     uint64_t udp_async_completed = 0;
     uint64_t udp_async_failed = 0;

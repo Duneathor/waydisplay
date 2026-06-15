@@ -182,6 +182,17 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.tcp_async_partial += src.tcp_async_partial;
     dst.tcp_async_coalesced += src.tcp_async_coalesced;
     dst.tcp_async_inflight_max = std::max(dst.tcp_async_inflight_max, src.tcp_async_inflight_max);
+    dst.video_frames_rx += src.video_frames_rx;
+    dst.video_bytes_rx += src.video_bytes_rx;
+    dst.video_frames_decoded += src.video_frames_decoded;
+    dst.video_frames_presented += src.video_frames_presented;
+    dst.video_decode_failed += src.video_decode_failed;
+    dst.video_publish_failed += src.video_publish_failed;
+    dst.video_control_frames_rx += src.video_control_frames_rx;
+    dst.video_need_keyframe_drops += src.video_need_keyframe_drops;
+    dst.video_decoder_resets += src.video_decoder_resets;
+    dst.video_decode_samples += src.video_decode_samples;
+    dst.video_decode_sum_ns += src.video_decode_sum_ns;
     dst.udp_async_posted += src.udp_async_posted;
     dst.udp_async_completed += src.udp_async_completed;
     dst.udp_async_failed += src.udp_async_failed;
@@ -1003,6 +1014,17 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t tcp_async_partial = logged.tcp_async_partial;
     const uint64_t tcp_async_coalesced = logged.tcp_async_coalesced;
     const uint64_t tcp_async_inflight_max = logged.tcp_async_inflight_max;
+    const uint64_t video_frames_rx = logged.video_frames_rx;
+    const uint64_t video_bytes_rx = logged.video_bytes_rx;
+    const uint64_t video_frames_decoded = logged.video_frames_decoded;
+    const uint64_t video_frames_presented = logged.video_frames_presented;
+    const uint64_t video_decode_failed = logged.video_decode_failed;
+    const uint64_t video_publish_failed = logged.video_publish_failed;
+    const uint64_t video_control_frames_rx = logged.video_control_frames_rx;
+    const uint64_t video_need_keyframe_drops = logged.video_need_keyframe_drops;
+    const uint64_t video_decoder_resets = logged.video_decoder_resets;
+    const uint64_t video_decode_samples = logged.video_decode_samples;
+    const uint64_t video_decode_sum_ns = logged.video_decode_sum_ns;
     const uint64_t udp_async_posted = logged.udp_async_posted;
     const uint64_t udp_async_completed = logged.udp_async_completed;
     const uint64_t udp_async_failed = logged.udp_async_failed;
@@ -1091,6 +1113,25 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                      static_cast<unsigned long long>(tcp_async_coalesced), static_cast<unsigned long long>(input_events),
                      static_cast<unsigned long long>(input_channel_events), static_cast<unsigned long long>(input_fallback_events),
                      static_cast<unsigned long long>(selection_channel_events), static_cast<unsigned long long>(selection_fallback_events));
+    }
+
+    const bool client_video_activity = video_frames_rx != 0 || video_frames_decoded != 0 || video_frames_presented != 0 ||
+                                       video_decode_failed != 0 || video_publish_failed != 0 ||
+                                       video_control_frames_rx != 0 || video_need_keyframe_drops != 0 ||
+                                       video_decoder_resets != 0;
+    if (client_video_activity)
+    {
+        WD_LOG_DEBUG("[client video/min] rx=%llu decoded=%llu presented=%llu control=%llu kib=%.1f decode_avg_ms=%.2f decode_failed=%llu publish_failed=%llu need_keyframe_drops=%llu resets=%llu",
+                     static_cast<unsigned long long>(video_frames_rx),
+                     static_cast<unsigned long long>(video_frames_decoded),
+                     static_cast<unsigned long long>(video_frames_presented),
+                     static_cast<unsigned long long>(video_control_frames_rx),
+                     static_cast<double>(video_bytes_rx) / 1024.0,
+                     avg_ms(video_decode_sum_ns, video_decode_samples),
+                     static_cast<unsigned long long>(video_decode_failed),
+                     static_cast<unsigned long long>(video_publish_failed),
+                     static_cast<unsigned long long>(video_need_keyframe_drops),
+                     static_cast<unsigned long long>(video_decoder_resets));
     }
 
     const bool tcp_async_activity = tcp_async_queued != 0 || tcp_async_completed != 0 || tcp_async_failed != 0 ||
@@ -1188,6 +1229,17 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t tcp_async_partial        = take_stat(state.stats.tcp_async_partial);
     const uint64_t tcp_async_coalesced      = take_stat(state.stats.tcp_async_coalesced);
     const uint64_t tcp_async_inflight_max   = take_stat(state.stats.tcp_async_inflight_max);
+    const uint64_t video_frames_rx          = take_stat(state.stats.video_frames_rx);
+    const uint64_t video_bytes_rx           = take_stat(state.stats.video_bytes_rx);
+    const uint64_t video_frames_decoded     = take_stat(state.stats.video_frames_decoded);
+    const uint64_t video_frames_presented   = take_stat(state.stats.video_frames_presented);
+    const uint64_t video_decode_failed      = take_stat(state.stats.video_decode_failed);
+    const uint64_t video_publish_failed     = take_stat(state.stats.video_publish_failed);
+    const uint64_t video_control_frames_rx  = take_stat(state.stats.video_control_frames_rx);
+    const uint64_t video_need_keyframe_drops = take_stat(state.stats.video_need_keyframe_drops);
+    const uint64_t video_decoder_resets     = take_stat(state.stats.video_decoder_resets);
+    const uint64_t video_decode_samples     = take_stat(state.stats.video_decode_samples);
+    const uint64_t video_decode_sum_ns      = take_stat(state.stats.video_decode_sum_ns);
     client_reap_async_udp_receives(state);
     const uint64_t udp_async_posted         = take_stat(state.stats.udp_async_posted);
     const uint64_t udp_async_completed      = take_stat(state.stats.udp_async_completed);
@@ -1267,6 +1319,17 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.tcp_async_partial = tcp_async_partial;
     sample.tcp_async_coalesced = tcp_async_coalesced;
     sample.tcp_async_inflight_max = tcp_async_inflight_max;
+    sample.video_frames_rx = video_frames_rx;
+    sample.video_bytes_rx = video_bytes_rx;
+    sample.video_frames_decoded = video_frames_decoded;
+    sample.video_frames_presented = video_frames_presented;
+    sample.video_decode_failed = video_decode_failed;
+    sample.video_publish_failed = video_publish_failed;
+    sample.video_control_frames_rx = video_control_frames_rx;
+    sample.video_need_keyframe_drops = video_need_keyframe_drops;
+    sample.video_decoder_resets = video_decoder_resets;
+    sample.video_decode_samples = video_decode_samples;
+    sample.video_decode_sum_ns = video_decode_sum_ns;
     sample.udp_async_posted = udp_async_posted;
     sample.udp_async_completed = udp_async_completed;
     sample.udp_async_failed = udp_async_failed;
@@ -1300,7 +1363,11 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     client_stats_accumulate(state.stats_log.totals, sample);
 
     const bool feedback_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || partial_timeouts != 0 ||
-                                   invalid != 0 || old_gen != 0 || retx != 0 || udp_interarrival_samples != 0;
+                                   invalid != 0 || old_gen != 0 || retx != 0 || udp_interarrival_samples != 0 ||
+                                   video_frames_rx != 0 || video_frames_decoded != 0 ||
+                                   video_frames_presented != 0 || video_decode_failed != 0 ||
+                                   video_publish_failed != 0 || video_control_frames_rx != 0 ||
+                                   video_need_keyframe_drops != 0 || video_decoder_resets != 0;
 
     if (feedback_activity)
     {
@@ -1331,6 +1398,17 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         feedback.present_max_ns             = sdl_present_max_ns;
         feedback.input_present_samples      = input_seq_present_samples;
         feedback.input_present_sum_ns       = input_seq_present_sum_ns;
+        feedback.video_frames_rx            = video_frames_rx;
+        feedback.video_bytes_rx             = video_bytes_rx;
+        feedback.video_frames_decoded       = video_frames_decoded;
+        feedback.video_frames_presented     = video_frames_presented;
+        feedback.video_decode_failed        = video_decode_failed;
+        feedback.video_publish_failed       = video_publish_failed;
+        feedback.video_control_frames_rx    = video_control_frames_rx;
+        feedback.video_need_keyframe_drops  = video_need_keyframe_drops;
+        feedback.video_decoder_resets       = video_decoder_resets;
+        feedback.video_decode_samples       = video_decode_samples;
+        feedback.video_decode_sum_ns        = video_decode_sum_ns;
         if (feedback.session_id != 0)
         {
             client_send_stats(state, feedback);

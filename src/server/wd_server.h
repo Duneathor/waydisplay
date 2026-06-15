@@ -256,6 +256,8 @@ struct wd_stats {
     uint64_t tcp_video_channel_accepted;
     uint64_t tcp_video_channel_closed;
 
+    uint64_t video_frame_attempts;
+    uint64_t video_frames_tx;
     uint64_t video_keyframe_attempts;
     uint64_t video_keyframes_tx;
     uint64_t video_tcp_bytes_tx;
@@ -289,6 +291,17 @@ struct wd_stats {
     uint64_t client_present_max_ns;
     uint64_t client_input_present_samples;
     uint64_t client_input_present_sum_ns;
+    uint64_t client_video_frames_rx;
+    uint64_t client_video_bytes_rx;
+    uint64_t client_video_frames_decoded;
+    uint64_t client_video_frames_presented;
+    uint64_t client_video_decode_failed;
+    uint64_t client_video_publish_failed;
+    uint64_t client_video_control_frames_rx;
+    uint64_t client_video_need_keyframe_drops;
+    uint64_t client_video_decoder_resets;
+    uint64_t client_video_decode_samples;
+    uint64_t client_video_decode_sum_ns;
 
     uint64_t retx_req_rx;
     uint64_t retx_tiles_req;
@@ -432,6 +445,8 @@ struct wd_stream_policy {
     uint32_t video_bitrate_kib_per_second;
     uint32_t video_candidate_seconds;
     uint32_t tile_recovery_seconds;
+    uint32_t video_client_failure_seconds;
+    bool     tile_refresh_pending;
 
     uint32_t frame_rate_good_seconds;
 
@@ -498,6 +513,7 @@ struct wd_net_state {
     bool encoder_batch_active;
     void* encoder_pool;
     struct wd_video_encoder* video_encoder;
+    pthread_mutex_t video_encoder_lock;
 
     uint16_t* dirty_queue;
     bool*     dirty_queued;

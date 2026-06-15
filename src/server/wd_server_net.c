@@ -294,6 +294,14 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         return false;
     }
 
+    if (pthread_mutex_init(&net->video_encoder_lock, NULL) != 0)
+    {
+        pthread_cond_destroy(&net->encoder_idle_cond);
+        pthread_cond_destroy(&net->display_resize_cond);
+        pthread_mutex_destroy(&net->lock);
+        return false;
+    }
+
     net->running              = true;
     net->tcp_port             = tcp_port;
     net->tcp_fd               = -1;
@@ -366,6 +374,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         wd_async_tcp_sender_destroy(net->video_tx);
         wd_async_udp_sender_destroy(net->udp_tx);
         wd_video_encoder_destroy(net->video_encoder);
+        pthread_mutex_destroy(&net->video_encoder_lock);
         net->control_tx                  = NULL;
         net->video_tx                    = NULL;
         net->udp_tx                      = NULL;
@@ -444,6 +453,7 @@ void wd_net_destroy(struct wd_server* server) {
     wd_async_tcp_sender_destroy(net->video_tx);
     wd_async_udp_sender_destroy(net->udp_tx);
     wd_video_encoder_destroy(net->video_encoder);
+    pthread_mutex_destroy(&net->video_encoder_lock);
     net->control_tx = NULL;
     net->video_tx = NULL;
     net->udp_tx = NULL;
@@ -1838,6 +1848,17 @@ void* wd_net_thread_main(void* arg) {
                         }
                         net->stats.client_input_present_samples += cs.input_present_samples;
                         net->stats.client_input_present_sum_ns += cs.input_present_sum_ns;
+                        net->stats.client_video_frames_rx += cs.video_frames_rx;
+                        net->stats.client_video_bytes_rx += cs.video_bytes_rx;
+                        net->stats.client_video_frames_decoded += cs.video_frames_decoded;
+                        net->stats.client_video_frames_presented += cs.video_frames_presented;
+                        net->stats.client_video_decode_failed += cs.video_decode_failed;
+                        net->stats.client_video_publish_failed += cs.video_publish_failed;
+                        net->stats.client_video_control_frames_rx += cs.video_control_frames_rx;
+                        net->stats.client_video_need_keyframe_drops += cs.video_need_keyframe_drops;
+                        net->stats.client_video_decoder_resets += cs.video_decoder_resets;
+                        net->stats.client_video_decode_samples += cs.video_decode_samples;
+                        net->stats.client_video_decode_sum_ns += cs.video_decode_sum_ns;
                         pthread_mutex_unlock(&net->lock);
                     }
                 }

@@ -12,6 +12,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
+#include <libavutil/log.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
@@ -29,6 +30,8 @@ struct wd_video_encoder {
     AVFrame*           frame;
     AVPacket*          packet;
     struct SwsContext* sws_ctx;
+    uint32_t*          padded_pixels;
+    size_t             padded_pixel_capacity;
 #endif
 };
 
@@ -41,6 +44,10 @@ static void wd_video_encoder_release_backend(struct wd_video_encoder* encoder) {
 
     sws_freeContext(encoder->sws_ctx);
     encoder->sws_ctx = NULL;
+
+    free(encoder->padded_pixels);
+    encoder->padded_pixels = NULL;
+    encoder->padded_pixel_capacity = 0;
 
     av_packet_free(&encoder->packet);
     av_frame_free(&encoder->frame);
@@ -61,7 +68,7 @@ static bool wd_video_encoder_config_matches(const struct wd_video_encoder* encod
                                             const struct wd_video_encoder_config* config) {
     return encoder && config && encoder->configured && encoder->codec_ctx &&
            encoder->config.session_id == config->session_id && encoder->config.width == config->width &&
-           encoder->config.height == config->height && encoder->config.target_fps == config->target_fps &&
+           encoder->config.height == config->height &&
            encoder->config.bitrate_kib_per_second == config->bitrate_kib_per_second &&
            encoder->config.codec == config->codec;
 }
@@ -209,8 +216,10 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
     {
         (void)av_opt_set(encoder->codec_ctx->priv_data, "preset", "ultrafast", 0);
         (void)av_opt_set(encoder->codec_ctx->priv_data, "tune", "zerolatency", 0);
-        (void)av_opt_set(encoder->codec_ctx->priv_data, "x265-params", "repeat-headers=1", 0);
+        (void)av_opt_set(encoder->codec_ctx->priv_data, "x265-params", "repeat-headers=1:log-level=error", 0);
     }
+
+    av_log_set_level(AV_LOG_WARNING);
 
     if (avcodec_open2(encoder->codec_ctx, encoder->codec, NULL) < 0)
     {
@@ -227,7 +236,7 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
         return false;
     }
 
-    encoder->sws_ctx = sws_getContext(config->width, config->height, AV_PIX_FMT_BGRA,
+    encoder->sws_ctx = sws_getContext(encoder->codec_ctx->width, encoder->codec_ctx->height, AV_PIX_FMT_BGRA,
                                       encoder->codec_ctx->width, encoder->codec_ctx->height,
                                       encoder->codec_ctx->pix_fmt, SWS_FAST_BILINEAR, NULL, NULL, NULL);
     if (!encoder->sws_ctx)
@@ -261,6 +270,54 @@ bool wd_video_encoder_request_keyframe(struct wd_video_encoder* encoder) {
     return wd_video_encoder_available(encoder);
 }
 
+
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+static const uint32_t* wd_video_encoder_prepare_xrgb_source(struct wd_video_encoder* encoder,
+                                                           const struct wd_video_encoder_input_xrgb8888* input,
+                                                           uint32_t coded_width,
+                                                           uint32_t coded_height,
+                                                           uint32_t* out_stride_pixels) {
+    if (!encoder || !input || !out_stride_pixels || coded_width == 0 || coded_height == 0)
+    {
+        return NULL;
+    }
+
+    if (input->width == coded_width && input->height == coded_height)
+    {
+        *out_stride_pixels = input->stride_pixels;
+        return input->pixels;
+    }
+
+    const size_t needed = (size_t)coded_width * (size_t)coded_height;
+    if (encoder->padded_pixel_capacity < needed)
+    {
+        uint32_t* new_pixels = realloc(encoder->padded_pixels, needed * sizeof(*new_pixels));
+        if (!new_pixels)
+        {
+            return NULL;
+        }
+        encoder->padded_pixels = new_pixels;
+        encoder->padded_pixel_capacity = needed;
+    }
+
+    for (uint32_t y = 0; y < coded_height; ++y)
+    {
+        const uint32_t src_y = y < input->height ? y : input->height - 1u;
+        const uint32_t* src = input->pixels + (size_t)src_y * input->stride_pixels;
+        uint32_t* dst = encoder->padded_pixels + (size_t)y * coded_width;
+        memcpy(dst, src, (size_t)input->width * sizeof(*dst));
+        const uint32_t edge = input->width != 0 ? src[input->width - 1u] : 0xff000000u;
+        for (uint32_t x = input->width; x < coded_width; ++x)
+        {
+            dst[x] = edge;
+        }
+    }
+
+    *out_stride_pixels = coded_width;
+    return encoder->padded_pixels;
+}
+#endif
+
 bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder,
                                       const struct wd_video_encoder_input_xrgb8888* input,
                                       struct wd_video_encoder_packet* packet) {
@@ -287,9 +344,19 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder,
         return false;
     }
 
-    const uint8_t* src_slices[4] = {(const uint8_t*)input->pixels, NULL, NULL, NULL};
-    const int      src_stride[4] = {(int)(input->stride_pixels * WD_BYTES_PER_PIXEL), 0, 0, 0};
-    if (sws_scale(encoder->sws_ctx, src_slices, src_stride, 0, input->height,
+    uint32_t source_stride_pixels = 0;
+    const uint32_t* source_pixels = wd_video_encoder_prepare_xrgb_source(encoder, input,
+                                                                         (uint32_t)encoder->codec_ctx->width,
+                                                                         (uint32_t)encoder->codec_ctx->height,
+                                                                         &source_stride_pixels);
+    if (!source_pixels)
+    {
+        return false;
+    }
+
+    const uint8_t* src_slices[4] = {(const uint8_t*)source_pixels, NULL, NULL, NULL};
+    const int      src_stride[4] = {(int)(source_stride_pixels * WD_BYTES_PER_PIXEL), 0, 0, 0};
+    if (sws_scale(encoder->sws_ctx, src_slices, src_stride, 0, encoder->codec_ctx->height,
                   encoder->frame->data, encoder->frame->linesize) != encoder->frame->height)
     {
         return false;
@@ -300,15 +367,39 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder,
 
     av_packet_unref(encoder->packet);
     int rc = avcodec_send_frame(encoder->codec_ctx, encoder->frame);
-    if (rc < 0)
+    if (rc == AVERROR(EAGAIN))
+    {
+        rc = avcodec_receive_packet(encoder->codec_ctx, encoder->packet);
+        if (rc >= 0)
+        {
+            /* Return the delayed packet now; the current frame can be retried on
+             * the next cadence tick. */
+        }
+        else if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
+        {
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    else if (rc < 0)
     {
         return false;
     }
 
-    rc = avcodec_receive_packet(encoder->codec_ctx, encoder->packet);
-    if (rc < 0)
+    if (encoder->packet->size == 0)
     {
-        return false;
+        rc = avcodec_receive_packet(encoder->codec_ctx, encoder->packet);
+        if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
+        {
+            return true;
+        }
+        if (rc < 0)
+        {
+            return false;
+        }
     }
 
     if (encoder->packet->size <= 0 || (uint64_t)encoder->packet->size > WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES)
@@ -326,9 +417,11 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder,
     }
     packet->header.frame_id   = encoder->next_frame_id++;
     packet->header.pts_usec   = input->pts_usec;
-    packet->header.width      = (uint16_t)input->width;
-    packet->header.height     = (uint16_t)input->height;
-    packet->header.data_size  = (uint32_t)encoder->packet->size;
+    packet->header.width        = (uint16_t)input->width;
+    packet->header.height       = (uint16_t)input->height;
+    packet->header.coded_width  = (uint16_t)encoder->codec_ctx->width;
+    packet->header.coded_height = (uint16_t)encoder->codec_ctx->height;
+    packet->header.data_size    = (uint32_t)encoder->packet->size;
     packet->data              = encoder->packet->data;
 
     encoder->keyframe_requested = false;
