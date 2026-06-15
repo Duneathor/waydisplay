@@ -57,6 +57,20 @@ const char* video_mode_name(uint8_t mode) {
     }
 }
 
+const char* video_hwdecode_mode_name(uint8_t mode) {
+    switch (mode)
+    {
+    case WD_CLIENT_VIDEO_HWDECODE_AUTO:
+        return "auto";
+    case WD_CLIENT_VIDEO_HWDECODE_OFF:
+        return "off";
+    case WD_CLIENT_VIDEO_HWDECODE_VAAPI:
+        return "vaapi";
+    default:
+        return "unknown";
+    }
+}
+
 uint64_t clamp_retransmit_grace_ns(uint64_t ns) {
     return std::max(RETRANSMIT_GRACE_MIN_NS, std::min(RETRANSMIT_GRACE_MAX_NS, ns));
 }
@@ -900,13 +914,14 @@ bool receive_server_config(ClientState& state) {
     hello.video_exit_dirty_percent      = state.stream_config.video_exit_dirty_percent;
     hello.video_exit_seconds            = state.stream_config.video_exit_seconds;
 
-    WD_LOG_INFO("video mode control: mode=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u decoder=%s",
+    WD_LOG_INFO("video mode control: mode=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u hwdecode=%s decoder=%s",
                 video_mode_name(state.stream_config.video_mode),
                 static_cast<unsigned>(state.stream_config.video_bitrate_kib_per_second),
                 static_cast<unsigned>(state.stream_config.video_min_dirty_percent),
                 static_cast<unsigned>(state.stream_config.video_enter_seconds),
                 static_cast<unsigned>(state.stream_config.video_exit_dirty_percent),
                 static_cast<unsigned>(state.stream_config.video_exit_seconds),
+                video_hwdecode_mode_name(state.stream_config.video_hwdecode_mode),
                 video_decoder_available ? "yes" : "no");
 
     if (!wd_send_tcp_message(state.tcp_fd, WD_MSG_CLIENT_HELLO, &hello, sizeof(hello)))
@@ -1730,8 +1745,9 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         config.height       = packet.header.height;
         config.coded_width  = packet.header.coded_width != 0 ? packet.header.coded_width : packet.header.width;
         config.coded_height = packet.header.coded_height != 0 ? packet.header.coded_height : packet.header.height;
-        config.target_fps   = state.stream_config.target_fps;
-        config.codec        = packet.header.codec;
+        config.target_fps    = state.stream_config.target_fps;
+        config.codec         = packet.header.codec;
+        config.hwdecode_mode = state.stream_config.video_hwdecode_mode;
 
         if (!client_video_decoder_configure(state.video_decoder, config))
         {

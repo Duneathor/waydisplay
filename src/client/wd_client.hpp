@@ -45,6 +45,7 @@ struct ClientStreamConfig {
     uint8_t  video_exit_dirty_percent      = WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT;
     uint16_t video_exit_seconds            = WD_VIDEO_EXIT_SECONDS_DEFAULT;
     uint32_t video_bitrate_kib_per_second  = 0;
+    uint8_t  video_hwdecode_mode           = WD_CLIENT_VIDEO_HWDECODE_AUTO;
     bool     disable_vsync                 = false;
 };
 

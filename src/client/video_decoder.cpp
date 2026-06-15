@@ -1,6 +1,7 @@
 #include "video_decoder.hpp"
 
 #include <cstring>
+#include <cstdlib>
 #include <new>
 #include <vector>
 
@@ -8,11 +9,17 @@
 #define WAYDISPLAY_HAVE_H265_CLIENT_DECODER 0
 #endif
 
+#ifndef WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+#define WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER 0
+#endif
+
 #if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavutil/buffer.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
 }
@@ -30,9 +37,14 @@ struct ClientVideoDecoder {
     const AVCodec*    codec     = nullptr;
     AVCodecContext*   codec_ctx = nullptr;
     AVFrame*          frame     = nullptr;
+    AVFrame*          sw_frame  = nullptr;
     AVPacket*         packet    = nullptr;
     SwsContext*       sws_ctx   = nullptr;
+    AVBufferRef*      hw_device_ctx = nullptr;
     AVPixelFormat     sws_src_format = AV_PIX_FMT_NONE;
+    bool              vaapi_requested = false;
+    bool              vaapi_required = false;
+    bool              using_vaapi = false;
 #endif
 };
 
@@ -47,9 +59,14 @@ void release_decoder_backend(ClientVideoDecoder* decoder) {
     decoder->sws_ctx = nullptr;
 
     av_packet_free(&decoder->packet);
+    av_frame_free(&decoder->sw_frame);
     av_frame_free(&decoder->frame);
     avcodec_free_context(&decoder->codec_ctx);
+    av_buffer_unref(&decoder->hw_device_ctx);
     decoder->sws_src_format = AV_PIX_FMT_NONE;
+    decoder->vaapi_requested = false;
+    decoder->vaapi_required = false;
+    decoder->using_vaapi = false;
 }
 
 const AVCodec* find_h265_decoder() {
@@ -60,7 +77,60 @@ bool decoder_config_matches(const ClientVideoDecoder* decoder, const ClientVideo
     return decoder && decoder->configured && decoder->codec_ctx && decoder->config.session_id == config.session_id &&
            decoder->config.width == config.width && decoder->config.height == config.height &&
            decoder->config.coded_width == config.coded_width && decoder->config.coded_height == config.coded_height &&
-           decoder->config.target_fps == config.target_fps && decoder->config.codec == config.codec;
+           decoder->config.target_fps == config.target_fps && decoder->config.codec == config.codec &&
+           decoder->config.hwdecode_mode == config.hwdecode_mode;
+}
+
+#if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+AVPixelFormat select_decoder_hw_format(AVCodecContext* codec_ctx, const AVPixelFormat* formats) {
+    auto* decoder = codec_ctx ? static_cast<ClientVideoDecoder*>(codec_ctx->opaque) : nullptr;
+    for (const AVPixelFormat* fmt = formats; fmt && *fmt != AV_PIX_FMT_NONE; ++fmt)
+    {
+        if (*fmt == AV_PIX_FMT_VAAPI)
+        {
+            if (decoder)
+            {
+                decoder->using_vaapi = true;
+            }
+            return *fmt;
+        }
+    }
+
+    if (decoder)
+    {
+        decoder->using_vaapi = false;
+    }
+    return formats && *formats != AV_PIX_FMT_NONE ? *formats : AV_PIX_FMT_NONE;
+}
+#endif
+
+bool transfer_hw_frame_if_needed(ClientVideoDecoder* decoder, AVFrame** frame) {
+    if (!decoder || !frame || !*frame)
+    {
+        return false;
+    }
+
+#if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+    if ((*frame)->format == AV_PIX_FMT_VAAPI)
+    {
+        if (!decoder->sw_frame)
+        {
+            decoder->sw_frame = av_frame_alloc();
+            if (!decoder->sw_frame)
+            {
+                return false;
+            }
+        }
+        av_frame_unref(decoder->sw_frame);
+        if (av_hwframe_transfer_data(decoder->sw_frame, *frame, 0) < 0)
+        {
+            return false;
+        }
+        *frame = decoder->sw_frame;
+    }
+#endif
+
+    return true;
 }
 
 bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket& packet,
@@ -70,7 +140,13 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket&
         return false;
     }
 
-    if (decoder->frame->width <= 0 || decoder->frame->height <= 0 ||
+    AVFrame* src_frame = decoder->frame;
+    if (!transfer_hw_frame_if_needed(decoder, &src_frame))
+    {
+        return false;
+    }
+
+    if (src_frame->width <= 0 || src_frame->height <= 0 ||
         packet.header.width == 0 || packet.header.height == 0)
     {
         return false;
@@ -78,17 +154,17 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket&
 
     const uint16_t coded_width = packet.header.coded_width != 0
                                      ? packet.header.coded_width
-                                     : static_cast<uint16_t>(decoder->frame->width);
+                                     : static_cast<uint16_t>(src_frame->width);
     const uint16_t coded_height = packet.header.coded_height != 0
                                       ? packet.header.coded_height
-                                      : static_cast<uint16_t>(decoder->frame->height);
+                                      : static_cast<uint16_t>(src_frame->height);
     if (coded_width < packet.header.width || coded_height < packet.header.height ||
-        decoder->frame->width < coded_width || decoder->frame->height < coded_height)
+        src_frame->width < coded_width || src_frame->height < coded_height)
     {
         return false;
     }
 
-    const auto src_format = static_cast<AVPixelFormat>(decoder->frame->format);
+    const auto src_format = static_cast<AVPixelFormat>(src_frame->format);
     decoder->sws_ctx = sws_getCachedContext(decoder->sws_ctx, coded_width, coded_height,
                                             src_format, coded_width, coded_height,
                                             AV_PIX_FMT_BGRA, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
@@ -120,7 +196,7 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket&
 
     uint8_t* const dst_slices[4] = {reinterpret_cast<uint8_t*>(decoder->coded_pixels.data()), nullptr, nullptr, nullptr};
     const int      dst_stride[4] = {coded_width * static_cast<int>(sizeof(uint32_t)), 0, 0, 0};
-    if (sws_scale(decoder->sws_ctx, decoder->frame->data, decoder->frame->linesize, 0, coded_height,
+    if (sws_scale(decoder->sws_ctx, src_frame->data, src_frame->linesize, 0, coded_height,
                   dst_slices, dst_stride) != coded_height)
     {
         return false;
@@ -198,6 +274,10 @@ bool client_video_decoder_available(const ClientVideoDecoder* decoder) {
 
 const char* client_video_decoder_backend_name(const ClientVideoDecoder* decoder) {
 #if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+    if (decoder && decoder->configured && decoder->using_vaapi)
+    {
+        return "hevc+vaapi";
+    }
     if (decoder && decoder->codec && decoder->codec->name)
     {
         return decoder->codec->name;
@@ -242,6 +322,42 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
 
     decoder->codec_ctx->width  = config.coded_width != 0 ? config.coded_width : config.width;
     decoder->codec_ctx->height = config.coded_height != 0 ? config.coded_height : config.height;
+    decoder->codec_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    decoder->codec_ctx->thread_count = 1;
+
+#if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+    decoder->vaapi_requested = config.hwdecode_mode != WD_CLIENT_VIDEO_HWDECODE_OFF;
+    decoder->vaapi_required = config.hwdecode_mode == WD_CLIENT_VIDEO_HWDECODE_VAAPI;
+    if (decoder->vaapi_requested)
+    {
+        const AVHWDeviceType vaapi_type = av_hwdevice_find_type_by_name("vaapi");
+        const char* vaapi_device = std::getenv("WAYDISPLAY_VAAPI_DEVICE");
+        if (vaapi_type != AV_HWDEVICE_TYPE_NONE &&
+            av_hwdevice_ctx_create(&decoder->hw_device_ctx, vaapi_type, vaapi_device && *vaapi_device ? vaapi_device : nullptr,
+                                   nullptr, 0) >= 0)
+        {
+            decoder->codec_ctx->hw_device_ctx = av_buffer_ref(decoder->hw_device_ctx);
+            if (!decoder->codec_ctx->hw_device_ctx)
+            {
+                release_decoder_backend(decoder);
+                return false;
+            }
+            decoder->codec_ctx->opaque = decoder;
+            decoder->codec_ctx->get_format = select_decoder_hw_format;
+        }
+        else if (decoder->vaapi_required)
+        {
+            release_decoder_backend(decoder);
+            return false;
+        }
+    }
+#else
+    if (config.hwdecode_mode == WD_CLIENT_VIDEO_HWDECODE_VAAPI)
+    {
+        release_decoder_backend(decoder);
+        return false;
+    }
+#endif
 
     if (avcodec_open2(decoder->codec_ctx, decoder->codec, nullptr) < 0)
     {

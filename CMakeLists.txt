@@ -21,6 +21,7 @@ option(WAYDISPLAY_ENABLE_DEBUG_LOGGING "Enable WayDisplay debug-level logging" O
 option(WAYDISPLAY_ENABLE_XWAYLAND "Enable Xwayland support in the wlroots server" ON)
 option(WAYDISPLAY_ENABLE_H265_SERVER_ENCODER "Enable H.265 server encoder backends when available" ON)
 option(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER "Enable H.265 client decoder backends when available" ON)
+option(WAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER "Enable optional VAAPI H.265 client hardware decode when available" ON)
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -32,6 +33,7 @@ find_package(Threads REQUIRED)
 
 set(WAYDISPLAY_HAVE_H265_SERVER_ENCODER FALSE)
 set(WAYDISPLAY_HAVE_H265_CLIENT_DECODER FALSE)
+set(WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER FALSE)
 
 if(WAYDISPLAY_ENABLE_H265_SERVER_ENCODER)
     pkg_check_modules(FFMPEG_H265_ENCODER QUIET IMPORTED_TARGET
@@ -56,6 +58,9 @@ if(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER)
 
     if(FFMPEG_H265_DECODER_FOUND)
         set(WAYDISPLAY_HAVE_H265_CLIENT_DECODER TRUE)
+        if(WAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER)
+            set(WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER TRUE)
+        endif()
     else()
         message(STATUS "H.265 client decoder backend disabled: libavcodec/libavutil/libswscale not found")
     endif()
@@ -148,6 +153,7 @@ if(WAYDISPLAY_BUILD_CLIENT_SDL)
 
     target_compile_definitions(waydisplay_client_sdl PRIVATE
         WAYDISPLAY_HAVE_H265_CLIENT_DECODER=$<BOOL:${WAYDISPLAY_HAVE_H265_CLIENT_DECODER}>
+        WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER=$<BOOL:${WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER}>
     )
 
     target_link_libraries(waydisplay_client_sdl PRIVATE

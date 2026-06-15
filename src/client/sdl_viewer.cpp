@@ -2898,7 +2898,7 @@ int run_sdl_viewer(ClientState& state) {
 
                 bool used_bounds_upload = false;
                 const uint64_t source_dirty_rect_count = dirty_rects.size();
-                if (remote_frame_dirty && !texture_needs_full_upload && source_dirty_rect_count == 0)
+                if (remote_frame_dirty && !texture_needs_full_upload && !upload_video_frame && source_dirty_rect_count == 0)
                 {
                     state.stats.sdl_empty_remote_wakeups.fetch_add(1, std::memory_order_relaxed);
                     remote_frame_dirty = false;
@@ -2934,7 +2934,7 @@ int run_sdl_viewer(ClientState& state) {
                     state.running.store(false, std::memory_order_relaxed);
                     break;
                 }
-                remote_texture_updated = remote_frame_dirty && source_dirty_rect_count != 0;
+                remote_texture_updated = upload_video_frame || (remote_frame_dirty && source_dirty_rect_count != 0);
             }
 
             const bool should_present = local_frame_dirty || remote_texture_updated;

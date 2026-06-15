@@ -97,6 +97,31 @@ bool parse_video_mode(const char* text, uint8_t& out) {
     return false;
 }
 
+bool parse_video_hwdecode_mode(const char* text, uint8_t& out) {
+    if (!text)
+    {
+        return false;
+    }
+
+    if (std::strcmp(text, "auto") == 0)
+    {
+        out = WD_CLIENT_VIDEO_HWDECODE_AUTO;
+        return true;
+    }
+    if (std::strcmp(text, "off") == 0)
+    {
+        out = WD_CLIENT_VIDEO_HWDECODE_OFF;
+        return true;
+    }
+    if (std::strcmp(text, "vaapi") == 0)
+    {
+        out = WD_CLIENT_VIDEO_HWDECODE_VAAPI;
+        return true;
+    }
+
+    return false;
+}
+
 bool parse_size(const char* text, uint16_t& width, uint16_t& height) {
     if (!text || !*text)
     {
@@ -246,6 +271,16 @@ int main(int argc, char** argv) {
         {
             if (i + 1 >= argc || !parse_u16(argv[i + 1], stream_config.video_exit_seconds) ||
                 stream_config.video_exit_seconds > WD_VIDEO_EXIT_SECONDS_MAX)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            ++i;
+        }
+        else if (std::strcmp(argv[i], "--video-hwdecode") == 0)
+        {
+            if (i + 1 >= argc || !parse_video_hwdecode_mode(argv[i + 1], stream_config.video_hwdecode_mode))
             {
                 usage(argv[0]);
                 return 1;
