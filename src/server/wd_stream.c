@@ -305,12 +305,6 @@ static bool wd_stream_client_render_pressure_sample(const struct wd_stream_polic
     const bool client_video_activity = stats->client_tiles_completed != 0 || stats->client_udp_bytes_rx != 0 ||
                                        stats->client_present_samples != 0;
 
-    if (stats->client_present_samples != 0 &&
-        stats->client_present_sum_ns / stats->client_present_samples >= WD_STREAM_CLIENT_PRESENT_PRESSURE_NS)
-    {
-        return true;
-    }
-
     if (effective_fps != 0 && client_video_activity &&
         stats->client_render_frames * 100ull <
             (uint64_t)effective_fps * (uint64_t)stats->client_stats_rx * WD_STREAM_CLIENT_RENDER_FPS_PRESSURE_PERCENT)
@@ -318,11 +312,15 @@ static bool wd_stream_client_render_pressure_sample(const struct wd_stream_polic
         return true;
     }
 
-    /* Input-to-present latency is useful telemetry, but it includes server
-     * scheduling, application damage behavior, link/repair delays, and pending
-     * input-sequence correlation.  Do not treat it as local client render
-     * pressure or a fast loopback client can be downshifted for stale input
-     * latency even while present/render time is healthy. */
+    /* Present latency is useful telemetry, but a client can report high
+     * SDL_RenderPresent() samples because it was allowed to over-present local
+     * dirty updates, because the window system briefly blocked, or because a
+     * single visible sample spiked.  Treat the client's measured render rate as
+     * the render-pressure signal; if it is keeping up with the negotiated FPS,
+     * present time alone should not ratchet the server down.  Input-to-present
+     * latency is even broader telemetry because it includes server scheduling,
+     * application damage behavior, link/repair delays, and pending input-sequence
+     * correlation, so it also must not drive local client render pressure. */
     return false;
 }
 

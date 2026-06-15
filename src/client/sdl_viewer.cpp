@@ -44,6 +44,61 @@ constexpr uint16_t WD_POINTER_MOD_SHIFT = 1u << 1;
 constexpr uint16_t WD_POINTER_MOD_CTRL  = 1u << 2;
 constexpr uint16_t WD_POINTER_MOD_SUPER = 1u << 3;
 
+uint16_t client_local_present_fps(const ClientState& state) {
+    uint16_t fps = state.stream_config.target_fps;
+    if (fps == 0)
+    {
+        fps = WD_CLIENT_DEFAULT_TARGET_FPS;
+    }
+    if (fps < WD_STREAM_FPS_MIN)
+    {
+        fps = WD_STREAM_FPS_MIN;
+    }
+    if (fps > WD_MAX_REASONABLE_FPS)
+    {
+        fps = WD_MAX_REASONABLE_FPS;
+    }
+    return fps;
+}
+
+uint64_t client_local_present_interval_ns(const ClientState& state) {
+    return WD_NSEC_PER_SEC / client_local_present_fps(state);
+}
+
+bool client_local_present_due(const ClientState& state, uint64_t last_present_ns, uint64_t now_ns) {
+    if (last_present_ns == 0)
+    {
+        return true;
+    }
+
+    return now_ns - last_present_ns >= client_local_present_interval_ns(state);
+}
+
+uint32_t client_present_delay_ms(const ClientState& state, uint64_t last_present_ns, uint64_t now_ns) {
+    if (last_present_ns == 0)
+    {
+        return 1;
+    }
+
+    const uint64_t interval_ns = client_local_present_interval_ns(state);
+    const uint64_t elapsed_ns  = now_ns - last_present_ns;
+    if (elapsed_ns >= interval_ns)
+    {
+        return 0;
+    }
+
+    uint64_t remaining_ms = (interval_ns - elapsed_ns + 999999ull) / 1000000ull;
+    if (remaining_ms == 0)
+    {
+        remaining_ms = 1;
+    }
+    if (remaining_ms > WD_CLIENT_FRAME_DELAY_MS)
+    {
+        remaining_ms = WD_CLIENT_FRAME_DELAY_MS;
+    }
+    return static_cast<uint32_t>(remaining_ms);
+}
+
 void update_window_size(SDL_Window* window);
 
 enum class ContextMenuAction {
@@ -2350,6 +2405,7 @@ int run_sdl_viewer(ClientState& state) {
         renderer_flags |= SDL_RENDERER_PRESENTVSYNC;
     }
     WD_LOG_INFO("SDL renderer vsync: %s", state.stream_config.disable_vsync ? "disabled" : "enabled");
+    WD_LOG_INFO("SDL local present cap: %u fps", (unsigned)client_local_present_fps(state));
 
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, renderer_flags);
 
@@ -2386,6 +2442,7 @@ int run_sdl_viewer(ClientState& state) {
     uint16_t              pending_resize_width    = 0;
     uint16_t              pending_resize_height   = 0;
     uint64_t              pending_resize_since_ns = 0;
+    uint64_t              last_present_ns         = 0;
     ContextMenu           context_menu;
     std::vector<uint64_t> present_tile_timestamps;
     std::vector<uint64_t> present_input_sequences;
@@ -2473,8 +2530,19 @@ int run_sdl_viewer(ClientState& state) {
             }
         }
 
-        const bool remote_frame_dirty = state.frame_dirty.exchange(false, std::memory_order_acq_rel);
-        if (frame_dirty || remote_frame_dirty || texture_needs_full_upload)
+        const bool local_frame_dirty = frame_dirty || texture_needs_full_upload;
+        bool       remote_frame_dirty = false;
+
+        if (local_frame_dirty || state.frame_dirty.load(std::memory_order_acquire))
+        {
+            const uint64_t present_check_ns = wd_now_ns();
+            if (local_frame_dirty || client_local_present_due(state, last_present_ns, present_check_ns))
+            {
+                remote_frame_dirty = state.frame_dirty.exchange(false, std::memory_order_acq_rel);
+            }
+        }
+
+        if (local_frame_dirty || remote_frame_dirty)
         {
             const uint32_t frame_width  = state.config.width;
             const uint32_t frame_height = state.config.height;
@@ -2539,6 +2607,7 @@ int run_sdl_viewer(ClientState& state) {
             }
 
             const uint64_t present_ns = wd_now_ns();
+            last_present_ns = present_ns;
             for (uint64_t tile_timestamp_ns : present_tile_timestamps)
             {
                 if (tile_timestamp_ns != 0 && present_ns >= tile_timestamp_ns)
@@ -2585,6 +2654,14 @@ int run_sdl_viewer(ClientState& state) {
         if (!frame_dirty && !state.frame_dirty.load(std::memory_order_acquire))
         {
             SDL_Delay(WD_CLIENT_FRAME_DELAY_MS);
+        }
+        else if (!frame_dirty)
+        {
+            const uint32_t delay_ms = client_present_delay_ms(state, last_present_ns, wd_now_ns());
+            if (delay_ms != 0)
+            {
+                SDL_Delay(delay_ms);
+            }
         }
     }
 
