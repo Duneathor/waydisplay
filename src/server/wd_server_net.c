@@ -1,6 +1,8 @@
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_time.h"
 #include "wd_server.h"
+#include "wd_async_tcp.h"
+#include "wd_async_udp.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -76,6 +78,76 @@ static void wd_log_tcp_channel_endpoint(const char* channel, int fd) {
     WD_LOG_INFO("WayDisplay: %s TCP channel connected local=%s remote=%s", channel, local, remote);
 }
 
+static uint64_t wd_clamp_u64(uint64_t value, uint64_t min_value, uint64_t max_value) {
+    if (value < min_value)
+    {
+        return min_value;
+    }
+    if (value > max_value)
+    {
+        return max_value;
+    }
+    return value;
+}
+
+static uint16_t wd_ns_to_ms_ceil_u16(uint64_t ns) {
+    uint64_t ms = (ns + 999999ull) / 1000000ull;
+    if (ms > UINT16_MAX)
+    {
+        return UINT16_MAX;
+    }
+    return (uint16_t)ms;
+}
+
+static void wd_net_set_link_profile_defaults(struct wd_net_state* net) {
+    if (!net)
+    {
+        return;
+    }
+
+    net->link_rtt_ns                   = WD_LINK_RTT_DEFAULT_NS;
+    net->link_jitter_ns                = 0;
+    net->summary_retransmit_grace_ns   = WD_LINK_SUMMARY_GRACE_DEFAULT_NS;
+    net->retransmit_rerequest_ns       = WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS;
+    net->retransmit_inflight_grace_ns  = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
+    net->tile_reassembly_timeout_ns    = WD_LINK_TILE_REASSEMBLY_DEFAULT_NS;
+    net->active_summary_interval_ns    = WD_LINK_ACTIVE_SUMMARY_INTERVAL_DEFAULT_NS;
+    net->clean_summary_interval_ns     = WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
+}
+
+static void wd_net_derive_link_profile(struct wd_net_state* net, uint64_t measured_rtt_ns, uint64_t measured_jitter_ns) {
+    if (!net)
+    {
+        return;
+    }
+
+    const uint64_t rtt_ns    = wd_clamp_u64(measured_rtt_ns ? measured_rtt_ns : WD_LINK_RTT_DEFAULT_NS,
+                                         WD_LINK_RTT_MIN_NS, WD_LINK_RTT_MAX_NS);
+    const uint64_t jitter_ns = wd_clamp_u64(measured_jitter_ns, 0, WD_LINK_RTT_MAX_NS / 2ull);
+
+    net->link_rtt_ns    = rtt_ns;
+    net->link_jitter_ns = jitter_ns;
+
+    net->summary_retransmit_grace_ns = wd_clamp_u64(rtt_ns + 2ull * jitter_ns + 50000000ull,
+                                                    WD_LINK_SUMMARY_GRACE_MIN_NS,
+                                                    WD_LINK_SUMMARY_GRACE_MAX_NS);
+    net->retransmit_rerequest_ns = wd_clamp_u64(rtt_ns + 2ull * jitter_ns + 100000000ull,
+                                                WD_LINK_RETRANSMIT_REREQUEST_MIN_NS,
+                                                WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
+    net->retransmit_inflight_grace_ns = wd_clamp_u64(rtt_ns + 2ull * jitter_ns + 100000000ull,
+                                                     WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS,
+                                                     WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS);
+    net->tile_reassembly_timeout_ns = wd_clamp_u64(rtt_ns / 2ull + 2ull * jitter_ns + 150000000ull,
+                                                   WD_LINK_TILE_REASSEMBLY_DEFAULT_NS,
+                                                   WD_LINK_TILE_REASSEMBLY_MAX_NS);
+    net->active_summary_interval_ns = wd_clamp_u64(rtt_ns / 4ull,
+                                                   WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS,
+                                                   WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
+    net->clean_summary_interval_ns = wd_clamp_u64(rtt_ns / 2ull,
+                                                  WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS,
+                                                  WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS);
+}
+
 static void wd_close_fd(int* fd) {
     if (fd && *fd >= 0)
     {
@@ -141,6 +213,8 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->input_tcp_fd         = -1;
     net->selection_tcp_fd     = -1;
     net->listen_fd            = -1;
+    net->control_tx           = NULL;
+    net->udp_tx               = NULL;
     net->udp_fd               = -1;
     net->session_id           = 0;
     net->dirty_region_rng = 0;
@@ -157,6 +231,18 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->retransmit_requested_generation = calloc(server->total_tiles, sizeof(*net->retransmit_requested_generation));
     net->summary_dirty_tiles         = calloc(server->total_tiles, sizeof(*net->summary_dirty_tiles));
     net->summary_dirty_queue         = calloc(server->total_tiles, sizeof(*net->summary_dirty_queue));
+    if (!wd_async_tcp_sender_create(&net->control_tx, 64))
+    {
+        net->control_tx = NULL;
+    }
+    else
+    {
+        wd_async_tcp_sender_set_max_pending_bytes(net->control_tx, 4ull * 1024ull * 1024ull);
+    }
+    if (!wd_async_udp_sender_create(&net->udp_tx, 4096))
+    {
+        net->udp_tx = NULL;
+    }
     if (!net->dirty_regions || !net->dirty_region_queued || !net->dirty_epochs || !net->dirty_queue || !net->dirty_queued ||
         !net->dirty_queue_enqueued_ns || !net->retransmit_queue ||
         !net->retransmit_queued || !net->retransmit_queue_enqueued_ns || !net->retransmit_requested_generation ||
@@ -174,6 +260,10 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         free(net->retransmit_requested_generation);
         free(net->summary_dirty_tiles);
         free(net->summary_dirty_queue);
+        wd_async_tcp_sender_destroy(net->control_tx);
+        wd_async_udp_sender_destroy(net->udp_tx);
+        net->control_tx                  = NULL;
+        net->udp_tx                      = NULL;
         net->dirty_regions               = NULL;
         net->dirty_region_queued         = NULL;
         net->dirty_region_count          = 0;
@@ -199,6 +289,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     net->retransmit_queue_count = 0;
     net->summary_dirty_count    = 0;
     net->udp_payload_target            = WD_UDP_PAYLOAD_TARGET;
+    wd_net_set_link_profile_defaults(net);
 
     wd_stream_policy_set_defaults(&net->stream_policy);
 
@@ -237,6 +328,11 @@ void wd_net_destroy(struct wd_server* server) {
         close(net->udp_fd);
         net->udp_fd = -1;
     }
+
+    wd_async_tcp_sender_destroy(net->control_tx);
+    wd_async_udp_sender_destroy(net->udp_tx);
+    net->control_tx = NULL;
+    net->udp_tx = NULL;
 
     free(net->dirty_regions);
     net->dirty_regions = NULL;
@@ -617,6 +713,99 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
     return limited_rate;
 }
 
+static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
+    struct wd_net_state* net = &server->net;
+    enum { WD_LINK_PROBE_COUNT = 5 };
+
+    uint64_t samples[WD_LINK_PROBE_COUNT];
+    uint32_t sample_count = 0;
+
+    for (uint32_t i = 0; i < WD_LINK_PROBE_COUNT; ++i)
+    {
+        struct wd_link_probe_payload ping;
+        memset(&ping, 0, sizeof(ping));
+        ping.session_id   = net->session_id;
+        ping.sequence     = i + 1u;
+        ping.timestamp_ns = wd_now_ns();
+
+        if (!wd_send_tcp_message(tcp_fd, WD_MSG_LINK_PROBE_PING, &ping, sizeof(ping)))
+        {
+            break;
+        }
+
+        uint16_t type         = 0;
+        uint8_t* payload      = NULL;
+        uint32_t payload_size = 0;
+
+        if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size))
+        {
+            free(payload);
+            break;
+        }
+
+        if (type == WD_MSG_LINK_PROBE_PONG && payload_size >= sizeof(struct wd_link_probe_payload))
+        {
+            struct wd_link_probe_payload pong;
+            memcpy(&pong, payload, sizeof(pong));
+            if (pong.session_id == net->session_id && pong.sequence == ping.sequence)
+            {
+                uint64_t now_ns = wd_now_ns();
+                if (now_ns >= ping.timestamp_ns)
+                {
+                    samples[sample_count++] = now_ns - ping.timestamp_ns;
+                }
+            }
+        }
+
+        free(payload);
+
+        if (sample_count == 0 && i >= 1)
+        {
+            break;
+        }
+    }
+
+    if (sample_count == 0)
+    {
+        wd_net_derive_link_profile(net, WD_LINK_RTT_DEFAULT_NS, 0);
+        WD_LOG_INFO("WayDisplay: TCP link RTT probe unavailable; using conservative defaults rtt=%u ms",
+                    (unsigned)(WD_LINK_RTT_DEFAULT_NS / 1000000ull));
+        return;
+    }
+
+    uint64_t sum_ns = 0;
+    uint64_t max_ns = 0;
+    uint64_t min_ns = UINT64_MAX;
+    for (uint32_t i = 0; i < sample_count; ++i)
+    {
+        sum_ns += samples[i];
+        if (samples[i] > max_ns)
+        {
+            max_ns = samples[i];
+        }
+        if (samples[i] < min_ns)
+        {
+            min_ns = samples[i];
+        }
+    }
+
+    uint64_t avg_ns = sum_ns / sample_count;
+    /* Use the average, not the minimum, and include half the sample spread so
+     * very fast LAN measurements do not collapse timers to overly aggressive
+     * values while high-latency/jittery links get more slack. */
+    uint64_t jitter_ns = (max_ns > min_ns) ? (max_ns - min_ns) / 2ull : 0;
+    wd_net_derive_link_profile(net, avg_ns, jitter_ns);
+
+    WD_LOG_INFO("WayDisplay: TCP link profile rtt=%llu ms jitter=%llu ms summary_grace=%llu ms rerequest=%llu ms reassembly=%llu ms summary_delta=%llu/%llu ms samples=%u",
+                (unsigned long long)(net->link_rtt_ns / 1000000ull),
+                (unsigned long long)(net->link_jitter_ns / 1000000ull),
+                (unsigned long long)(net->summary_retransmit_grace_ns / 1000000ull),
+                (unsigned long long)(net->retransmit_rerequest_ns / 1000000ull),
+                (unsigned long long)(net->tile_reassembly_timeout_ns / 1000000ull),
+                (unsigned long long)(net->active_summary_interval_ns / 1000000ull),
+                (unsigned long long)(net->clean_summary_interval_ns / 1000000ull), sample_count);
+}
+
 static void wd_server_fill_config(struct wd_server* server, uint8_t session_id, uint16_t udp_payload_target,
                                   struct wd_server_config_payload* cfg) {
     memset(cfg, 0, sizeof(*cfg));
@@ -634,6 +823,13 @@ static void wd_server_fill_config(struct wd_server* server, uint8_t session_id, 
     cfg->zstd_level         = WD_ZSTD_LEVEL;
     cfg->udp_payload_target = udp_payload_target;
     cfg->capabilities       = WD_SERVER_CAP_INPUT_CHANNEL | WD_SERVER_CAP_SELECTION_CHANNEL;
+    cfg->link_rtt_ms        = wd_ns_to_ms_ceil_u16(server->net.link_rtt_ns);
+    cfg->summary_retransmit_grace_ms  = wd_ns_to_ms_ceil_u16(server->net.summary_retransmit_grace_ns);
+    cfg->retransmit_rerequest_ms      = wd_ns_to_ms_ceil_u16(server->net.retransmit_rerequest_ns);
+    cfg->retransmit_inflight_grace_ms = wd_ns_to_ms_ceil_u16(server->net.retransmit_inflight_grace_ns);
+    cfg->tile_reassembly_timeout_ms   = wd_ns_to_ms_ceil_u16(server->net.tile_reassembly_timeout_ns);
+    cfg->active_summary_interval_ms   = wd_ns_to_ms_ceil_u16(server->net.active_summary_interval_ns);
+    cfg->clean_summary_interval_ms    = wd_ns_to_ms_ceil_u16(server->net.clean_summary_interval_ns);
 }
 
 
@@ -652,13 +848,35 @@ bool wd_server_send_current_config_locked(struct wd_server* server) {
     struct wd_server_config_payload cfg;
     wd_server_fill_config(server, net->session_id, net->udp_payload_target, &cfg);
 
-    if (!wd_send_tcp_message(net->tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg)))
+    bool ok = false;
+    if (net->control_tx)
     {
-        return false;
+        (void)wd_async_tcp_sender_drop_message_type(net->control_tx, WD_MSG_TILE_GENERATION_SUMMARY);
+        if (wd_async_tcp_sender_has_message_type(net->control_tx, WD_MSG_TILE_GENERATION_SUMMARY))
+        {
+            net->stats.tcp_async_send_failed++;
+            (void)shutdown(net->tcp_fd, SHUT_RDWR);
+            return false;
+        }
+        ok = wd_async_tcp_send_message(net->control_tx, net->tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg));
+        if (!ok)
+        {
+            net->stats.tcp_async_send_failed++;
+            (void)shutdown(net->tcp_fd, SHUT_RDWR);
+        }
+    }
+    else
+    {
+        ok = wd_send_tcp_message(net->tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg));
     }
 
-    net->stats.tcp_config_tx++;
-    return true;
+    if (ok)
+    {
+        wd_stream_account_tcp_control_bytes_locked(net,
+                                                   (uint32_t)(sizeof(struct wd_tcp_header) + sizeof(cfg)));
+        net->stats.tcp_config_tx++;
+    }
+    return ok;
 }
 
 static void wd_server_handle_keyboard_message(struct wd_server* server, const struct wd_server_config_payload* cfg,
@@ -990,6 +1208,7 @@ void* wd_net_thread_main(void* arg) {
 
         uint16_t selected_udp_payload = run_udp_mtu_probe(server, tcp_fd, &client_udp_addr);
         uint64_t selected_limited_udp_rate = run_udp_throughput_probe(server, tcp_fd, &client_udp_addr, selected_udp_payload);
+        run_tcp_link_probe(server, tcp_fd);
 
         pthread_mutex_lock(&net->lock);
         net->udp_payload_target = selected_udp_payload;
@@ -1028,6 +1247,15 @@ void* wd_net_thread_main(void* arg) {
         }
         net->client_udp_addr      = client_udp_addr;
         net->client_connected     = true;
+        if (net->control_tx)
+        {
+            (void)wd_async_tcp_sender_drop_message_type(net->control_tx, WD_MSG_TILE_GENERATION_SUMMARY);
+        }
+        net->summary_epoch++;
+        if (net->summary_epoch == 0)
+        {
+            net->summary_epoch = 1;
+        }
         net->dirty_region_rng = 0;
         if (net->dirty_region_queued)
         {
@@ -1375,13 +1603,15 @@ void* wd_net_thread_main(void* arg) {
                     {
                         if (wd_server_request_display_size(server, resize.width, resize.height))
                         {
-                            wd_server_fill_config(server, cfg.session_id, selected_udp_payload, &cfg);
-
-                            if (!wd_send_tcp_message(tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg)))
+                            pthread_mutex_lock(&net->lock);
+                            bool config_sent = wd_server_send_current_config_locked(server);
+                            pthread_mutex_unlock(&net->lock);
+                            if (!config_sent)
                             {
                                 free(payload);
                                 break;
                             }
+                            wd_server_fill_config(server, cfg.session_id, selected_udp_payload, &cfg);
 
                             WD_LOG_INFO("WayDisplay: client resized display to %ux%u", server->display_width, server->display_height);
                         }

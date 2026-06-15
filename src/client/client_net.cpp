@@ -1,5 +1,8 @@
 #include "client_net.hpp"
 
+#include "client_async_tcp.hpp"
+#include "client_async_udp.hpp"
+
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_protocol.h"
@@ -27,17 +30,77 @@ constexpr size_t MAX_RETRANSMIT_REQUEST_ENTRY_CAP =
     (MAX_RETRANSMIT_REQUEST_PAYLOAD_BYTES - sizeof(wd_retransmit_request_payload_header)) / sizeof(wd_retransmit_entry);
 constexpr size_t MAX_RETRANSMIT_ENTRIES_PER_MESSAGE =
     MAX_RETRANSMIT_REQUEST_ENTRY_CAP > UINT16_MAX ? UINT16_MAX : MAX_RETRANSMIT_REQUEST_ENTRY_CAP;
-constexpr uint64_t RETRANSMIT_REREQUEST_INTERVAL_NS   = 250ull * 1000ull * 1000ull;
-constexpr uint64_t SUMMARY_RETRANSMIT_GRACE_NS         = 150ull * 1000ull * 1000ull;
-constexpr uint64_t RETRANSMIT_GRACE_MIN_NS            = 50ull * 1000ull * 1000ull;
-constexpr uint64_t RETRANSMIT_GRACE_DEFAULT_NS        = 250ull * 1000ull * 1000ull;
-constexpr uint64_t RETRANSMIT_GRACE_MAX_NS            = 500ull * 1000ull * 1000ull;
+constexpr uint64_t RETRANSMIT_GRACE_MIN_NS            = WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS;
+constexpr uint64_t RETRANSMIT_GRACE_DEFAULT_NS        = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
+constexpr uint64_t RETRANSMIT_GRACE_MAX_NS            = WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS;
 constexpr uint64_t MTU_PROBE_SERVER_STARTUP_DELAY_NS  = 10ull * 1000ull * 1000ull;
+
+constexpr uint32_t CLIENT_ASYNC_TCP_RING_ENTRIES = 64;
+constexpr uint64_t CLIENT_ASYNC_TCP_MAX_PENDING_BYTES = 1024ull * 1024ull;
+constexpr uint32_t CLIENT_ASYNC_UDP_RING_ENTRIES = 256;
+constexpr size_t CLIENT_ASYNC_UDP_PACKET_SLACK = 512u;
 
 uint64_t clamp_retransmit_grace_ns(uint64_t ns) {
     return std::max(RETRANSMIT_GRACE_MIN_NS, std::min(RETRANSMIT_GRACE_MAX_NS, ns));
 }
 
+uint64_t ms_to_ns(uint16_t ms, uint64_t fallback_ns) {
+    if (ms == 0)
+    {
+        return fallback_ns;
+    }
+    return static_cast<uint64_t>(ms) * 1000ull * 1000ull;
+}
+
+uint64_t clamp_timer_ns(uint64_t ns, uint64_t min_ns, uint64_t max_ns) {
+    return std::max(min_ns, std::min(max_ns, ns));
+}
+
+uint64_t summary_retransmit_grace_ns(const ClientState& state) {
+    return clamp_timer_ns(state.summary_retransmit_grace_ns.load(std::memory_order_relaxed),
+                          WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS);
+}
+
+uint64_t retransmit_rerequest_interval_ns(const ClientState& state) {
+    return clamp_timer_ns(state.retransmit_rerequest_interval_ns.load(std::memory_order_relaxed),
+                          WD_LINK_RETRANSMIT_REREQUEST_MIN_NS, WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
+}
+
+void apply_link_timers_from_config(ClientState& state, const wd_server_config_payload& config) {
+    const uint64_t summary_grace_ns = clamp_timer_ns(ms_to_ns(config.summary_retransmit_grace_ms,
+                                                              WD_LINK_SUMMARY_GRACE_DEFAULT_NS),
+                                                     WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS);
+    const uint64_t rerequest_ns = clamp_timer_ns(ms_to_ns(config.retransmit_rerequest_ms,
+                                                          WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS),
+                                                 WD_LINK_RETRANSMIT_REREQUEST_MIN_NS,
+                                                 WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
+    const uint64_t inflight_ns = clamp_timer_ns(ms_to_ns(config.retransmit_inflight_grace_ms,
+                                                         WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS),
+                                                WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS,
+                                                WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS);
+    const uint64_t reassembly_ns = clamp_timer_ns(ms_to_ns(config.tile_reassembly_timeout_ms,
+                                                           WD_LINK_TILE_REASSEMBLY_DEFAULT_NS),
+                                                  WD_LINK_TILE_REASSEMBLY_MIN_NS, WD_LINK_TILE_REASSEMBLY_MAX_NS);
+    const uint64_t reassembly_floor_ns = clamp_timer_ns(std::max<uint64_t>(WD_LINK_TILE_REASSEMBLY_MIN_NS, reassembly_ns / 2),
+                                                        WD_LINK_TILE_REASSEMBLY_MIN_NS,
+                                                        WD_LINK_TILE_REASSEMBLY_MAX_NS);
+
+    state.summary_retransmit_grace_ns.store(summary_grace_ns, std::memory_order_relaxed);
+    state.retransmit_rerequest_interval_ns.store(rerequest_ns, std::memory_order_relaxed);
+
+    {
+        std::lock_guard<std::mutex> lock(state.retx_mutex);
+        state.retx_inflight_grace_ns = inflight_ns;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state.tile_reassembly_timeout_mutex);
+        state.tile_reassembly_floor_ns.store(reassembly_floor_ns, std::memory_order_relaxed);
+        state.tile_reassembly_timeout_ns.store(reassembly_ns, std::memory_order_relaxed);
+        state.tile_reassembly_ewma_ns      = static_cast<double>(reassembly_ns);
+        state.tile_reassembly_deviation_ns = static_cast<double>(reassembly_ns) / 4.0;
+    }
+}
 
 uint64_t next_input_sequence(ClientState& state) {
     uint64_t seq = state.next_input_sequence.fetch_add(1, std::memory_order_relaxed);
@@ -127,6 +190,191 @@ void log_udp_endpoint(const ClientState& state) {
     format_socket_endpoint(state.udp_fd, false, local, sizeof(local));
     std::printf("WayDisplay [info]: UDP receive endpoint local=%s requested_port=%u fd=%d\n", local,
                 state.client_udp_port, state.udp_fd);
+}
+
+ClientAsyncTcpSender* create_client_tcp_sender(const char* label) {
+    ClientAsyncTcpSender* sender = client_async_tcp_sender_create(CLIENT_ASYNC_TCP_RING_ENTRIES,
+                                                                  CLIENT_ASYNC_TCP_MAX_PENDING_BYTES);
+    if (!sender)
+    {
+        std::fprintf(stderr, "WayDisplay [warn]: io_uring TCP sender unavailable for %s channel; using synchronous sends\n",
+                     label ? label : "unknown");
+    }
+    return sender;
+}
+
+void destroy_client_tcp_sender(ClientAsyncTcpSender*& sender) {
+    if (sender)
+    {
+        client_async_tcp_sender_destroy(sender);
+        sender = nullptr;
+    }
+}
+
+size_t client_async_udp_packet_bytes(const ClientState& state) {
+    uint16_t udp_payload_target = state.config.udp_payload_target;
+    if (udp_payload_target == 0)
+    {
+        udp_payload_target = WD_UDP_PAYLOAD_TARGET;
+    }
+    return WD_UDP_TILE_HEADER_MAX_SIZE + static_cast<size_t>(udp_payload_target) + CLIENT_ASYNC_UDP_PACKET_SLACK;
+}
+
+ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state) {
+    const size_t packet_bytes = client_async_udp_packet_bytes(state);
+    ClientAsyncUdpReceiver* receiver = client_async_udp_receiver_create(state.udp_fd, CLIENT_ASYNC_UDP_RING_ENTRIES,
+                                                                        packet_bytes);
+    if (!receiver)
+    {
+        if (state.udp_fd >= 0 && wd_set_nonblocking(state.udp_fd) < 0)
+        {
+            std::perror("restore UDP nonblocking");
+        }
+        std::fprintf(stderr, "WayDisplay [warn]: io_uring UDP receiver unavailable; using synchronous recv fallback\n");
+    }
+    else
+    {
+        std::printf("WayDisplay [info]: UDP io_uring receive enabled entries=%u buffer=%zu\n",
+                    CLIENT_ASYNC_UDP_RING_ENTRIES, packet_bytes);
+    }
+    return receiver;
+}
+
+void destroy_client_udp_receiver(ClientState& state) {
+    if (state.udp_receiver)
+    {
+        client_async_udp_receiver_destroy(state.udp_receiver);
+        state.udp_receiver = nullptr;
+    }
+}
+
+ClientAsyncTcpSender* sender_for_fd(ClientState& state, int fd) {
+    if (fd < 0)
+    {
+        return nullptr;
+    }
+    if (fd == state.input_tcp_fd)
+    {
+        return state.input_tcp_sender;
+    }
+    if (fd == state.selection_tcp_fd)
+    {
+        return state.selection_tcp_sender;
+    }
+    if (fd == state.tcp_fd)
+    {
+        return state.control_tcp_sender;
+    }
+    return nullptr;
+}
+
+bool client_send_tcp_message_queued(ClientState& state, int fd, uint16_t message_type, const void* payload,
+                                    uint32_t payload_size) {
+    if (fd < 0)
+    {
+        return false;
+    }
+
+    if (ClientAsyncTcpSender* sender = sender_for_fd(state, fd))
+    {
+        return client_async_tcp_send_message(sender, fd, message_type, payload, payload_size);
+    }
+
+    return wd_send_tcp_message(fd, message_type, payload, payload_size);
+}
+
+void update_async_seen(ClientState& state, ClientAsyncTcpSender* sender, ClientAsyncTcpStatsSeen& seen) {
+    if (!sender)
+    {
+        return;
+    }
+
+    ClientAsyncTcpSenderStats stats = client_async_tcp_sender_stats(sender);
+    if (stats.queued >= seen.queued)
+    {
+        state.stats.tcp_async_queued.fetch_add(stats.queued - seen.queued, std::memory_order_relaxed);
+    }
+    if (stats.completed >= seen.completed)
+    {
+        state.stats.tcp_async_completed.fetch_add(stats.completed - seen.completed, std::memory_order_relaxed);
+    }
+    if (stats.failed >= seen.failed)
+    {
+        state.stats.tcp_async_failed.fetch_add(stats.failed - seen.failed, std::memory_order_relaxed);
+    }
+    if (stats.overflows >= seen.overflows)
+    {
+        state.stats.tcp_async_overflow.fetch_add(stats.overflows - seen.overflows, std::memory_order_relaxed);
+    }
+    if (stats.partial_resubmits >= seen.partial_resubmits)
+    {
+        state.stats.tcp_async_partial.fetch_add(stats.partial_resubmits - seen.partial_resubmits, std::memory_order_relaxed);
+    }
+    if (stats.coalesced >= seen.coalesced)
+    {
+        state.stats.tcp_async_coalesced.fetch_add(stats.coalesced - seen.coalesced, std::memory_order_relaxed);
+    }
+
+    uint64_t current_max = state.stats.tcp_async_inflight_max.load(std::memory_order_relaxed);
+    while (stats.inflight_max > current_max &&
+           !state.stats.tcp_async_inflight_max.compare_exchange_weak(current_max, stats.inflight_max,
+                                                                     std::memory_order_relaxed,
+                                                                     std::memory_order_relaxed))
+    {
+    }
+
+    seen.queued            = stats.queued;
+    seen.completed         = stats.completed;
+    seen.failed            = stats.failed;
+    seen.overflows         = stats.overflows;
+    seen.partial_resubmits = stats.partial_resubmits;
+    seen.coalesced         = stats.coalesced;
+    seen.inflight_max      = stats.inflight_max;
+}
+
+void update_async_udp_seen(ClientState& state) {
+    if (!state.udp_receiver)
+    {
+        return;
+    }
+
+    ClientAsyncUdpReceiverStats stats = client_async_udp_receiver_stats(state.udp_receiver);
+    ClientAsyncUdpStatsSeen& seen = state.udp_seen;
+    if (stats.posted >= seen.posted)
+    {
+        state.stats.udp_async_posted.fetch_add(stats.posted - seen.posted, std::memory_order_relaxed);
+    }
+    if (stats.completed >= seen.completed)
+    {
+        state.stats.udp_async_completed.fetch_add(stats.completed - seen.completed, std::memory_order_relaxed);
+    }
+    if (stats.failed >= seen.failed)
+    {
+        state.stats.udp_async_failed.fetch_add(stats.failed - seen.failed, std::memory_order_relaxed);
+    }
+    if (stats.submit_failed >= seen.submit_failed)
+    {
+        state.stats.udp_async_submit_failed.fetch_add(stats.submit_failed - seen.submit_failed, std::memory_order_relaxed);
+    }
+    if (stats.cancels >= seen.cancels)
+    {
+        state.stats.udp_async_cancels.fetch_add(stats.cancels - seen.cancels, std::memory_order_relaxed);
+    }
+
+    uint64_t current_max = state.stats.udp_async_inflight_max.load(std::memory_order_relaxed);
+    while (stats.inflight_max > current_max &&
+           !state.stats.udp_async_inflight_max.compare_exchange_weak(current_max, stats.inflight_max,
+                                                                     std::memory_order_relaxed,
+                                                                     std::memory_order_relaxed))
+    {
+    }
+
+    seen.posted        = stats.posted;
+    seen.completed     = stats.completed;
+    seen.failed        = stats.failed;
+    seen.submit_failed = stats.submit_failed;
+    seen.cancels       = stats.cancels;
+    seen.inflight_max  = stats.inflight_max;
 }
 
 bool set_socket_rcvbuf(int fd, int requested_bytes) {
@@ -247,6 +495,7 @@ bool open_input_tcp_socket(ClientState& state) {
     }
 
     state.input_tcp_fd = fd;
+    state.input_tcp_sender = create_client_tcp_sender("input");
     log_tcp_channel_endpoint("input", state.input_tcp_fd);
     return true;
 }
@@ -273,6 +522,7 @@ bool open_selection_tcp_socket(ClientState& state) {
     }
 
     state.selection_tcp_fd = fd;
+    state.selection_tcp_sender = create_client_tcp_sender("selection");
     log_tcp_channel_endpoint("selection", state.selection_tcp_fd);
     return true;
 }
@@ -489,6 +739,17 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
     return wd_send_tcp_message(state.tcp_fd, WD_MSG_THROUGHPUT_PROBE_RESULT, &result, sizeof(result));
 }
 
+bool handle_link_probe_ping(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
+    if (!payload || payload_size < sizeof(wd_link_probe_payload))
+    {
+        return false;
+    }
+
+    wd_link_probe_payload pong{};
+    std::memcpy(&pong, payload, sizeof(pong));
+    return wd_send_tcp_message(state.tcp_fd, WD_MSG_LINK_PROBE_PONG, &pong, sizeof(pong));
+}
+
 bool receive_server_config(ClientState& state) {
     wd_client_hello_payload hello{};
     hello.client_udp_port      = state.client_udp_port;
@@ -543,9 +804,24 @@ bool receive_server_config(ClientState& state) {
             continue;
         }
 
+        if (message_type == WD_MSG_LINK_PROBE_PING)
+        {
+            const bool ok = handle_link_probe_ping(state, payload, payload_size);
+            std::free(payload);
+
+            if (!ok)
+            {
+                std::fprintf(stderr, "failed TCP link probe\n");
+                return false;
+            }
+
+            continue;
+        }
+
         if (message_type == WD_MSG_SERVER_CONFIG && payload_size >= sizeof(wd_server_config_payload))
         {
             std::memcpy(&state.config, payload, sizeof(state.config));
+            apply_link_timers_from_config(state, state.config);
             std::free(payload);
             break;
         }
@@ -576,6 +852,11 @@ bool receive_server_config(ClientState& state) {
     }
 
     std::printf("UDP payload target: %u\n", state.config.udp_payload_target);
+    std::printf("link timers: rtt=%ums summary_grace=%ums rerequest=%ums inflight=%ums reassembly=%ums summary_delta=%u/%ums\n",
+                state.config.link_rtt_ms, state.config.summary_retransmit_grace_ms,
+                state.config.retransmit_rerequest_ms, state.config.retransmit_inflight_grace_ms,
+                state.config.tile_reassembly_timeout_ms, state.config.active_summary_interval_ms,
+                state.config.clean_summary_interval_ms);
 
     return true;
 }
@@ -713,7 +994,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
             if (state.retx_last_requested_generation[entry.tile_id] >= entry.tile_generation &&
                 state.retx_last_request_ns[entry.tile_id] != 0 &&
-                now_ns - state.retx_last_request_ns[entry.tile_id] < RETRANSMIT_REREQUEST_INTERVAL_NS)
+                now_ns - state.retx_last_request_ns[entry.tile_id] < retransmit_rerequest_interval_ns(state))
             {
                 if (state.retx_summary_pending_generation[entry.tile_id] < entry.tile_generation)
                 {
@@ -740,7 +1021,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             }
 
             if (state.retx_summary_pending_since_ns[entry.tile_id] != 0 &&
-                now_ns - state.retx_summary_pending_since_ns[entry.tile_id] < SUMMARY_RETRANSMIT_GRACE_NS)
+                now_ns - state.retx_summary_pending_since_ns[entry.tile_id] < summary_retransmit_grace_ns(state))
             {
                 continue;
             }
@@ -804,7 +1085,7 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
             continue;
         }
 
-        if (now_ns - since_ns < SUMMARY_RETRANSMIT_GRACE_NS)
+        if (now_ns - since_ns < summary_retransmit_grace_ns(state))
         {
             continue;
         }
@@ -816,7 +1097,7 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
         }
 
         if (state.retx_last_requested_generation[tile_id] >= generation && state.retx_last_request_ns[tile_id] != 0 &&
-            now_ns - state.retx_last_request_ns[tile_id] < RETRANSMIT_REREQUEST_INTERVAL_NS)
+            now_ns - state.retx_last_request_ns[tile_id] < retransmit_rerequest_interval_ns(state))
         {
             continue;
         }
@@ -938,6 +1219,8 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
         config.udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
 
+    apply_link_timers_from_config(state, config);
+
     std::lock_guard<std::mutex> lock(state.config_mutex);
     state.pending_config       = config;
     state.pending_config_valid = true;
@@ -971,6 +1254,10 @@ void tcp_reader_main(ClientState* state) {
         else if (message_type == WD_MSG_CURSOR_SHAPE)
         {
             store_cursor_shape(*state, payload, payload_size);
+        }
+        else if (message_type == WD_MSG_LINK_PROBE_PING)
+        {
+            (void)handle_link_probe_ping(*state, payload, payload_size);
         }
         else if (message_type == WD_MSG_ERROR)
         {
@@ -1019,6 +1306,8 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         return false;
     }
 
+    state.control_tcp_sender = create_client_tcp_sender("control");
+
     if (open_input_tcp_socket(state))
     {
         std::printf("input TCP channel: enabled\n");
@@ -1053,6 +1342,7 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
     }
 
     state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + state.config.udp_payload_target + 512, 0);
+    state.udp_receiver = create_client_udp_receiver(state);
 
     state.running.store(true, std::memory_order_relaxed);
 
@@ -1083,6 +1373,12 @@ void client_disconnect(ClientState& state) {
         state.tcp_thread.join();
     }
 
+    client_reap_async_sends(state);
+    destroy_client_tcp_sender(state.input_tcp_sender);
+    destroy_client_tcp_sender(state.selection_tcp_sender);
+    destroy_client_tcp_sender(state.control_tcp_sender);
+    destroy_client_udp_receiver(state);
+
     if (state.udp_fd >= 0)
     {
         ::close(state.udp_fd);
@@ -1104,6 +1400,37 @@ void client_disconnect(ClientState& state) {
         ::close(state.selection_tcp_fd);
         state.selection_tcp_fd = -1;
     }
+}
+
+void client_reap_async_sends(ClientState& state) {
+    std::lock_guard<std::mutex> lock(state.async_tcp_stats_mutex);
+    update_async_seen(state, state.control_tcp_sender, state.control_tcp_seen);
+    update_async_seen(state, state.input_tcp_sender, state.input_tcp_seen);
+    update_async_seen(state, state.selection_tcp_sender, state.selection_tcp_seen);
+}
+
+void client_reap_async_udp_receives(ClientState& state) {
+    update_async_udp_seen(state);
+}
+
+bool client_disable_async_udp_receiver(ClientState& state) {
+    if (!state.udp_receiver)
+    {
+        return true;
+    }
+
+    update_async_udp_seen(state);
+    destroy_client_udp_receiver(state);
+    state.udp_seen = ClientAsyncUdpStatsSeen{};
+
+    if (state.udp_fd >= 0 && wd_set_nonblocking(state.udp_fd) < 0)
+    {
+        std::perror("restore UDP nonblocking");
+        return false;
+    }
+
+    std::fprintf(stderr, "WayDisplay [warn]: UDP io_uring receive failed; falling back to synchronous recv\n");
+    return true;
 }
 
 bool client_start_tcp_reader(ClientState& state) {
@@ -1130,7 +1457,7 @@ bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool 
     event.evdev_key_code      = evdev_key_code;
     event.pressed             = pressed ? 1 : 0;
 
-    const bool ok = wd_send_tcp_message(fd, WD_MSG_KEYBOARD_KEY, &event, sizeof(event));
+    const bool ok = client_send_tcp_message_queued(state, fd, WD_MSG_KEYBOARD_KEY, &event, sizeof(event));
 
     if (ok)
     {
@@ -1165,7 +1492,7 @@ bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payloa
         return false;
     }
 
-    const bool ok = wd_send_tcp_message(fd, WD_MSG_POINTER_EVENT, &outbound, sizeof(outbound));
+    const bool ok = client_send_tcp_message_queued(state, fd, WD_MSG_POINTER_EVENT, &outbound, sizeof(outbound));
 
     if (ok)
     {
@@ -1216,12 +1543,13 @@ bool client_send_selection_text(ClientState& state, uint16_t message_type, const
         std::memcpy(payload.data() + sizeof(header), text, text_len);
     }
 
-    bool ok = wd_send_tcp_message(fd, message_type, payload.data(), static_cast<uint32_t>(payload.size()));
+    bool ok = client_send_tcp_message_queued(state, fd, message_type, payload.data(), static_cast<uint32_t>(payload.size()));
     if (!ok && fd == state.selection_tcp_fd && state.tcp_fd >= 0)
     {
+        destroy_client_tcp_sender(state.selection_tcp_sender);
         ::close(state.selection_tcp_fd);
         state.selection_tcp_fd = -1;
-        ok = wd_send_tcp_message(state.tcp_fd, message_type, payload.data(), static_cast<uint32_t>(payload.size()));
+        ok = client_send_tcp_message_queued(state, state.tcp_fd, message_type, payload.data(), static_cast<uint32_t>(payload.size()));
     }
 
     if (ok)
@@ -1257,7 +1585,7 @@ bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t hei
     resize.width      = width;
     resize.height     = height;
 
-    return wd_send_tcp_message(state.tcp_fd, WD_MSG_DISPLAY_RESIZE, &resize, sizeof(resize));
+    return client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_DISPLAY_RESIZE, &resize, sizeof(resize));
 }
 
 
@@ -1267,7 +1595,7 @@ bool client_send_stats(ClientState& state, const wd_client_stats_payload& stats)
         return false;
     }
 
-    return wd_send_tcp_message(state.tcp_fd, WD_MSG_CLIENT_STATS, &stats, sizeof(stats));
+    return client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_CLIENT_STATS, &stats, sizeof(stats));
 }
 
 bool client_flush_retransmit_requests(ClientState& state) {
@@ -1329,7 +1657,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
             }
 
             if (state.retx_last_requested_generation[tile_id] >= target_generation && state.retx_last_request_ns[tile_id] != 0 &&
-                now_ns - state.retx_last_request_ns[tile_id] < RETRANSMIT_REREQUEST_INTERVAL_NS)
+                now_ns - state.retx_last_request_ns[tile_id] < retransmit_rerequest_interval_ns(state))
             {
                 state.retx_queued_generation[tile_id] = target_generation;
                 state.retx_queue.push_back(tile_id);
@@ -1362,7 +1690,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
     std::memcpy(payload.data(), &header, sizeof(header));
     std::memcpy(payload.data() + sizeof(header), entries.data(), entries.size() * sizeof(wd_retransmit_entry));
 
-    const bool ok = wd_send_tcp_message(state.tcp_fd, WD_MSG_RETRANSMIT_REQUEST, payload.data(), static_cast<uint32_t>(payload.size()));
+    const bool ok = client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_RETRANSMIT_REQUEST, payload.data(), static_cast<uint32_t>(payload.size()));
 
     if (!ok)
     {

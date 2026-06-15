@@ -1,4 +1,6 @@
 #include "wd_server.h"
+#include "wd_async_tcp.h"
+#include "wd_async_udp.h"
 
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
@@ -8,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 static struct wd_server*     g_server_for_signal   = NULL;
@@ -118,6 +121,92 @@ static void server_process_pending_display_resize(struct wd_server* server) {
     pthread_mutex_unlock(&net->lock);
 }
 
+static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    wd_async_tcp_sender_reap(server->net.control_tx);
+    wd_async_udp_sender_reap(server->net.udp_tx);
+
+    if (server->net.control_tx)
+    {
+        uint64_t queued = wd_async_tcp_sender_queued(server->net.control_tx);
+        uint64_t completed = wd_async_tcp_sender_completed(server->net.control_tx);
+        uint64_t failed = wd_async_tcp_sender_failed(server->net.control_tx);
+        uint64_t partial = wd_async_tcp_sender_partial_resubmits(server->net.control_tx);
+        uint64_t overflows = wd_async_tcp_sender_overflows(server->net.control_tx);
+        if (queued > server->net.control_tx_queued_seen)
+        {
+            server->net.stats.tcp_async_queued += queued - server->net.control_tx_queued_seen;
+            server->net.control_tx_queued_seen = queued;
+        }
+        if (completed > server->net.control_tx_completed_seen)
+        {
+            server->net.stats.tcp_async_completed += completed - server->net.control_tx_completed_seen;
+            server->net.control_tx_completed_seen = completed;
+        }
+        if (partial > server->net.control_tx_partial_seen)
+        {
+            server->net.stats.tcp_async_partial_resubmits += partial - server->net.control_tx_partial_seen;
+            server->net.control_tx_partial_seen = partial;
+        }
+        if (overflows > server->net.control_tx_overflow_seen)
+        {
+            server->net.stats.tcp_async_queue_overflow += overflows - server->net.control_tx_overflow_seen;
+            server->net.control_tx_overflow_seen = overflows;
+        }
+        uint64_t inflight_max = wd_async_tcp_sender_inflight_max(server->net.control_tx);
+        if (inflight_max > server->net.stats.tcp_async_inflight_max)
+        {
+            server->net.stats.tcp_async_inflight_max = inflight_max;
+        }
+        if (failed > server->net.control_tx_failed_seen)
+        {
+            server->net.stats.tcp_async_completion_failed += failed - server->net.control_tx_failed_seen;
+            server->net.control_tx_failed_seen = failed;
+            if (server->net.tcp_fd >= 0)
+            {
+                (void)shutdown(server->net.tcp_fd, SHUT_RDWR);
+            }
+        }
+    }
+
+    if (server->net.udp_tx)
+    {
+        uint64_t queued = wd_async_udp_sender_queued(server->net.udp_tx);
+        uint64_t completed = wd_async_udp_sender_completed(server->net.udp_tx);
+        uint64_t failed = wd_async_udp_sender_failed(server->net.udp_tx);
+        uint64_t fallbacks = wd_async_udp_sender_fallbacks(server->net.udp_tx);
+        if (queued > server->net.udp_tx_queued_seen)
+        {
+            server->net.stats.udp_async_queued += queued - server->net.udp_tx_queued_seen;
+            server->net.udp_tx_queued_seen = queued;
+        }
+        if (completed > server->net.udp_tx_completed_seen)
+        {
+            server->net.stats.udp_async_completed += completed - server->net.udp_tx_completed_seen;
+            server->net.udp_tx_completed_seen = completed;
+        }
+        if (fallbacks > server->net.udp_tx_fallback_seen)
+        {
+            server->net.stats.udp_async_fallback_sync += fallbacks - server->net.udp_tx_fallback_seen;
+            server->net.udp_tx_fallback_seen = fallbacks;
+        }
+        uint64_t inflight_max = wd_async_udp_sender_inflight_max(server->net.udp_tx);
+        if (inflight_max > server->net.stats.udp_async_inflight_max)
+        {
+            server->net.stats.udp_async_inflight_max = inflight_max;
+        }
+        if (failed > server->net.udp_tx_failed_seen)
+        {
+            server->net.stats.udp_async_completion_failed += failed - server->net.udp_tx_failed_seen;
+            server->net.udp_tx_failed_seen = failed;
+        }
+    }
+}
+
 static int server_frame_timer(void* data) {
     struct wd_server* server = data;
 
@@ -146,6 +235,7 @@ static int server_frame_timer(void* data) {
     uint64_t t = wd_now_ns();
 
     pthread_mutex_lock(&server->net.lock);
+    wd_server_reap_and_sample_async_locked(server);
     wd_cursor_flush_pending_locked(server);
     pthread_mutex_unlock(&server->net.lock);
 
@@ -177,20 +267,26 @@ static int server_frame_timer(void* data) {
     if (server->last_summary_ns == 0 || t - server->last_summary_ns >= WD_GENERATION_SUMMARY_FULL_SANITY_INTERVAL_NS)
     {
         pthread_mutex_lock(&server->net.lock);
-        wd_stream_send_generation_summary_locked(server);
+        bool summary_sent = wd_stream_send_generation_summary_locked(server);
         pthread_mutex_unlock(&server->net.lock);
 
-        server->last_summary_ns       = t;
-        server->last_delta_summary_ns = t;
+        if (summary_sent)
+        {
+            server->last_summary_ns       = t;
+            server->last_delta_summary_ns = t;
+        }
     }
     else
     {
-        uint64_t delta_interval_ns = WD_GENERATION_SUMMARY_CLEAN_DELTA_INTERVAL_NS;
+        uint64_t delta_interval_ns = WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
         pthread_mutex_lock(&server->net.lock);
+        delta_interval_ns = server->net.clean_summary_interval_ns ? server->net.clean_summary_interval_ns
+                                                                  : WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
         if (server->net.retransmit_queue_count != 0 || server->net.stats.client_partial_tiles_timed_out != 0 ||
             server->net.stats.client_retx_requests_tx != 0)
         {
-            delta_interval_ns = WD_GENERATION_SUMMARY_DELTA_INTERVAL_NS;
+            delta_interval_ns = server->net.active_summary_interval_ns ? server->net.active_summary_interval_ns
+                                                                      : WD_LINK_ACTIVE_SUMMARY_INTERVAL_DEFAULT_NS;
         }
         const bool should_send_delta = server->last_delta_summary_ns == 0 || t - server->last_delta_summary_ns >= delta_interval_ns;
         if (should_send_delta && server->net.summary_dirty_count != 0)
@@ -205,6 +301,10 @@ static int server_frame_timer(void* data) {
 
     if (t - server->last_stats_ns > 1000000000ull)
     {
+        pthread_mutex_lock(&server->net.lock);
+        wd_server_reap_and_sample_async_locked(server);
+        pthread_mutex_unlock(&server->net.lock);
+
         wd_stream_print_and_reset_stats(server);
         server->last_stats_ns = t;
     }
@@ -713,6 +813,16 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     }
 
     pthread_mutex_lock(&server->net.lock);
+
+    if (server->net.control_tx)
+    {
+        (void)wd_async_tcp_sender_drop_message_type(server->net.control_tx, WD_MSG_TILE_GENERATION_SUMMARY);
+    }
+    server->net.summary_epoch++;
+    if (server->net.summary_epoch == 0)
+    {
+        server->net.summary_epoch = 1;
+    }
 
     wd_stream_wait_for_encoder_idle_locked(server);
 

@@ -1,7 +1,9 @@
 #include "waydisplay/wd_net.h"
 #include "wd_server.h"
+#include "wd_async_tcp.h"
 
 #include <string.h>
+#include <sys/socket.h>
 
 static void remove_listener_if_linked(struct wl_listener* listener) {
     if (!listener)
@@ -86,9 +88,28 @@ static bool wd_cursor_send_shape_locked(struct wd_server* server, uint16_t shape
     payload.session_id = net->session_id;
     payload.shape      = shape;
 
-    bool ok = wd_send_tcp_message(net->tcp_fd, WD_MSG_CURSOR_SHAPE, &payload, sizeof(payload));
+    bool ok = false;
+    if (net->control_tx)
+    {
+        ok = wd_async_tcp_send_message(net->control_tx, net->tcp_fd, WD_MSG_CURSOR_SHAPE, &payload, sizeof(payload));
+        if (!ok)
+        {
+            net->stats.tcp_async_send_failed++;
+            if (net->tcp_fd >= 0)
+            {
+                (void)shutdown(net->tcp_fd, SHUT_RDWR);
+            }
+        }
+    }
+    else
+    {
+        ok = wd_send_tcp_message(net->tcp_fd, WD_MSG_CURSOR_SHAPE, &payload, sizeof(payload));
+    }
+
     if (ok)
     {
+        wd_stream_account_tcp_control_bytes_locked(net,
+                                                   (uint32_t)(sizeof(struct wd_tcp_header) + sizeof(payload)));
         net->stats.cursor_shape_tx++;
     }
     return ok;

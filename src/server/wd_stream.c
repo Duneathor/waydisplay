@@ -3,6 +3,8 @@
 #include "waydisplay/wd_time.h"
 #include "waydisplay/wd_zstd.h"
 #include "wd_server.h"
+#include "wd_async_tcp.h"
+#include "wd_async_udp.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -868,7 +870,7 @@ static uint64_t wd_stream_policy_limited_byte_budget_locked(struct wd_stream_pol
     return (uint64_t)policy->limited_udp_byte_tokens;
 }
 
-static void wd_stream_policy_consume_limited_bytes_locked(struct wd_stream_policy* policy, uint32_t bytes) {
+static void wd_stream_policy_consume_limited_bytes_locked(struct wd_stream_policy* policy, uint64_t bytes) {
     if (!policy || bytes == 0)
     {
         return;
@@ -882,6 +884,62 @@ static void wd_stream_policy_consume_limited_bytes_locked(struct wd_stream_polic
     {
         policy->limited_udp_byte_tokens = 0.0;
     }
+}
+
+static void wd_stream_policy_refund_limited_bytes_locked(struct wd_stream_policy* policy, uint64_t bytes) {
+    if (!policy || bytes == 0)
+    {
+        return;
+    }
+
+    uint64_t rate = wd_stream_clamp_limited_udp_byte_rate(policy->limited_udp_bytes_per_second);
+    policy->limited_udp_bytes_per_second = rate;
+
+    policy->limited_udp_byte_tokens += (double)bytes;
+
+    uint64_t burst_cap = wd_stream_byte_burst_cap_for_rate(rate);
+    if (policy->limited_udp_byte_tokens > (double)burst_cap)
+    {
+        policy->limited_udp_byte_tokens = (double)burst_cap;
+    }
+}
+
+bool wd_stream_try_consume_tcp_control_budget_locked(struct wd_net_state* net, uint32_t bytes, uint64_t now_ns) {
+    if (!net || bytes == 0)
+    {
+        return true;
+    }
+
+    uint64_t budget = wd_stream_policy_limited_byte_budget_locked(&net->stream_policy, now_ns);
+    if (budget < (uint64_t)bytes)
+    {
+        net->stats.tcp_budget_blocked++;
+        return false;
+    }
+
+    wd_stream_policy_consume_limited_bytes_locked(&net->stream_policy, bytes);
+    net->stats.tcp_control_bytes_sent += bytes;
+    return true;
+}
+
+void wd_stream_account_tcp_control_bytes_locked(struct wd_net_state* net, uint32_t bytes) {
+    if (!net || bytes == 0)
+    {
+        return;
+    }
+
+    wd_stream_policy_consume_limited_bytes_locked(&net->stream_policy, bytes);
+    net->stats.tcp_control_bytes_sent += bytes;
+}
+
+static void wd_stream_refund_tcp_control_budget_locked(struct wd_net_state* net, uint64_t bytes) {
+    if (!net || bytes == 0)
+    {
+        return;
+    }
+
+    wd_stream_policy_refund_limited_bytes_locked(&net->stream_policy, bytes);
+    net->stats.tcp_control_bytes_refunded += bytes;
 }
 
 static void wd_stream_init_send_result(struct wd_udp_tile_send_result* result) {
@@ -1083,47 +1141,65 @@ static bool wd_stream_send_tile_payload_sized_locked(struct wd_server* server, u
                 return false;
         }
 
-        struct iovec iov[2];
-        memset(iov, 0, sizeof(iov));
-        iov[0].iov_base = header_buf;
-        iov[0].iov_len  = header_size;
-        iov[1].iov_base = (uint8_t*)tile_payload + offset;
-        iov[1].iov_len  = payload_size;
-
-        struct msghdr msg;
-        memset(&msg, 0, sizeof(msg));
-        msg.msg_name    = &net->client_udp_addr;
-        msg.msg_namelen = sizeof(net->client_udp_addr);
-        msg.msg_iov     = iov;
-        msg.msg_iovlen  = 2;
-
-        ssize_t sent = sendmsg(net->udp_fd, &msg, 0);
-
-        if (sent < 0)
+        uint32_t packet_wire_size = (uint32_t)header_size + (uint32_t)payload_size;
+        bool async_queued = wd_async_udp_send_packet(net->udp_tx, net->udp_fd, &net->client_udp_addr, header_buf,
+                                                     header_size, (uint8_t*)tile_payload + offset, payload_size);
+        if (!async_queued)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS)
+            if (net->udp_tx)
             {
-                wd_note_udp_send_pressure_locked(net, errno);
-                if (result)
-                {
-                    result->send_blocked = true;
-                }
-                break;
+                net->stats.udp_async_send_failed++;
             }
 
-            WD_LOG_ERROR("WayDisplay: sendto failed: %s", strerror(errno));
-            return false;
+            struct iovec iov[2];
+            memset(iov, 0, sizeof(iov));
+            iov[0].iov_base = header_buf;
+            iov[0].iov_len  = header_size;
+            iov[1].iov_base = (uint8_t*)tile_payload + offset;
+            iov[1].iov_len  = payload_size;
+
+            struct msghdr msg;
+            memset(&msg, 0, sizeof(msg));
+            msg.msg_name    = &net->client_udp_addr;
+            msg.msg_namelen = sizeof(net->client_udp_addr);
+            msg.msg_iov     = iov;
+            msg.msg_iovlen  = 2;
+
+            ssize_t sent = sendmsg(net->udp_fd, &msg, 0);
+
+            if (sent < 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS)
+                {
+                    wd_note_udp_send_pressure_locked(net, errno);
+                    if (result)
+                    {
+                        result->send_blocked = true;
+                    }
+                    break;
+                }
+
+                WD_LOG_ERROR("WayDisplay: sendto failed: %s", strerror(errno));
+                return false;
+            }
+
+            packet_wire_size = (uint32_t)sent;
         }
 
         if (result)
         {
             result->any_packet_sent = true;
             result->packets_sent++;
-            result->bytes_sent += (uint32_t)sent;
+            result->bytes_sent += packet_wire_size;
         }
 
         net->stats.udp_packets_sent++;
-        net->stats.udp_bytes_sent += (uint64_t)sent;
+        net->stats.udp_bytes_sent += (uint64_t)packet_wire_size;
+    }
+
+    if (net->udp_tx && !wd_async_udp_sender_flush(net->udp_tx))
+    {
+        net->stats.udp_async_send_failed++;
     }
 
     if (result)
@@ -1756,90 +1832,6 @@ static void wd_stream_maybe_clear_dirty_top_region_for_base_locked(struct wd_ser
     }
 }
 
-static bool wd_stream_wire_tile_region_has_dirty_locked(struct wd_server* server, uint16_t wire_tile_id, uint16_t tile_width,
-                                                        uint16_t tile_height, uint16_t* out_ids, uint16_t* out_count,
-                                                        uint16_t max_count) {
-    if (!server || !out_ids || !out_count || !server->net.dirty_queued)
-    {
-        return false;
-    }
-
-    if (!wd_stream_collect_wire_tile_base_ids(server, wire_tile_id, tile_width, tile_height, out_ids, out_count, max_count))
-    {
-        return false;
-    }
-
-    bool dirty = false;
-    for (uint16_t i = 0; i < *out_count; ++i)
-    {
-        const uint16_t base_id = out_ids[i];
-        if (base_id >= server->total_tiles || !server->net.dirty_queued[base_id])
-        {
-            continue;
-        }
-
-        dirty = true;
-    }
-
-    return dirty;
-}
-
-static bool wd_stream_try_build_wire_tile_candidate_for_region(struct wd_server* server, uint16_t wire_tile_id, uint16_t tile_width,
-                                                               uint16_t tile_height, uint64_t input_sequence, bool allow_compression,
-                                                               uint8_t* tile_bytes, uint8_t* compressed_tile,
-                                                               size_t compressed_capacity, struct wd_wire_tile_candidate* out) {
-    if (!server || !tile_bytes || !compressed_tile || !out)
-    {
-        return false;
-    }
-
-    uint16_t covered_count = 0;
-    uint16_t covered_ids[64];
-    if (!wd_stream_collect_wire_tile_base_ids(server, wire_tile_id, tile_width, tile_height, covered_ids, &covered_count,
-                                             (uint16_t)(sizeof(covered_ids) / sizeof(covered_ids[0]))))
-    {
-        return false;
-    }
-
-    const uint32_t uncompressed_size = (uint32_t)tile_width * (uint32_t)tile_height * WD_BYTES_PER_PIXEL;
-    const uint64_t encode_start_ns = wd_now_ns();
-    const uint16_t wire_tiles_x = wd_tiles_for_width_with_tile(server->display_width, tile_width);
-    const uint16_t wire_total_tiles = wd_total_tiles_for_size_with_tile(server->display_width, server->display_height, tile_width, tile_height);
-    if (!wd_extract_tile_xrgb8888_for_tile(server->framebuffer_xrgb8888, server->display_width, server->display_height,
-                                           wire_tiles_x, wire_total_tiles, wire_tile_id, tile_width, tile_height, tile_bytes))
-    {
-        return false;
-    }
-
-    uint32_t compressed_size = 0;
-    bool compressed_payload = false;
-    if (allow_compression)
-    {
-        if (!wd_zstd_compress(tile_bytes, uncompressed_size, compressed_tile, (uint32_t)compressed_capacity, WD_ZSTD_LEVEL,
-                              &compressed_size))
-        {
-            return false;
-        }
-        compressed_payload = wd_stream_use_compressed_tile_payload(compressed_size, uncompressed_size, server->net.udp_payload_target,
-                                                                   input_sequence);
-    }
-
-    const uint32_t payload_size = compressed_payload ? compressed_size : uncompressed_size;
-    server->net.stats.tile_encode_ns += wd_now_ns() - encode_start_ns;
-
-    memset(out, 0, sizeof(*out));
-    out->width = tile_width;
-    out->height = tile_height;
-    out->tile_id = wire_tile_id;
-    memcpy(out->covered_base_ids, covered_ids, (size_t)covered_count * sizeof(covered_ids[0]));
-    out->covered_base_count = covered_count;
-    out->uncompressed_size = uncompressed_size;
-    out->compressed_size = compressed_size;
-    out->wire_size = wd_stream_tile_wire_bytes_for_payload(payload_size, server->net.udp_payload_target, input_sequence, compressed_payload);
-    out->compressed_payload = compressed_payload;
-    return true;
-}
-
 static bool wd_stream_candidate_allowed_for_region_locked(struct wd_server* server, const struct wd_wire_tile_candidate* candidate,
                                                           uint64_t remaining_byte_budget, bool network_happy) {
     if (!server || !candidate || candidate->wire_size == 0 || candidate->wire_size > remaining_byte_budget)
@@ -1879,142 +1871,6 @@ static bool wd_stream_candidate_allowed_for_job(const struct wd_parallel_encode_
     }
     return candidate->wire_size <= one_packet_budget;
 }
-
-static bool wd_stream_choose_region_recursive_locked(struct wd_server* server, uint16_t wire_tile_id, uint16_t tile_width,
-                                                     uint16_t tile_height, uint64_t input_sequence, uint64_t remaining_byte_budget,
-                                                     bool network_happy, uint8_t* tile_bytes, uint8_t* compressed_tile,
-                                                     size_t compressed_capacity, struct wd_wire_tile_candidate* out,
-                                                     bool* out_budget_blocked) {
-    if (out_budget_blocked)
-    {
-        *out_budget_blocked = false;
-    }
-    if (!server || !out)
-    {
-        return false;
-    }
-
-    uint16_t covered_count = 0;
-    uint16_t covered_ids[64];
-    server->net.stats.dirty_region_probes++;
-    if (!wd_stream_wire_tile_region_has_dirty_locked(server, wire_tile_id, tile_width, tile_height, covered_ids, &covered_count,
-                                                     (uint16_t)(sizeof(covered_ids) / sizeof(covered_ids[0]))))
-    {
-        return false;
-    }
-    server->net.stats.dirty_region_hits++;
-
-    const bool is_base_tile = tile_width == server->tile_width && tile_height == server->tile_height;
-    const bool allow_compression = !is_base_tile;
-    struct wd_wire_tile_candidate candidate;
-    memset(&candidate, 0, sizeof(candidate));
-    if (wd_stream_try_build_wire_tile_candidate_for_region(server, wire_tile_id, tile_width, tile_height, input_sequence,
-                                                           allow_compression, tile_bytes, compressed_tile, compressed_capacity,
-                                                           &candidate) &&
-        wd_stream_candidate_allowed_for_region_locked(server, &candidate, remaining_byte_budget, network_happy))
-    {
-        *out = candidate;
-        return true;
-    }
-
-    if (is_base_tile)
-    {
-        if (candidate.wire_size > remaining_byte_budget && out_budget_blocked)
-        {
-            *out_budget_blocked = true;
-        }
-        return false;
-    }
-
-    const uint16_t parent_tiles_x = wd_tiles_for_width_with_tile(server->display_width, tile_width);
-    const uint32_t start_x = wd_tile_start_x_for_tile(wire_tile_id, parent_tiles_x, tile_width);
-    const uint32_t start_y = wd_tile_start_y_for_tile(wire_tile_id, parent_tiles_x, tile_height);
-    uint16_t child_width = 0;
-    uint16_t child_height = 0;
-    uint16_t child_count = 0;
-    uint16_t child_ids[4];
-
-    if (tile_width == WD_WIRE_TILE_MAX_WIDTH && tile_height == WD_WIRE_TILE_MAX_HEIGHT)
-    {
-        child_width = 64;
-        child_height = 64;
-        const uint32_t xs[2] = {start_x, start_x + child_width};
-        for (uint16_t i = 0; i < 2; ++i)
-        {
-            if (xs[i] < server->display_width && start_y < server->display_height &&
-                wd_stream_wire_tile_for_pixel(server, xs[i], start_y, child_width, child_height, &child_ids[child_count]))
-            {
-                child_count++;
-            }
-        }
-    }
-    else if (tile_width == 64 && tile_height == 64)
-    {
-        child_width = 32;
-        child_height = 32;
-        const uint32_t xs[2] = {start_x, start_x + child_width};
-        const uint32_t ys[2] = {start_y, start_y + child_height};
-        for (uint16_t y = 0; y < 2; ++y)
-        {
-            for (uint16_t x = 0; x < 2; ++x)
-            {
-                if (xs[x] < server->display_width && ys[y] < server->display_height &&
-                    wd_stream_wire_tile_for_pixel(server, xs[x], ys[y], child_width, child_height, &child_ids[child_count]))
-                {
-                    child_count++;
-                }
-            }
-        }
-    }
-    else if (tile_width == 32 && tile_height == 32)
-    {
-        child_width = server->tile_width;
-        child_height = server->tile_height;
-        const uint32_t xs[2] = {start_x, start_x + child_width};
-        const uint32_t ys[2] = {start_y, start_y + child_height};
-        for (uint16_t y = 0; y < 2; ++y)
-        {
-            for (uint16_t x = 0; x < 2; ++x)
-            {
-                if (xs[x] < server->display_width && ys[y] < server->display_height &&
-                    wd_stream_wire_tile_for_pixel(server, xs[x], ys[y], child_width, child_height, &child_ids[child_count]))
-                {
-                    child_count++;
-                }
-            }
-        }
-    }
-    else
-    {
-        return false;
-    }
-
-    if (child_count == 0)
-    {
-        return false;
-    }
-
-    uint32_t r = server->net.dirty_region_rng = server->net.dirty_region_rng * 1664525u + 1013904223u;
-    uint16_t first = (uint16_t)(r % child_count);
-    for (uint16_t i = 0; i < child_count; ++i)
-    {
-        uint16_t child_index = (uint16_t)((first + i) % child_count);
-        bool child_budget_blocked = false;
-        if (wd_stream_choose_region_recursive_locked(server, child_ids[child_index], child_width, child_height, input_sequence,
-                                                     remaining_byte_budget, network_happy, tile_bytes, compressed_tile,
-                                                     compressed_capacity, out, &child_budget_blocked))
-        {
-            return true;
-        }
-        if (child_budget_blocked && out_budget_blocked)
-        {
-            *out_budget_blocked = true;
-        }
-    }
-
-    return false;
-}
-
 
 static bool wd_stream_job_collect_wire_tile_base_ids(const struct wd_parallel_encode_job* job, uint16_t tile_id,
                                                         uint16_t tile_width, uint16_t tile_height, uint16_t* out_ids,
@@ -3185,12 +3041,120 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     return true;
 }
 
+
+struct wd_summary_completion_entry {
+    uint16_t tile_id;
+    uint64_t tile_generation;
+};
+
+struct wd_summary_completion {
+    struct wd_server* server;
+    bool full_summary;
+    bool async_pending;
+    bool input_since_last_summary;
+    uint64_t server_timestamp_ns;
+    uint64_t last_input_inject_ns;
+    uint64_t summary_epoch;
+    uint64_t budget_bytes;
+    uint16_t entry_count;
+    struct wd_summary_completion_entry entries[];
+};
+
+static void wd_stream_rebuild_summary_dirty_queue_locked(struct wd_server* server) {
+    struct wd_net_state* net = &server->net;
+    if (!net->summary_dirty_tiles || !net->summary_dirty_queue)
+    {
+        net->summary_dirty_count = 0;
+        return;
+    }
+
+    uint16_t count = 0;
+    for (uint16_t tile_id = 0; tile_id < server->total_tiles; ++tile_id)
+    {
+        if (net->summary_dirty_tiles[tile_id])
+        {
+            net->summary_dirty_queue[count++] = tile_id;
+        }
+    }
+    net->summary_dirty_count = count;
+}
+
+static void wd_stream_summary_completion(void* user_data, bool success) {
+    struct wd_summary_completion* completion = user_data;
+    if (!completion)
+    {
+        return;
+    }
+
+    if (completion->server)
+    {
+        struct wd_server* server = completion->server;
+        struct wd_net_state* net = &server->net;
+
+        if (completion->async_pending && net->summary_async_pending_count > 0)
+        {
+            net->summary_async_pending_count--;
+            if (net->summary_async_pending_count == 0)
+            {
+                net->summary_async_pending_full = false;
+            }
+        }
+
+        if (!success && completion->budget_bytes != 0)
+        {
+            wd_stream_refund_tcp_control_budget_locked(net, completion->budget_bytes);
+            completion->budget_bytes = 0;
+        }
+
+        if (success && net->summary_dirty_tiles && net->summary_epoch == completion->summary_epoch)
+        {
+            for (uint16_t i = 0; i < completion->entry_count; ++i)
+            {
+                uint16_t tile_id = completion->entries[i].tile_id;
+                if (tile_id < server->total_tiles && net->tiles[tile_id].generation == completion->entries[i].tile_generation)
+                {
+                    net->summary_dirty_tiles[tile_id] = false;
+                }
+            }
+            wd_stream_rebuild_summary_dirty_queue_locked(server);
+        }
+
+        if (success && completion->input_since_last_summary && completion->last_input_inject_ns != 0 &&
+            completion->server_timestamp_ns >= completion->last_input_inject_ns)
+        {
+            net->stats.input_to_summary_samples++;
+            net->stats.input_to_summary_sum_ns += completion->server_timestamp_ns - completion->last_input_inject_ns;
+            net->input_since_last_summary = false;
+        }
+    }
+
+    free(completion);
+}
+
 static bool wd_stream_send_generation_summary_kind_locked(struct wd_server* server, bool full_summary) {
     struct wd_net_state* net = &server->net;
 
     if (!net->client_connected || net->tcp_fd < 0)
     {
         return true;
+    }
+
+    if (net->control_tx && net->summary_async_pending_count != 0)
+    {
+        if (!full_summary && net->summary_async_pending_full)
+        {
+            return false;
+        }
+
+        uint32_t dropped = wd_async_tcp_sender_drop_message_type(net->control_tx, WD_MSG_TILE_GENERATION_SUMMARY);
+        if (dropped != 0)
+        {
+            net->stats.tcp_summary_coalesced += dropped;
+        }
+        if (wd_async_tcp_sender_has_message_type(net->control_tx, WD_MSG_TILE_GENERATION_SUMMARY))
+        {
+            return false;
+        }
     }
 
     const uint64_t summary_build_start_ns = wd_now_ns();
@@ -3260,42 +3224,84 @@ static bool wd_stream_send_generation_summary_kind_locked(struct wd_server* serv
 
     size_t payload_size = sizeof(header) + (size_t)entry_count * sizeof(struct wd_tile_generation_entry);
     net->stats.summary_build_ns += wd_now_ns() - summary_build_start_ns;
-    bool ok = wd_send_tcp_message(net->tcp_fd, WD_MSG_TILE_GENERATION_SUMMARY, payload, (uint32_t)payload_size);
+
+    const uint64_t frame_size = (uint64_t)sizeof(struct wd_tcp_header) + (uint64_t)payload_size;
+    if (frame_size > UINT32_MAX ||
+        !wd_stream_try_consume_tcp_control_budget_locked(net, (uint32_t)frame_size, header.server_timestamp_ns))
+    {
+        free(payload);
+        return false;
+    }
+
+    struct wd_summary_completion* completion = calloc(1, sizeof(*completion) +
+                                                          (size_t)entry_count * sizeof(completion->entries[0]));
+    if (!completion)
+    {
+        wd_stream_refund_tcp_control_budget_locked(net, frame_size);
+        free(payload);
+        return false;
+    }
+    completion->server = server;
+    completion->full_summary = full_summary;
+    completion->input_since_last_summary = net->input_since_last_summary;
+    completion->server_timestamp_ns = header.server_timestamp_ns;
+    completion->last_input_inject_ns = net->last_input_inject_ns;
+    completion->summary_epoch = net->summary_epoch;
+    completion->budget_bytes = frame_size;
+    completion->entry_count = entry_count;
+    for (uint16_t i = 0; i < entry_count; ++i)
+    {
+        completion->entries[i].tile_id = entries[i].tile_id;
+        completion->entries[i].tile_generation = entries[i].tile_generation;
+    }
+
+    bool ok = false;
+    if (net->control_tx)
+    {
+        ok = wd_async_tcp_send_message_ex(net->control_tx, net->tcp_fd, WD_MSG_TILE_GENERATION_SUMMARY, payload,
+                                          (uint32_t)payload_size, wd_stream_summary_completion, completion);
+        if (ok)
+        {
+            completion->async_pending = true;
+            net->summary_async_pending_count++;
+            if (full_summary)
+            {
+                net->summary_async_pending_full = true;
+            }
+        }
+        if (!ok)
+        {
+            net->stats.tcp_async_send_failed++;
+            if (net->tcp_fd >= 0)
+            {
+                (void)shutdown(net->tcp_fd, SHUT_RDWR);
+            }
+        }
+    }
+    else
+    {
+        ok = wd_send_tcp_message(net->tcp_fd, WD_MSG_TILE_GENERATION_SUMMARY, payload, (uint32_t)payload_size);
+        wd_stream_summary_completion(completion, ok);
+        completion = NULL;
+    }
 
     if (ok)
     {
         if (full_summary)
         {
-            if (net->summary_dirty_tiles)
-            {
-                memset(net->summary_dirty_tiles, 0, server->total_tiles * sizeof(*net->summary_dirty_tiles));
-            }
-            net->summary_dirty_count = 0;
             net->stats.tcp_summary_full_tx++;
         }
         else
         {
-            for (uint16_t i = 0; i < entry_count; ++i)
-            {
-                uint16_t tile_id = entries[i].tile_id;
-                if (tile_id < server->total_tiles && net->summary_dirty_tiles)
-                {
-                    net->summary_dirty_tiles[tile_id] = false;
-                }
-            }
-            net->summary_dirty_count = 0;
             net->stats.tcp_summary_delta_tx++;
             net->stats.tcp_summary_delta_tiles += entry_count;
         }
-
-        if (net->input_since_last_summary && net->last_input_inject_ns != 0 && header.server_timestamp_ns >= net->last_input_inject_ns)
-        {
-            net->stats.input_to_summary_samples++;
-            net->stats.input_to_summary_sum_ns += header.server_timestamp_ns - net->last_input_inject_ns;
-            net->input_since_last_summary = false;
-        }
-
         net->stats.tcp_summary_tx++;
+    }
+
+    if (!ok && completion)
+    {
+        wd_stream_summary_completion(completion, false);
     }
 
     free(payload);
@@ -3372,7 +3378,9 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
 
     bool video_activity = s.dirty_tiles != 0 || s.dirty_tiles_stale_skipped != 0 || s.udp_tiles_sent != 0 ||
                           s.udp_fresh_tiles_sent != 0 || s.udp_retx_tiles_sent != 0 || s.udp_packets_sent != 0 ||
-                          s.udp_bytes_sent != 0 || s.udp_send_pressure_drops != 0 ||
+                          s.udp_bytes_sent != 0 || s.udp_send_pressure_drops != 0 || s.udp_async_send_failed != 0 ||
+                          s.udp_async_queued != 0 || s.udp_async_completed != 0 ||
+                          s.udp_async_completion_failed != 0 || s.udp_async_fallback_sync != 0 ||
                           s.tile_choice_compressed != 0 || s.tile_choice_uncompressed != 0 ||
                           s.dirty_queue_age_samples != 0 || s.retx_queue_age_samples != 0 ||
                           s.dirty_region_probes != 0 || s.dirty_region_hits != 0 ||
@@ -3382,7 +3390,7 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     if (video_activity)
     {
         uint64_t choices = s.tile_choice_compressed + s.tile_choice_uncompressed;
-        WD_LOG_DEBUG("WayDisplay video/s: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f tile_sizes=128x64:%llu,64x64:%llu,32x32:%llu,16x16:%llu encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_batches=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
+        WD_LOG_DEBUG("WayDisplay video/s: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu async_queued=%llu async_completed=%llu async_failed=%llu async_completion_failed=%llu async_fallback=%llu async_inflight_max=%llu dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f tile_sizes=128x64:%llu,64x64:%llu,32x32:%llu,16x16:%llu encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_batches=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
                      (unsigned long long)s.dirty_tiles, (unsigned long long)s.dirty_tiles_stale_skipped,
                      (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_fresh_tiles_sent,
                      (unsigned long long)s.udp_retx_tiles_sent, (unsigned long long)s.udp_packets_sent,
@@ -3403,6 +3411,12 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
                      choices ? (double)s.tile_choice_chosen_wire_sum / (double)choices : 0.0,
                      (double)s.tile_choice_saved_wire_sum / 1024.0,
                      (unsigned long long)s.udp_send_pressure_drops,
+                     (unsigned long long)s.udp_async_queued,
+                     (unsigned long long)s.udp_async_completed,
+                     (unsigned long long)s.udp_async_send_failed,
+                     (unsigned long long)s.udp_async_completion_failed,
+                     (unsigned long long)s.udp_async_fallback_sync,
+                     (unsigned long long)s.udp_async_inflight_max,
                      wd_avg_ms(s.dirty_queue_age_sum_ns, s.dirty_queue_age_samples),
                      wd_avg_ms(s.retx_queue_age_sum_ns, s.retx_queue_age_samples),
                      (unsigned long long)s.dirty_region_probes,
@@ -3432,13 +3446,14 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     bool repair_activity = s.retx_req_rx != 0 || s.retx_tiles_req != 0 || s.retx_req_ignored_live != 0 ||
                            s.retx_req_stale_generation != 0 || s.retx_tiles_superseded_by_fresh != 0 ||
                            s.tcp_summary_tx != 0 || s.tcp_summary_delta_tx != 0 ||
-                           s.tcp_summary_delta_tiles != 0 || s.rate_decreases != 0 || s.rate_increases != 0 ||
+                           s.tcp_summary_delta_tiles != 0 || s.tcp_summary_coalesced != 0 || s.rate_decreases != 0 || s.rate_increases != 0 ||
                            s.frame_rate_downshifts != 0 || s.frame_rate_upshifts != 0;
     if (repair_activity)
     {
-        WD_LOG_DEBUG("WayDisplay repair/s: summaries=%llu full=%llu delta=%llu delta_tiles=%llu retx_req=%llu retx_tiles=%llu stale_gen=%llu ignored_live=%llu superseded=%llu rate_down=%llu rate_up=%llu fps_down=%llu fps_up=%llu",
+        WD_LOG_DEBUG("WayDisplay repair/s: summaries=%llu full=%llu delta=%llu delta_tiles=%llu summary_coalesced=%llu retx_req=%llu retx_tiles=%llu stale_gen=%llu ignored_live=%llu superseded=%llu rate_down=%llu rate_up=%llu fps_down=%llu fps_up=%llu",
                      (unsigned long long)s.tcp_summary_tx, (unsigned long long)s.tcp_summary_full_tx,
                      (unsigned long long)s.tcp_summary_delta_tx, (unsigned long long)s.tcp_summary_delta_tiles,
+                     (unsigned long long)s.tcp_summary_coalesced,
                      (unsigned long long)s.retx_req_rx, (unsigned long long)s.retx_tiles_req,
                      (unsigned long long)s.retx_req_stale_generation,
                      (unsigned long long)s.retx_req_ignored_live, (unsigned long long)s.retx_tiles_superseded_by_fresh,
@@ -3463,14 +3478,27 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     bool control_activity = s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 || s.tcp_input_channel_rx != 0 ||
                             s.tcp_input_channel_accepted != 0 || s.tcp_input_channel_closed != 0 ||
                             s.tcp_selection_channel_rx != 0 || s.tcp_selection_channel_accepted != 0 ||
-                            s.tcp_selection_channel_closed != 0;
+                            s.tcp_selection_channel_closed != 0 || s.tcp_async_send_failed != 0 ||
+                            s.tcp_async_queued != 0 || s.tcp_async_completed != 0 ||
+                            s.tcp_async_completion_failed != 0 || s.tcp_async_queue_overflow != 0 || s.tcp_async_partial_resubmits != 0 ||
+                            s.tcp_control_bytes_sent != 0 || s.tcp_control_bytes_refunded != 0 || s.tcp_budget_blocked != 0;
     if (control_activity)
     {
-        WD_LOG_DEBUG("WayDisplay control/s: hello=%llu config=%llu input_rx=%llu input_accepted=%llu input_closed=%llu selection_rx=%llu selection_accepted=%llu selection_closed=%llu",
+        WD_LOG_DEBUG("WayDisplay control/s: hello=%llu config=%llu input_rx=%llu input_accepted=%llu input_closed=%llu selection_rx=%llu selection_accepted=%llu selection_closed=%llu async_queued=%llu async_completed=%llu async_send_failed=%llu async_completion_failed=%llu async_overflow=%llu async_partial=%llu async_inflight_max=%llu tcp_kib=%.1f tcp_refund_kib=%.1f tcp_budget_blocked=%llu",
                      (unsigned long long)s.tcp_hello_rx, (unsigned long long)s.tcp_config_tx,
                      (unsigned long long)s.tcp_input_channel_rx, (unsigned long long)s.tcp_input_channel_accepted,
                      (unsigned long long)s.tcp_input_channel_closed, (unsigned long long)s.tcp_selection_channel_rx,
-                     (unsigned long long)s.tcp_selection_channel_accepted, (unsigned long long)s.tcp_selection_channel_closed);
+                     (unsigned long long)s.tcp_selection_channel_accepted, (unsigned long long)s.tcp_selection_channel_closed,
+                     (unsigned long long)s.tcp_async_queued,
+                     (unsigned long long)s.tcp_async_completed,
+                     (unsigned long long)s.tcp_async_send_failed,
+                     (unsigned long long)s.tcp_async_completion_failed,
+                     (unsigned long long)s.tcp_async_queue_overflow,
+                     (unsigned long long)s.tcp_async_partial_resubmits,
+                     (unsigned long long)s.tcp_async_inflight_max,
+                     (double)s.tcp_control_bytes_sent / 1024.0,
+                     (double)s.tcp_control_bytes_refunded / 1024.0,
+                     (unsigned long long)s.tcp_budget_blocked);
     }
 
     bool input_activity = s.key_events_rx != 0 || s.key_events_injected != 0 || s.key_events_dropped != 0 ||

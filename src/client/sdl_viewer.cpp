@@ -1,6 +1,7 @@
 #include "sdl_viewer.hpp"
 
 #include "client_net.hpp"
+#include "client_async_udp.hpp"
 #include "sdl_input.hpp"
 #include "tile_reassembly.hpp"
 #include "waydisplay/wd_config.h"
@@ -758,6 +759,8 @@ bool take_input_timestamp(ClientState& state, uint64_t sequence, uint64_t& times
 }
 
 void print_client_stats(ClientState& state) {
+    client_reap_async_sends(state);
+
     const uint64_t udp_packets              = take_stat(state.stats.udp_packets_rx);
     const uint64_t udp_bytes                = take_stat(state.stats.udp_bytes_rx);
     const uint64_t udp_interarrival_samples = take_stat(state.stats.udp_interarrival_samples);
@@ -791,6 +794,20 @@ void print_client_stats(ClientState& state) {
     const uint64_t input_fallback_events    = take_stat(state.stats.tcp_input_channel_fallback_tx);
     const uint64_t selection_channel_events = take_stat(state.stats.tcp_selection_channel_tx);
     const uint64_t selection_fallback_events = take_stat(state.stats.tcp_selection_channel_fallback_tx);
+    const uint64_t tcp_async_queued         = take_stat(state.stats.tcp_async_queued);
+    const uint64_t tcp_async_completed      = take_stat(state.stats.tcp_async_completed);
+    const uint64_t tcp_async_failed         = take_stat(state.stats.tcp_async_failed);
+    const uint64_t tcp_async_overflow       = take_stat(state.stats.tcp_async_overflow);
+    const uint64_t tcp_async_partial        = take_stat(state.stats.tcp_async_partial);
+    const uint64_t tcp_async_coalesced      = take_stat(state.stats.tcp_async_coalesced);
+    const uint64_t tcp_async_inflight_max   = take_stat(state.stats.tcp_async_inflight_max);
+    client_reap_async_udp_receives(state);
+    const uint64_t udp_async_posted         = take_stat(state.stats.udp_async_posted);
+    const uint64_t udp_async_completed      = take_stat(state.stats.udp_async_completed);
+    const uint64_t udp_async_failed         = take_stat(state.stats.udp_async_failed);
+    const uint64_t udp_async_submit_failed  = take_stat(state.stats.udp_async_submit_failed);
+    const uint64_t udp_async_cancels        = take_stat(state.stats.udp_async_cancels);
+    const uint64_t udp_async_inflight_max   = take_stat(state.stats.udp_async_inflight_max);
     const uint64_t summary_latency_samples  = take_stat(state.stats.summary_latency_samples);
     const uint64_t summary_latency_sum_ns   = take_stat(state.stats.summary_latency_sum_ns);
     const uint64_t tile_assembly_samples    = take_stat(state.stats.tile_assembly_samples);
@@ -831,14 +848,23 @@ void print_client_stats(ClientState& state) {
     }
 
     const bool udp_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 ||
-                              ignored_probe != 0 || stale_session != 0;
+                              ignored_probe != 0 || stale_session != 0 || udp_async_posted != 0 ||
+                              udp_async_completed != 0 || udp_async_failed != 0 || udp_async_submit_failed != 0 ||
+                              udp_async_cancels != 0 || udp_async_inflight_max != 0;
     if (udp_activity)
     {
-        WD_LOG_DEBUG("[client udp/s] pkts=%llu kib=%.1f completed=%llu invalid=%llu probe=%llu stale_session=%llu old_gen=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f kib_per_tile=%.2f compressed_kib_per_tile=%.2f pkts_per_tile=%.2f",
+        WD_LOG_DEBUG("[client udp/s] pkts=%llu kib=%.1f completed=%llu invalid=%llu probe=%llu stale_session=%llu old_gen=%llu async_recv_submitted=%llu async_recv_completed=%llu async_recv_failed=%llu async_recv_submit_failed=%llu async_recv_cancels=%llu async_recv_inflight_max=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f kib_per_tile=%.2f compressed_kib_per_tile=%.2f pkts_per_tile=%.2f",
                      static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0,
                      static_cast<unsigned long long>(completed), static_cast<unsigned long long>(invalid),
                      static_cast<unsigned long long>(ignored_probe), static_cast<unsigned long long>(stale_session),
-                     static_cast<unsigned long long>(old_gen), avg_ms(udp_interarrival_sum_ns, udp_interarrival_samples),
+                     static_cast<unsigned long long>(old_gen),
+                     static_cast<unsigned long long>(udp_async_posted),
+                     static_cast<unsigned long long>(udp_async_completed),
+                     static_cast<unsigned long long>(udp_async_failed),
+                     static_cast<unsigned long long>(udp_async_submit_failed),
+                     static_cast<unsigned long long>(udp_async_cancels),
+                     static_cast<unsigned long long>(udp_async_inflight_max),
+                     avg_ms(udp_interarrival_sum_ns, udp_interarrival_samples),
                      avg_ms(udp_jitter_sum_ns, udp_jitter_samples), static_cast<double>(udp_interarrival_max_ns) / 1000000.0,
                      completed ? (static_cast<double>(udp_bytes) / 1024.0) / static_cast<double>(completed) : 0.0,
                      completed ? (static_cast<double>(completed_compressed) / 1024.0) / static_cast<double>(completed) : 0.0,
@@ -860,14 +886,26 @@ void print_client_stats(ClientState& state) {
     }
 
     const bool input_activity = keys != 0 || pointer != 0 || input_events != 0 || input_channel_events != 0 ||
-                                input_fallback_events != 0 || selection_channel_events != 0 || selection_fallback_events != 0;
+                                input_fallback_events != 0 || selection_channel_events != 0 || selection_fallback_events != 0 ||
+                                tcp_async_coalesced != 0;
     if (input_activity)
     {
-        WD_LOG_DEBUG("[client input/s] keys=%llu pointer=%llu input_events=%llu input_channel=%llu input_fallback=%llu selection_channel=%llu selection_fallback=%llu",
+        WD_LOG_DEBUG("[client input/s] keys=%llu pointer_queued=%llu pointer_coalesced=%llu input_events_queued=%llu input_channel=%llu input_fallback=%llu selection_channel=%llu selection_fallback=%llu",
                      static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
-                     static_cast<unsigned long long>(input_events), static_cast<unsigned long long>(input_channel_events),
-                     static_cast<unsigned long long>(input_fallback_events), static_cast<unsigned long long>(selection_channel_events),
-                     static_cast<unsigned long long>(selection_fallback_events));
+                     static_cast<unsigned long long>(tcp_async_coalesced), static_cast<unsigned long long>(input_events),
+                     static_cast<unsigned long long>(input_channel_events), static_cast<unsigned long long>(input_fallback_events),
+                     static_cast<unsigned long long>(selection_channel_events), static_cast<unsigned long long>(selection_fallback_events));
+    }
+
+    const bool tcp_async_activity = tcp_async_queued != 0 || tcp_async_completed != 0 || tcp_async_failed != 0 ||
+                                    tcp_async_overflow != 0 || tcp_async_partial != 0 || tcp_async_coalesced != 0 || tcp_async_inflight_max != 0;
+    if (tcp_async_activity)
+    {
+        WD_LOG_DEBUG("[client tcp_async/s] queued=%llu completed=%llu failed=%llu overflow=%llu partial=%llu coalesced=%llu inflight_max=%llu",
+                     static_cast<unsigned long long>(tcp_async_queued), static_cast<unsigned long long>(tcp_async_completed),
+                     static_cast<unsigned long long>(tcp_async_failed), static_cast<unsigned long long>(tcp_async_overflow),
+                     static_cast<unsigned long long>(tcp_async_partial), static_cast<unsigned long long>(tcp_async_coalesced),
+                     static_cast<unsigned long long>(tcp_async_inflight_max));
     }
 
     static uint64_t prev_timeout_ms = 0;
@@ -971,9 +1009,122 @@ bool client_has_pending_server_config(ClientState& state) {
     return state.pending_config_valid;
 }
 
-bool drain_udp(ClientState& state, TileReassembler& reassembler) {
-    std::lock_guard<std::mutex> processing_lock(state.udp_processing_mutex);
+bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, const uint8_t* packet, size_t packet_size) {
+    if (!packet || packet_size < WD_UDP_TILE_HEADER_MIN_SIZE)
+    {
+        state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
 
+    wd_udp_tile_packet_decoded udp_header{};
+    if (!wd_udp_tile_packet_decode(packet, packet_size, &udp_header))
+    {
+        state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    if (udp_header.tile_id == WD_UDP_TILE_ID_MTU_PROBE || udp_header.tile_id == WD_UDP_TILE_ID_THROUGHPUT_PROBE)
+    {
+        state.stats.udp_ignored_probe.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    uint8_t session_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(state.config_mutex);
+        session_id = state.config.session_id;
+    }
+
+    if (session_id == 0 || udp_header.session_id != session_id)
+    {
+        state.stats.udp_ignored_stale_session.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    const uint64_t packet_rx_ns = wd_now_ns();
+    const uint64_t prev_rx_ns = state.stats.last_udp_packet_rx_ns.exchange(packet_rx_ns, std::memory_order_relaxed);
+    if (prev_rx_ns != 0 && packet_rx_ns >= prev_rx_ns)
+    {
+        const uint64_t interarrival_ns = packet_rx_ns - prev_rx_ns;
+        state.stats.udp_interarrival_samples.fetch_add(1, std::memory_order_relaxed);
+        state.stats.udp_interarrival_sum_ns.fetch_add(interarrival_ns, std::memory_order_relaxed);
+        record_atomic_max(state.stats.udp_interarrival_max_ns, interarrival_ns);
+
+        const uint64_t prev_interarrival_ns =
+            state.stats.last_udp_interarrival_ns.exchange(interarrival_ns, std::memory_order_relaxed);
+        if (prev_interarrival_ns != 0)
+        {
+            const uint64_t jitter_ns = interarrival_ns > prev_interarrival_ns ? interarrival_ns - prev_interarrival_ns
+                                                                              : prev_interarrival_ns - interarrival_ns;
+            state.stats.udp_interarrival_jitter_samples.fetch_add(1, std::memory_order_relaxed);
+            state.stats.udp_interarrival_jitter_sum_ns.fetch_add(jitter_ns, std::memory_order_relaxed);
+        }
+    }
+
+    state.stats.udp_packets_rx.fetch_add(1, std::memory_order_relaxed);
+    state.stats.udp_bytes_rx.fetch_add(static_cast<uint64_t>(packet_size), std::memory_order_relaxed);
+
+    CompletedTile completed = reassembler.process_udp_packet(state, packet, packet_size);
+
+    if (!completed.valid)
+    {
+        return true;
+    }
+
+    {
+        std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
+        if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_width, completed.tile_height, completed.tile_bytes))
+        {
+            state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state.generation_mutex);
+        mark_completed_base_generations(state, completed);
+    }
+
+    if (completed.first_packet_ns != 0 && completed.completed_timestamp_ns >= completed.first_packet_ns)
+    {
+        state.stats.tile_assembly_samples.fetch_add(1, std::memory_order_relaxed);
+        state.stats.tile_assembly_sum_ns.fetch_add(completed.completed_timestamp_ns - completed.first_packet_ns,
+                                                   std::memory_order_relaxed);
+    }
+
+    if (completed.completed_timestamp_ns != 0)
+    {
+        std::lock_guard<std::mutex> present_lock(state.present_mutex);
+        state.pending_present_tile_timestamps.push_back(completed.completed_timestamp_ns);
+        state.pending_present_input_sequences.push_back(completed.input_sequence);
+    }
+
+    state.stats.udp_completed_compressed_bytes.fetch_add(completed.compressed_size, std::memory_order_relaxed);
+    state.stats.udp_completed_packets.fetch_add(completed.packet_count, std::memory_order_relaxed);
+    state.stats.udp_tiles_completed.fetch_add(1, std::memory_order_relaxed);
+    state.frame_dirty.store(true, std::memory_order_release);
+    return true;
+}
+
+struct AsyncUdpDrainContext {
+    ClientState*      state       = nullptr;
+    TileReassembler* reassembler = nullptr;
+};
+
+bool handle_async_udp_packet(void* userdata, const uint8_t* packet, size_t packet_size) {
+    auto* ctx = static_cast<AsyncUdpDrainContext*>(userdata);
+    if (!ctx || !ctx->state || !ctx->reassembler)
+    {
+        return false;
+    }
+    if (client_has_pending_server_config(*ctx->state))
+    {
+        return true;
+    }
+    return process_udp_datagram(*ctx->state, *ctx->reassembler, packet, packet_size);
+}
+
+bool drain_udp_sync_locked(ClientState& state, TileReassembler& reassembler) {
     uint16_t udp_payload_target = state.config.udp_payload_target;
     if (udp_payload_target == 0)
     {
@@ -1017,101 +1168,33 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler) {
             return true;
         }
 
-        if (static_cast<size_t>(n) < WD_UDP_TILE_HEADER_MIN_SIZE)
+        if (!process_udp_datagram(state, reassembler, state.udp_recv_buffer.data(), static_cast<size_t>(n)))
         {
-            state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
-            continue;
+            return false;
         }
-
-        wd_udp_tile_packet_decoded udp_header{};
-        if (!wd_udp_tile_packet_decode(state.udp_recv_buffer.data(), static_cast<size_t>(n), &udp_header))
-        {
-            state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-
-        if (udp_header.tile_id == WD_UDP_TILE_ID_MTU_PROBE || udp_header.tile_id == WD_UDP_TILE_ID_THROUGHPUT_PROBE)
-        {
-            state.stats.udp_ignored_probe.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-
-        uint8_t session_id = 0;
-        {
-            std::lock_guard<std::mutex> lock(state.config_mutex);
-            session_id = state.config.session_id;
-        }
-
-        if (session_id == 0 || udp_header.session_id != session_id)
-        {
-            state.stats.udp_ignored_stale_session.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-
-        const uint64_t packet_rx_ns = wd_now_ns();
-        const uint64_t prev_rx_ns = state.stats.last_udp_packet_rx_ns.exchange(packet_rx_ns, std::memory_order_relaxed);
-        if (prev_rx_ns != 0 && packet_rx_ns >= prev_rx_ns)
-        {
-            const uint64_t interarrival_ns = packet_rx_ns - prev_rx_ns;
-            state.stats.udp_interarrival_samples.fetch_add(1, std::memory_order_relaxed);
-            state.stats.udp_interarrival_sum_ns.fetch_add(interarrival_ns, std::memory_order_relaxed);
-            record_atomic_max(state.stats.udp_interarrival_max_ns, interarrival_ns);
-
-            const uint64_t prev_interarrival_ns =
-                state.stats.last_udp_interarrival_ns.exchange(interarrival_ns, std::memory_order_relaxed);
-            if (prev_interarrival_ns != 0)
-            {
-                const uint64_t jitter_ns = interarrival_ns > prev_interarrival_ns ? interarrival_ns - prev_interarrival_ns
-                                                                                  : prev_interarrival_ns - interarrival_ns;
-                state.stats.udp_interarrival_jitter_samples.fetch_add(1, std::memory_order_relaxed);
-                state.stats.udp_interarrival_jitter_sum_ns.fetch_add(jitter_ns, std::memory_order_relaxed);
-            }
-        }
-
-        state.stats.udp_packets_rx.fetch_add(1, std::memory_order_relaxed);
-        state.stats.udp_bytes_rx.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
-
-        CompletedTile completed = reassembler.process_udp_packet(state, state.udp_recv_buffer.data(), static_cast<size_t>(n));
-
-        if (!completed.valid)
-        {
-            continue;
-        }
-
-        {
-            std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
-            if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_width, completed.tile_height, completed.tile_bytes))
-            {
-                state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
-                continue;
-            }
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(state.generation_mutex);
-
-            mark_completed_base_generations(state, completed);
-        }
-
-        if (completed.first_packet_ns != 0 && completed.completed_timestamp_ns >= completed.first_packet_ns)
-        {
-            state.stats.tile_assembly_samples.fetch_add(1, std::memory_order_relaxed);
-            state.stats.tile_assembly_sum_ns.fetch_add(completed.completed_timestamp_ns - completed.first_packet_ns,
-                                                       std::memory_order_relaxed);
-        }
-
-        if (completed.completed_timestamp_ns != 0)
-        {
-            std::lock_guard<std::mutex> present_lock(state.present_mutex);
-            state.pending_present_tile_timestamps.push_back(completed.completed_timestamp_ns);
-            state.pending_present_input_sequences.push_back(completed.input_sequence);
-        }
-
-        state.stats.udp_completed_compressed_bytes.fetch_add(completed.compressed_size, std::memory_order_relaxed);
-        state.stats.udp_completed_packets.fetch_add(completed.packet_count, std::memory_order_relaxed);
-        state.stats.udp_tiles_completed.fetch_add(1, std::memory_order_relaxed);
-        state.frame_dirty.store(true, std::memory_order_release);
     }
+}
+
+bool drain_udp(ClientState& state, TileReassembler& reassembler) {
+    std::lock_guard<std::mutex> processing_lock(state.udp_processing_mutex);
+
+    if (state.udp_receiver)
+    {
+        AsyncUdpDrainContext ctx{&state, &reassembler};
+        const bool ok = client_async_udp_receiver_drain(state.udp_receiver, &ctx, handle_async_udp_packet, 8192);
+        client_reap_async_udp_receives(state);
+        if (ok)
+        {
+            return true;
+        }
+
+        if (!client_disable_async_udp_receiver(state))
+        {
+            return false;
+        }
+    }
+
+    return drain_udp_sync_locked(state, reassembler);
 }
 
 

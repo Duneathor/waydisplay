@@ -17,23 +17,37 @@
 namespace waydisplay {
 namespace {
 
-constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MIN_NS     = 100ull * 1000ull * 1000ull;
-constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS = 250ull * 1000ull * 1000ull;
-constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MAX_NS     = 450ull * 1000ull * 1000ull;
+constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MIN_NS     = WD_LINK_TILE_REASSEMBLY_MIN_NS;
+constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS = WD_LINK_TILE_REASSEMBLY_DEFAULT_NS;
+constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MAX_NS     = WD_LINK_TILE_REASSEMBLY_MAX_NS;
 constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_SLACK_NS   = 50ull * 1000ull * 1000ull;
 
-uint64_t clamp_tile_reassembly_timeout_ns(uint64_t ns) {
-    return std::max(TILE_REASSEMBLY_TIMEOUT_MIN_NS, std::min(TILE_REASSEMBLY_TIMEOUT_MAX_NS, ns));
+uint64_t tile_reassembly_floor_ns(const ClientState& state) {
+    uint64_t floor_ns = state.tile_reassembly_floor_ns.load(std::memory_order_relaxed);
+    if (floor_ns == 0)
+    {
+        floor_ns = TILE_REASSEMBLY_TIMEOUT_MIN_NS;
+    }
+    return std::max(TILE_REASSEMBLY_TIMEOUT_MIN_NS, std::min(TILE_REASSEMBLY_TIMEOUT_MAX_NS, floor_ns));
+}
+
+uint64_t clamp_tile_reassembly_timeout_ns(const ClientState& state, uint64_t ns) {
+    return std::max(tile_reassembly_floor_ns(state), std::min(TILE_REASSEMBLY_TIMEOUT_MAX_NS, ns));
+}
+
+uint64_t clamp_retransmit_inflight_grace_ns(uint64_t ns) {
+    return std::max<uint64_t>(WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS,
+                              std::min<uint64_t>(WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS, ns));
 }
 
 uint64_t current_tile_reassembly_timeout_ns(const ClientState& state) {
     const uint64_t timeout_ns = state.tile_reassembly_timeout_ns.load(std::memory_order_relaxed);
     if (timeout_ns == 0)
     {
-        return TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS;
+        return std::max(tile_reassembly_floor_ns(state), TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS);
     }
 
-    return clamp_tile_reassembly_timeout_ns(timeout_ns);
+    return clamp_tile_reassembly_timeout_ns(state, timeout_ns);
 }
 
 void update_tile_reassembly_timeout(ClientState& state, uint64_t sample_ns, bool response_sample) {
@@ -59,7 +73,7 @@ void update_tile_reassembly_timeout(ClientState& state, uint64_t sample_ns, bool
 
     const double jittered_tile_ns = state.tile_reassembly_ewma_ns + 2.0 * state.tile_reassembly_deviation_ns +
                                     static_cast<double>(TILE_REASSEMBLY_TIMEOUT_SLACK_NS);
-    const uint64_t target_ns = clamp_tile_reassembly_timeout_ns(static_cast<uint64_t>(jittered_tile_ns));
+    const uint64_t target_ns = clamp_tile_reassembly_timeout_ns(state, static_cast<uint64_t>(jittered_tile_ns));
 
     const uint64_t old_ns = current_tile_reassembly_timeout_ns(state);
     if (old_ns != target_ns)
@@ -78,7 +92,7 @@ void reduce_tile_reassembly_timeout_after_loss(ClientState& state) {
     {
         target_ns = TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS;
     }
-    target_ns = clamp_tile_reassembly_timeout_ns(target_ns);
+    target_ns = clamp_tile_reassembly_timeout_ns(state, target_ns);
 
     if (state.tile_reassembly_ewma_ns > static_cast<double>(target_ns))
     {
@@ -527,7 +541,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
                 now_ns >= state.retx_last_request_ns[base_id])
             {
                 retx_response_ns = now_ns - state.retx_last_request_ns[base_id];
-                state.retx_inflight_grace_ns = clamp_tile_reassembly_timeout_ns(retx_response_ns + retx_response_ns / 2);
+                state.retx_inflight_grace_ns = clamp_retransmit_inflight_grace_ns(retx_response_ns + retx_response_ns / 2);
             }
 
             if (base_id < state.config.total_tiles && state.retx_inflight_generation.size() == state.config.total_tiles &&

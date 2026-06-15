@@ -89,10 +89,13 @@ target_link_libraries(waydisplay_common PUBLIC
 
 if(WAYDISPLAY_BUILD_CLIENT_SDL)
     pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+    pkg_check_modules(LIBURING REQUIRED IMPORTED_TARGET liburing)
 
     add_executable(waydisplay_client_sdl
         src/client/main_sdl.cpp
         src/client/client_net.cpp
+        src/client/client_async_tcp.cpp
+        src/client/client_async_udp.cpp
         src/client/tile_reassembly.cpp
         src/client/sdl_input.cpp
         src/client/sdl_viewer.cpp
@@ -107,6 +110,7 @@ if(WAYDISPLAY_BUILD_CLIENT_SDL)
     target_link_libraries(waydisplay_client_sdl PRIVATE
         waydisplay_common
         PkgConfig::SDL2
+        PkgConfig::LIBURING
         Threads::Threads
     )
 endif()
@@ -123,6 +127,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
     pkg_check_modules(XKBCOMMON QUIET IMPORTED_TARGET xkbcommon)
     pkg_check_modules(PIXMAN QUIET IMPORTED_TARGET pixman-1)
     pkg_check_modules(LIBDRM QUIET IMPORTED_TARGET libdrm)
+    pkg_check_modules(LIBURING QUIET IMPORTED_TARGET liburing)
 
     find_program(WAYLAND_SCANNER wayland-scanner)
 
@@ -132,6 +137,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
        AND XKBCOMMON_FOUND
        AND PIXMAN_FOUND
        AND LIBDRM_FOUND
+       AND LIBURING_FOUND
        AND WAYLAND_SCANNER)
 
         message(STATUS "Using wlroots pkg-config module: ${WAYDISPLAY_WLROOTS_MODULE}")
@@ -238,6 +244,8 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/main_wlroots.c
             src/server/wd_server.c
             src/server/wd_server_net.c
+            src/server/wd_async_tcp.c
+            src/server/wd_async_udp.c
             src/server/wd_stream.c
             src/server/wd_keyboard.c
             src/server/wd_keyboard_shortcuts_inhibit.c
@@ -278,13 +286,14 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             PkgConfig::XKBCOMMON
             PkgConfig::PIXMAN
             PkgConfig::LIBDRM
+            PkgConfig::LIBURING
             Threads::Threads
         )
     else()
         message(WARNING
             "Skipping waydisplay_server_wlroots because one or more dependencies were not found.\n"
             "Tried wlroots pkg-config modules: wlroots, wlroots-0.19, wlroots0.19, wlroots-0.18, wlroots0.18\n"
-            "Required pkg-config modules: wayland-server, wayland-protocols, xkbcommon, pixman-1, libdrm\n"
+            "Required pkg-config modules: wayland-server, wayland-protocols, xkbcommon, pixman-1, libdrm, liburing\n"
             "Required executable: wayland-scanner\n"
             "Found status:\n"
             "  wlroots:           ${WAYDISPLAY_WLROOTS_FOUND}\n"
@@ -294,6 +303,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             "  xkbcommon:         ${XKBCOMMON_FOUND}\n"
             "  pixman-1:          ${PIXMAN_FOUND}\n"
             "  libdrm:            ${LIBDRM_FOUND}\n"
+            "  liburing:          ${LIBURING_FOUND}\n"
             "  wayland-scanner:   ${WAYLAND_SCANNER}\n"
             "Set -DWAYDISPLAY_BUILD_WLROOTS_SERVER=OFF to silence this warning."
         )

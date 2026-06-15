@@ -29,6 +29,9 @@
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_protocol.h"
 
+struct wd_async_tcp_sender;
+struct wd_async_udp_sender;
+
 #include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
@@ -300,6 +303,23 @@ struct wd_stats {
     uint64_t tcp_summary_full_tx;
     uint64_t tcp_summary_delta_tx;
     uint64_t tcp_summary_delta_tiles;
+    uint64_t tcp_summary_coalesced;
+    uint64_t tcp_control_bytes_sent;
+    uint64_t tcp_control_bytes_refunded;
+    uint64_t tcp_budget_blocked;
+    uint64_t tcp_async_send_failed;
+    uint64_t tcp_async_queue_overflow;
+    uint64_t tcp_async_queued;
+    uint64_t tcp_async_completed;
+    uint64_t tcp_async_completion_failed;
+    uint64_t tcp_async_partial_resubmits;
+    uint64_t tcp_async_inflight_max;
+    uint64_t udp_async_send_failed;
+    uint64_t udp_async_queued;
+    uint64_t udp_async_completed;
+    uint64_t udp_async_completion_failed;
+    uint64_t udp_async_fallback_sync;
+    uint64_t udp_async_inflight_max;
 
     uint64_t rate_decreases;
     uint64_t rate_increases;
@@ -380,6 +400,15 @@ struct wd_net_state {
     bool client_connected;
     uint16_t udp_payload_target;
 
+    uint64_t link_rtt_ns;
+    uint64_t link_jitter_ns;
+    uint64_t summary_retransmit_grace_ns;
+    uint64_t retransmit_rerequest_ns;
+    uint64_t retransmit_inflight_grace_ns;
+    uint64_t tile_reassembly_timeout_ns;
+    uint64_t active_summary_interval_ns;
+    uint64_t clean_summary_interval_ns;
+
     uint32_t dirty_region_rng;
     uint16_t* dirty_regions;
     bool*     dirty_region_queued;
@@ -406,9 +435,24 @@ struct wd_net_state {
     bool*     summary_dirty_tiles;
     uint16_t* summary_dirty_queue;
     uint16_t  summary_dirty_count;
+    uint64_t  summary_epoch;
+    uint16_t  summary_async_pending_count;
+    bool      summary_async_pending_full;
 
     uint16_t pending_cursor_shape;
     bool     pending_cursor_shape_dirty;
+
+    struct wd_async_tcp_sender* control_tx;
+    struct wd_async_udp_sender* udp_tx;
+    uint64_t                    control_tx_failed_seen;
+    uint64_t                    control_tx_queued_seen;
+    uint64_t                    control_tx_completed_seen;
+    uint64_t                    control_tx_partial_seen;
+    uint64_t                    control_tx_overflow_seen;
+    uint64_t                    udp_tx_failed_seen;
+    uint64_t                    udp_tx_queued_seen;
+    uint64_t                    udp_tx_completed_seen;
+    uint64_t                    udp_tx_fallback_seen;
 
     int listen_fd;
     int tcp_fd;
@@ -657,6 +701,8 @@ bool wd_stream_send_generation_summary_locked(struct wd_server* server);
 bool wd_stream_send_pending_generation_summary_locked(struct wd_server* server);
 bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id, uint64_t requested_generation);
 void wd_stream_print_and_reset_stats(struct wd_server* server);
+bool wd_stream_try_consume_tcp_control_budget_locked(struct wd_net_state* net, uint32_t bytes, uint64_t now_ns);
+void wd_stream_account_tcp_control_bytes_locked(struct wd_net_state* net, uint32_t bytes);
 
 void     wd_stream_policy_set_defaults(struct wd_stream_policy* policy);
 void     wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const struct wd_client_hello_payload* hello);

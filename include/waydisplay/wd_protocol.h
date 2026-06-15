@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 14u
+#define WD_PROTOCOL_VERSION 15u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -42,6 +42,8 @@ enum wd_message_type {
     WD_MSG_INPUT_CHANNEL_HELLO     = 17,
     WD_MSG_SELECTION_CHANNEL_HELLO = 18,
     WD_MSG_CLIENT_STATS            = 19,
+    WD_MSG_LINK_PROBE_PING         = 20,
+    WD_MSG_LINK_PROBE_PONG         = 21,
     WD_MSG_ERROR                   = 255,
 };
 
@@ -144,6 +146,22 @@ struct wd_server_config_payload {
     uint16_t zstd_level;
     uint16_t udp_payload_target;
     uint32_t capabilities;
+
+    /* Conservative link-profile timers derived by the server's connect-time
+     * probe. Values are milliseconds; 0 means use the compiled default. */
+    uint16_t link_rtt_ms;
+    uint16_t summary_retransmit_grace_ms;
+    uint16_t retransmit_rerequest_ms;
+    uint16_t retransmit_inflight_grace_ms;
+    uint16_t tile_reassembly_timeout_ms;
+    uint16_t active_summary_interval_ms;
+    uint16_t clean_summary_interval_ms;
+};
+
+struct wd_link_probe_payload {
+    uint8_t session_id;
+    uint32_t sequence;
+    uint64_t timestamp_ns;
 };
 
 struct wd_tile_generation_entry {
