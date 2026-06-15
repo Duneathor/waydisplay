@@ -16,6 +16,56 @@
 static struct wd_server*     g_server_for_signal   = NULL;
 static volatile sig_atomic_t g_terminate_requested = 0;
 
+
+static uint64_t wd_server_clamp_u64(uint64_t value, uint64_t min_value, uint64_t max_value) {
+    if (value < min_value)
+    {
+        return min_value;
+    }
+    if (value > max_value)
+    {
+        return max_value;
+    }
+    return value;
+}
+
+static uint64_t wd_server_delta_summary_interval_locked(struct wd_server* server, uint64_t now_ns) {
+    (void)now_ns;
+    if (!server)
+    {
+        return WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
+    }
+
+    struct wd_net_state* net = &server->net;
+    bool active = net->retransmit_queue_count != 0 || net->stats.retx_req_rx != 0 ||
+                  net->stats.retx_req_stale_generation != 0 || net->stats.retx_tiles_superseded_by_fresh != 0 ||
+                  net->stats.client_partial_tiles_timed_out != 0 || net->stats.client_retx_requests_tx != 0;
+
+    uint64_t interval_ns = active ? net->active_summary_interval_ns : net->clean_summary_interval_ns;
+    if (interval_ns == 0)
+    {
+        interval_ns = active ? WD_LINK_ACTIVE_SUMMARY_INTERVAL_DEFAULT_NS : WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
+    }
+
+    if (active)
+    {
+        uint64_t stale_or_superseded = net->stats.retx_req_stale_generation + net->stats.retx_tiles_superseded_by_fresh;
+        uint64_t repair_activity = stale_or_superseded + net->stats.retx_tiles_req + net->stats.retx_req_ignored_live;
+        if (stale_or_superseded >= 16 && repair_activity != 0 &&
+            stale_or_superseded * 100ull >= repair_activity * (uint64_t)WD_LINK_STALE_REPAIR_BACKOFF_PERCENT)
+        {
+            interval_ns *= WD_LINK_STALE_REPAIR_BACKOFF_MULTIPLIER;
+            interval_ns = wd_server_clamp_u64(interval_ns,
+                                              WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS,
+                                              WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
+            net->stats.tcp_summary_repair_backoff++;
+        }
+    }
+
+    net->stats.tcp_summary_budget_interval_ns = interval_ns;
+    return interval_ns;
+}
+
 static void handle_signal(int signo) {
     (void)signo;
 
@@ -280,14 +330,7 @@ static int server_frame_timer(void* data) {
     {
         uint64_t delta_interval_ns = WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
         pthread_mutex_lock(&server->net.lock);
-        delta_interval_ns = server->net.clean_summary_interval_ns ? server->net.clean_summary_interval_ns
-                                                                  : WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
-        if (server->net.retransmit_queue_count != 0 || server->net.stats.client_partial_tiles_timed_out != 0 ||
-            server->net.stats.client_retx_requests_tx != 0)
-        {
-            delta_interval_ns = server->net.active_summary_interval_ns ? server->net.active_summary_interval_ns
-                                                                      : WD_LINK_ACTIVE_SUMMARY_INTERVAL_DEFAULT_NS;
-        }
+        delta_interval_ns = wd_server_delta_summary_interval_locked(server, t);
         const bool should_send_delta = server->last_delta_summary_ns == 0 || t - server->last_delta_summary_ns >= delta_interval_ns;
         if (should_send_delta && server->net.summary_dirty_count != 0)
         {

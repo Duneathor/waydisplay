@@ -14,7 +14,6 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
-#define WD_NSEC_PER_SEC 1000000000ull
 
 #define WD_UDP_SEND_PRESSURE_LOG_INTERVAL_NS 1000000000ull
 #define WD_ENCODER_MAX_THREADS 4u
@@ -3446,14 +3445,18 @@ void wd_stream_print_and_reset_stats(struct wd_server* server) {
     bool repair_activity = s.retx_req_rx != 0 || s.retx_tiles_req != 0 || s.retx_req_ignored_live != 0 ||
                            s.retx_req_stale_generation != 0 || s.retx_tiles_superseded_by_fresh != 0 ||
                            s.tcp_summary_tx != 0 || s.tcp_summary_delta_tx != 0 ||
-                           s.tcp_summary_delta_tiles != 0 || s.tcp_summary_coalesced != 0 || s.rate_decreases != 0 || s.rate_increases != 0 ||
+                           s.tcp_summary_delta_tiles != 0 || s.tcp_summary_coalesced != 0 ||
+                           s.tcp_summary_repair_backoff != 0 || s.tcp_summary_budget_interval_ns != 0 ||
+                           s.rate_decreases != 0 || s.rate_increases != 0 ||
                            s.frame_rate_downshifts != 0 || s.frame_rate_upshifts != 0;
     if (repair_activity)
     {
-        WD_LOG_DEBUG("WayDisplay repair/s: summaries=%llu full=%llu delta=%llu delta_tiles=%llu summary_coalesced=%llu retx_req=%llu retx_tiles=%llu stale_gen=%llu ignored_live=%llu superseded=%llu rate_down=%llu rate_up=%llu fps_down=%llu fps_up=%llu",
+        WD_LOG_DEBUG("WayDisplay repair/s: summaries=%llu full=%llu delta=%llu delta_tiles=%llu summary_coalesced=%llu summary_interval_ms=%llu repair_backoff=%llu retx_req=%llu retx_tiles=%llu stale_gen=%llu ignored_live=%llu superseded=%llu rate_down=%llu rate_up=%llu fps_down=%llu fps_up=%llu",
                      (unsigned long long)s.tcp_summary_tx, (unsigned long long)s.tcp_summary_full_tx,
                      (unsigned long long)s.tcp_summary_delta_tx, (unsigned long long)s.tcp_summary_delta_tiles,
                      (unsigned long long)s.tcp_summary_coalesced,
+                     (unsigned long long)(s.tcp_summary_budget_interval_ns / 1000000ull),
+                     (unsigned long long)s.tcp_summary_repair_backoff,
                      (unsigned long long)s.retx_req_rx, (unsigned long long)s.retx_tiles_req,
                      (unsigned long long)s.retx_req_stale_generation,
                      (unsigned long long)s.retx_req_ignored_live, (unsigned long long)s.retx_tiles_superseded_by_fresh,

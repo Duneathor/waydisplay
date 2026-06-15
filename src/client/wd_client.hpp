@@ -90,8 +90,6 @@ struct ClientStats {
     std::atomic<uint64_t> tcp_async_coalesced{0};
     std::atomic<uint64_t> tcp_async_inflight_max{0};
 
-    std::atomic<uint64_t> summary_latency_samples{0};
-    std::atomic<uint64_t> summary_latency_sum_ns{0};
     std::atomic<uint64_t> tile_assembly_samples{0};
     std::atomic<uint64_t> tile_assembly_sum_ns{0};
     std::atomic<uint64_t> tile_present_latency_samples{0};
@@ -188,6 +186,7 @@ struct ClientState {
     double                tile_reassembly_deviation_ns  = 0.0;
     std::atomic<uint64_t> tile_reassembly_timeout_ns{WD_LINK_TILE_REASSEMBLY_DEFAULT_NS};
     std::atomic<uint64_t> tile_reassembly_floor_ns{WD_LINK_TILE_REASSEMBLY_MIN_NS};
+    std::atomic<uint64_t> udp_gap_pressure_ns{0};
 
     std::vector<uint8_t> udp_recv_buffer;
 

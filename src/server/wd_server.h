@@ -304,6 +304,8 @@ struct wd_stats {
     uint64_t tcp_summary_delta_tx;
     uint64_t tcp_summary_delta_tiles;
     uint64_t tcp_summary_coalesced;
+    uint64_t tcp_summary_budget_interval_ns;
+    uint64_t tcp_summary_repair_backoff;
     uint64_t tcp_control_bytes_sent;
     uint64_t tcp_control_bytes_refunded;
     uint64_t tcp_budget_blocked;

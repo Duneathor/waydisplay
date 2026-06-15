@@ -115,6 +115,78 @@ static void wd_net_set_link_profile_defaults(struct wd_net_state* net) {
     net->clean_summary_interval_ns     = WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
 }
 
+
+static uint64_t wd_net_estimate_summary_frame_bytes(const struct wd_server* server) {
+    if (!server || server->total_tiles == 0)
+    {
+        return sizeof(struct wd_tcp_header) + sizeof(struct wd_tile_summary_payload_header);
+    }
+
+    return (uint64_t)sizeof(struct wd_tcp_header) +
+           (uint64_t)sizeof(struct wd_tile_summary_payload_header) +
+           (uint64_t)server->total_tiles * (uint64_t)sizeof(struct wd_tile_generation_entry);
+}
+
+static uint64_t wd_net_summary_budget_interval_ns(const struct wd_server* server, uint64_t base_interval_ns) {
+    if (!server)
+    {
+        return base_interval_ns;
+    }
+
+    const struct wd_net_state* net = &server->net;
+    uint64_t rate = net->stream_policy.limited_udp_bytes_per_second;
+    if (rate == 0)
+    {
+        return base_interval_ns;
+    }
+
+    uint64_t summary_budget_bytes_per_second = (rate * (uint64_t)WD_LINK_SUMMARY_BUDGET_PERCENT) / 100ull;
+    if (summary_budget_bytes_per_second == 0)
+    {
+        return WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS;
+    }
+
+    uint64_t summary_frame_bytes = wd_net_estimate_summary_frame_bytes(server);
+    uint64_t interval_ns = (summary_frame_bytes * WD_NSEC_PER_SEC + summary_budget_bytes_per_second - 1ull) /
+                           summary_budget_bytes_per_second;
+
+    if (interval_ns < base_interval_ns)
+    {
+        interval_ns = base_interval_ns;
+    }
+
+    return wd_clamp_u64(interval_ns, WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS,
+                        WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
+}
+
+static void wd_net_update_summary_cadence_for_budget(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    struct wd_net_state* net = &server->net;
+    uint64_t base_active = wd_clamp_u64(net->link_rtt_ns / 4ull,
+                                        WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS,
+                                        WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
+    uint64_t active = wd_net_summary_budget_interval_ns(server, base_active);
+    uint64_t base_clean = wd_clamp_u64(net->link_rtt_ns / 2ull,
+                                       WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS,
+                                       WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS);
+    uint64_t clean = base_clean;
+    if (active > clean / 2ull)
+    {
+        clean = active * 2ull;
+    }
+
+    net->active_summary_interval_ns = wd_clamp_u64(active,
+                                                   WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS,
+                                                   WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
+    net->clean_summary_interval_ns = wd_clamp_u64(clean,
+                                                  WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS,
+                                                  WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS);
+}
+
 static void wd_net_derive_link_profile(struct wd_net_state* net, uint64_t measured_rtt_ns, uint64_t measured_jitter_ns) {
     if (!net)
     {
@@ -768,8 +840,11 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
     if (sample_count == 0)
     {
         wd_net_derive_link_profile(net, WD_LINK_RTT_DEFAULT_NS, 0);
-        WD_LOG_INFO("WayDisplay: TCP link RTT probe unavailable; using conservative defaults rtt=%u ms",
-                    (unsigned)(WD_LINK_RTT_DEFAULT_NS / 1000000ull));
+        wd_net_update_summary_cadence_for_budget(server);
+        WD_LOG_INFO("WayDisplay: TCP link RTT probe unavailable; using conservative defaults rtt=%u ms summary_delta=%llu/%llu ms",
+                    (unsigned)(WD_LINK_RTT_DEFAULT_NS / 1000000ull),
+                    (unsigned long long)(net->active_summary_interval_ns / 1000000ull),
+                    (unsigned long long)(net->clean_summary_interval_ns / 1000000ull));
         return;
     }
 
@@ -795,6 +870,7 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
      * values while high-latency/jittery links get more slack. */
     uint64_t jitter_ns = (max_ns > min_ns) ? (max_ns - min_ns) / 2ull : 0;
     wd_net_derive_link_profile(net, avg_ns, jitter_ns);
+    wd_net_update_summary_cadence_for_budget(server);
 
     WD_LOG_INFO("WayDisplay: TCP link profile rtt=%llu ms jitter=%llu ms summary_grace=%llu ms rerequest=%llu ms reassembly=%llu ms summary_delta=%llu/%llu ms samples=%u",
                 (unsigned long long)(net->link_rtt_ns / 1000000ull),
@@ -809,6 +885,8 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
 static void wd_server_fill_config(struct wd_server* server, uint8_t session_id, uint16_t udp_payload_target,
                                   struct wd_server_config_payload* cfg) {
     memset(cfg, 0, sizeof(*cfg));
+
+    wd_net_update_summary_cadence_for_budget(server);
 
     cfg->session_id         = session_id;
     cfg->width              = (uint16_t)server->display_width;
@@ -1208,12 +1286,14 @@ void* wd_net_thread_main(void* arg) {
 
         uint16_t selected_udp_payload = run_udp_mtu_probe(server, tcp_fd, &client_udp_addr);
         uint64_t selected_limited_udp_rate = run_udp_throughput_probe(server, tcp_fd, &client_udp_addr, selected_udp_payload);
-        run_tcp_link_probe(server, tcp_fd);
 
         pthread_mutex_lock(&net->lock);
         net->udp_payload_target = selected_udp_payload;
         wd_stream_policy_set_limited_udp_byte_rate(&net->stream_policy, selected_limited_udp_rate);
+        wd_stream_policy_apply_client_hello(&net->stream_policy, &hello);
         pthread_mutex_unlock(&net->lock);
+
+        run_tcp_link_probe(server, tcp_fd);
 
         wd_server_fill_config(server, session_id, selected_udp_payload, &cfg);
 
@@ -1231,8 +1311,6 @@ void* wd_net_thread_main(void* arg) {
         wd_clear_tcp_receive_timeout(tcp_fd);
 
         pthread_mutex_lock(&net->lock);
-
-        wd_stream_policy_apply_client_hello(&net->stream_policy, &hello);
 
         net->tcp_fd           = tcp_fd;
         net->input_tcp_fd     = input_tcp_fd;
@@ -1547,6 +1625,7 @@ void* wd_net_thread_main(void* arg) {
                             if (requested_generation != 0 && tile->generation > requested_generation)
                             {
                                 net->stats.retx_req_stale_generation++;
+                                continue;
                             }
 
                             if (wd_stream_queue_retransmit_tile_locked(server, entries[i].tile_id, requested_generation))

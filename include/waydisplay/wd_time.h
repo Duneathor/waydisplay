@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#define WD_NSEC_PER_SEC 1000000000ull
+
 #ifdef __cplusplus
 extern "C" {
 #endif

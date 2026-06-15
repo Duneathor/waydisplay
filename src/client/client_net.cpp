@@ -56,14 +56,49 @@ uint64_t clamp_timer_ns(uint64_t ns, uint64_t min_ns, uint64_t max_ns) {
     return std::max(min_ns, std::min(max_ns, ns));
 }
 
+uint64_t udp_gap_pressure_ns(const ClientState& state) {
+    return clamp_timer_ns(state.udp_gap_pressure_ns.load(std::memory_order_relaxed),
+                          0, WD_LINK_RTT_MAX_NS);
+}
+
 uint64_t summary_retransmit_grace_ns(const ClientState& state) {
-    return clamp_timer_ns(state.summary_retransmit_grace_ns.load(std::memory_order_relaxed),
-                          WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS);
+    uint64_t grace_ns = clamp_timer_ns(state.summary_retransmit_grace_ns.load(std::memory_order_relaxed),
+                                       WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS);
+    uint64_t gap_ns = udp_gap_pressure_ns(state);
+    if (gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
+    {
+        uint64_t gap_grace_ns = gap_ns + 50000000ull;
+        grace_ns = std::max(grace_ns, clamp_timer_ns(gap_grace_ns,
+                                                     WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS));
+    }
+    return grace_ns;
 }
 
 uint64_t retransmit_rerequest_interval_ns(const ClientState& state) {
-    return clamp_timer_ns(state.retransmit_rerequest_interval_ns.load(std::memory_order_relaxed),
-                          WD_LINK_RETRANSMIT_REREQUEST_MIN_NS, WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
+    uint64_t rerequest_ns = clamp_timer_ns(state.retransmit_rerequest_interval_ns.load(std::memory_order_relaxed),
+                                           WD_LINK_RETRANSMIT_REREQUEST_MIN_NS, WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
+    uint64_t gap_ns = udp_gap_pressure_ns(state);
+    if (gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
+    {
+        rerequest_ns = std::max(rerequest_ns, clamp_timer_ns(gap_ns * 2ull,
+                                                            WD_LINK_RETRANSMIT_REREQUEST_MIN_NS,
+                                                            WD_LINK_RETRANSMIT_REREQUEST_MAX_NS));
+    }
+    return rerequest_ns;
+}
+
+uint64_t retransmit_inflight_grace_ns_locked(const ClientState& state) {
+    uint64_t inflight_ns = clamp_timer_ns(state.retx_inflight_grace_ns,
+                                          WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS,
+                                          WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS);
+    uint64_t gap_ns = udp_gap_pressure_ns(state);
+    if (gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
+    {
+        inflight_ns = std::max(inflight_ns, clamp_timer_ns(gap_ns * 2ull,
+                                                          WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS,
+                                                          WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS));
+    }
+    return inflight_ns;
 }
 
 void apply_link_timers_from_config(ClientState& state, const wd_server_config_payload& config) {
@@ -925,11 +960,6 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
     std::memcpy(&summary, payload, sizeof(summary));
 
     const uint64_t now_ns = wd_now_ns();
-    if (summary.server_timestamp_ns != 0 && now_ns >= summary.server_timestamp_ns)
-    {
-        state.stats.summary_latency_samples.fetch_add(1, std::memory_order_relaxed);
-        state.stats.summary_latency_sum_ns.fetch_add(now_ns - summary.server_timestamp_ns, std::memory_order_relaxed);
-    }
 
     const size_t needed =
         sizeof(wd_tile_summary_payload_header) + static_cast<size_t>(summary.tile_count) * sizeof(wd_tile_generation_entry);
@@ -962,6 +992,8 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
         uint64_t newly_queued_from_summary = 0;
         uint64_t newly_deferred_from_summary = 0;
+        uint64_t summary_to_retx_local_sum_ns = 0;
+        uint64_t summary_to_retx_local_samples = 0;
 
         for (uint16_t i = 0; i < summary.tile_count; ++i)
         {
@@ -981,7 +1013,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
             if (state.retx_inflight_generation[entry.tile_id] >= entry.tile_generation &&
                 state.retx_inflight_since_ns[entry.tile_id] != 0 &&
-                now_ns - state.retx_inflight_since_ns[entry.tile_id] < state.retx_inflight_grace_ns)
+                now_ns - state.retx_inflight_since_ns[entry.tile_id] < retransmit_inflight_grace_ns_locked(state))
             {
                 if (state.retx_summary_pending_generation[entry.tile_id] < entry.tile_generation)
                 {
@@ -1028,6 +1060,12 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
             if (queue_retransmit_tile_locked(state, entry.tile_id, entry.tile_generation, total_tiles))
             {
+                uint64_t pending_since_ns = state.retx_summary_pending_since_ns[entry.tile_id];
+                if (pending_since_ns != 0 && now_ns >= pending_since_ns)
+                {
+                    summary_to_retx_local_sum_ns += now_ns - pending_since_ns;
+                    summary_to_retx_local_samples++;
+                }
                 state.retx_summary_pending_generation[entry.tile_id] = 0;
                 state.retx_summary_pending_since_ns[entry.tile_id]  = 0;
                 newly_queued_from_summary++;
@@ -1042,10 +1080,10 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
         if (newly_queued_from_summary != 0)
         {
             state.stats.summary_retx_tiles_queued.fetch_add(newly_queued_from_summary, std::memory_order_relaxed);
-            if (summary.server_timestamp_ns != 0 && now_ns >= summary.server_timestamp_ns)
+            if (summary_to_retx_local_samples != 0)
             {
-                state.stats.summary_to_retx_samples.fetch_add(1, std::memory_order_relaxed);
-                state.stats.summary_to_retx_sum_ns.fetch_add(now_ns - summary.server_timestamp_ns, std::memory_order_relaxed);
+                state.stats.summary_to_retx_samples.fetch_add(summary_to_retx_local_samples, std::memory_order_relaxed);
+                state.stats.summary_to_retx_sum_ns.fetch_add(summary_to_retx_local_sum_ns, std::memory_order_relaxed);
             }
         }
     }
@@ -1067,6 +1105,8 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
 
     const uint64_t now_ns = wd_now_ns();
     uint64_t newly_queued = 0;
+    uint64_t summary_to_retx_local_sum_ns = 0;
+    uint64_t summary_to_retx_local_samples = 0;
 
     for (uint16_t tile_id = 0; tile_id < total_tiles; ++tile_id)
     {
@@ -1091,7 +1131,7 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
         }
 
         if (state.retx_inflight_generation[tile_id] >= generation && state.retx_inflight_since_ns[tile_id] != 0 &&
-            now_ns - state.retx_inflight_since_ns[tile_id] < state.retx_inflight_grace_ns)
+            now_ns - state.retx_inflight_since_ns[tile_id] < retransmit_inflight_grace_ns_locked(state))
         {
             continue;
         }
@@ -1104,6 +1144,11 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
 
         if (queue_retransmit_tile_locked(state, tile_id, generation, total_tiles))
         {
+            if (now_ns >= since_ns)
+            {
+                summary_to_retx_local_sum_ns += now_ns - since_ns;
+                summary_to_retx_local_samples++;
+            }
             state.retx_summary_pending_generation[tile_id] = 0;
             state.retx_summary_pending_since_ns[tile_id]  = 0;
             newly_queued++;
@@ -1113,6 +1158,11 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
     if (newly_queued != 0)
     {
         state.stats.summary_retx_tiles_queued.fetch_add(newly_queued, std::memory_order_relaxed);
+        if (summary_to_retx_local_samples != 0)
+        {
+            state.stats.summary_to_retx_samples.fetch_add(summary_to_retx_local_samples, std::memory_order_relaxed);
+            state.stats.summary_to_retx_sum_ns.fetch_add(summary_to_retx_local_sum_ns, std::memory_order_relaxed);
+        }
     }
 }
 
@@ -1649,7 +1699,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
             }
 
             if (state.retx_inflight_generation[tile_id] >= target_generation && state.retx_inflight_since_ns[tile_id] != 0 &&
-                now_ns - state.retx_inflight_since_ns[tile_id] < state.retx_inflight_grace_ns)
+                now_ns - state.retx_inflight_since_ns[tile_id] < retransmit_inflight_grace_ns_locked(state))
             {
                 state.retx_queued_generation[tile_id] = target_generation;
                 state.retx_queue.push_back(tile_id);
