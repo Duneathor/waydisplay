@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 31u
+#define WD_PROTOCOL_VERSION 32u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -79,6 +79,7 @@ enum wd_client_capability {
 
 enum wd_video_codec {
     WD_VIDEO_CODEC_H265 = 1u << 0,
+    WD_VIDEO_CODEC_H264 = 1u << 1,
 };
 
 enum wd_video_transport {
@@ -338,7 +339,7 @@ struct wd_video_channel_hello_payload {
 struct wd_video_frame_payload_header {
     uint8_t session_id;
 
-    /* enum wd_video_codec bit value; first implementation is WD_VIDEO_CODEC_H265. */
+    /* Single enum wd_video_codec bit value selected for this frame. */
     uint32_t codec;
 
     /* Bitmask from enum wd_video_frame_flags. */

@@ -631,7 +631,7 @@ static bool wd_stream_queue_video_control_frame_locked(struct wd_server* server,
     struct wd_video_frame_payload_header header;
     memset(&header, 0, sizeof(header));
     header.session_id = net->session_id;
-    header.codec      = WD_VIDEO_CODEC_H265;
+    header.codec      = net->video_codecs != 0 ? net->video_codecs : WD_VIDEO_CODEC_H265;
     header.flags      = flags;
     header.pts_usec   = wd_now_ns() / 1000ull;
     header.width        = (uint16_t)server->display_width;
@@ -776,7 +776,7 @@ static bool wd_stream_try_send_video_frame_locked(struct wd_server* server, uint
     config.height = height;
     config.target_fps = target_fps;
     config.bitrate_kib_per_second = bitrate_kib;
-    config.codec = WD_VIDEO_CODEC_H265;
+    config.codec = net->video_codecs != 0 ? net->video_codecs : WD_VIDEO_CODEC_H265;
 
     struct wd_video_encoder_input_xrgb8888 input;
     memset(&input, 0, sizeof(input));
@@ -808,7 +808,7 @@ static bool wd_stream_try_send_video_frame_locked(struct wd_server* server, uint
         {
             header = packet.header;
             header.session_id = session_id;
-            header.codec = WD_VIDEO_CODEC_H265;
+            header.codec = config.codec;
             header.pts_usec = input.pts_usec;
             header.width = (uint16_t)width;
             header.height = (uint16_t)height;

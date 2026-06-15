@@ -8,7 +8,11 @@
 #define WAYDISPLAY_HAVE_H265_SERVER_ENCODER 0
 #endif
 
-#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+#ifndef WAYDISPLAY_HAVE_H264_SERVER_ENCODER
+#define WAYDISPLAY_HAVE_H264_SERVER_ENCODER 0
+#endif
+
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
@@ -24,7 +28,7 @@ struct wd_video_encoder {
     bool                           keyframe_requested;
     uint64_t                       next_frame_id;
 
-#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
     const AVCodec*     codec;
     AVCodecContext*    codec_ctx;
     AVFrame*           frame;
@@ -37,7 +41,7 @@ struct wd_video_encoder {
 #endif
 };
 
-#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
 static void wd_video_encoder_release_backend(struct wd_video_encoder* encoder) {
     if (!encoder)
     {
@@ -60,14 +64,43 @@ static void wd_video_encoder_release_backend(struct wd_video_encoder* encoder) {
     avcodec_free_context(&encoder->codec_ctx);
 }
 
-static const AVCodec* wd_video_encoder_find_h265_codec(void) {
-    const AVCodec* codec = avcodec_find_encoder_by_name("libx265");
-    if (codec)
+static const AVCodec* wd_video_encoder_find_codec(uint32_t codec) {
+    switch (codec)
     {
-        return codec;
+#if WAYDISPLAY_HAVE_H264_SERVER_ENCODER
+    case WD_VIDEO_CODEC_H264:
+    {
+        const AVCodec* avc = avcodec_find_encoder_by_name("libx264");
+        return avc ? avc : avcodec_find_encoder(AV_CODEC_ID_H264);
     }
+#endif
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+    case WD_VIDEO_CODEC_H265:
+    {
+        const AVCodec* hevc = avcodec_find_encoder_by_name("libx265");
+        return hevc ? hevc : avcodec_find_encoder(AV_CODEC_ID_HEVC);
+    }
+#endif
+    default:
+        return NULL;
+    }
+}
 
-    return avcodec_find_encoder(AV_CODEC_ID_HEVC);
+static uint32_t wd_video_encoder_detect_supported_codecs(void) {
+    uint32_t codecs = 0;
+#if WAYDISPLAY_HAVE_H264_SERVER_ENCODER
+    if (wd_video_encoder_find_codec(WD_VIDEO_CODEC_H264))
+    {
+        codecs |= WD_VIDEO_CODEC_H264;
+    }
+#endif
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+    if (wd_video_encoder_find_codec(WD_VIDEO_CODEC_H265))
+    {
+        codecs |= WD_VIDEO_CODEC_H265;
+    }
+#endif
+    return codecs;
 }
 
 static bool wd_video_encoder_config_matches(const struct wd_video_encoder* encoder,
@@ -136,7 +169,7 @@ static bool wd_video_encoder_copy_packet(struct wd_video_encoder* encoder, const
 
     memset(packet, 0, sizeof(*packet));
     packet->header.session_id = encoder->config.session_id;
-    packet->header.codec      = WD_VIDEO_CODEC_H265;
+    packet->header.codec      = encoder->config.codec;
     packet->header.flags      = 0;
     if ((src->flags & AV_PKT_FLAG_KEY) != 0)
     {
@@ -161,17 +194,17 @@ bool wd_video_encoder_create(struct wd_video_encoder** out_encoder) {
     }
 
     *out_encoder = calloc(1, sizeof(struct wd_video_encoder));
-#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
     if (*out_encoder)
     {
-        (*out_encoder)->codec = wd_video_encoder_find_h265_codec();
+        (*out_encoder)->codec = NULL;
     }
 #endif
     return *out_encoder != NULL;
 }
 
 void wd_video_encoder_destroy(struct wd_video_encoder* encoder) {
-#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
     wd_video_encoder_release_backend(encoder);
 #endif
     free(encoder);
@@ -183,9 +216,9 @@ void wd_video_encoder_reset(struct wd_video_encoder* encoder) {
         return;
     }
 
-#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
     wd_video_encoder_release_backend(encoder);
-    encoder->codec = wd_video_encoder_find_h265_codec();
+    encoder->codec = NULL;
 #endif
 
     memset(&encoder->config, 0, sizeof(encoder->config));
@@ -195,19 +228,41 @@ void wd_video_encoder_reset(struct wd_video_encoder* encoder) {
 }
 
 bool wd_video_encoder_available(const struct wd_video_encoder* encoder) {
-#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
-    return encoder && encoder->codec != NULL;
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
+    return encoder && wd_video_encoder_detect_supported_codecs() != 0;
 #else
     (void)encoder;
     return false;
 #endif
 }
 
+uint32_t wd_video_encoder_supported_codecs(const struct wd_video_encoder* encoder) {
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
+    return encoder ? wd_video_encoder_detect_supported_codecs() : 0;
+#else
+    (void)encoder;
+    return 0;
+#endif
+}
+
 const char* wd_video_encoder_backend_name(const struct wd_video_encoder* encoder) {
-#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
     if (encoder && encoder->codec && encoder->codec->name)
     {
         return encoder->codec->name;
+    }
+    const uint32_t codecs = wd_video_encoder_detect_supported_codecs();
+    if (codecs == (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265))
+    {
+        return "h264/hevc";
+    }
+    if ((codecs & WD_VIDEO_CODEC_H264) != 0)
+    {
+        return "h264";
+    }
+    if ((codecs & WD_VIDEO_CODEC_H265) != 0)
+    {
+        return "hevc";
     }
 #endif
     (void)encoder;
@@ -215,16 +270,13 @@ const char* wd_video_encoder_backend_name(const struct wd_video_encoder* encoder
 }
 
 bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config) {
-    if (!encoder || !config || config->codec != WD_VIDEO_CODEC_H265 || config->width == 0 || config->height == 0)
+    if (!encoder || !config || (config->codec != WD_VIDEO_CODEC_H265 && config->codec != WD_VIDEO_CODEC_H264) || config->width == 0 || config->height == 0)
     {
         return false;
     }
 
-#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
-    if (!encoder->codec)
-    {
-        encoder->codec = wd_video_encoder_find_h265_codec();
-    }
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
+    encoder->codec = wd_video_encoder_find_codec(config->codec);
     if (!encoder->codec)
     {
         return false;
@@ -248,7 +300,7 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
 
     const int fps = wd_video_encoder_effective_fps(config);
     encoder->codec_ctx->codec_type = AVMEDIA_TYPE_VIDEO;
-    encoder->codec_ctx->codec_id   = AV_CODEC_ID_HEVC;
+    encoder->codec_ctx->codec_id   = encoder->codec ? encoder->codec->id : AV_CODEC_ID_NONE;
     encoder->codec_ctx->width      = wd_video_encoder_even_dimension(config->width);
     encoder->codec_ctx->height     = wd_video_encoder_even_dimension(config->height);
     encoder->codec_ctx->pix_fmt    = AV_PIX_FMT_YUV420P;
@@ -263,7 +315,14 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
     {
         (void)av_opt_set(encoder->codec_ctx->priv_data, "preset", "ultrafast", 0);
         (void)av_opt_set(encoder->codec_ctx->priv_data, "tune", "zerolatency", 0);
-        (void)av_opt_set(encoder->codec_ctx->priv_data, "x265-params", "repeat-headers=1:log-level=error:pools=none:frame-threads=1", 0);
+        if (config->codec == WD_VIDEO_CODEC_H264)
+        {
+            (void)av_opt_set(encoder->codec_ctx->priv_data, "x264-params", "repeat-headers=1:log-level=error:sliced-threads=1", 0);
+        }
+        else
+        {
+            (void)av_opt_set(encoder->codec_ctx->priv_data, "x265-params", "repeat-headers=1:log-level=error:pools=none:frame-threads=1", 0);
+        }
     }
 
     av_log_set_level(AV_LOG_WARNING);
@@ -318,7 +377,7 @@ bool wd_video_encoder_request_keyframe(struct wd_video_encoder* encoder) {
 }
 
 
-#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
 static const uint32_t* wd_video_encoder_prepare_xrgb_source(struct wd_video_encoder* encoder,
                                                            const struct wd_video_encoder_input_xrgb8888* input,
                                                            uint32_t coded_width,
@@ -379,7 +438,7 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder,
         return false;
     }
 
-#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
     if (!encoder->configured || !encoder->codec_ctx || !encoder->frame || !encoder->packet || !encoder->sws_ctx ||
         input->width != encoder->config.width || input->height != encoder->config.height)
     {

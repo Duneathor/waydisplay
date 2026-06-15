@@ -27,7 +27,8 @@ void usage(const char* argv0) {
                  "  --video-enter-seconds <N>     Seconds auto criteria must remain stable, default 3\n"
                  "  --video-exit-dirty-percent <N> Dirty coverage to leave video mode, default 30\n"
                  "  --video-exit-seconds <N>      Seconds exit criteria must remain stable, default 30\n"
-                 "  --video-hwdecode <off|auto|vaapi> Optional H.265 hardware decode, default off\n"
+                 "  --video-codec <auto|h264|h265> Select video codec, default auto\n"
+                 "  --video-hwdecode <off|auto|vaapi> Optional video hardware decode, default auto\n"
                  "  --limited-rate-kib <N>       Deprecated alias for --rate-kib\n"
                  "  --wan                        Shorthand for --rate-kib 4096\n\n"
                  "Examples:\n"
@@ -92,6 +93,31 @@ bool parse_video_mode(const char* text, uint8_t& out) {
     if (std::strcmp(text, "force") == 0)
     {
         out = WD_VIDEO_MODE_FORCE;
+        return true;
+    }
+
+    return false;
+}
+
+bool parse_video_codec(const char* text, uint32_t& out) {
+    if (!text)
+    {
+        return false;
+    }
+
+    if (std::strcmp(text, "auto") == 0)
+    {
+        out = WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265;
+        return true;
+    }
+    if (std::strcmp(text, "h264") == 0)
+    {
+        out = WD_VIDEO_CODEC_H264;
+        return true;
+    }
+    if (std::strcmp(text, "h265") == 0 || std::strcmp(text, "hevc") == 0)
+    {
+        out = WD_VIDEO_CODEC_H265;
         return true;
     }
 
@@ -272,6 +298,16 @@ int main(int argc, char** argv) {
         {
             if (i + 1 >= argc || !parse_u16(argv[i + 1], stream_config.video_exit_seconds) ||
                 stream_config.video_exit_seconds > WD_VIDEO_EXIT_SECONDS_MAX)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            ++i;
+        }
+        else if (std::strcmp(argv[i], "--video-codec") == 0)
+        {
+            if (i + 1 >= argc || !parse_video_codec(argv[i + 1], stream_config.video_codec_mask))
             {
                 usage(argv[0]);
                 return 1;

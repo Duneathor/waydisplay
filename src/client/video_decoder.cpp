@@ -11,11 +11,15 @@
 #define WAYDISPLAY_HAVE_H265_CLIENT_DECODER 0
 #endif
 
+#ifndef WAYDISPLAY_HAVE_H264_CLIENT_DECODER
+#define WAYDISPLAY_HAVE_H264_CLIENT_DECODER 0
+#endif
+
 #ifndef WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
 #define WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER 0
 #endif
 
-#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/buffer.h>
@@ -35,7 +39,7 @@ struct ClientVideoDecoder {
     std::vector<uint32_t>    pixels{};
     std::vector<uint32_t>    coded_pixels{};
 
-#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
     const AVCodec*    codec     = nullptr;
     AVCodecContext*   codec_ctx = nullptr;
     AVFrame*          frame     = nullptr;
@@ -52,7 +56,7 @@ struct ClientVideoDecoder {
 #endif
 };
 
-#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
 void release_decoder_backend(ClientVideoDecoder* decoder) {
     if (!decoder)
     {
@@ -73,9 +77,39 @@ void release_decoder_backend(ClientVideoDecoder* decoder) {
     decoder->using_vaapi = false;
 }
 
-const AVCodec* find_h265_decoder() {
-    return avcodec_find_decoder(AV_CODEC_ID_HEVC);
+const AVCodec* find_decoder_for_codec(uint32_t codec) {
+    switch (codec)
+    {
+#if WAYDISPLAY_HAVE_H264_CLIENT_DECODER
+    case WD_VIDEO_CODEC_H264:
+        return avcodec_find_decoder(AV_CODEC_ID_H264);
+#endif
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+    case WD_VIDEO_CODEC_H265:
+        return avcodec_find_decoder(AV_CODEC_ID_HEVC);
+#endif
+    default:
+        return nullptr;
+    }
 }
+
+uint32_t supported_decoder_codecs() {
+    uint32_t codecs = 0;
+#if WAYDISPLAY_HAVE_H264_CLIENT_DECODER
+    if (avcodec_find_decoder(AV_CODEC_ID_H264))
+    {
+        codecs |= WD_VIDEO_CODEC_H264;
+    }
+#endif
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+    if (avcodec_find_decoder(AV_CODEC_ID_HEVC))
+    {
+        codecs |= WD_VIDEO_CODEC_H265;
+    }
+#endif
+    return codecs;
+}
+
 
 bool decoder_config_matches(const ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {
     return decoder && decoder->configured && decoder->codec_ctx && decoder->config.session_id == config.session_id &&
@@ -119,7 +153,7 @@ bool mark_vaapi_auto_failed(ClientVideoDecoder* decoder, const char* reason) {
     decoder->using_vaapi = false;
     if (!decoder->vaapi_disable_logged)
     {
-        WD_LOG_WARN("VAAPI video decode failed%s%s; falling back to software HEVC decode",
+        WD_LOG_WARN("VAAPI video decode failed%s%s; falling back to software decode",
                     reason && *reason ? ": " : "", reason && *reason ? reason : "");
         decoder->vaapi_disable_logged = true;
     }
@@ -259,17 +293,17 @@ bool client_video_decoder_create(ClientVideoDecoder** out_decoder) {
     }
 
     *out_decoder = new (std::nothrow) ClientVideoDecoder();
-#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
     if (*out_decoder)
     {
-        (*out_decoder)->codec = find_h265_decoder();
+        (*out_decoder)->codec = nullptr;
     }
 #endif
     return *out_decoder != nullptr;
 }
 
 void client_video_decoder_destroy(ClientVideoDecoder* decoder) {
-#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
     release_decoder_backend(decoder);
 #endif
     delete decoder;
@@ -281,9 +315,9 @@ void client_video_decoder_reset(ClientVideoDecoder* decoder) {
         return;
     }
 
-#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
     release_decoder_backend(decoder);
-    decoder->codec = find_h265_decoder();
+    decoder->codec = nullptr;
 #endif
 
     decoder->config     = ClientVideoDecoderConfig{};
@@ -293,23 +327,44 @@ void client_video_decoder_reset(ClientVideoDecoder* decoder) {
 }
 
 bool client_video_decoder_available(const ClientVideoDecoder* decoder) {
-#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
-    return decoder && decoder->codec != nullptr;
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
+    return decoder && supported_decoder_codecs() != 0;
 #else
     (void)decoder;
     return false;
 #endif
 }
 
+uint32_t client_video_decoder_supported_codecs(const ClientVideoDecoder* decoder) {
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
+    return decoder ? supported_decoder_codecs() : 0;
+#else
+    (void)decoder;
+    return 0;
+#endif
+}
+
 const char* client_video_decoder_backend_name(const ClientVideoDecoder* decoder) {
-#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
     if (decoder && decoder->configured && decoder->using_vaapi)
     {
-        return "hevc+vaapi";
+        return decoder->config.codec == WD_VIDEO_CODEC_H264 ? "h264+vaapi" : "hevc+vaapi";
     }
     if (decoder && decoder->codec && decoder->codec->name)
     {
         return decoder->codec->name;
+    }
+    if (supported_decoder_codecs() == (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265))
+    {
+        return "h264/hevc";
+    }
+    if ((supported_decoder_codecs() & WD_VIDEO_CODEC_H264) != 0)
+    {
+        return "h264";
+    }
+    if ((supported_decoder_codecs() & WD_VIDEO_CODEC_H265) != 0)
+    {
+        return "hevc";
     }
 #endif
     (void)decoder;
@@ -317,7 +372,7 @@ const char* client_video_decoder_backend_name(const ClientVideoDecoder* decoder)
 }
 
 bool client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* decoder) {
-#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER && WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+#if (WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER) && WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
     return decoder && decoder->vaapi_auto_disabled;
 #else
     (void)decoder;
@@ -326,17 +381,14 @@ bool client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* decoder
 }
 
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {
-    if (!decoder || config.codec != WD_VIDEO_CODEC_H265 || config.width == 0 || config.height == 0 ||
+    if (!decoder || (config.codec != WD_VIDEO_CODEC_H265 && config.codec != WD_VIDEO_CODEC_H264) || config.width == 0 || config.height == 0 ||
         config.coded_width < config.width || config.coded_height < config.height)
     {
         return false;
     }
 
-#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
-    if (!decoder->codec)
-    {
-        decoder->codec = find_h265_decoder();
-    }
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
+    decoder->codec = find_decoder_for_codec(config.codec);
     if (!decoder->codec)
     {
         return false;
@@ -434,20 +486,20 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
 #endif
 }
 
-bool client_video_decoder_decode_h265(ClientVideoDecoder* decoder, const ClientVideoPacket& packet,
-                                      ClientDecodedVideoFrame* out_frame) {
+bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoPacket& packet,
+                                 ClientDecodedVideoFrame* out_frame) {
     if (out_frame)
     {
         *out_frame = ClientDecodedVideoFrame{};
     }
 
-    if (!decoder || !decoder->configured || packet.header.codec != WD_VIDEO_CODEC_H265 || !packet.data ||
+    if (!decoder || !decoder->configured || (packet.header.codec != WD_VIDEO_CODEC_H265 && packet.header.codec != WD_VIDEO_CODEC_H264) || !packet.data ||
         packet.header.data_size == 0)
     {
         return false;
     }
 
-#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
     if (!decoder->codec_ctx || !decoder->frame || !decoder->packet)
     {
         return false;

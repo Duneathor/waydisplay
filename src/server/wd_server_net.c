@@ -34,6 +34,31 @@ static const char* wd_video_mode_name(uint8_t mode) {
     }
 }
 
+static const char* wd_video_codec_name(uint32_t codec) {
+    switch (codec)
+    {
+    case WD_VIDEO_CODEC_H264:
+        return "h264";
+    case WD_VIDEO_CODEC_H265:
+        return "h265";
+    default:
+        return "none";
+    }
+}
+
+static uint32_t wd_choose_video_codec(uint32_t client_codecs, uint32_t server_codecs) {
+    const uint32_t common = client_codecs & server_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265);
+    if ((common & WD_VIDEO_CODEC_H264) != 0)
+    {
+        return WD_VIDEO_CODEC_H264;
+    }
+    if ((common & WD_VIDEO_CODEC_H265) != 0)
+    {
+        return WD_VIDEO_CODEC_H265;
+    }
+    return 0;
+}
+
 static void wd_format_sockaddr_in(const struct sockaddr_in* addr, char* buf, size_t buf_size) {
     char ip[INET_ADDRSTRLEN];
 
@@ -1126,7 +1151,7 @@ static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_i
         memcpy(&hello, payload, sizeof(hello));
 
         if (hello.session_id == session_id && net->video_stream_negotiated &&
-            (hello.video_codecs & net->video_codecs & WD_VIDEO_CODEC_H265) != 0 &&
+            (hello.video_codecs & net->video_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) != 0 &&
             hello.video_transport == net->video_transport)
         {
             *video_tcp_fd = fd;
@@ -1342,9 +1367,11 @@ void* wd_net_thread_main(void* arg) {
             }
         }
 
-        const bool client_video_tcp_h265 = (hello.capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0 &&
-                                           (hello.video_codecs & WD_VIDEO_CODEC_H265) != 0 &&
-                                           hello.video_transport == WD_VIDEO_TRANSPORT_TCP;
+        const uint32_t selected_video_codec =
+            (hello.capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0 && hello.video_transport == WD_VIDEO_TRANSPORT_TCP
+                ? wd_choose_video_codec(hello.video_codecs, wd_video_encoder_supported_codecs(net->video_encoder))
+                : 0;
+        const bool client_video_tcp = selected_video_codec != 0;
 
         struct wd_server_config_payload cfg;
         uint8_t                         session_id = 0;
@@ -1376,9 +1403,9 @@ void* wd_net_thread_main(void* arg) {
 
         pthread_mutex_lock(&net->lock);
         net->udp_payload_target = selected_udp_payload;
-        net->video_stream_negotiated = client_video_tcp_h265;
-        net->video_codecs = client_video_tcp_h265 ? WD_VIDEO_CODEC_H265 : 0;
-        net->video_transport = client_video_tcp_h265 ? WD_VIDEO_TRANSPORT_TCP : 0;
+        net->video_stream_negotiated = client_video_tcp;
+        net->video_codecs = client_video_tcp ? selected_video_codec : 0;
+        net->video_transport = client_video_tcp ? WD_VIDEO_TRANSPORT_TCP : 0;
         wd_stream_policy_set_limited_udp_byte_rate(&net->stream_policy, selected_limited_udp_rate);
         wd_stream_policy_apply_client_hello(&net->stream_policy, &hello);
         WD_LOG_INFO("video mode control: mode=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u negotiated=%s",
@@ -1388,12 +1415,13 @@ void* wd_net_thread_main(void* arg) {
                     net->stream_policy.video_enter_seconds,
                     net->stream_policy.video_exit_dirty_percent,
                     net->stream_policy.video_exit_seconds,
-                    client_video_tcp_h265 ? "yes" : "no");
+                    client_video_tcp ? "yes" : "no");
         pthread_mutex_unlock(&net->lock);
 
-        if (client_video_tcp_h265 && !wd_video_encoder_available(net->video_encoder))
+        if ((hello.capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0 && hello.video_transport == WD_VIDEO_TRANSPORT_TCP && !client_video_tcp)
         {
-            WD_LOG_INFO("video stream negotiated but H.265 encoder backend is unavailable; backend=%s",
+            WD_LOG_INFO("video stream unavailable for requested codecs=0x%x; server codecs=0x%x backend=%s",
+                        hello.video_codecs, wd_video_encoder_supported_codecs(net->video_encoder),
                         wd_video_encoder_backend_name(net->video_encoder));
         }
 
@@ -1517,8 +1545,8 @@ void* wd_net_thread_main(void* arg) {
 
             WD_LOG_INFO("client connected; control_tcp=%s<->%s udp=%s->%s input_channel=%s selection_channel=%s video_channel=%s video_stream=%s video_codec=%s video_transport=%s display=%ux%u tile=%ux%u fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
                         control_local, control_remote, udp_local, udp_remote, input_tcp_fd >= 0 ? "yes" : "no",
-                        selection_tcp_fd >= 0 ? "yes" : "no", video_tcp_fd >= 0 ? "yes" : "no", client_video_tcp_h265 ? "yes" : "no",
-                        client_video_tcp_h265 ? "h265" : "none", client_video_tcp_h265 ? "tcp" : "none",
+                        selection_tcp_fd >= 0 ? "yes" : "no", video_tcp_fd >= 0 ? "yes" : "no", client_video_tcp ? "yes" : "no",
+                        client_video_tcp ? wd_video_codec_name(selected_video_codec) : "none", client_video_tcp ? "tcp" : "none",
                         server->display_width, server->display_height,
                         server->tile_width, server->tile_height, hello.target_fps, hello.limited_udp_kib_per_second,
                         (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
@@ -1586,7 +1614,7 @@ void* wd_net_thread_main(void* arg) {
             }
 
             if (input_tcp_fd < 0 || selection_tcp_fd < 0 ||
-                (client_video_tcp_h265 && video_tcp_fd < 0))
+                (client_video_tcp && video_tcp_fd < 0))
             {
                 listen_pfd_idx        = nfds;
                 have_listen_pfd       = true;

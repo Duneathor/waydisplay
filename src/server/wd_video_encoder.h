@@ -40,6 +40,7 @@ void wd_video_encoder_destroy(struct wd_video_encoder* encoder);
 void wd_video_encoder_reset(struct wd_video_encoder* encoder);
 
 bool wd_video_encoder_available(const struct wd_video_encoder* encoder);
+uint32_t wd_video_encoder_supported_codecs(const struct wd_video_encoder* encoder);
 const char* wd_video_encoder_backend_name(const struct wd_video_encoder* encoder);
 
 bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config);

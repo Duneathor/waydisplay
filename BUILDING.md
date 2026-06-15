@@ -13,25 +13,27 @@ cmake --build build-common
 A full build needs SDL3 with Vulkan support for the client and wlroots/Wayland
 development packages for the compositor server.
 
-## Optional H.265 video mode
+## Optional video mode
 
-The video-mode scaffolding can use FFmpeg/libavcodec for H.265 when the codec
+The video-mode path can use FFmpeg/libavcodec for H.264 and H.265 when the codec
 libraries are available. The build still succeeds without them; in that case the
 encoder/decoder backends report `none` and video negotiation remains disabled.
 
-To enable the real H.265 path, install FFmpeg development packages that provide
+To enable the real video path, install FFmpeg development packages that provide
 pkg-config files for `libavcodec`, `libavutil`, and `libswscale`, then build with:
 
 ```sh
 cmake -S . -B build \
+  -DWAYDISPLAY_ENABLE_H264_SERVER_ENCODER=ON \
+  -DWAYDISPLAY_ENABLE_H264_CLIENT_DECODER=ON \
   -DWAYDISPLAY_ENABLE_H265_SERVER_ENCODER=ON \
   -DWAYDISPLAY_ENABLE_H265_CLIENT_DECODER=ON
 cmake --build build
 ```
 
-The server prefers the `libx265` encoder when FFmpeg exposes it, falling back to
-FFmpeg's generic HEVC encoder lookup. The client uses FFmpeg's HEVC decoder and
-converts decoded frames back to XRGB8888 for the existing SDL texture presenter.
+The server prefers H.264 when both peers advertise both codecs, because H.264
+hardware decode support is more common on older GPUs. Use `--video-codec h265`
+or `--video-codec h264` on the client to force a specific codec.
 
 ## Tile-size selection
 

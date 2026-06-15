@@ -57,6 +57,20 @@ const char* video_mode_name(uint8_t mode) {
     }
 }
 
+const char* video_codec_name(uint32_t codec) {
+    switch (codec)
+    {
+    case WD_VIDEO_CODEC_H264:
+        return "h264";
+    case WD_VIDEO_CODEC_H265:
+        return "h265";
+    case WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265:
+        return "auto";
+    default:
+        return "none";
+    }
+}
+
 const char* video_hwdecode_mode_name(uint8_t mode) {
     switch (mode)
     {
@@ -903,10 +917,14 @@ bool receive_server_config(ClientState& state) {
     hello.desired_height              = state.desired_height;
     hello.limited_udp_kib_per_second  = state.stream_config.limited_udp_kib_per_second;
     const bool video_allowed = state.stream_config.video_mode != WD_VIDEO_MODE_OFF;
-    const bool video_decoder_available = client_video_decoder_available(state.video_decoder);
-    hello.capabilities                = video_allowed && video_decoder_available ? WD_CLIENT_CAP_VIDEO_STREAM : 0;
-    hello.video_codecs                = video_allowed && video_decoder_available ? WD_VIDEO_CODEC_H265 : 0;
-    hello.video_transport             = video_allowed && video_decoder_available ? WD_VIDEO_TRANSPORT_TCP : 0;
+    const uint32_t supported_video_codecs = client_video_decoder_supported_codecs(state.video_decoder);
+    const uint32_t requested_video_codecs = state.stream_config.video_codec_mask &
+                                           (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265);
+    const uint32_t advertised_video_codecs = video_allowed ? (supported_video_codecs & requested_video_codecs) : 0;
+    const bool video_decoder_available = advertised_video_codecs != 0;
+    hello.capabilities                = video_decoder_available ? WD_CLIENT_CAP_VIDEO_STREAM : 0;
+    hello.video_codecs                = advertised_video_codecs;
+    hello.video_transport             = video_decoder_available ? WD_VIDEO_TRANSPORT_TCP : 0;
     hello.video_mode                  = state.stream_config.video_mode;
     hello.video_min_dirty_percent     = state.stream_config.video_min_dirty_percent;
     hello.video_enter_seconds         = state.stream_config.video_enter_seconds;
@@ -914,8 +932,9 @@ bool receive_server_config(ClientState& state) {
     hello.video_exit_dirty_percent      = state.stream_config.video_exit_dirty_percent;
     hello.video_exit_seconds            = state.stream_config.video_exit_seconds;
 
-    WD_LOG_INFO("video mode control: mode=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u hwdecode=%s decoder=%s",
+    WD_LOG_INFO("video mode control: mode=%s codec=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u hwdecode=%s decoder=%s",
                 video_mode_name(state.stream_config.video_mode),
+                video_codec_name(requested_video_codecs),
                 static_cast<unsigned>(state.stream_config.video_bitrate_kib_per_second),
                 static_cast<unsigned>(state.stream_config.video_min_dirty_percent),
                 static_cast<unsigned>(state.stream_config.video_enter_seconds),
@@ -1016,7 +1035,7 @@ bool receive_server_config(ClientState& state) {
     }
 
     state.video_stream_negotiated = (state.config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0 &&
-                                    (state.config.video_codecs & WD_VIDEO_CODEC_H265) != 0 &&
+                                    (state.config.video_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) != 0 &&
                                     state.config.video_transport == WD_VIDEO_TRANSPORT_TCP;
     state.video_codecs = state.video_stream_negotiated ? state.config.video_codecs : 0;
     state.video_transport = state.video_stream_negotiated ? state.config.video_transport : 0;
@@ -1024,7 +1043,7 @@ bool receive_server_config(ClientState& state) {
     WD_LOG_INFO("UDP payload target: %u", state.config.udp_payload_target);
     WD_LOG_INFO("video stream negotiation: %s codec=%s transport=%s",
                 state.video_stream_negotiated ? "enabled" : "unavailable",
-                state.video_stream_negotiated ? "h265" : "none",
+                state.video_stream_negotiated ? video_codec_name(state.video_codecs) : "none",
                 state.video_stream_negotiated ? "tcp" : "none");
     WD_LOG_INFO("link timers: rtt=%ums summary_grace=%ums rerequest=%ums inflight=%ums reassembly=%ums summary_delta=%u/%ums",
                 state.config.link_rtt_ms, state.config.summary_retransmit_grace_ms,
@@ -1557,7 +1576,7 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
     apply_link_timers_from_config(state, config);
 
     const bool new_video_stream_negotiated = (config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0 &&
-                                             (config.video_codecs & WD_VIDEO_CODEC_H265) != 0 &&
+                                             (config.video_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) != 0 &&
                                              config.video_transport == WD_VIDEO_TRANSPORT_TCP;
     const uint32_t new_video_codecs = new_video_stream_negotiated ? config.video_codecs : 0;
     const uint16_t new_video_transport = new_video_stream_negotiated ? config.video_transport : 0;
@@ -1595,7 +1614,7 @@ bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_
     }
 
     std::memcpy(&packet.header, payload, sizeof(packet.header));
-    if (packet.header.codec != WD_VIDEO_CODEC_H265 ||
+    if ((packet.header.codec != WD_VIDEO_CODEC_H265 && packet.header.codec != WD_VIDEO_CODEC_H264) ||
         !wd_video_frame_payload_size_is_valid(&packet.header, payload_size))
     {
         state.stats.video_invalid_frames_rx.fetch_add(1, std::memory_order_relaxed);
@@ -1758,22 +1777,36 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
 
         ClientDecodedVideoFrame frame{};
         const uint64_t decode_start_ns = wd_now_ns();
-        if (!client_video_decoder_decode_h265(state.video_decoder, packet, &frame))
-        {
-            decode_elapsed_ns = wd_now_ns() - decode_start_ns;
-            state.stats.video_decode_sum_ns.fetch_add(decode_elapsed_ns, std::memory_order_relaxed);
-            state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
-            state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
-            if (client_video_decoder_hwdecode_failed_auto(state.video_decoder))
-            {
-                client_video_decoder_reset(state.video_decoder);
-            }
-            state.video_decoder_needs_keyframe = true;
-            return;
-        }
+        bool decoded = client_video_decoder_decode(state.video_decoder, packet, &frame);
         decode_elapsed_ns = wd_now_ns() - decode_start_ns;
         state.stats.video_decode_sum_ns.fetch_add(decode_elapsed_ns, std::memory_order_relaxed);
         state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
+
+        if (!decoded && client_video_decoder_hwdecode_failed_auto(state.video_decoder))
+        {
+            /* Auto hardware decode is best-effort. If the VAAPI backend fails
+             * while decoding the access unit that unlocks the stream, rebuild
+             * the decoder immediately as software and retry that same keyframe
+             * instead of waiting for a later periodic keyframe. */
+            client_video_decoder_reset(state.video_decoder);
+            if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0 &&
+                client_video_decoder_configure(state.video_decoder, config))
+            {
+                frame = ClientDecodedVideoFrame{};
+                const uint64_t retry_start_ns = wd_now_ns();
+                decoded = client_video_decoder_decode(state.video_decoder, packet, &frame);
+                const uint64_t retry_elapsed_ns = wd_now_ns() - retry_start_ns;
+                state.stats.video_decode_sum_ns.fetch_add(retry_elapsed_ns, std::memory_order_relaxed);
+                state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        if (!decoded)
+        {
+            state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
+            state.video_decoder_needs_keyframe = true;
+            return;
+        }
         if (!frame.pixels)
         {
             return;
@@ -1948,10 +1981,11 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
 
     if (!client_video_decoder_create(&state.video_decoder))
     {
-        WD_LOG_WARN("failed to create H.265 video decoder skeleton");
+        WD_LOG_WARN("failed to create video decoder skeleton");
     }
-    WD_LOG_INFO("H.265 video decoder: backend=%s available=%s",
+    WD_LOG_INFO("video decoder: backend=%s codecs=0x%x available=%s",
                 client_video_decoder_backend_name(state.video_decoder),
+                client_video_decoder_supported_codecs(state.video_decoder),
                 client_video_decoder_available(state.video_decoder) ? "yes" : "no");
 
     if (!open_udp_socket(state))
