@@ -828,6 +828,22 @@ static void wd_server_free_resize_stream_state(struct wd_server* server) {
     wd_server_free_net_resize_arrays(&server->net);
 }
 
+static void wd_server_advance_stream_session_locked(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    uint8_t next_session_id = (uint8_t)(server->net.session_id + 1u);
+    if (next_session_id == 0)
+    {
+        next_session_id = 1;
+    }
+
+    server->net.session_id            = next_session_id;
+    server->net.config_update_pending = true;
+}
+
 bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint32_t height) {
     if (!server || width == 0 || height == 0 || width > UINT16_MAX || height > UINT16_MAX)
     {
@@ -912,6 +928,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     server->net.summary_dirty_count    = 0;
     server->last_summary_ns            = 0;
     server->last_delta_summary_ns      = 0;
+    wd_server_advance_stream_session_locked(server);
     wd_stream_invalidate_all_tiles_locked(server);
 
     pthread_mutex_unlock(&server->net.lock);

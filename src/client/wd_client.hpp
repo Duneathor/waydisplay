@@ -40,6 +40,13 @@ struct ClientStreamConfig {
     uint32_t limited_udp_kib_per_second = 0;
 };
 
+struct ClientDirtyRect {
+    uint16_t x = 0;
+    uint16_t y = 0;
+    uint16_t w = 0;
+    uint16_t h = 0;
+};
+
 struct ClientStats {
     std::atomic<uint64_t> udp_packets_rx{0};
     std::atomic<uint64_t> udp_bytes_rx{0};
@@ -100,6 +107,18 @@ struct ClientStats {
     std::atomic<uint64_t> input_sequence_present_latency_samples{0};
     std::atomic<uint64_t> input_sequence_present_latency_sum_ns{0};
     std::atomic<uint64_t> latest_input_event_timestamp_ns{0};
+
+    std::atomic<uint64_t> sdl_render_frames{0};
+    std::atomic<uint64_t> sdl_texture_full_uploads{0};
+    std::atomic<uint64_t> sdl_texture_partial_uploads{0};
+    std::atomic<uint64_t> sdl_texture_dirty_rects{0};
+    std::atomic<uint64_t> sdl_texture_upload_pixels{0};
+    std::atomic<uint64_t> sdl_texture_upload_samples{0};
+    std::atomic<uint64_t> sdl_texture_upload_sum_ns{0};
+    std::atomic<uint64_t> sdl_texture_upload_max_ns{0};
+    std::atomic<uint64_t> sdl_present_samples{0};
+    std::atomic<uint64_t> sdl_present_sum_ns{0};
+    std::atomic<uint64_t> sdl_present_max_ns{0};
 };
 
 struct ClientStatsSnapshot {
@@ -158,6 +177,17 @@ struct ClientStatsSnapshot {
     uint64_t input_to_present_sum_ns = 0;
     uint64_t input_seq_present_samples = 0;
     uint64_t input_seq_present_sum_ns = 0;
+    uint64_t sdl_render_frames = 0;
+    uint64_t sdl_texture_full_uploads = 0;
+    uint64_t sdl_texture_partial_uploads = 0;
+    uint64_t sdl_texture_dirty_rects = 0;
+    uint64_t sdl_texture_upload_pixels = 0;
+    uint64_t sdl_texture_upload_samples = 0;
+    uint64_t sdl_texture_upload_sum_ns = 0;
+    uint64_t sdl_texture_upload_max_ns = 0;
+    uint64_t sdl_present_samples = 0;
+    uint64_t sdl_present_sum_ns = 0;
+    uint64_t sdl_present_max_ns = 0;
 };
 
 struct ClientStatsLogState {
@@ -205,6 +235,8 @@ struct ClientState {
     std::mutex udp_processing_mutex;
     std::mutex framebuffer_mutex;
     std::atomic<bool> frame_dirty{false};
+    std::mutex dirty_rect_mutex;
+    std::vector<ClientDirtyRect> pending_dirty_rects;
     std::atomic<uint64_t> client_config_generation{1};
 
     std::mutex present_mutex;

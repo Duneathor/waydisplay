@@ -122,6 +122,17 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.input_to_present_sum_ns += src.input_to_present_sum_ns;
     dst.input_seq_present_samples += src.input_seq_present_samples;
     dst.input_seq_present_sum_ns += src.input_seq_present_sum_ns;
+    dst.sdl_render_frames += src.sdl_render_frames;
+    dst.sdl_texture_full_uploads += src.sdl_texture_full_uploads;
+    dst.sdl_texture_partial_uploads += src.sdl_texture_partial_uploads;
+    dst.sdl_texture_dirty_rects += src.sdl_texture_dirty_rects;
+    dst.sdl_texture_upload_pixels += src.sdl_texture_upload_pixels;
+    dst.sdl_texture_upload_samples += src.sdl_texture_upload_samples;
+    dst.sdl_texture_upload_sum_ns += src.sdl_texture_upload_sum_ns;
+    dst.sdl_texture_upload_max_ns = std::max(dst.sdl_texture_upload_max_ns, src.sdl_texture_upload_max_ns);
+    dst.sdl_present_samples += src.sdl_present_samples;
+    dst.sdl_present_sum_ns += src.sdl_present_sum_ns;
+    dst.sdl_present_max_ns = std::max(dst.sdl_present_max_ns, src.sdl_present_max_ns);
 }
 
 const std::array<ContextMenuItem, 5> CONTEXT_MENU_ITEMS{{
@@ -901,6 +912,17 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t input_to_present_sum_ns = logged.input_to_present_sum_ns;
     const uint64_t input_seq_present_samples = logged.input_seq_present_samples;
     const uint64_t input_seq_present_sum_ns = logged.input_seq_present_sum_ns;
+    const uint64_t sdl_render_frames = logged.sdl_render_frames;
+    const uint64_t sdl_texture_full_uploads = logged.sdl_texture_full_uploads;
+    const uint64_t sdl_texture_partial_uploads = logged.sdl_texture_partial_uploads;
+    const uint64_t sdl_texture_dirty_rects = logged.sdl_texture_dirty_rects;
+    const uint64_t sdl_texture_upload_pixels = logged.sdl_texture_upload_pixels;
+    const uint64_t sdl_texture_upload_samples = logged.sdl_texture_upload_samples;
+    const uint64_t sdl_texture_upload_sum_ns = logged.sdl_texture_upload_sum_ns;
+    const uint64_t sdl_texture_upload_max_ns = logged.sdl_texture_upload_max_ns;
+    const uint64_t sdl_present_samples = logged.sdl_present_samples;
+    const uint64_t sdl_present_sum_ns = logged.sdl_present_sum_ns;
+    const uint64_t sdl_present_max_ns = logged.sdl_present_max_ns;
     const uint64_t udp_gap_pressure_ms = state.udp_gap_pressure_ns.load(std::memory_order_relaxed) / 1000000ull;
 
     const bool udp_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 ||
@@ -978,6 +1000,20 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
         state.stats_log.prev_timeout_ms = timeout_ms;
         state.stats_log.prev_udp_gap_pressure_ms = udp_gap_pressure_ms;
     }
+
+    if (sdl_render_frames != 0 || sdl_texture_upload_samples != 0 || sdl_present_samples != 0)
+    {
+        WD_LOG_DEBUG("[client render/min] frames=%llu texture_full=%llu texture_partial=%llu dirty_rects=%llu upload_mpix=%.2f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
+                     static_cast<unsigned long long>(sdl_render_frames),
+                     static_cast<unsigned long long>(sdl_texture_full_uploads),
+                     static_cast<unsigned long long>(sdl_texture_partial_uploads),
+                     static_cast<unsigned long long>(sdl_texture_dirty_rects),
+                     static_cast<double>(sdl_texture_upload_pixels) / 1000000.0,
+                     avg_ms(sdl_texture_upload_sum_ns, sdl_texture_upload_samples),
+                     static_cast<double>(sdl_texture_upload_max_ns) / 1000000.0,
+                     avg_ms(sdl_present_sum_ns, sdl_present_samples),
+                     static_cast<double>(sdl_present_max_ns) / 1000000.0);
+    }
 }
 
 void sample_client_stats(ClientState& state, bool log_stats) {
@@ -1039,6 +1075,17 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t input_to_present_sum_ns  = take_stat(state.stats.input_to_present_latency_sum_ns);
     const uint64_t input_seq_present_samples = take_stat(state.stats.input_sequence_present_latency_samples);
     const uint64_t input_seq_present_sum_ns  = take_stat(state.stats.input_sequence_present_latency_sum_ns);
+    const uint64_t sdl_render_frames          = take_stat(state.stats.sdl_render_frames);
+    const uint64_t sdl_texture_full_uploads   = take_stat(state.stats.sdl_texture_full_uploads);
+    const uint64_t sdl_texture_partial_uploads = take_stat(state.stats.sdl_texture_partial_uploads);
+    const uint64_t sdl_texture_dirty_rects    = take_stat(state.stats.sdl_texture_dirty_rects);
+    const uint64_t sdl_texture_upload_pixels  = take_stat(state.stats.sdl_texture_upload_pixels);
+    const uint64_t sdl_texture_upload_samples = take_stat(state.stats.sdl_texture_upload_samples);
+    const uint64_t sdl_texture_upload_sum_ns  = take_stat(state.stats.sdl_texture_upload_sum_ns);
+    const uint64_t sdl_texture_upload_max_ns  = take_stat(state.stats.sdl_texture_upload_max_ns);
+    const uint64_t sdl_present_samples        = take_stat(state.stats.sdl_present_samples);
+    const uint64_t sdl_present_sum_ns         = take_stat(state.stats.sdl_present_sum_ns);
+    const uint64_t sdl_present_max_ns         = take_stat(state.stats.sdl_present_max_ns);
 
     ClientStatsSnapshot sample{};
     sample.udp_packets = udp_packets;
@@ -1096,6 +1143,17 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.input_to_present_sum_ns = input_to_present_sum_ns;
     sample.input_seq_present_samples = input_seq_present_samples;
     sample.input_seq_present_sum_ns = input_seq_present_sum_ns;
+    sample.sdl_render_frames = sdl_render_frames;
+    sample.sdl_texture_full_uploads = sdl_texture_full_uploads;
+    sample.sdl_texture_partial_uploads = sdl_texture_partial_uploads;
+    sample.sdl_texture_dirty_rects = sdl_texture_dirty_rects;
+    sample.sdl_texture_upload_pixels = sdl_texture_upload_pixels;
+    sample.sdl_texture_upload_samples = sdl_texture_upload_samples;
+    sample.sdl_texture_upload_sum_ns = sdl_texture_upload_sum_ns;
+    sample.sdl_texture_upload_max_ns = sdl_texture_upload_max_ns;
+    sample.sdl_present_samples = sdl_present_samples;
+    sample.sdl_present_sum_ns = sdl_present_sum_ns;
+    sample.sdl_present_max_ns = sdl_present_max_ns;
     client_stats_accumulate(state.stats_log.totals, sample);
 
     const bool feedback_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || partial_timeouts != 0 ||
@@ -1138,7 +1196,7 @@ void sample_client_stats(ClientState& state, bool log_stats) {
 }
 
 bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
-                      const std::vector<uint8_t>& tile_bytes) {
+                      const std::vector<uint8_t>& tile_bytes, ClientDirtyRect& dirty_rect) {
     const uint16_t tiles_x = wd_tiles_for_width_with_tile(state.config.width, tile_width);
     const uint16_t tiles_y = wd_tiles_for_height_with_tile(state.config.height, tile_height);
     const uint32_t total_tiles = static_cast<uint32_t>(tiles_x) * static_cast<uint32_t>(tiles_y);
@@ -1160,6 +1218,11 @@ bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, uint16_t tile_widt
 
     const uint32_t visible_width  = std::min<uint32_t>(tile_width, state.config.width - dst_x);
     const uint32_t visible_height = std::min<uint32_t>(tile_height, state.config.height - dst_y);
+
+    dirty_rect.x = static_cast<uint16_t>(dst_x);
+    dirty_rect.y = static_cast<uint16_t>(dst_y);
+    dirty_rect.w = static_cast<uint16_t>(visible_width);
+    dirty_rect.h = static_cast<uint16_t>(visible_height);
 
     for (uint32_t y = 0; y < visible_height; ++y)
     {
@@ -1286,13 +1349,19 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
         return true;
     }
 
+    ClientDirtyRect dirty_rect{};
     {
         std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
-        if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_width, completed.tile_height, completed.tile_bytes))
+        if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_width, completed.tile_height, completed.tile_bytes, dirty_rect))
         {
             state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
+    }
+
+    {
+        std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
+        state.pending_dirty_rects.push_back(dirty_rect);
     }
 
     {
@@ -1622,7 +1691,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         return false;
     }
 
-    if (config.width == state.config.width && config.height == state.config.height &&
+    if (config.session_id == state.config.session_id && config.width == state.config.width && config.height == state.config.height &&
         config.tile_width == state.config.tile_width && config.tile_height == state.config.tile_height &&
         config.tiles_x == state.config.tiles_x && config.tiles_y == state.config.tiles_y && config.total_tiles == state.config.total_tiles)
     {
@@ -1631,8 +1700,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         return false;
     }
 
-    WD_LOG_INFO("server config updated: display=%ux%u tile=%ux%u grid=%ux%u total=%u", config.width, config.height,
-                config.tile_width, config.tile_height, config.tiles_x, config.tiles_y, config.total_tiles);
+    WD_LOG_INFO("server config updated: session=%u display=%ux%u tile=%ux%u grid=%ux%u total=%u", config.session_id,
+                config.width, config.height, config.tile_width, config.tile_height, config.tiles_x, config.tiles_y, config.total_tiles);
 
     std::vector<uint32_t> new_framebuffer(static_cast<size_t>(config.width) * config.height, 0xff202020u);
     std::vector<uint64_t> new_displayed_generation(config.total_tiles, 0);
@@ -1659,11 +1728,13 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         std::lock_guard<std::mutex> processing_lock(state.udp_processing_mutex);
         std::lock_guard<std::mutex> config_lock(state.config_mutex);
         std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
+        std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
         std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
         std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
 
         state.config               = config;
         state.framebuffer          = std::move(new_framebuffer);
+        state.pending_dirty_rects.clear();
         state.displayed_generation = std::move(new_displayed_generation);
         state.retx_queue.clear();
         state.retx_queued_generation          = std::move(new_retx_queued_generation);
@@ -1694,6 +1765,116 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     update_window_size(window);
 
     return true;
+}
+
+uint64_t dirty_rect_pixel_count(const std::vector<ClientDirtyRect>& rects) {
+    uint64_t pixels = 0;
+    for (const ClientDirtyRect& rect : rects)
+    {
+        pixels += static_cast<uint64_t>(rect.w) * static_cast<uint64_t>(rect.h);
+    }
+    return pixels;
+}
+
+bool should_upload_full_texture(ClientState& state, const std::vector<ClientDirtyRect>& rects) {
+    if (rects.empty())
+    {
+        return true;
+    }
+
+    if (rects.size() >= WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_THRESHOLD)
+    {
+        return true;
+    }
+
+    const uint64_t frame_pixels = static_cast<uint64_t>(state.config.width) * static_cast<uint64_t>(state.config.height);
+    if (frame_pixels == 0)
+    {
+        return true;
+    }
+
+    const uint64_t dirty_pixels = dirty_rect_pixel_count(rects);
+    return dirty_pixels * 100ull >= frame_pixels * static_cast<uint64_t>(WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_PERCENT);
+}
+
+void record_texture_upload_stats(ClientState& state, uint64_t started_ns, uint64_t pixels) {
+    const uint64_t elapsed_ns = wd_now_ns() - started_ns;
+    state.stats.sdl_texture_upload_samples.fetch_add(1, std::memory_order_relaxed);
+    state.stats.sdl_texture_upload_sum_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
+    state.stats.sdl_texture_upload_pixels.fetch_add(pixels, std::memory_order_relaxed);
+    record_atomic_max(state.stats.sdl_texture_upload_max_ns, elapsed_ns);
+}
+
+bool upload_full_texture(ClientState& state, SDL_Texture* texture, uint32_t frame_width, uint32_t frame_height) {
+    const uint64_t started_ns = wd_now_ns();
+    bool ok = false;
+    {
+        std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
+        const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
+        ok = frame_width != 0 && frame_height != 0 && state.framebuffer.size() >= expected_pixels &&
+             SDL_UpdateTexture(texture, nullptr, state.framebuffer.data(), static_cast<int>(frame_width * WD_BYTES_PER_PIXEL)) == 0;
+    }
+
+    if (ok)
+    {
+        state.stats.sdl_texture_full_uploads.fetch_add(1, std::memory_order_relaxed);
+        record_texture_upload_stats(state, started_ns, static_cast<uint64_t>(frame_width) * static_cast<uint64_t>(frame_height));
+    }
+
+    return ok;
+}
+
+bool upload_dirty_texture_rects(ClientState& state, SDL_Texture* texture, const std::vector<ClientDirtyRect>& rects,
+                                uint32_t frame_width, uint32_t frame_height) {
+    const uint64_t started_ns = wd_now_ns();
+    uint64_t uploaded_pixels = 0;
+    uint64_t uploaded_rects = 0;
+    bool ok = true;
+
+    {
+        std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
+        const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
+        if (frame_width == 0 || frame_height == 0 || state.framebuffer.size() < expected_pixels)
+        {
+            return false;
+        }
+
+        for (const ClientDirtyRect& rect : rects)
+        {
+            if (rect.w == 0 || rect.h == 0 || rect.x >= frame_width || rect.y >= frame_height)
+            {
+                continue;
+            }
+
+            const uint32_t visible_width  = std::min<uint32_t>(rect.w, frame_width - rect.x);
+            const uint32_t visible_height = std::min<uint32_t>(rect.h, frame_height - rect.y);
+            if (visible_width == 0 || visible_height == 0)
+            {
+                continue;
+            }
+
+            const SDL_Rect sdl_rect{static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(visible_width),
+                                    static_cast<int>(visible_height)};
+            const uint32_t* pixels = state.framebuffer.data() + static_cast<size_t>(rect.y) * frame_width + rect.x;
+            if (SDL_UpdateTexture(texture, &sdl_rect, pixels, static_cast<int>(frame_width * WD_BYTES_PER_PIXEL)) != 0)
+            {
+                ok = false;
+                break;
+            }
+
+            uploaded_pixels += static_cast<uint64_t>(visible_width) * static_cast<uint64_t>(visible_height);
+            ++uploaded_rects;
+        }
+    }
+
+    if (ok)
+    {
+        state.stats.sdl_texture_partial_uploads.fetch_add(1, std::memory_order_relaxed);
+        state.stats.sdl_texture_dirty_rects.fetch_add(uploaded_rects, std::memory_order_relaxed);
+        record_texture_upload_stats(state, started_ns, uploaded_pixels);
+    }
+
+    return ok;
 }
 
 bool client_send_keyboard_key_checked(ClientState& state, uint16_t evdev_key_code, bool pressed) {
@@ -1955,6 +2136,7 @@ int run_sdl_viewer(ClientState& state) {
     uint64_t              last_stats_ns           = wd_now_ns();
     uint64_t              last_stats_log_ns       = last_stats_ns;
     bool                  frame_dirty             = true;
+    bool                  texture_needs_full_upload = true;
     uint16_t              last_requested_width    = state.config.width;
     uint16_t              last_requested_height   = state.config.height;
     uint16_t              pending_resize_width    = 0;
@@ -1963,6 +2145,7 @@ int run_sdl_viewer(ClientState& state) {
     ContextMenu           context_menu;
     std::vector<uint64_t> present_tile_timestamps;
     std::vector<uint64_t> present_input_sequences;
+    std::vector<ClientDirtyRect> dirty_rects;
 
     while (state.running.load(std::memory_order_relaxed))
     {
@@ -1978,6 +2161,7 @@ int run_sdl_viewer(ClientState& state) {
             pending_resize_since_ns = 0;
             present_tile_timestamps.clear();
             frame_dirty = true;
+            texture_needs_full_upload = true;
         }
 
         SDL_Event event;
@@ -2040,33 +2224,48 @@ int run_sdl_viewer(ClientState& state) {
             }
         }
 
-        if (frame_dirty || state.frame_dirty.exchange(false, std::memory_order_acq_rel))
+        const bool remote_frame_dirty = state.frame_dirty.exchange(false, std::memory_order_acq_rel);
+        if (frame_dirty || remote_frame_dirty || texture_needs_full_upload)
         {
-            const uint32_t frame_width     = state.config.width;
-            const uint32_t frame_height    = state.config.height;
-            const size_t   expected_pixels = static_cast<size_t>(frame_width) * frame_height;
+            const uint32_t frame_width  = state.config.width;
+            const uint32_t frame_height = state.config.height;
 
-            bool texture_updated = false;
+            if (texture_needs_full_upload || remote_frame_dirty)
             {
-                std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
-                if (frame_width != 0 && frame_height != 0 && state.framebuffer.size() >= expected_pixels &&
-                    SDL_UpdateTexture(texture, nullptr, state.framebuffer.data(), static_cast<int>(frame_width * WD_BYTES_PER_PIXEL)) == 0)
+                dirty_rects.clear();
+                if (!texture_needs_full_upload)
                 {
-                    texture_updated = true;
+                    std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
+                    dirty_rects.swap(state.pending_dirty_rects);
                 }
-            }
 
-            if (!texture_updated)
-            {
-                WD_LOG_ERROR("failed to update SDL texture: %s", SDL_GetError());
-                state.running.store(false, std::memory_order_relaxed);
-                break;
+                const bool upload_full = texture_needs_full_upload || should_upload_full_texture(state, dirty_rects);
+                if (upload_full)
+                {
+                    std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
+                    state.pending_dirty_rects.clear();
+                }
+                const bool texture_updated = upload_full ? upload_full_texture(state, texture, frame_width, frame_height)
+                                                         : upload_dirty_texture_rects(state, texture, dirty_rects, frame_width, frame_height);
+
+                if (!texture_updated)
+                {
+                    WD_LOG_ERROR("failed to update SDL texture: %s", SDL_GetError());
+                    state.running.store(false, std::memory_order_relaxed);
+                    break;
+                }
             }
 
             SDL_RenderClear(renderer);
             SDL_RenderCopy(renderer, texture, nullptr, &g_content_rect);
             render_context_menu(renderer, context_menu);
+            const uint64_t present_started_ns = wd_now_ns();
             SDL_RenderPresent(renderer);
+            const uint64_t present_elapsed_ns = wd_now_ns() - present_started_ns;
+            state.stats.sdl_render_frames.fetch_add(1, std::memory_order_relaxed);
+            state.stats.sdl_present_samples.fetch_add(1, std::memory_order_relaxed);
+            state.stats.sdl_present_sum_ns.fetch_add(present_elapsed_ns, std::memory_order_relaxed);
+            record_atomic_max(state.stats.sdl_present_max_ns, present_elapsed_ns);
 
             {
                 std::lock_guard<std::mutex> present_lock(state.present_mutex);
@@ -2103,6 +2302,7 @@ int run_sdl_viewer(ClientState& state) {
             }
 
             frame_dirty = false;
+            texture_needs_full_upload = false;
         }
 
         const uint64_t now = wd_now_ns();

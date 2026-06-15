@@ -1344,13 +1344,7 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
 
     const uint32_t expected_tiles = static_cast<uint32_t>(config.tiles_x) * static_cast<uint32_t>(config.tiles_y);
 
-    uint8_t session_id = 0;
-    {
-        std::lock_guard<std::mutex> lock(state.config_mutex);
-        session_id = state.config.session_id;
-    }
-
-    if (config.session_id != session_id || config.width == 0 || config.height == 0 || config.tile_width == 0 || config.tile_height == 0 ||
+    if (config.session_id == 0 || config.width == 0 || config.height == 0 || config.tile_width == 0 || config.tile_height == 0 ||
         config.tiles_x == 0 || config.tiles_y == 0 || config.total_tiles == 0 || expected_tiles != config.total_tiles ||
         config.pixel_format != WD_PIXEL_FORMAT_XRGB8888 || config.compression_mode != WD_COMPRESSION_ZSTD)
     {

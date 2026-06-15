@@ -473,7 +473,7 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
     bool                     client_connected  = net->client_connected;
     struct wd_stream_policy* policy            = &net->stream_policy;
 
-    if (!client_connected)
+    if (!client_connected || net->config_update_pending)
     {
         pthread_mutex_unlock(&net->lock);
         return false;
@@ -2773,6 +2773,12 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
         return true;
     }
 
+    if (net->config_update_pending)
+    {
+        pthread_mutex_unlock(&net->lock);
+        return true;
+    }
+
     /*
      * Normal send pass. New/reconnected clients are handled through the same
      * dirty-tile pipeline by invalidating tile state and marking the
@@ -3134,6 +3140,11 @@ static bool wd_stream_send_generation_summary_kind_locked(struct wd_server* serv
     if (!net->client_connected || net->tcp_fd < 0)
     {
         return true;
+    }
+
+    if (net->config_update_pending)
+    {
+        return false;
     }
 
     if (net->control_tx && net->summary_async_pending_count != 0)

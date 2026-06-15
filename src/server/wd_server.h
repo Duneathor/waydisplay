@@ -476,6 +476,7 @@ struct wd_net_state {
 
     uint16_t tcp_port;
     uint8_t session_id;
+    bool    config_update_pending;
 
     struct sockaddr_in      client_udp_addr;
     struct wd_stream_policy stream_policy;

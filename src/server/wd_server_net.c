@@ -929,6 +929,7 @@ bool wd_server_send_current_config_locked(struct wd_server* server) {
     bool ok = false;
     if (net->control_tx)
     {
+        (void)wd_async_tcp_sender_drop_message_type(net->control_tx, WD_MSG_SERVER_CONFIG);
         (void)wd_async_tcp_sender_drop_message_type(net->control_tx, WD_MSG_TILE_GENERATION_SUMMARY);
         if (wd_async_tcp_sender_has_message_type(net->control_tx, WD_MSG_TILE_GENERATION_SUMMARY))
         {
@@ -953,6 +954,7 @@ bool wd_server_send_current_config_locked(struct wd_server* server) {
         wd_stream_account_tcp_control_bytes_locked(net,
                                                    (uint32_t)(sizeof(struct wd_tcp_header) + sizeof(cfg)));
         net->stats.tcp_config_tx++;
+        net->config_update_pending = false;
     }
     return ok;
 }
@@ -1325,6 +1327,7 @@ void* wd_net_thread_main(void* arg) {
         }
         net->client_udp_addr      = client_udp_addr;
         net->client_connected     = true;
+        net->config_update_pending = false;
         if (net->control_tx)
         {
             (void)wd_async_tcp_sender_drop_message_type(net->control_tx, WD_MSG_TILE_GENERATION_SUMMARY);
@@ -1684,13 +1687,16 @@ void* wd_net_thread_main(void* arg) {
                         {
                             pthread_mutex_lock(&net->lock);
                             bool config_sent = wd_server_send_current_config_locked(server);
+                            if (config_sent)
+                            {
+                                wd_server_fill_config(server, net->session_id, selected_udp_payload, &cfg);
+                            }
                             pthread_mutex_unlock(&net->lock);
                             if (!config_sent)
                             {
                                 free(payload);
                                 break;
                             }
-                            wd_server_fill_config(server, cfg.session_id, selected_udp_payload, &cfg);
 
                             WD_LOG_INFO("client resized display to %ux%u", server->display_width, server->display_height);
                         }
@@ -1729,6 +1735,7 @@ void* wd_net_thread_main(void* arg) {
         }
 
         net->client_connected    = false;
+        net->config_update_pending = false;
         net->key_queue_count     = 0;
         net->pointer_queue_count = 0;
         net->key_state_reset_pending = true;
