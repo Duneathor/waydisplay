@@ -31,9 +31,9 @@ cmake -S . -B build \
 cmake --build build
 ```
 
-The server prefers H.264 when both peers advertise both codecs, because H.264
-hardware decode support is more common on older GPUs. Use `--video-codec h265`
-or `--video-codec h264` on the client to force a specific codec.
+The client defaults to H.265. Use `--video-codec auto` to advertise both H.265
+and H.264, or `--video-codec h264` / `--video-codec h265` to force a specific
+codec. When both peers advertise both codecs, the server prefers H.265.
 
 ## Tile-size selection
 

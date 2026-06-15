@@ -46,7 +46,7 @@ struct ClientStreamConfig {
     uint16_t video_exit_seconds            = WD_VIDEO_EXIT_SECONDS_DEFAULT;
     uint32_t video_bitrate_kib_per_second  = 0;
     uint8_t  video_hwdecode_mode           = WD_CLIENT_VIDEO_HWDECODE_AUTO;
-    uint32_t video_codec_mask              = WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265;
+    uint32_t video_codec_mask              = WD_VIDEO_CODEC_H265;
     bool     disable_vsync                 = false;
 };
 

@@ -48,13 +48,13 @@ static const char* wd_video_codec_name(uint32_t codec) {
 
 static uint32_t wd_choose_video_codec(uint32_t client_codecs, uint32_t server_codecs) {
     const uint32_t common = client_codecs & server_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265);
-    if ((common & WD_VIDEO_CODEC_H264) != 0)
-    {
-        return WD_VIDEO_CODEC_H264;
-    }
     if ((common & WD_VIDEO_CODEC_H265) != 0)
     {
         return WD_VIDEO_CODEC_H265;
+    }
+    if ((common & WD_VIDEO_CODEC_H264) != 0)
+    {
+        return WD_VIDEO_CODEC_H264;
     }
     return 0;
 }

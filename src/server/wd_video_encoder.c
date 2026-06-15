@@ -317,7 +317,7 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
         (void)av_opt_set(encoder->codec_ctx->priv_data, "tune", "zerolatency", 0);
         if (config->codec == WD_VIDEO_CODEC_H264)
         {
-            (void)av_opt_set(encoder->codec_ctx->priv_data, "x264-params", "repeat-headers=1:log-level=error:sliced-threads=1", 0);
+            (void)av_opt_set(encoder->codec_ctx->priv_data, "x264-params", "repeat-headers=1:sliced-threads=1", 0);
         }
         else
         {
