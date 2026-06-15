@@ -88,7 +88,7 @@ target_link_libraries(waydisplay_common PUBLIC
 # -----------------------------------------------------------------------------
 
 if(WAYDISPLAY_BUILD_CLIENT_SDL)
-    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+    pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
     pkg_check_modules(LIBURING REQUIRED IMPORTED_TARGET liburing)
 
     add_executable(waydisplay_client_sdl
@@ -109,7 +109,7 @@ if(WAYDISPLAY_BUILD_CLIENT_SDL)
 
     target_link_libraries(waydisplay_client_sdl PRIVATE
         waydisplay_common
-        PkgConfig::SDL2
+        PkgConfig::SDL3
         PkgConfig::LIBURING
         Threads::Threads
     )

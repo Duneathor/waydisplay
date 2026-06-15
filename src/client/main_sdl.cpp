@@ -3,6 +3,8 @@
 #include "wd_client.hpp"
 #include "waydisplay/wd_log.h"
 
+#include <SDL3/SDL_main.h>
+
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -18,7 +20,7 @@ void usage(const char* argv0) {
                  "  --fps <N>                   Target adaptive render/discovery FPS, default 30\n"
                  "  --size <WxH>                 Request remote display size\n"
                  "  --rate-kib <N>               Cap adaptive UDP tile budget in KiB/s\n"
-                 "  --no-vsync                   Create the SDL renderer without present-vsync\n"
+                 "  --no-vsync                   Create the SDL Vulkan renderer without present-vsync\n"
                  "  --limited-rate-kib <N>       Deprecated alias for --rate-kib\n"
                  "  --wan                        Shorthand for --rate-kib 4096\n\n"
                  "Examples:\n"

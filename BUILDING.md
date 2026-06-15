@@ -10,8 +10,8 @@ cmake -S . -B build-common \
 cmake --build build-common
 ```
 
-A full build needs SDL2 for the client and wlroots/Wayland development packages
-for the compositor server.
+A full build needs SDL3 with Vulkan support for the client and wlroots/Wayland
+development packages for the compositor server.
 
 ## Tile-size selection
 
