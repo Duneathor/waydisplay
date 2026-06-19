@@ -4722,6 +4722,13 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->tile_size_16x16_sent += src->tile_size_16x16_sent;
     dst->tcp_hello_rx += src->tcp_hello_rx;
     dst->tcp_config_tx += src->tcp_config_tx;
+    dst->tcp_config_applied_ack_rx += src->tcp_config_applied_ack_rx;
+    dst->tcp_config_apply_ack_samples += src->tcp_config_apply_ack_samples;
+    dst->tcp_config_apply_ack_sum_ns += src->tcp_config_apply_ack_sum_ns;
+    if (src->tcp_config_apply_ack_max_ns > dst->tcp_config_apply_ack_max_ns)
+    {
+        dst->tcp_config_apply_ack_max_ns = src->tcp_config_apply_ack_max_ns;
+    }
     dst->tcp_summary_tx += src->tcp_summary_tx;
     dst->tcp_input_channel_rx += src->tcp_input_channel_rx;
     dst->tcp_input_channel_accepted += src->tcp_input_channel_accepted;
@@ -5265,7 +5272,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      (unsigned long long)s.client_video_last_frame_id_presented);
     }
 
-    bool control_activity = s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 || s.tcp_input_channel_rx != 0 ||
+    bool control_activity = s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 || s.tcp_config_applied_ack_rx != 0 || s.tcp_input_channel_rx != 0 ||
                             s.tcp_input_channel_accepted != 0 || s.tcp_input_channel_closed != 0 ||
                             s.tcp_selection_channel_rx != 0 || s.tcp_selection_channel_accepted != 0 ||
                             s.tcp_selection_channel_closed != 0 || s.tcp_video_channel_rx != 0 ||
@@ -5276,8 +5283,11 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                             s.tcp_control_bytes_sent != 0 || s.tcp_control_bytes_refunded != 0 || s.tcp_budget_blocked != 0;
     if (control_activity)
     {
-        WD_LOG_DEBUG("control/min: hello=%llu config=%llu input_rx=%llu input_accepted=%llu input_closed=%llu selection_rx=%llu selection_accepted=%llu selection_closed=%llu video_rx=%llu video_accepted=%llu video_closed=%llu async_queued=%llu async_completed=%llu async_send_failed=%llu async_completion_failed=%llu async_overflow=%llu async_partial=%llu async_inflight_max=%llu tcp_kib=%.1f tcp_refund_kib=%.1f tcp_budget_blocked=%llu",
+        WD_LOG_DEBUG("control/min: hello=%llu config=%llu config_ack=%llu config_ack_avg_ms=%.2f config_ack_max_ms=%.2f input_rx=%llu input_accepted=%llu input_closed=%llu selection_rx=%llu selection_accepted=%llu selection_closed=%llu video_rx=%llu video_accepted=%llu video_closed=%llu async_queued=%llu async_completed=%llu async_send_failed=%llu async_completion_failed=%llu async_overflow=%llu async_partial=%llu async_inflight_max=%llu tcp_kib=%.1f tcp_refund_kib=%.1f tcp_budget_blocked=%llu",
                      (unsigned long long)s.tcp_hello_rx, (unsigned long long)s.tcp_config_tx,
+                     (unsigned long long)s.tcp_config_applied_ack_rx,
+                     wd_avg_ms(s.tcp_config_apply_ack_sum_ns, s.tcp_config_apply_ack_samples),
+                     (double)s.tcp_config_apply_ack_max_ns / 1000000.0,
                      (unsigned long long)s.tcp_input_channel_rx, (unsigned long long)s.tcp_input_channel_accepted,
                      (unsigned long long)s.tcp_input_channel_closed, (unsigned long long)s.tcp_selection_channel_rx,
                      (unsigned long long)s.tcp_selection_channel_accepted, (unsigned long long)s.tcp_selection_channel_closed,

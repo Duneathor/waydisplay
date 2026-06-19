@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 32u
+#define WD_PROTOCOL_VERSION 33u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -46,6 +46,7 @@ enum wd_message_type {
     WD_MSG_LINK_PROBE_PONG         = 21,
     WD_MSG_VIDEO_CHANNEL_HELLO     = 22,
     WD_MSG_VIDEO_FRAME             = 23,
+    WD_MSG_CONFIG_APPLIED          = 24,
     WD_MSG_ERROR                   = 255,
 };
 
@@ -845,6 +846,10 @@ struct wd_display_resize_payload {
     uint16_t height;
 };
 
+struct wd_config_applied_payload {
+    uint8_t session_id;
+};
+
 WD_PACKED_END
 
 #undef WD_PACKED_BEGIN
@@ -872,6 +877,7 @@ static_assert(sizeof(struct wd_video_frame_payload_header) == 35, "unexpected wd
 static_assert(sizeof(struct wd_selection_payload_header) == 7, "unexpected wd_selection_payload_header size");
 static_assert(sizeof(struct wd_cursor_shape_payload) == 3, "unexpected wd_cursor_shape_payload size");
 static_assert(sizeof(struct wd_display_resize_payload) == 5, "unexpected wd_display_resize_payload size");
+static_assert(sizeof(struct wd_config_applied_payload) == 1, "unexpected wd_config_applied_payload size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 36, "unexpected wd_udp_tile_packet_header size");
@@ -894,6 +900,7 @@ _Static_assert(sizeof(struct wd_video_frame_payload_header) == 35, "unexpected w
 _Static_assert(sizeof(struct wd_selection_payload_header) == 7, "unexpected wd_selection_payload_header size");
 _Static_assert(sizeof(struct wd_cursor_shape_payload) == 3, "unexpected wd_cursor_shape_payload size");
 _Static_assert(sizeof(struct wd_display_resize_payload) == 5, "unexpected wd_display_resize_payload size");
+_Static_assert(sizeof(struct wd_config_applied_payload) == 1, "unexpected wd_config_applied_payload size");
 #endif
 
 

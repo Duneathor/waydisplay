@@ -1017,6 +1017,7 @@ static void wd_server_advance_stream_session_locked(struct wd_server* server) {
 
     server->net.session_id            = next_session_id;
     server->net.config_update_pending = true;
+    server->net.config_update_sent_ns = 0;
 }
 
 bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint32_t height) {

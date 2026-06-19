@@ -18,6 +18,7 @@ bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payloa
 bool client_send_clipboard_text(ClientState& state, const char* text);
 bool client_send_primary_text(ClientState& state, const char* text);
 bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t height);
+bool client_send_config_applied(ClientState& state, uint8_t session_id);
 
 void client_promote_deferred_summary_retransmits(ClientState& state);
 bool client_flush_retransmit_requests(ClientState& state);

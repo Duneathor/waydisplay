@@ -1028,7 +1028,15 @@ bool wd_server_send_current_config_locked(struct wd_server* server) {
         wd_stream_account_tcp_control_bytes_locked(net,
                                                    (uint32_t)(sizeof(struct wd_tcp_header) + sizeof(cfg)));
         net->stats.tcp_config_tx++;
-        net->config_update_pending = false;
+
+        /* Do not release the new-session tile stream merely because the
+         * config was queued to TCP. UDP can overtake TCP, and the client must
+         * rebuild its framebuffer/texture before it can accept the new
+         * session. WD_MSG_CONFIG_APPLIED is the readiness barrier. */
+        if (net->config_update_pending)
+        {
+            net->config_update_sent_ns = wd_now_ns();
+        }
     }
     return ok;
 }
@@ -1454,8 +1462,9 @@ void* wd_net_thread_main(void* arg) {
             net->stats.tcp_video_channel_accepted++;
         }
         net->client_udp_addr      = client_udp_addr;
-        net->client_connected     = true;
+        net->client_connected      = true;
         net->config_update_pending = false;
+        net->config_update_sent_ns = 0;
         if (net->control_tx)
         {
             (void)wd_async_tcp_sender_drop_message_type(net->control_tx, WD_MSG_TILE_GENERATION_SUMMARY);
@@ -1833,6 +1842,41 @@ void* wd_net_thread_main(void* arg) {
                         pthread_mutex_unlock(&net->lock);
                     }
                 }
+                else if (type == WD_MSG_CONFIG_APPLIED && payload_size >= sizeof(struct wd_config_applied_payload))
+                {
+                    struct wd_config_applied_payload applied;
+                    memcpy(&applied, payload, sizeof(applied));
+
+                    if (applied.session_id == cfg.session_id)
+                    {
+                        pthread_mutex_lock(&net->lock);
+                        if (net->config_update_pending && applied.session_id == net->session_id)
+                        {
+                            const uint64_t now_ns = wd_now_ns();
+                            net->config_update_pending = false;
+                            net->stats.tcp_config_applied_ack_rx++;
+                            if (net->config_update_sent_ns != 0 && now_ns >= net->config_update_sent_ns)
+                            {
+                                const uint64_t wait_ns = now_ns - net->config_update_sent_ns;
+                                net->stats.tcp_config_apply_ack_samples++;
+                                net->stats.tcp_config_apply_ack_sum_ns += wait_ns;
+                                if (wait_ns > net->stats.tcp_config_apply_ack_max_ns)
+                                {
+                                    net->stats.tcp_config_apply_ack_max_ns = wait_ns;
+                                }
+                            }
+                            net->config_update_sent_ns = 0;
+
+                            /* Start the post-resize refresh from current scene
+                             * contents only after the client has installed the
+                             * matching geometry/session. Reset pacing so the
+                             * first refresh is not delayed by the old FPS slot. */
+                            net->stream_policy.last_frame_send_ns = 0;
+                            wd_stream_invalidate_all_tiles_locked(server);
+                        }
+                        pthread_mutex_unlock(&net->lock);
+                    }
+                }
                 else if (type == WD_MSG_CLIENT_STATS && payload_size >= sizeof(struct wd_client_stats_payload))
                 {
                     struct wd_client_stats_payload cs;
@@ -1972,8 +2016,9 @@ void* wd_net_thread_main(void* arg) {
             net->video_tcp_fd = -1;
         }
 
-        net->client_connected    = false;
+        net->client_connected      = false;
         net->config_update_pending = false;
+        net->config_update_sent_ns = 0;
         wd_stream_video_reset_locked(server, "client disconnected", false, false);
         net->video_stream_negotiated = false;
         net->video_codecs = 0;

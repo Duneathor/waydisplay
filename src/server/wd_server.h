@@ -245,6 +245,10 @@ struct wd_stats {
 
     uint64_t tcp_hello_rx;
     uint64_t tcp_config_tx;
+    uint64_t tcp_config_applied_ack_rx;
+    uint64_t tcp_config_apply_ack_samples;
+    uint64_t tcp_config_apply_ack_sum_ns;
+    uint64_t tcp_config_apply_ack_max_ns;
     uint64_t tcp_summary_tx;
     uint64_t tcp_input_channel_rx;
     uint64_t tcp_input_channel_accepted;
@@ -599,8 +603,9 @@ struct wd_net_state {
     int udp_fd;
 
     uint16_t tcp_port;
-    uint8_t session_id;
-    bool    config_update_pending;
+    uint8_t  session_id;
+    bool     config_update_pending;
+    uint64_t config_update_sent_ns;
 
     bool     video_stream_negotiated;
     uint32_t video_codecs;

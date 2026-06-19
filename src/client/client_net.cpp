@@ -2308,6 +2308,18 @@ bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t hei
 }
 
 
+bool client_send_config_applied(ClientState& state, uint8_t session_id) {
+    if (state.tcp_fd < 0 || session_id == 0)
+    {
+        return false;
+    }
+
+    wd_config_applied_payload applied{};
+    applied.session_id = session_id;
+    return client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_CONFIG_APPLIED, &applied, sizeof(applied));
+}
+
+
 bool client_send_stats(ClientState& state, const wd_client_stats_payload& stats) {
     if (state.tcp_fd < 0)
     {

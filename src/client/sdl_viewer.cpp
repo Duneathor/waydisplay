@@ -2160,6 +2160,14 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     }
     update_window_size(window);
 
+    if (!client_send_config_applied(state, config.session_id))
+    {
+        WD_LOG_ERROR("failed to acknowledge applied server config session=%u", config.session_id);
+        state.running.store(false, std::memory_order_relaxed);
+        return false;
+    }
+    WD_LOG_DEBUG("acknowledged applied server config session=%u", config.session_id);
+
     return true;
 }
 
