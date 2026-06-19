@@ -232,6 +232,10 @@ struct wd_stats {
     uint64_t tile_choice_saved_wire_sum;
 
     uint64_t stream_mode_frame_samples;
+    /* Scene frames whose framebuffer diff contained at least one changed
+     * base tile. This is the actual tile-render demand; unchanged commits and
+     * idle queue-service ticks must not count as client render pressure. */
+    uint64_t stream_mode_changed_frame_samples;
     uint64_t stream_mode_dirty_coverage_per_mille_sum;
     uint64_t stream_mode_dirty_coverage_per_mille_peak;
     uint64_t stream_mode_pending_coverage_per_mille_sum;

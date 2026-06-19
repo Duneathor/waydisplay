@@ -1872,6 +1872,8 @@ void* wd_net_thread_main(void* arg) {
                              * matching geometry/session. Reset pacing so the
                              * first refresh is not delayed by the old FPS slot. */
                             net->stream_policy.last_frame_send_ns = 0;
+                            net->stream_policy.client_render_pressure_seconds = 0;
+                            net->stream_policy.frame_rate_good_seconds = 0;
                             wd_stream_invalidate_all_tiles_locked(server);
                         }
                         pthread_mutex_unlock(&net->lock);

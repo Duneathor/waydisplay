@@ -1462,7 +1462,10 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         feedback.udp_interarrival_jitter_samples = udp_jitter_samples;
         feedback.udp_interarrival_jitter_sum_ns  = udp_jitter_sum_ns;
         feedback.udp_interarrival_max_ns    = udp_interarrival_max_ns;
-        feedback.render_frames              = sdl_render_frames;
+        /* Render-pressure feedback must count presentations caused by remote
+         * texture updates only. Local exposes, menus, and window-system redraws
+         * do not represent capacity consumed by the tile stream. */
+        feedback.render_frames              = sdl_remote_frames;
         feedback.present_samples            = sdl_present_samples;
         feedback.present_sum_ns             = sdl_present_sum_ns;
         feedback.present_max_ns             = sdl_present_max_ns;

@@ -292,7 +292,9 @@ struct wd_client_stats_payload {
     uint64_t udp_interarrival_jitter_sum_ns;
     uint64_t udp_interarrival_max_ns;
 
-    /* Client-side render/present telemetry for sender adaptation. */
+    /* Client-side render/present telemetry for sender adaptation.
+     * render_frames counts presentations containing a remote tile/video update,
+     * not local-only window redraws. */
     uint64_t render_frames;
     uint64_t present_samples;
     uint64_t present_sum_ns;

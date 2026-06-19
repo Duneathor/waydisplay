@@ -1183,12 +1183,25 @@ static bool wd_stream_client_render_pressure_sample(const struct wd_stream_polic
     }
 
     const uint16_t effective_fps = wd_stream_policy_effective_fps_locked(policy);
-    const bool client_video_activity = stats->client_tiles_completed != 0 || stats->client_udp_bytes_rx != 0 ||
-                                       stats->client_present_samples != 0;
+    if (effective_fps == 0 || stats->stream_mode_changed_frame_samples == 0)
+    {
+        return false;
+    }
 
-    if (effective_fps != 0 && client_video_activity &&
+    /* A tile client has no reason to present at the configured FPS when the
+     * scene is static. Compare remote presentations only with scene frames
+     * that actually produced changed pixels. Cap demand by the number of FPS
+     * slots covered by the received one-second reports so a delayed health
+     * sample cannot manufacture impossible demand. */
+    const uint64_t report_capacity =
+        (uint64_t)effective_fps * (uint64_t)stats->client_stats_rx;
+    const uint64_t render_demand =
+        stats->stream_mode_changed_frame_samples < report_capacity ?
+            stats->stream_mode_changed_frame_samples : report_capacity;
+
+    if (render_demand != 0 &&
         stats->client_render_frames * 100ull <
-            (uint64_t)effective_fps * (uint64_t)stats->client_stats_rx * WD_STREAM_CLIENT_RENDER_FPS_PRESSURE_PERCENT)
+            render_demand * WD_STREAM_CLIENT_RENDER_FPS_PRESSURE_PERCENT)
     {
         return true;
     }
@@ -1196,12 +1209,10 @@ static bool wd_stream_client_render_pressure_sample(const struct wd_stream_polic
     /* Present latency is useful telemetry, but a client can report high
      * SDL_RenderPresent() samples because it was allowed to over-present local
      * dirty updates, because the window system briefly blocked, or because a
-     * single visible sample spiked.  Treat the client's measured render rate as
-     * the render-pressure signal; if it is keeping up with the negotiated FPS,
-     * present time alone should not ratchet the server down.  Input-to-present
-     * latency is even broader telemetry because it includes server scheduling,
-     * application damage behavior, link/repair delays, and pending input-sequence
-     * correlation, so it also must not drive local client render pressure. */
+     * single visible sample spiked. Input-to-present latency is even broader
+     * telemetry because it includes server scheduling, application damage
+     * behavior, link/repair delays, and input-sequence correlation. Neither
+     * latency metric should ratchet the sender down by itself. */
     return false;
 }
 
@@ -2656,6 +2667,10 @@ static void wd_stream_note_mode_frame_locked(struct wd_net_state* net, uint16_t 
     const uint64_t pending_coverage = wd_stream_coverage_per_mille(pending_tiles, total_tiles);
 
     net->stats.stream_mode_frame_samples++;
+    if (dirty_tiles != 0)
+    {
+        net->stats.stream_mode_changed_frame_samples++;
+    }
     net->stats.stream_mode_dirty_coverage_per_mille_sum += dirty_coverage;
     if (dirty_coverage > net->stats.stream_mode_dirty_coverage_per_mille_peak)
     {
@@ -4705,6 +4720,7 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->tile_choice_chosen_wire_sum += src->tile_choice_chosen_wire_sum;
     dst->tile_choice_saved_wire_sum += src->tile_choice_saved_wire_sum;
     dst->stream_mode_frame_samples += src->stream_mode_frame_samples;
+    dst->stream_mode_changed_frame_samples += src->stream_mode_changed_frame_samples;
     dst->stream_mode_dirty_coverage_per_mille_sum += src->stream_mode_dirty_coverage_per_mille_sum;
     if (src->stream_mode_dirty_coverage_per_mille_peak > dst->stream_mode_dirty_coverage_per_mille_peak)
     {
@@ -5062,8 +5078,9 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                                                 ? ((double)limited_udp_kib_per_second * 1024.0) / (wire_avg_bytes * total_tiles)
                                                 : 0.0;
 
-        WD_LOG_DEBUG("stream-mode/min: samples=%llu dirty_avg_pct=%.1f dirty_peak_pct=%.1f pending_avg_pct=%.1f pending_peak_pct=%.1f budget_pressure_frames=%llu budget_pressure_pct=%.1f video_mode=%s video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u est_tile_full_frame_mib=%.2f est_tile_budget_fps=%.1f",
-                     (unsigned long long)s.stream_mode_frame_samples, dirty_avg_pct, dirty_peak_pct,
+        WD_LOG_DEBUG("stream-mode/min: samples=%llu changed_samples=%llu dirty_avg_pct=%.1f dirty_peak_pct=%.1f pending_avg_pct=%.1f pending_peak_pct=%.1f budget_pressure_frames=%llu budget_pressure_pct=%.1f video_mode=%s video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u est_tile_full_frame_mib=%.2f est_tile_budget_fps=%.1f",
+                     (unsigned long long)s.stream_mode_frame_samples,
+                     (unsigned long long)s.stream_mode_changed_frame_samples, dirty_avg_pct, dirty_peak_pct,
                      pending_avg_pct, pending_peak_pct,
                      (unsigned long long)s.stream_mode_budget_pressure_frames, budget_pressure_pct,
                      wd_video_mode_name(video_mode), (unsigned)video_min_dirty_percent,
@@ -5229,7 +5246,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                            s.client_render_visible_reports != 0 || s.client_render_hidden_reports != 0;
     if (client_activity)
     {
-        WD_LOG_DEBUG("client/min: reports=%llu visible=%llu hidden=%llu completed=%llu udp_kib=%.1f partial_timeouts=%llu old_gen=%llu retx_req_tx=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f render_frames=%llu present_avg_ms=%.2f present_max_ms=%.2f input_present_avg_ms=%.2f",
+        WD_LOG_DEBUG("client/min: reports=%llu visible=%llu hidden=%llu completed=%llu udp_kib=%.1f partial_timeouts=%llu old_gen=%llu retx_req_tx=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f remote_render_frames=%llu present_avg_ms=%.2f present_max_ms=%.2f input_present_avg_ms=%.2f",
                      (unsigned long long)s.client_stats_rx,
                      (unsigned long long)s.client_render_visible_reports,
                      (unsigned long long)s.client_render_hidden_reports,
