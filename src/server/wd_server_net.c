@@ -1545,12 +1545,12 @@ void* wd_net_thread_main(void* arg) {
             wd_format_socket_endpoint(net->udp_fd, false, udp_local, sizeof(udp_local));
             wd_format_sockaddr_in(&client_udp_addr, udp_remote, sizeof(udp_remote));
 
-            WD_LOG_INFO("client connected; control_tcp=%s<->%s udp=%s->%s input_channel=%s selection_channel=%s video_channel=%s video_stream=%s video_codec=%s video_transport=%s display=%ux%u tile=%ux%u fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
+            WD_LOG_INFO("client connected; control_tcp=%s<->%s udp=%s->%s input_channel=%s selection_channel=%s video_channel=%s video_stream=%s video_codec=%s video_transport=%s display=%ux%u tile=%ux%u requested_capture_fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
                         control_local, control_remote, udp_local, udp_remote, input_tcp_fd >= 0 ? "yes" : "no",
                         selection_tcp_fd >= 0 ? "yes" : "no", video_tcp_fd >= 0 ? "yes" : "no", client_video_tcp ? "yes" : "no",
                         client_video_tcp ? wd_video_codec_name(selected_video_codec) : "none", client_video_tcp ? "tcp" : "none",
                         server->display_width, server->display_height,
-                        server->tile_width, server->tile_height, hello.target_fps, hello.limited_udp_kib_per_second,
+                        server->tile_width, server->tile_height, hello.requested_capture_fps, hello.limited_udp_kib_per_second,
                         (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
 
             if (input_tcp_fd >= 0)

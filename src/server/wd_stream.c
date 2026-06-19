@@ -128,8 +128,8 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
 
     memset(policy, 0, sizeof(*policy));
 
-    policy->target_fps                    = WD_DEFAULT_PARTIAL_FPS;
-    policy->effective_target_fps          = WD_DEFAULT_PARTIAL_FPS;
+    policy->requested_capture_fps                    = WD_DEFAULT_PARTIAL_FPS;
+    policy->adaptive_capture_fps          = WD_DEFAULT_PARTIAL_FPS;
     policy->stream_mode                   = WD_STREAM_MODE_TILES;
     policy->video_mode                    = WD_VIDEO_MODE_AUTO;
     policy->video_min_dirty_percent       = WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT;
@@ -159,7 +159,7 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
         return;
     }
 
-    uint16_t fps = hello->target_fps;
+    uint16_t fps = hello->requested_capture_fps;
     if (fps == 0)
     {
         fps = WD_DEFAULT_PARTIAL_FPS;
@@ -170,8 +170,8 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
         fps = WD_MAX_REASONABLE_FPS;
     }
 
-    policy->target_fps           = fps;
-    policy->effective_target_fps = fps;
+    policy->requested_capture_fps           = fps;
+    policy->adaptive_capture_fps = fps;
     policy->stream_mode = WD_STREAM_MODE_TILES;
     policy->video_mode = hello->video_mode <= WD_VIDEO_MODE_FORCE ? hello->video_mode : WD_VIDEO_MODE_AUTO;
     policy->video_min_dirty_percent = hello->video_min_dirty_percent != 0 ? hello->video_min_dirty_percent : WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT;
@@ -285,33 +285,33 @@ static const char* wd_stream_mode_owner_name(enum wd_stream_mode mode) {
     return wd_stream_mode_video_owns_display(mode) ? "video" : "tiles";
 }
 
-static void wd_stream_policy_restore_target_fps_locked(struct wd_stream_policy* policy, const char* reason) {
+static void wd_stream_policy_restore_requested_capture_fps_locked(struct wd_stream_policy* policy, const char* reason) {
     if (!policy)
     {
         return;
     }
 
-    if (policy->target_fps == 0)
+    if (policy->requested_capture_fps == 0)
     {
-        policy->target_fps = WD_DEFAULT_PARTIAL_FPS;
+        policy->requested_capture_fps = WD_DEFAULT_PARTIAL_FPS;
     }
 
-    uint16_t old_fps = policy->effective_target_fps != 0 ? policy->effective_target_fps : policy->target_fps;
-    if (old_fps == policy->target_fps)
+    uint16_t old_fps = policy->adaptive_capture_fps != 0 ? policy->adaptive_capture_fps : policy->requested_capture_fps;
+    if (old_fps == policy->requested_capture_fps)
     {
-        policy->effective_target_fps = policy->target_fps;
+        policy->adaptive_capture_fps = policy->requested_capture_fps;
         policy->frame_rate_good_seconds = 0;
         return;
     }
 
-    policy->effective_target_fps = policy->target_fps;
+    policy->adaptive_capture_fps = policy->requested_capture_fps;
     policy->frame_rate_good_seconds = 0;
     policy->client_render_pressure_seconds = 0;
     policy->last_frame_send_ns = 0;
     policy->last_video_frame_send_ns = 0;
 
-    WD_LOG_INFO("stream frame rate reset: %u -> %u fps due to %s",
-                (unsigned)old_fps, (unsigned)policy->target_fps, reason ? reason : "stream mode change");
+    WD_LOG_INFO("stream capture rate reset: %u -> %u fps due to %s",
+                (unsigned)old_fps, (unsigned)policy->requested_capture_fps, reason ? reason : "stream mode change");
 }
 
 static void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_stream_mode mode,
@@ -333,7 +333,7 @@ static void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, en
 
     if (wd_stream_mode_uses_video_frames(mode) && !wd_stream_mode_uses_video_frames(old_mode))
     {
-        wd_stream_policy_restore_target_fps_locked(policy, "video mode entry");
+        wd_stream_policy_restore_requested_capture_fps_locked(policy, "video mode entry");
     }
 
     WD_LOG_INFO("stream mode state: %s -> %s reason=%s dirty_avg_pct=%.1f dirty_peak_pct=%.1f budget_pressure_pct=%.1f video_channel=%s video_encoder=%s",
@@ -357,8 +357,8 @@ static void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
     const double dirty_peak_pct = wd_stream_coverage_pct(stats->stream_mode_dirty_coverage_per_mille_peak);
     const double budget_pressure_pct = ((double)stats->stream_mode_budget_pressure_frames / (double)sample_count) * 100.0;
 
-    const bool fps_limited = policy->target_fps > 0 &&
-                             (uint32_t)policy->effective_target_fps * 2u < (uint32_t)policy->target_fps;
+    const bool fps_limited = policy->requested_capture_fps > 0 &&
+                             (uint32_t)policy->adaptive_capture_fps * 2u < (uint32_t)policy->requested_capture_fps;
     const uint8_t min_dirty_pct = policy->video_min_dirty_percent != 0
                                       ? policy->video_min_dirty_percent
                                       : WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT;
@@ -534,10 +534,10 @@ static void wd_stream_policy_set_limited_rate_locked(struct wd_stream_policy* po
 
 
 static uint16_t wd_stream_policy_effective_fps_locked(const struct wd_stream_policy* policy) {
-    uint16_t fps = policy ? policy->effective_target_fps : 0;
+    uint16_t fps = policy ? policy->adaptive_capture_fps : 0;
     if (fps == 0 && policy)
     {
-        fps = policy->target_fps;
+        fps = policy->requested_capture_fps;
     }
     if (fps == 0)
     {
@@ -555,7 +555,7 @@ static uint16_t wd_stream_policy_effective_fps_locked(const struct wd_stream_pol
 }
 
 
-static uint16_t wd_stream_policy_output_fps_locked(const struct wd_stream_policy* policy) {
+static uint16_t wd_stream_policy_capture_pacing_fps_locked(const struct wd_stream_policy* policy) {
     uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
 
     if (policy && !policy->client_render_visible && fps > WD_STREAM_HIDDEN_CLIENT_FPS)
@@ -1232,13 +1232,13 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
         return;
     }
 
-    if (policy->target_fps == 0)
+    if (policy->requested_capture_fps == 0)
     {
-        policy->target_fps = WD_DEFAULT_PARTIAL_FPS;
+        policy->requested_capture_fps = WD_DEFAULT_PARTIAL_FPS;
     }
-    if (policy->effective_target_fps == 0)
+    if (policy->adaptive_capture_fps == 0)
     {
-        policy->effective_target_fps = policy->target_fps;
+        policy->adaptive_capture_fps = policy->requested_capture_fps;
     }
 
     uint16_t old_fps = wd_stream_policy_effective_fps_locked(policy);
@@ -1260,10 +1260,10 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
 
         if ((uint16_t)new_fps != old_fps)
         {
-            policy->effective_target_fps = (uint16_t)new_fps;
+            policy->adaptive_capture_fps = (uint16_t)new_fps;
             policy->last_frame_send_ns = 0;
             stats->frame_rate_downshifts++;
-            WD_LOG_INFO("stream frame rate down: %u -> %u fps due to %s", old_fps, (unsigned)new_fps,
+            WD_LOG_INFO("stream capture rate down: %u -> %u fps due to %s", old_fps, (unsigned)new_fps,
                         pressure_reason ? pressure_reason : "stream pressure");
         }
         return;
@@ -1276,9 +1276,9 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
         return;
     }
 
-    if (old_fps >= policy->target_fps)
+    if (old_fps >= policy->requested_capture_fps)
     {
-        policy->effective_target_fps = policy->target_fps;
+        policy->adaptive_capture_fps = policy->requested_capture_fps;
         policy->frame_rate_good_seconds = 0;
         return;
     }
@@ -1293,17 +1293,17 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
 
     uint32_t percent_fps = ((uint32_t)old_fps * WD_STREAM_FPS_INCREASE_PERCENT) / 100u;
     uint32_t new_fps = percent_fps > (uint32_t)old_fps ? percent_fps : (uint32_t)old_fps + 1u;
-    if (new_fps > policy->target_fps)
+    if (new_fps > policy->requested_capture_fps)
     {
-        new_fps = policy->target_fps;
+        new_fps = policy->requested_capture_fps;
     }
 
     if ((uint16_t)new_fps != old_fps)
     {
-        policy->effective_target_fps = (uint16_t)new_fps;
+        policy->adaptive_capture_fps = (uint16_t)new_fps;
         policy->last_frame_send_ns = 0;
         stats->frame_rate_upshifts++;
-        WD_LOG_INFO("stream frame rate up: %u -> %u fps", old_fps, (unsigned)new_fps);
+        WD_LOG_INFO("stream capture rate up: %u -> %u fps", old_fps, (unsigned)new_fps);
     }
 }
 
@@ -1403,7 +1403,10 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
      * frame coverage at the nominal FPS.  Keep byte-budget adaptation tied to
      * real UDP send pressure below.
      */
-    const bool budget_frame_pressure = stats->dirty_budget_blocked != 0 &&
+    const uint64_t normal_dirty_budget_blocked =
+        stats->dirty_budget_blocked > stats->dirty_budget_blocked_full_refresh ?
+            stats->dirty_budget_blocked - stats->dirty_budget_blocked_full_refresh : 0;
+    const bool budget_frame_pressure = normal_dirty_budget_blocked != 0 &&
                                        (stats->dirty_tiles != 0 || stats->udp_fresh_tiles_sent != 0);
     const bool client_render_pressure_sample = wd_stream_client_render_pressure_sample(policy, stats);
     if (!policy->client_render_visible || !client_render_pressure_sample)
@@ -1457,9 +1460,9 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
         policy->link_loss_seconds = 0;
         policy->link_good_seconds = 0;
         policy->client_render_pressure_seconds = 0;
-        if (policy->effective_target_fps != policy->target_fps)
+        if (policy->adaptive_capture_fps != policy->requested_capture_fps)
         {
-            wd_stream_policy_restore_target_fps_locked(policy, "video mode frame pacing");
+            wd_stream_policy_restore_requested_capture_fps_locked(policy, "video mode frame pacing");
         }
         return;
     }
@@ -1539,7 +1542,7 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
 
     bool should = false;
 
-    uint16_t fps = wd_stream_policy_output_fps_locked(policy);
+    uint16_t fps = wd_stream_policy_capture_pacing_fps_locked(policy);
     uint64_t interval_ns = WD_NSEC_PER_SEC / fps;
 
     if (policy->last_frame_send_ns == 0 || now_ns - policy->last_frame_send_ns >= interval_ns)
@@ -2657,7 +2660,7 @@ static uint16_t wd_detect_dirty_tiles_into_queue_locked(struct wd_server* server
 
 static void wd_stream_note_mode_frame_locked(struct wd_net_state* net, uint16_t dirty_tiles,
                                              uint16_t pending_tiles, uint32_t total_tiles,
-                                             bool budget_pressure) {
+                                             bool budget_pressure, bool full_refresh) {
     if (!net)
     {
         return;
@@ -2670,6 +2673,10 @@ static void wd_stream_note_mode_frame_locked(struct wd_net_state* net, uint16_t 
     if (dirty_tiles != 0)
     {
         net->stats.stream_mode_changed_frame_samples++;
+    }
+    if (full_refresh)
+    {
+        net->stats.stream_mode_full_refresh_samples++;
     }
     net->stats.stream_mode_dirty_coverage_per_mille_sum += dirty_coverage;
     if (dirty_coverage > net->stats.stream_mode_dirty_coverage_per_mille_peak)
@@ -2686,6 +2693,10 @@ static void wd_stream_note_mode_frame_locked(struct wd_net_state* net, uint16_t 
     if (budget_pressure)
     {
         net->stats.stream_mode_budget_pressure_frames++;
+        if (full_refresh)
+        {
+            net->stats.stream_mode_full_refresh_budget_pressure_frames++;
+        }
     }
 }
 
@@ -4090,7 +4101,7 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
         else
         {
             const uint16_t dirty_frame_tiles = wd_stream_take_video_damage_sample_locked(server);
-            wd_stream_note_mode_frame_locked(net, dirty_frame_tiles, 0, server->total_tiles, false);
+            wd_stream_note_mode_frame_locked(net, dirty_frame_tiles, 0, server->total_tiles, false, false);
         }
 
         net->stats.video_tile_detection_skipped++;
@@ -4123,6 +4134,7 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
     uint16_t dirty_frame_tiles = 0;
     const uint16_t pending_tiles_at_frame_start = net->dirty_queue_count;
     const uint64_t dirty_budget_blocked_at_frame_start = net->stats.dirty_budget_blocked;
+    const uint64_t full_refresh_at_frame_start = net->stats.framebuffer_diff_full_refreshes;
 
     if (detect_new_damage)
     {
@@ -4385,8 +4397,14 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
     if (detect_new_damage)
     {
         const bool budget_pressure_this_frame = net->stats.dirty_budget_blocked != dirty_budget_blocked_at_frame_start;
+        const bool full_refresh_this_frame = net->stats.framebuffer_diff_full_refreshes != full_refresh_at_frame_start;
+        if (budget_pressure_this_frame && full_refresh_this_frame)
+        {
+            const uint64_t blocked_now = net->stats.dirty_budget_blocked - dirty_budget_blocked_at_frame_start;
+            net->stats.dirty_budget_blocked_full_refresh += blocked_now;
+        }
         wd_stream_note_mode_frame_locked(net, dirty_frame_tiles, pending_tiles_at_frame_start,
-                                         server->total_tiles, budget_pressure_this_frame);
+                                         server->total_tiles, budget_pressure_this_frame, full_refresh_this_frame);
 
         /* Pending network work is serviced independently from wlroots scene
          * rendering. Do not force another render of an unchanged scene merely
@@ -4732,6 +4750,8 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
         dst->stream_mode_pending_coverage_per_mille_peak = src->stream_mode_pending_coverage_per_mille_peak;
     }
     dst->stream_mode_budget_pressure_frames += src->stream_mode_budget_pressure_frames;
+    dst->stream_mode_full_refresh_samples += src->stream_mode_full_refresh_samples;
+    dst->stream_mode_full_refresh_budget_pressure_frames += src->stream_mode_full_refresh_budget_pressure_frames;
     dst->tile_size_128x64_sent += src->tile_size_128x64_sent;
     dst->tile_size_64x64_sent += src->tile_size_64x64_sent;
     dst->tile_size_32x32_sent += src->tile_size_32x32_sent;
@@ -4918,6 +4938,7 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->dirty_region_probes += src->dirty_region_probes;
     dst->dirty_region_hits += src->dirty_region_hits;
     dst->dirty_budget_blocked += src->dirty_budget_blocked;
+    dst->dirty_budget_blocked_full_refresh += src->dirty_budget_blocked_full_refresh;
     dst->partial_tile_sends += src->partial_tile_sends;
     dst->partial_tile_packets_sent += src->partial_tile_packets_sent;
     dst->dirty_detect_ns += src->dirty_detect_ns;
@@ -4973,9 +4994,11 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                                         net->video_stream_negotiated, net->video_tcp_fd >= 0,
                                         wd_video_encoder_available(net->video_encoder));
     uint64_t limited_udp_kib_per_second = net->stream_policy.limited_udp_bytes_per_second / 1024ull;
-    uint16_t target_fps = net->stream_policy.target_fps;
-    uint16_t effective_target_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
-    uint16_t output_fps = wd_stream_policy_output_fps_locked(&net->stream_policy);
+    uint16_t requested_capture_fps = net->stream_policy.requested_capture_fps;
+    uint16_t adaptive_capture_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
+    uint16_t capture_pacing_fps = wd_stream_policy_capture_pacing_fps_locked(&net->stream_policy);
+    uint16_t compositor_refresh_hz = (uint16_t)((server->output_refresh_mhz + 500u) / 1000u);
+    uint16_t client_present_cap_fps = requested_capture_fps != 0 ? requested_capture_fps : WD_DEFAULT_PARTIAL_FPS;
     bool client_render_visible = net->stream_policy.client_render_visible;
     enum wd_stream_mode stream_mode = net->stream_policy.stream_mode;
     uint16_t tile_width = server->tile_width;
@@ -5005,8 +5028,12 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     memset(&stats_log->totals, 0, sizeof(stats_log->totals));
 
     bool state_changed = !stats_log->have_prev_state ||
-                         stats_log->prev_target_fps != target_fps || stats_log->prev_effective_fps != effective_target_fps ||
-                         stats_log->prev_output_fps != output_fps || stats_log->prev_client_render_visible != client_render_visible ||
+                         stats_log->prev_requested_capture_fps != requested_capture_fps ||
+                         stats_log->prev_adaptive_capture_fps != adaptive_capture_fps ||
+                         stats_log->prev_capture_pacing_fps != capture_pacing_fps ||
+                         stats_log->prev_compositor_refresh_hz != compositor_refresh_hz ||
+                         stats_log->prev_client_present_cap_fps != client_present_cap_fps ||
+                         stats_log->prev_client_render_visible != client_render_visible ||
                          stats_log->prev_limited_kib != limited_udp_kib_per_second || stats_log->prev_tile_width != tile_width ||
                          stats_log->prev_tile_height != tile_height || stats_log->prev_input_channel != input_channel_connected ||
                          stats_log->prev_selection_channel != selection_channel_connected ||
@@ -5023,8 +5050,9 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
 
     if (state_changed)
     {
-        WD_LOG_DEBUG("state: target_fps=%u effective_fps=%u output_fps=%u client_visible=%s stream_mode=%s owner=%s fresh_udp_tiles=%s tile_repair=%s video_mode=%s video_bitrate_kib=%u video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s video_negotiated=%s video_channel=%s video_encoder=%s",
-                     (unsigned)target_fps, (unsigned)effective_target_fps, (unsigned)output_fps,
+        WD_LOG_DEBUG("state: requested_capture_fps=%u adaptive_capture_fps=%u capture_pacing_fps=%u compositor_refresh_hz=%u client_present_cap_fps=%u client_visible=%s stream_mode=%s owner=%s fresh_udp_tiles=%s tile_repair=%s video_mode=%s video_bitrate_kib=%u video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s video_negotiated=%s video_channel=%s video_encoder=%s",
+                     (unsigned)requested_capture_fps, (unsigned)adaptive_capture_fps, (unsigned)capture_pacing_fps,
+                     (unsigned)compositor_refresh_hz, (unsigned)client_present_cap_fps,
                      client_render_visible ? "yes" : "no", wd_stream_mode_name(stream_mode),
                      wd_stream_mode_owner_name(stream_mode),
                      wd_stream_mode_video_owns_display(stream_mode) ? "paused" : "enabled",
@@ -5038,9 +5066,11 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      video_encoder_available ? "yes" : "no");
 
         stats_log->have_prev_state = true;
-        stats_log->prev_target_fps = target_fps;
-        stats_log->prev_effective_fps = effective_target_fps;
-        stats_log->prev_output_fps = output_fps;
+        stats_log->prev_requested_capture_fps = requested_capture_fps;
+        stats_log->prev_adaptive_capture_fps = adaptive_capture_fps;
+        stats_log->prev_capture_pacing_fps = capture_pacing_fps;
+        stats_log->prev_compositor_refresh_hz = compositor_refresh_hz;
+        stats_log->prev_client_present_cap_fps = client_present_cap_fps;
         stats_log->prev_client_render_visible = client_render_visible;
         stats_log->prev_limited_kib = limited_udp_kib_per_second;
         stats_log->prev_tile_width = tile_width;
@@ -5062,7 +5092,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     bool stream_mode_activity = s.stream_mode_frame_samples != 0 &&
                                 (s.stream_mode_dirty_coverage_per_mille_sum != 0 ||
                                  s.stream_mode_pending_coverage_per_mille_sum != 0 ||
-                                 s.stream_mode_budget_pressure_frames != 0 || effective_target_fps < target_fps);
+                                 s.stream_mode_budget_pressure_frames != 0 || adaptive_capture_fps < requested_capture_fps);
     if (stream_mode_activity)
     {
         const double total_tiles = server->total_tiles != 0 ? (double)server->total_tiles : 1.0;
@@ -5078,11 +5108,13 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                                                 ? ((double)limited_udp_kib_per_second * 1024.0) / (wire_avg_bytes * total_tiles)
                                                 : 0.0;
 
-        WD_LOG_DEBUG("stream-mode/min: samples=%llu changed_samples=%llu dirty_avg_pct=%.1f dirty_peak_pct=%.1f pending_avg_pct=%.1f pending_peak_pct=%.1f budget_pressure_frames=%llu budget_pressure_pct=%.1f video_mode=%s video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u est_tile_full_frame_mib=%.2f est_tile_budget_fps=%.1f",
+        WD_LOG_DEBUG("stream-mode/min: capture_samples=%llu changed_samples=%llu full_refresh_samples=%llu dirty_avg_pct=%.1f dirty_peak_pct=%.1f pending_avg_pct=%.1f pending_peak_pct=%.1f budget_pressure_frames=%llu full_refresh_budget_pressure_frames=%llu budget_pressure_pct=%.1f video_mode=%s video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u est_tile_full_refresh_mib=%.2f est_full_refreshes_per_sec=%.1f",
                      (unsigned long long)s.stream_mode_frame_samples,
-                     (unsigned long long)s.stream_mode_changed_frame_samples, dirty_avg_pct, dirty_peak_pct,
+                     (unsigned long long)s.stream_mode_changed_frame_samples,
+                     (unsigned long long)s.stream_mode_full_refresh_samples, dirty_avg_pct, dirty_peak_pct,
                      pending_avg_pct, pending_peak_pct,
-                     (unsigned long long)s.stream_mode_budget_pressure_frames, budget_pressure_pct,
+                     (unsigned long long)s.stream_mode_budget_pressure_frames,
+                     (unsigned long long)s.stream_mode_full_refresh_budget_pressure_frames, budget_pressure_pct,
                      wd_video_mode_name(video_mode), (unsigned)video_min_dirty_percent,
                      (unsigned)video_enter_seconds, (unsigned)video_exit_dirty_percent,
                      (unsigned)video_exit_seconds, estimated_full_frame_mib, estimated_budget_fps);
@@ -5103,7 +5135,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     if (video_activity)
     {
         uint64_t choices = s.tile_choice_compressed + s.tile_choice_uncompressed;
-        WD_LOG_DEBUG("video/min: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu async_queued=%llu async_completed=%llu async_failed=%llu async_completion_failed=%llu async_fallback=%llu async_inflight_max=%llu dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f diff_candidates=%llu diff_changed=%llu diff_unchanged=%llu diff_full=%llu diff_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f tile_sizes=128x64:%llu,64x64:%llu,32x32:%llu,16x16:%llu encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_batches=%llu encode_batch_peak=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
+        WD_LOG_DEBUG("tile-stream/min: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu async_queued=%llu async_completed=%llu async_failed=%llu async_completion_failed=%llu async_fallback=%llu async_inflight_max=%llu dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu dirty_budget_blocked_full_refresh=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f diff_candidates=%llu diff_changed=%llu diff_unchanged=%llu diff_full=%llu diff_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f tile_sizes=128x64:%llu,64x64:%llu,32x32:%llu,16x16:%llu encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_batches=%llu encode_batch_peak=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
                      (unsigned long long)s.dirty_tiles, (unsigned long long)s.dirty_tiles_stale_skipped,
                      (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_fresh_tiles_sent,
                      (unsigned long long)s.udp_retx_tiles_sent, (unsigned long long)s.udp_packets_sent,
@@ -5135,6 +5167,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      (unsigned long long)s.dirty_region_probes,
                      (unsigned long long)s.dirty_region_hits,
                      (unsigned long long)s.dirty_budget_blocked,
+                     (unsigned long long)s.dirty_budget_blocked_full_refresh,
                      (unsigned long long)s.partial_tile_sends,
                      (unsigned long long)s.partial_tile_packets_sent,
                      (double)s.dirty_detect_ns / 1000000.0,
@@ -5164,7 +5197,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
 
     if (s.server_frame_timer_samples != 0 || s.server_render_readback_samples != 0)
     {
-        WD_LOG_DEBUG("server-frame/min: ticks=%llu tick_avg_ms=%.2f tick_max_ms=%.2f render_readback=%llu render_readback_avg_ms=%.2f render_readback_max_ms=%.2f scene_promote=%llu render_idle=%llu render_failed=%llu encode_avg_ms=%.2f",
+        WD_LOG_DEBUG("server-loop/min: service_ticks=%llu tick_avg_ms=%.2f tick_max_ms=%.2f render_readback=%llu render_readback_avg_ms=%.2f render_readback_max_ms=%.2f scene_promote=%llu render_idle=%llu render_failed=%llu encode_avg_ms=%.2f",
                      (unsigned long long)s.server_frame_timer_samples,
                      s.server_frame_timer_samples ?
                          (double)s.server_frame_timer_sum_ns / (double)s.server_frame_timer_samples / 1000000.0 : 0.0,
@@ -5225,7 +5258,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                            s.frame_rate_downshifts != 0 || s.frame_rate_upshifts != 0;
     if (repair_activity)
     {
-        WD_LOG_DEBUG("repair/min: summaries=%llu full=%llu delta=%llu delta_tiles=%llu summary_coalesced=%llu summary_interval_ms=%llu repair_backoff=%llu retx_req=%llu retx_tiles=%llu stale_drop=%llu stale_upgraded=%llu ignored_live=%llu superseded=%llu rate_down=%llu rate_up=%llu fps_down=%llu fps_up=%llu",
+        WD_LOG_DEBUG("repair/min: summaries=%llu full=%llu delta=%llu delta_tiles=%llu summary_coalesced=%llu summary_interval_ms=%llu repair_backoff=%llu retx_req=%llu retx_tiles=%llu stale_drop=%llu stale_upgraded=%llu ignored_live=%llu superseded=%llu rate_down=%llu rate_up=%llu capture_down=%llu capture_up=%llu",
                      (unsigned long long)s.tcp_summary_tx, (unsigned long long)s.tcp_summary_full_tx,
                      (unsigned long long)s.tcp_summary_delta_tx, (unsigned long long)s.tcp_summary_delta_tiles,
                      (unsigned long long)s.tcp_summary_coalesced,

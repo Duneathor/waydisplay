@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 33u
+#define WD_PROTOCOL_VERSION 34u
 
 /*
  * Wire structs are intentionally host-endian for now. WayDisplay targets
@@ -147,9 +147,11 @@ struct wd_client_hello_payload {
     uint16_t client_udp_port;
 
     /*
-     * Target dirty-discovery/render cadence. 0 means server default.
+     * Requested remote capture cadence cap. 0 means server default.
+     * The client may present repaired/tile batches at the same cap locally,
+     * but compositor output refresh and local presentation are separate concepts.
      */
-    uint16_t target_fps;
+    uint16_t requested_capture_fps;
 
     /*
      * Requested remote display size.

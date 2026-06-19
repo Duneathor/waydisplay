@@ -912,7 +912,7 @@ bool handle_link_probe_ping(ClientState& state, const uint8_t* payload, uint32_t
 bool receive_server_config(ClientState& state) {
     wd_client_hello_payload hello{};
     hello.client_udp_port      = state.client_udp_port;
-    hello.target_fps                  = state.stream_config.target_fps;
+    hello.requested_capture_fps                  = state.stream_config.target_fps;
     hello.desired_width               = state.desired_width;
     hello.desired_height              = state.desired_height;
     hello.limited_udp_kib_per_second  = state.stream_config.limited_udp_kib_per_second;

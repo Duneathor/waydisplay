@@ -17,7 +17,7 @@ void usage(const char* argv0) {
                  "Usage:\n"
                  "  %s <server_ipv4> <tcp_port> <client_udp_port> [options]\n\n"
                  "Options:\n"
-                 "  --fps <N>                   Target adaptive render/discovery FPS, default 30\n"
+                 "  --fps <N>                   Requested remote capture FPS cap, default 60\n"
                  "  --size <WxH>                 Request remote display size\n"
                  "  --rate-kib <N>               Cap adaptive UDP tile budget in KiB/s\n"
                  "  --no-vsync                   Create the SDL Vulkan renderer without present-vsync\n"
@@ -33,7 +33,7 @@ void usage(const char* argv0) {
                  "  --wan                        Shorthand for --rate-kib 4096\n\n"
                  "Examples:\n"
                  "  %s 127.0.0.1 5000 6000\n"
-                 "  %s 127.0.0.1 5000 6000 --fps 30\n"
+                 "  %s 127.0.0.1 5000 6000 --fps 60\n"
                  "  %s 127.0.0.1 5000 6000 --rate-kib 4096\n",
                  argv0, argv0, argv0, argv0);
 }

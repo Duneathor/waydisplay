@@ -241,6 +241,8 @@ struct wd_stats {
     uint64_t stream_mode_pending_coverage_per_mille_sum;
     uint64_t stream_mode_pending_coverage_per_mille_peak;
     uint64_t stream_mode_budget_pressure_frames;
+    uint64_t stream_mode_full_refresh_samples;
+    uint64_t stream_mode_full_refresh_budget_pressure_frames;
 
     uint64_t tile_size_128x64_sent;
     uint64_t tile_size_64x64_sent;
@@ -414,6 +416,7 @@ struct wd_stats {
     uint64_t dirty_region_probes;
     uint64_t dirty_region_hits;
     uint64_t dirty_budget_blocked;
+    uint64_t dirty_budget_blocked_full_refresh;
     uint64_t partial_tile_sends;
     uint64_t partial_tile_packets_sent;
     uint64_t dirty_detect_ns;
@@ -457,9 +460,11 @@ enum wd_stream_mode {
 struct wd_stats_log_state {
     struct wd_stats totals;
     bool            have_prev_state;
-    uint16_t        prev_target_fps;
-    uint16_t        prev_effective_fps;
-    uint16_t        prev_output_fps;
+    uint16_t        prev_requested_capture_fps;
+    uint16_t        prev_adaptive_capture_fps;
+    uint16_t        prev_capture_pacing_fps;
+    uint16_t        prev_compositor_refresh_hz;
+    uint16_t        prev_client_present_cap_fps;
     bool            prev_client_render_visible;
     uint64_t        prev_limited_kib;
     uint16_t        prev_tile_width;
@@ -479,8 +484,8 @@ struct wd_stats_log_state {
 };
 
 struct wd_stream_policy {
-    uint16_t target_fps;
-    uint16_t effective_target_fps;
+    uint16_t requested_capture_fps;
+    uint16_t adaptive_capture_fps;
 
     enum wd_stream_mode stream_mode;
     uint8_t video_mode;
