@@ -9,7 +9,9 @@ static void usage(const char* argv0) {
     fprintf(stderr,
             "Usage:\n"
             "  %s [--port 5000] [--scale 1.0] [--size 1664x1024] [--app <command>] "
-            "[--tile-size 128x64|64x64|32x32|16x16] [--xwayland|--no-xwayland]\n\n"
+            "[--tile-size 128x64|64x64|32x32|16x16] [--refresh-hz 60] "
+            "[--renderer auto|gles2|vulkan|pixman] "
+            "[--xwayland|--no-xwayland]\n\n"
             "Examples:\n"
             "  %s --port 5000 --app foot\n"
             "  %s --port 5000 --scale 1.25 --size 1366x768 --app foot\n"
@@ -26,7 +28,9 @@ int main(int argc, char** argv) {
     uint32_t    display_height  = WD_DISPLAY_HEIGHT;
     uint16_t    tile_width      = WD_TILE_WIDTH;
     uint16_t    tile_height     = WD_TILE_HEIGHT;
+    uint16_t    output_refresh_hz = 60;
     bool        enable_xwayland = true;
+    const char* renderer_name   = NULL;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -151,6 +155,40 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
+        else if (strcmp(argv[i], "--refresh-hz") == 0)
+        {
+            if (i + 1 >= argc)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            unsigned long refresh_hz = strtoul(argv[++i], NULL, 10);
+            if (refresh_hz == 0 || refresh_hz > 1000)
+            {
+                fprintf(stderr, "Invalid --refresh-hz value: %s; expected 1 through 1000\n", argv[i]);
+                usage(argv[0]);
+                return 1;
+            }
+            output_refresh_hz = (uint16_t)refresh_hz;
+        }
+        else if (strcmp(argv[i], "--renderer") == 0)
+        {
+            if (i + 1 >= argc)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            renderer_name = argv[++i];
+            if (strcmp(renderer_name, "auto") != 0 && strcmp(renderer_name, "gles2") != 0 &&
+                strcmp(renderer_name, "vulkan") != 0 && strcmp(renderer_name, "pixman") != 0)
+            {
+                fprintf(stderr, "Invalid --renderer value: %s; expected auto, gles2, vulkan, or pixman\n", renderer_name);
+                usage(argv[0]);
+                return 1;
+            }
+        }
         else if (strcmp(argv[i], "--xwayland") == 0)
         {
             enable_xwayland = true;
@@ -181,9 +219,23 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (renderer_name)
+    {
+        if (strcmp(renderer_name, "auto") == 0)
+        {
+            unsetenv("WLR_RENDERER");
+        }
+        else if (setenv("WLR_RENDERER", renderer_name, 1) != 0)
+        {
+            perror("setenv(WLR_RENDERER)");
+            return 1;
+        }
+    }
+
     struct wd_server server;
 
-    if (!wd_server_init(&server, tcp_port, app_cmd, output_scale, display_width, display_height, tile_width, tile_height, enable_xwayland))
+    if (!wd_server_init(&server, tcp_port, app_cmd, output_scale, output_refresh_hz,
+                        display_width, display_height, tile_width, tile_height, enable_xwayland))
     {
         wd_server_destroy(&server);
         return 1;

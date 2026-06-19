@@ -2,6 +2,30 @@
 
 #include <drm_fourcc.h>
 #include <stdlib.h>
+#include <wlr/render/gles2.h>
+#include <wlr/render/pixman.h>
+#include <wlr/render/vulkan.h>
+
+
+static const char* wd_wlroots_renderer_name(struct wlr_renderer* renderer) {
+    if (!renderer)
+    {
+        return "none";
+    }
+    if (wlr_renderer_is_vk(renderer))
+    {
+        return "vulkan";
+    }
+    if (wlr_renderer_is_gles2(renderer))
+    {
+        return "gles2";
+    }
+    if (wlr_renderer_is_pixman(renderer))
+    {
+        return "pixman";
+    }
+    return "unknown";
+}
 
 static void output_handle_frame(struct wl_listener* listener, void* data) {
     (void)data;
@@ -46,6 +70,10 @@ bool wd_wlroots_init(struct wd_server* server) {
     {
         return false;
     }
+
+    WD_LOG_INFO("wlroots renderer: active=%s requested=%s",
+                wd_wlroots_renderer_name(server->renderer),
+                getenv("WLR_RENDERER") ? getenv("WLR_RENDERER") : "auto");
 
     wlr_renderer_init_wl_display(server->renderer, server->display);
 
@@ -214,7 +242,8 @@ bool wd_wlroots_create_headless_output(struct wd_server* server) {
     wlr_output_state_init(&state);
 
     wlr_output_state_set_enabled(&state, true);
-    wlr_output_state_set_custom_mode(&state, (int)server->display_width, (int)server->display_height, 60000);
+    wlr_output_state_set_custom_mode(&state, (int)server->display_width, (int)server->display_height,
+                                     (int)server->output_refresh_mhz);
     wlr_output_state_set_scale(&state, server->output_scale);
     wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
 
@@ -257,7 +286,8 @@ bool wd_wlroots_create_headless_output(struct wd_server* server) {
     server->output_destroy.notify = output_handle_destroy;
     wl_signal_add(&server->output->events.destroy, &server->output_destroy);
 
-    WD_LOG_INFO("created headless output %ux%u", server->display_width, server->display_height);
+    WD_LOG_INFO("created headless output %ux%u refresh=%.3fHz", server->display_width, server->display_height,
+                (double)server->output_refresh_mhz / 1000.0);
 
     return true;
 }
@@ -272,7 +302,8 @@ bool wd_wlroots_resize_headless_output(struct wd_server* server) {
     wlr_output_state_init(&state);
 
     wlr_output_state_set_enabled(&state, true);
-    wlr_output_state_set_custom_mode(&state, (int)server->display_width, (int)server->display_height, 60000);
+    wlr_output_state_set_custom_mode(&state, (int)server->display_width, (int)server->display_height,
+                                     (int)server->output_refresh_mhz);
     wlr_output_state_set_scale(&state, server->output_scale);
     wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
 

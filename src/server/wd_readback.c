@@ -188,8 +188,6 @@ static bool readback_buffer_data_ptr_xrgb8888(struct wd_server* server, struct w
 
     if (ok)
     {
-        memset(server->framebuffer_xrgb8888, 0, server->framebuffer_bytes);
-
         int copy_width  = read_width;
         int copy_height = read_height;
 
@@ -201,6 +199,11 @@ static bool readback_buffer_data_ptr_xrgb8888(struct wd_server* server, struct w
         if (copy_height > buffer->height)
         {
             copy_height = buffer->height;
+        }
+
+        if (copy_width < (int)server->display_width || copy_height < (int)server->display_height)
+        {
+            memset(server->framebuffer_xrgb8888, 0, server->framebuffer_bytes);
         }
 
         for (int y = 0; y < copy_height; ++y)
@@ -219,17 +222,17 @@ static bool readback_buffer_data_ptr_xrgb8888(struct wd_server* server, struct w
     return ok;
 }
 
-bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
+enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
     if (!server || !server->scene_output || !server->output || !server->renderer || !server->framebuffer_xrgb8888)
     {
-        return false;
+        return WD_RENDER_RESULT_ERROR;
     }
 
     struct wlr_output_state state;
     wlr_output_state_init(&state);
 
-    bool readback_ok = false;
-    bool built_state = false;
+    enum wd_render_result result = WD_RENDER_RESULT_ERROR;
+    bool                  built_state = false;
 
     if (!wlr_scene_output_build_state(server->scene_output, &state, NULL))
     {
@@ -249,8 +252,11 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
     if (!(state.committed & WLR_OUTPUT_STATE_BUFFER) || state.buffer == NULL)
     {
         /*
-         * Nothing to read. This can happen during transient surface churn.
+         * No scene damage was rendered for this output state. This is not a
+         * readback failure: callers must distinguish an idle scene from a
+         * renderer/backend error so they do not break the frame-callback loop.
          */
+        result = WD_RENDER_RESULT_IDLE;
         goto commit_only;
     }
 
@@ -279,7 +285,8 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
     bool full_readback = true;
     readback_box_from_damage(server, read_width, read_height, &read_x, &read_y, &read_width, &read_height, &full_readback);
 
-    if (full_readback)
+    if (full_readback &&
+        (full_read_width < (int)server->display_width || full_read_height < (int)server->display_height))
     {
         memset(server->framebuffer_xrgb8888, 0, server->framebuffer_bytes);
     }
@@ -292,7 +299,7 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
 
         if (readback_buffer_data_ptr_xrgb8888(server, state.buffer, full_read_width, full_read_height))
         {
-            readback_ok = true;
+            result = WD_RENDER_RESULT_FRAME;
             goto commit_only;
         }
 
@@ -340,7 +347,7 @@ bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
     }
 
     wlr_texture_destroy(texture);
-    readback_ok = true;
+    result = WD_RENDER_RESULT_FRAME;
 
 commit_only:
     if (built_state)
@@ -355,11 +362,11 @@ commit_only:
                 WD_LOG_ERROR("wlr_output_commit_state failed");
             }
 
-            readback_ok = false;
+            result = WD_RENDER_RESULT_ERROR;
         }
     }
 
 out:
     wlr_output_state_finish(&state);
-    return readback_ok;
+    return result;
 }

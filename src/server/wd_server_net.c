@@ -441,6 +441,10 @@ void wd_net_destroy(struct wd_server* server) {
 
     net->running = false;
 
+    /* Stop encoder and tile workers before destroying their senders, codec,
+     * mutexes, or frame storage. */
+    wd_stream_destroy(server);
+
     if (net->listen_fd >= 0)
     {
         close(net->listen_fd);
@@ -529,8 +533,6 @@ void wd_net_destroy(struct wd_server* server) {
     net->primary_text         = NULL;
     net->primary_text_size    = 0;
     net->primary_text_pending = false;
-
-    wd_stream_destroy(server);
 
     pthread_cond_destroy(&net->encoder_idle_cond);
     pthread_cond_destroy(&net->display_resize_cond);
@@ -1060,6 +1062,7 @@ static void wd_server_handle_keyboard_message(struct wd_server* server, const st
         pthread_mutex_lock(&net->lock);
         wd_keyboard_queue_event_locked(net, &key, wd_now_ns());
         pthread_mutex_unlock(&net->lock);
+        wd_server_wake_input(server);
     }
 }
 
@@ -1087,6 +1090,7 @@ static void wd_server_handle_pointer_message(struct wd_server* server, const str
         pthread_mutex_lock(&net->lock);
         wd_pointer_queue_event_locked(net, &pointer, wd_now_ns());
         pthread_mutex_unlock(&net->lock);
+        wd_server_wake_input(server);
     }
 }
 
@@ -1531,6 +1535,7 @@ void* wd_net_thread_main(void* arg) {
         wd_cursor_queue_current_locked(server);
 
         pthread_mutex_unlock(&net->lock);
+        wd_server_wake_input(server);
 
         {
             char control_local[64];
@@ -1738,6 +1743,7 @@ void* wd_net_thread_main(void* arg) {
                         wd_clipboard_queue_client_set_locked(net, cfg.session_id, selection_payload, selection_payload_size,
                                                              selection_type == WD_MSG_PRIMARY_SET);
                         pthread_mutex_unlock(&net->lock);
+                        wd_server_wake_input(server);
                     }
 
                     free(selection_payload);
@@ -1910,6 +1916,7 @@ void* wd_net_thread_main(void* arg) {
                     pthread_mutex_lock(&net->lock);
                     wd_clipboard_queue_client_set_locked(net, cfg.session_id, payload, payload_size, type == WD_MSG_PRIMARY_SET);
                     pthread_mutex_unlock(&net->lock);
+                    wd_server_wake_input(server);
                 }
                 else if (type == WD_MSG_DISPLAY_RESIZE && payload_size >= sizeof(struct wd_display_resize_payload))
                 {
@@ -1994,6 +2001,7 @@ void* wd_net_thread_main(void* arg) {
         net->primary_text_pending = false;
 
         pthread_mutex_unlock(&net->lock);
+        wd_server_wake_input(server);
 
         close(tcp_fd);
         if (input_tcp_fd >= 0)

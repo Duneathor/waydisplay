@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -171,6 +172,103 @@ static void server_process_pending_display_resize(struct wd_server* server) {
     pthread_mutex_unlock(&net->lock);
 }
 
+static void server_drain_pending_input(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    /*
+     * Keep this ordering shared by the eventfd wakeup and the periodic frame
+     * timer. A held Ctrl key must be injected before clipboard paste
+     * synthesizes V, and primary selection must be published before a queued
+     * middle-click is injected.
+     */
+    wd_keyboard_drain_and_inject(server);
+    wd_clipboard_drain_and_apply(server);
+    wd_pointer_drain_and_inject(server);
+}
+
+void wd_server_wake_input(struct wd_server* server) {
+    if (!server || server->input_wakeup_fd < 0)
+    {
+        return;
+    }
+
+    const uint64_t value = 1;
+    ssize_t        written;
+
+    do
+    {
+        written = write(server->input_wakeup_fd, &value, sizeof(value));
+    } while (written < 0 && errno == EINTR);
+
+    pthread_mutex_lock(&server->net.lock);
+    if (written == (ssize_t)sizeof(value))
+    {
+        server->net.stats.input_wakeup_signals++;
+    }
+    else
+    {
+        server->net.stats.input_wakeup_failures++;
+    }
+    pthread_mutex_unlock(&server->net.lock);
+}
+
+static int server_input_wakeup(int fd, uint32_t mask, void* data) {
+    struct wd_server* server = data;
+    uint64_t          wake_events = 0;
+    bool              read_failed = false;
+
+    if (!server)
+    {
+        return 0;
+    }
+
+    if ((mask & WL_EVENT_READABLE) != 0)
+    {
+        for (;;)
+        {
+            uint64_t value = 0;
+            ssize_t  received = read(fd, &value, sizeof(value));
+
+            if (received == (ssize_t)sizeof(value))
+            {
+                wake_events += value;
+                continue;
+            }
+            if (received < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            if (received < 0 && errno == EAGAIN)
+            {
+                break;
+            }
+
+            read_failed = true;
+            break;
+        }
+    }
+
+    server_drain_pending_input(server);
+
+    pthread_mutex_lock(&server->net.lock);
+    server->net.stats.input_wakeup_callbacks++;
+    server->net.stats.input_wakeup_events += wake_events;
+    if (wake_events > 1)
+    {
+        server->net.stats.input_wakeup_coalesced += wake_events - 1;
+    }
+    if (read_failed || (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0)
+    {
+        server->net.stats.input_wakeup_failures++;
+    }
+    pthread_mutex_unlock(&server->net.lock);
+
+    return 0;
+}
+
 static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
     if (!server)
     {
@@ -258,6 +356,28 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
     }
 }
 
+static bool server_promote_wlroots_scene_damage(struct wd_server* server) {
+    if (!server || !server->scene_output || !wlr_scene_output_needs_frame(server->scene_output))
+    {
+        return false;
+    }
+
+    /*
+     * The wlroots scene graph is the authoritative source of render damage.
+     * Manual view/surface commit trackers are useful for deriving a smaller
+     * readback box, but they can miss toolkit-specific subsurface or buffer
+     * commits. If wlroots says a frame is needed and WayDisplay has no matching
+     * damage, conservatively promote it to a full-output update.
+     */
+    if (!server->scene_dirty || (!server->damage_all_tiles && server->damage_tile_count == 0))
+    {
+        wd_server_mark_scene_dirty(server);
+        return true;
+    }
+
+    return false;
+}
+
 static int server_frame_timer(void* data) {
     struct wd_server* server = data;
 
@@ -272,16 +392,17 @@ static int server_frame_timer(void* data) {
         return 0;
     }
 
+    const uint64_t timer_start_ns = wd_now_ns();
+
+    /* Rearm before render/readback/encode. If that work exceeds the 8 ms
+     * compositor tick, the timer is already ready when this callback returns
+     * instead of adding another unconditional 8 ms of latency. */
+    wl_event_source_timer_update(server->frame_timer, 8);
+
     server_process_pending_display_resize(server);
 
-    /*
-     * Drain keyboard first so a held Ctrl modifier is active before a clipboard
-     * paste request synthesizes the V key. Drain pointer after clipboard so
-     * middle-click primary paste sees the freshly published primary selection.
-     */
-    wd_keyboard_drain_and_inject(server);
-    wd_clipboard_drain_and_apply(server);
-    wd_pointer_drain_and_inject(server);
+    /* Periodic fallback in case a wakeup is coalesced or unavailable. */
+    server_drain_pending_input(server);
 
     uint64_t t = wd_now_ns();
 
@@ -290,7 +411,12 @@ static int server_frame_timer(void* data) {
     wd_cursor_flush_pending_locked(server);
     pthread_mutex_unlock(&server->net.lock);
 
+    const bool scene_damage_promoted = server_promote_wlroots_scene_damage(server);
+
     bool should_render = wd_stream_policy_should_render_now(server, t);
+    bool render_attempted = false;
+    uint64_t render_readback_ns = 0;
+    enum wd_render_result render_result = WD_RENDER_RESULT_IDLE;
 
     if (should_render)
     {
@@ -299,17 +425,22 @@ static int server_frame_timer(void* data) {
             wlr_output_schedule_frame(server->output);
         }
 
-        bool have_frame = wd_render_scene_and_readback_xrgb8888(server);
+        const uint64_t render_start_ns = wd_now_ns();
+        render_result = wd_render_scene_and_readback_xrgb8888(server);
+        render_readback_ns = wd_now_ns() - render_start_ns;
+        render_attempted = true;
 
-        if (have_frame)
+        if (render_result == WD_RENDER_RESULT_FRAME)
         {
             wd_stream_send_dirty_tiles(server);
         }
         else
         {
             /*
-             * Avoid spinning forever on transient readback failures.
-             * Surface commits/map/unmap will mark dirty again.
+             * An idle scene is expected when an output was scheduled without
+             * new wlroots damage. A renderer/backend failure remains distinct
+             * for diagnostics. In both cases stop this attempt; the next
+             * wlroots needs-frame transition is promoted above.
              */
             server->scene_dirty = false;
         }
@@ -359,7 +490,36 @@ static int server_frame_timer(void* data) {
         }
     }
 
-    wl_event_source_timer_update(server->frame_timer, 8);
+    const uint64_t timer_elapsed_ns = wd_now_ns() - timer_start_ns;
+    pthread_mutex_lock(&server->net.lock);
+    server->net.stats.server_frame_timer_samples++;
+    server->net.stats.server_frame_timer_sum_ns += timer_elapsed_ns;
+    if (timer_elapsed_ns > server->net.stats.server_frame_timer_max_ns)
+    {
+        server->net.stats.server_frame_timer_max_ns = timer_elapsed_ns;
+    }
+    if (scene_damage_promoted)
+    {
+        server->net.stats.server_scene_damage_promotions++;
+    }
+    if (render_attempted)
+    {
+        server->net.stats.server_render_readback_samples++;
+        server->net.stats.server_render_readback_sum_ns += render_readback_ns;
+        if (render_readback_ns > server->net.stats.server_render_readback_max_ns)
+        {
+            server->net.stats.server_render_readback_max_ns = render_readback_ns;
+        }
+        if (render_result == WD_RENDER_RESULT_IDLE)
+        {
+            server->net.stats.server_render_idle_results++;
+        }
+        else if (render_result == WD_RENDER_RESULT_ERROR)
+        {
+            server->net.stats.server_render_failed_results++;
+        }
+    }
+    pthread_mutex_unlock(&server->net.lock);
 
     return 0;
 }
@@ -950,9 +1110,11 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     return true;
 }
 
-bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale, uint32_t display_width,
-                    uint32_t display_height, uint16_t tile_width, uint16_t tile_height, bool enable_xwayland) {
+bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale,
+                    uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height,
+                    uint16_t tile_width, uint16_t tile_height, bool enable_xwayland) {
     memset(server, 0, sizeof(*server));
+    server->input_wakeup_fd = -1;
 
     wl_list_init(&server->views);
     wl_list_init(&server->popup_commit_trackers);
@@ -968,8 +1130,9 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
 
     server->scene_dirty = true;
 
-    server->startup_command = app_cmd;
-    server->output_scale    = output_scale;
+    server->startup_command   = app_cmd;
+    server->output_scale      = output_scale;
+    server->output_refresh_mhz = (uint32_t)(output_refresh_hz != 0 ? output_refresh_hz : 60u) * 1000u;
 #if WAYDISPLAY_ENABLE_XWAYLAND
     server->enable_xwayland = enable_xwayland;
 #else
@@ -1027,6 +1190,23 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
         return false;
     }
 
+    server->input_wakeup_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (server->input_wakeup_fd < 0)
+    {
+        WD_LOG_ERROR("failed to create input eventfd: %s", strerror(errno));
+        return false;
+    }
+
+    server->input_wakeup_source = wl_event_loop_add_fd(server->event_loop, server->input_wakeup_fd, WL_EVENT_READABLE,
+                                                        server_input_wakeup, server);
+    if (!server->input_wakeup_source)
+    {
+        WD_LOG_ERROR("failed to add input eventfd to Wayland event loop");
+        close(server->input_wakeup_fd);
+        server->input_wakeup_fd = -1;
+        return false;
+    }
+
     server->frame_timer = wl_event_loop_add_timer(server->event_loop, server_frame_timer, server);
 
     if (!server->frame_timer)
@@ -1054,6 +1234,17 @@ void wd_server_destroy(struct wd_server* server) {
     {
         wl_event_source_remove(server->frame_timer);
         server->frame_timer = NULL;
+    }
+
+    if (server->input_wakeup_source)
+    {
+        wl_event_source_remove(server->input_wakeup_source);
+        server->input_wakeup_source = NULL;
+    }
+    if (server->input_wakeup_fd >= 0)
+    {
+        close(server->input_wakeup_fd);
+        server->input_wakeup_fd = -1;
     }
 
     wd_clipboard_destroy(server);

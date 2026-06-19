@@ -616,6 +616,354 @@ static uint32_t wd_stream_video_bitrate_kib_locked(const struct wd_stream_policy
 }
 
 
+
+struct wd_video_worker_job {
+    uint32_t* pixels;
+    size_t    pixel_capacity;
+
+    struct wd_video_encoder_config config;
+    uint64_t                       epoch;
+    uint64_t                       published_ns;
+    uint64_t                       pts_usec;
+    int                            video_tcp_fd;
+    bool                           request_keyframe;
+};
+
+struct wd_video_worker {
+    struct wd_server* server;
+    pthread_t         thread;
+    pthread_mutex_t   lock;
+    pthread_cond_t    cond;
+    bool              thread_started;
+    bool              stop;
+    bool              pending;
+
+    struct wd_video_worker_job pending_job;
+    struct wd_video_worker_job active_job;
+};
+
+static bool wd_stream_video_job_current_locked(const struct wd_server* server,
+                                               const struct wd_video_worker_job* job) {
+    if (!server || !job)
+    {
+        return false;
+    }
+
+    const struct wd_net_state* net = &server->net;
+    return net->running && net->video_worker_epoch == job->epoch &&
+           net->session_id == job->config.session_id && net->video_tcp_fd == job->video_tcp_fd &&
+           net->video_stream_negotiated && net->video_tx &&
+           (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY ||
+            net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE);
+}
+
+static void wd_stream_video_worker_process(struct wd_video_worker* worker,
+                                           struct wd_video_worker_job* job) {
+    if (!worker || !worker->server || !job || !job->pixels)
+    {
+        return;
+    }
+
+    struct wd_server* server = worker->server;
+    struct wd_net_state* net = &server->net;
+
+    const uint64_t dequeue_ns = wd_now_ns();
+
+    pthread_mutex_lock(&net->lock);
+    if (!wd_stream_video_job_current_locked(server, job))
+    {
+        net->stats.video_worker_stale_drops++;
+        pthread_mutex_unlock(&net->lock);
+        return;
+    }
+
+    wd_async_tcp_sender_reap(net->video_tx);
+    if (wd_async_tcp_sender_has_message_type(net->video_tx, WD_MSG_VIDEO_FRAME))
+    {
+        net->stats.video_keyframe_skipped_pending++;
+        pthread_mutex_unlock(&net->lock);
+        return;
+    }
+
+    net->stats.video_frame_attempts++;
+    if (job->request_keyframe)
+    {
+        net->stats.video_keyframe_attempts++;
+    }
+    if (dequeue_ns >= job->published_ns)
+    {
+        net->stats.video_worker_queue_samples++;
+        net->stats.video_worker_queue_ns += dequeue_ns - job->published_ns;
+    }
+    pthread_mutex_unlock(&net->lock);
+
+    struct wd_video_encoder_input_xrgb8888 input;
+    memset(&input, 0, sizeof(input));
+    input.pixels        = job->pixels;
+    input.width         = job->config.width;
+    input.height        = job->config.height;
+    input.stride_pixels = job->config.width;
+    input.pts_usec      = job->pts_usec;
+
+    struct wd_video_encoder_packet packet;
+    memset(&packet, 0, sizeof(packet));
+
+    const uint64_t encode_start_ns = wd_now_ns();
+    bool encoded = false;
+    bool no_output = false;
+    bool payload_invalid = false;
+    uint8_t* payload = NULL;
+    uint32_t payload_size = 0;
+    struct wd_video_frame_payload_header header;
+    memset(&header, 0, sizeof(header));
+
+    pthread_mutex_lock(&net->video_encoder_lock);
+    if (wd_video_encoder_configure(net->video_encoder, &job->config) &&
+        (!job->request_keyframe || wd_video_encoder_request_keyframe(net->video_encoder)))
+    {
+        encoded = wd_video_encoder_encode_xrgb8888(net->video_encoder, &input, &packet);
+        no_output = encoded && (!packet.data || packet.header.data_size == 0);
+        if (encoded && !no_output)
+        {
+            header = packet.header;
+            header.session_id = job->config.session_id;
+            header.codec = job->config.codec;
+            header.pts_usec = input.pts_usec;
+            header.width = job->config.width;
+            header.height = job->config.height;
+            if (header.coded_width == 0)
+            {
+                header.coded_width = header.width;
+            }
+            if (header.coded_height == 0)
+            {
+                header.coded_height = header.height;
+            }
+
+            const uint64_t payload_size64 = (uint64_t)sizeof(header) + (uint64_t)header.data_size;
+            if (header.data_size > WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES || payload_size64 > UINT32_MAX)
+            {
+                payload_invalid = true;
+            }
+            else
+            {
+                payload = malloc((size_t)payload_size64);
+                if (!payload)
+                {
+                    payload_invalid = true;
+                }
+                else
+                {
+                    payload_size = (uint32_t)payload_size64;
+                    memcpy(payload, &header, sizeof(header));
+                    memcpy(payload + sizeof(header), packet.data, header.data_size);
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&net->video_encoder_lock);
+
+    const uint64_t encode_ns = wd_now_ns() - encode_start_ns;
+
+    pthread_mutex_lock(&net->lock);
+    net->stats.video_encode_ns += encode_ns;
+
+    if (!encoded || payload_invalid)
+    {
+        free(payload);
+        net->stats.video_encode_failed++;
+        pthread_mutex_unlock(&net->lock);
+        return;
+    }
+
+    if (no_output)
+    {
+        pthread_mutex_unlock(&net->lock);
+        return;
+    }
+
+    if (!wd_stream_video_job_current_locked(server, job))
+    {
+        free(payload);
+        net->stats.video_worker_stale_drops++;
+        pthread_mutex_unlock(&net->lock);
+        return;
+    }
+
+    wd_async_tcp_sender_reap(net->video_tx);
+    if (wd_async_tcp_sender_has_message_type(net->video_tx, WD_MSG_VIDEO_FRAME))
+    {
+        free(payload);
+        net->stats.video_keyframe_skipped_pending++;
+        pthread_mutex_unlock(&net->lock);
+        return;
+    }
+
+    const bool queued = wd_async_tcp_send_message(net->video_tx, net->video_tcp_fd, WD_MSG_VIDEO_FRAME,
+                                                  payload, payload_size);
+    free(payload);
+
+    if (!queued)
+    {
+        net->stats.video_tcp_send_failed++;
+        wd_stream_video_reset_locked(server, "video tcp send failed", false, false);
+        pthread_mutex_unlock(&net->lock);
+        return;
+    }
+
+    net->stats.video_frames_tx++;
+    if ((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0)
+    {
+        net->stats.video_keyframes_tx++;
+    }
+    net->stats.video_tcp_bytes_tx += payload_size;
+
+    if (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY)
+    {
+        wd_stream_policy_set_mode_locked(&net->stream_policy, WD_STREAM_MODE_VIDEO_ACTIVE,
+                                         "video keyframe queued", 0.0, 0.0, 0.0, true, true);
+    }
+
+    pthread_mutex_unlock(&net->lock);
+}
+
+static void* wd_stream_video_worker_main(void* data) {
+    struct wd_video_worker* worker = data;
+    if (!worker)
+    {
+        return NULL;
+    }
+
+    for (;;)
+    {
+        pthread_mutex_lock(&worker->lock);
+        while (!worker->stop && !worker->pending)
+        {
+            pthread_cond_wait(&worker->cond, &worker->lock);
+        }
+
+        if (worker->stop)
+        {
+            pthread_mutex_unlock(&worker->lock);
+            break;
+        }
+
+        struct wd_video_worker_job tmp = worker->active_job;
+        worker->active_job = worker->pending_job;
+        worker->pending_job = tmp;
+        worker->pending = false;
+        pthread_mutex_unlock(&worker->lock);
+
+        wd_stream_video_worker_process(worker, &worker->active_job);
+    }
+
+    return NULL;
+}
+
+static bool wd_stream_video_worker_init(struct wd_server* server) {
+    if (!server)
+    {
+        return false;
+    }
+
+    struct wd_net_state* net = &server->net;
+    if (!wd_video_encoder_available(net->video_encoder))
+    {
+        return true;
+    }
+    if (net->video_worker)
+    {
+        return true;
+    }
+
+    struct wd_video_worker* worker = calloc(1, sizeof(*worker));
+    if (!worker)
+    {
+        return false;
+    }
+    worker->server = server;
+
+    if (pthread_mutex_init(&worker->lock, NULL) != 0)
+    {
+        free(worker);
+        return false;
+    }
+    if (pthread_cond_init(&worker->cond, NULL) != 0)
+    {
+        pthread_mutex_destroy(&worker->lock);
+        free(worker);
+        return false;
+    }
+
+    net->video_worker_epoch = 1;
+    net->video_worker = worker;
+    if (pthread_create(&worker->thread, NULL, wd_stream_video_worker_main, worker) != 0)
+    {
+        net->video_worker = NULL;
+        pthread_cond_destroy(&worker->cond);
+        pthread_mutex_destroy(&worker->lock);
+        free(worker);
+        return false;
+    }
+    worker->thread_started = true;
+    return true;
+}
+
+static void wd_stream_video_worker_destroy(struct wd_server* server) {
+    if (!server || !server->net.video_worker)
+    {
+        return;
+    }
+
+    struct wd_video_worker* worker = server->net.video_worker;
+    server->net.video_worker = NULL;
+
+    pthread_mutex_lock(&worker->lock);
+    worker->stop = true;
+    worker->pending = false;
+    pthread_cond_broadcast(&worker->cond);
+    pthread_mutex_unlock(&worker->lock);
+
+    if (worker->thread_started)
+    {
+        pthread_join(worker->thread, NULL);
+    }
+
+    free(worker->pending_job.pixels);
+    free(worker->active_job.pixels);
+    pthread_cond_destroy(&worker->cond);
+    pthread_mutex_destroy(&worker->lock);
+    free(worker);
+}
+
+static void wd_stream_video_worker_discard_locked(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    struct wd_net_state* net = &server->net;
+    net->video_worker_epoch++;
+    if (net->video_worker_epoch == 0)
+    {
+        net->video_worker_epoch = 1;
+    }
+
+    struct wd_video_worker* worker = net->video_worker;
+    if (!worker)
+    {
+        return;
+    }
+
+    pthread_mutex_lock(&worker->lock);
+    if (worker->pending)
+    {
+        worker->pending = false;
+        net->stats.video_worker_stale_drops++;
+    }
+    pthread_mutex_unlock(&worker->lock);
+}
+
 static bool wd_stream_queue_video_control_frame_locked(struct wd_server* server, uint16_t flags) {
     if (!server)
     {
@@ -678,6 +1026,11 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
         (void)wd_stream_queue_video_control_frame_locked(server, flags);
     }
 
+    /* Invalidate both the pending mailbox frame and any frame currently being
+     * encoded. The active worker will validate the epoch before it queues its
+     * packet, so reset/resize cannot publish stale output. */
+    wd_stream_video_worker_discard_locked(server);
+
     pthread_mutex_lock(&net->video_encoder_lock);
     wd_video_encoder_reset(net->video_encoder);
     pthread_mutex_unlock(&net->video_encoder_lock);
@@ -705,14 +1058,16 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
     }
 }
 
-static bool wd_stream_try_send_video_frame_locked(struct wd_server* server, uint64_t now_ns) {
+static bool wd_stream_try_publish_video_frame_locked(struct wd_server* server, uint64_t now_ns) {
     if (!server || !server->framebuffer_xrgb8888)
     {
         return false;
     }
 
     struct wd_net_state* net = &server->net;
-    if ((net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_READY &&
+    struct wd_video_worker* worker = net->video_worker;
+    if (!worker ||
+        (net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_READY &&
          net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_ACTIVE) ||
         !net->video_stream_negotiated || net->video_tcp_fd < 0 || !net->video_tx ||
         !wd_video_encoder_available(net->video_encoder))
@@ -741,169 +1096,69 @@ static bool wd_stream_try_send_video_frame_locked(struct wd_server* server, uint
     }
 
     const size_t pixel_count = (size_t)width * (size_t)height;
-    if (height != 0 && pixel_count / height != width)
+    if ((height != 0 && pixel_count / height != width) ||
+        pixel_count > SIZE_MAX / sizeof(uint32_t))
     {
         net->stats.video_encode_failed++;
         return false;
     }
-
-    uint32_t* snapshot = malloc(pixel_count * sizeof(*snapshot));
-    if (!snapshot)
-    {
-        net->stats.video_encode_failed++;
-        return false;
-    }
-    memcpy(snapshot, server->framebuffer_xrgb8888, pixel_count * sizeof(*snapshot));
-
-    net->stats.video_frame_attempts++;
-    const bool request_keyframe = net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY;
-    if (request_keyframe)
-    {
-        net->stats.video_keyframe_attempts++;
-    }
-
-    const uint8_t session_id = net->session_id;
-    const uint16_t target_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
-    const uint32_t bitrate_kib = wd_stream_video_bitrate_kib_locked(&net->stream_policy);
-    const int video_tcp_fd = net->video_tcp_fd;
-
-    pthread_mutex_unlock(&net->lock);
 
     struct wd_video_encoder_config config;
     memset(&config, 0, sizeof(config));
-    config.session_id = session_id;
-    config.width = width;
-    config.height = height;
-    config.target_fps = target_fps;
-    config.bitrate_kib_per_second = bitrate_kib;
+    config.session_id = net->session_id;
+    config.width = (uint16_t)width;
+    config.height = (uint16_t)height;
+    config.target_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
+    config.bitrate_kib_per_second = wd_stream_video_bitrate_kib_locked(&net->stream_policy);
     config.codec = net->video_codecs != 0 ? net->video_codecs : WD_VIDEO_CODEC_H265;
 
-    struct wd_video_encoder_input_xrgb8888 input;
-    memset(&input, 0, sizeof(input));
-    input.pixels = snapshot;
-    input.width = width;
-    input.height = height;
-    input.stride_pixels = width;
-    input.pts_usec = now_ns / 1000ull;
+    const bool request_keyframe = net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY;
+    const uint64_t copy_start_ns = wd_now_ns();
 
-    struct wd_video_encoder_packet packet;
-    memset(&packet, 0, sizeof(packet));
-
-    const uint64_t encode_start_ns = wd_now_ns();
-    bool encoded = false;
-    bool no_output = false;
-    bool encode_payload_invalid = false;
-    uint8_t* payload = NULL;
-    uint32_t payload_size = 0;
-    struct wd_video_frame_payload_header header;
-    memset(&header, 0, sizeof(header));
-
-    pthread_mutex_lock(&net->video_encoder_lock);
-    if (wd_video_encoder_configure(net->video_encoder, &config) &&
-        (!request_keyframe || wd_video_encoder_request_keyframe(net->video_encoder)))
+    pthread_mutex_lock(&worker->lock);
+    if (worker->stop)
     {
-        encoded = wd_video_encoder_encode_xrgb8888(net->video_encoder, &input, &packet);
-        no_output = encoded && (!packet.data || packet.header.data_size == 0);
-        if (encoded && !no_output)
+        pthread_mutex_unlock(&worker->lock);
+        return false;
+    }
+
+    if (worker->pending_job.pixel_capacity < pixel_count)
+    {
+        uint32_t* new_pixels = realloc(worker->pending_job.pixels, pixel_count * sizeof(uint32_t));
+        if (!new_pixels)
         {
-            header = packet.header;
-            header.session_id = session_id;
-            header.codec = config.codec;
-            header.pts_usec = input.pts_usec;
-            header.width = (uint16_t)width;
-            header.height = (uint16_t)height;
-            if (header.coded_width == 0)
-            {
-                header.coded_width = header.width;
-            }
-            if (header.coded_height == 0)
-            {
-                header.coded_height = header.height;
-            }
-
-            const uint64_t payload_size64 = (uint64_t)sizeof(header) + (uint64_t)header.data_size;
-            if (header.data_size > WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES || payload_size64 > UINT32_MAX)
-            {
-                encode_payload_invalid = true;
-            }
-            else
-            {
-                payload = malloc((size_t)payload_size64);
-                if (!payload)
-                {
-                    encode_payload_invalid = true;
-                }
-                else
-                {
-                    payload_size = (uint32_t)payload_size64;
-                    memcpy(payload, &header, sizeof(header));
-                    memcpy(payload + sizeof(header), packet.data, header.data_size);
-                }
-            }
+            pthread_mutex_unlock(&worker->lock);
+            net->stats.video_encode_failed++;
+            return false;
         }
+        worker->pending_job.pixels = new_pixels;
+        worker->pending_job.pixel_capacity = pixel_count;
     }
-    pthread_mutex_unlock(&net->video_encoder_lock);
 
-    free(snapshot);
-    const uint64_t encode_ns = wd_now_ns() - encode_start_ns;
+    const bool superseded = worker->pending;
+    memcpy(worker->pending_job.pixels, server->framebuffer_xrgb8888,
+           pixel_count * sizeof(*worker->pending_job.pixels));
+    worker->pending_job.config = config;
+    worker->pending_job.epoch = net->video_worker_epoch;
+    worker->pending_job.published_ns = now_ns;
+    worker->pending_job.pts_usec = now_ns / 1000ull;
+    worker->pending_job.video_tcp_fd = net->video_tcp_fd;
+    worker->pending_job.request_keyframe = request_keyframe;
+    worker->pending = true;
+    pthread_cond_signal(&worker->cond);
+    pthread_mutex_unlock(&worker->lock);
 
-    pthread_mutex_lock(&net->lock);
-    net->stats.video_encode_ns += encode_ns;
-
-    if (!encoded || encode_payload_invalid)
+    net->stats.video_frames_published++;
+    if (superseded)
     {
-        free(payload);
-        net->stats.video_encode_failed++;
-        return false;
+        net->stats.video_frames_superseded++;
     }
+    net->stats.video_publish_copy_samples++;
+    net->stats.video_publish_copy_ns += wd_now_ns() - copy_start_ns;
 
-    if (no_output)
-    {
-        return false;
-    }
-
-    if (net->session_id != session_id || net->video_tcp_fd != video_tcp_fd ||
-        !net->video_stream_negotiated || !net->video_tx ||
-        (net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_READY &&
-         net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_ACTIVE))
-    {
-        free(payload);
-        return false;
-    }
-
-    wd_async_tcp_sender_reap(net->video_tx);
-    if (wd_async_tcp_sender_has_message_type(net->video_tx, WD_MSG_VIDEO_FRAME))
-    {
-        free(payload);
-        net->stats.video_keyframe_skipped_pending++;
-        return false;
-    }
-
-    const bool queued = wd_async_tcp_send_message(net->video_tx, net->video_tcp_fd, WD_MSG_VIDEO_FRAME,
-                                                  payload, payload_size);
-    free(payload);
-
-    if (!queued)
-    {
-        net->stats.video_tcp_send_failed++;
-        wd_stream_video_reset_locked(server, "video tcp send failed", false, false);
-        return false;
-    }
-
-    net->stats.video_frames_tx++;
-    if ((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0)
-    {
-        net->stats.video_keyframes_tx++;
-    }
-    net->stats.video_tcp_bytes_tx += payload_size;
+    /* This timestamp paces capture/publication, not TCP completion. The worker
+     * may discard an older pending frame when a fresher one arrives. */
     net->stream_policy.last_video_frame_send_ns = now_ns;
-
-    if (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY)
-    {
-        wd_stream_policy_set_mode_locked(&net->stream_policy, WD_STREAM_MODE_VIDEO_ACTIVE,
-                                         "video keyframe queued", 0.0, 0.0, 0.0, true, true);
-    }
-
     return true;
 }
 
@@ -1331,6 +1586,13 @@ bool wd_stream_init(struct wd_server* server) {
     server->damage_all_tiles  = true;
     server->damage_tile_count = 0;
 
+    if (!wd_stream_video_worker_init(server))
+    {
+        WD_LOG_ERROR("failed to create video encoder worker");
+        wd_stream_destroy(server);
+        return false;
+    }
+
     return true;
 }
 
@@ -1340,6 +1602,7 @@ void wd_stream_destroy(struct wd_server* server) {
         return;
     }
 
+    wd_stream_video_worker_destroy(server);
     wd_stream_encoder_pool_destroy(server);
 
     if (!server->net.tiles)
@@ -2162,6 +2425,45 @@ static void wd_clear_damage_tiles(struct wd_server* server) {
 
     server->damage_all_tiles  = false;
     server->damage_tile_count = 0;
+}
+
+/* Consume WayDisplay's compositor-side damage metadata without constructing
+ * dirty tile queues. Active video frames already carry the complete display,
+ * so tile generations, regions, retransmits, and summary state are redundant.
+ * The returned count is used only by adaptive video-mode exit heuristics. */
+static uint16_t wd_stream_take_video_damage_sample_locked(struct wd_server* server) {
+    if (!server)
+    {
+        return 0;
+    }
+
+    uint32_t dirty_tiles = 0;
+    if (server->damage_all_tiles || !server->damage_tiles)
+    {
+        dirty_tiles = server->total_tiles;
+    }
+    else
+    {
+        dirty_tiles = server->damage_tile_count;
+        if (dirty_tiles > server->total_tiles)
+        {
+            dirty_tiles = server->total_tiles;
+        }
+    }
+
+    wd_clear_damage_tiles(server);
+    return (uint16_t)dirty_tiles;
+}
+
+static bool wd_stream_has_queued_tile_work_locked(const struct wd_server* server) {
+    if (!server)
+    {
+        return false;
+    }
+
+    const struct wd_net_state* net = &server->net;
+    return net->dirty_queue_count != 0 || net->dirty_region_count != 0 ||
+           net->retransmit_queue_count != 0 || net->summary_dirty_count != 0;
 }
 
 static void wd_stream_collapse_tile_queues_for_video_locked(struct wd_server* server) {
@@ -3671,9 +3973,45 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
                                          net->video_tcp_fd >= 0, wd_video_encoder_available(net->video_encoder));
     }
 
+    if (wd_stream_mode_video_owns_display(net->stream_policy.stream_mode))
+    {
+        /* Video owns the display, so do not turn compositor damage into dirty
+         * tile generations or regions that will immediately be discarded.
+         * Forced video does not need tile coverage samples at all. Adaptive
+         * video keeps only the cheap metadata count used by its exit policy. */
+        if (net->stream_policy.video_mode == WD_VIDEO_MODE_FORCE)
+        {
+            wd_clear_damage_tiles(server);
+        }
+        else
+        {
+            const uint16_t dirty_frame_tiles = wd_stream_take_video_damage_sample_locked(server);
+            wd_stream_note_mode_frame_locked(net, dirty_frame_tiles, 0, server->total_tiles, false);
+        }
+
+        net->stats.video_tile_detection_skipped++;
+        (void)wd_stream_try_publish_video_frame_locked(server, now);
+
+        /* Queues should normally already be empty after video ownership was
+         * established. Only pay the memset cost if transition-era work remains. */
+        if (wd_stream_has_queued_tile_work_locked(server))
+        {
+            wd_stream_collapse_tile_queues_for_video_locked(server);
+        }
+
+        /*
+         * Do not force another wlroots render for an unchanged scene. The
+         * timer promotes wlr_scene_output_needs_frame() into WayDisplay damage,
+         * including commits missed by our manual surface trackers.
+         */
+        server->scene_dirty = false;
+        pthread_mutex_unlock(&net->lock);
+        return true;
+    }
+
     /*
-     * Normal send pass. New/reconnected clients are handled through the same
-     * dirty-tile pipeline by invalidating tile state and marking the
+     * Normal tile-owner send pass. New/reconnected clients are handled through
+     * the same dirty-tile pipeline by invalidating tile state and marking the
      * scene dirty. Avoid a separate full-frame catch-up path, because it
      * competes with current dirty tiles and explicit retransmits for the same
      * byte budget.
@@ -3684,20 +4022,7 @@ bool wd_stream_send_dirty_tiles(struct wd_server* server) {
     const uint16_t pending_tiles_at_frame_start = net->dirty_queue_count;
     const uint64_t dirty_budget_blocked_at_frame_start = net->stats.dirty_budget_blocked;
 
-    (void)wd_stream_try_send_video_frame_locked(server, now);
-
-    if (wd_stream_mode_video_owns_display(net->stream_policy.stream_mode))
-    {
-        /* Video mode owns the display. The compositor framebuffer is already
-         * current; collapse tile work to a future full-refresh-on-exit marker
-         * instead of accumulating stale dirty/retransmit/summary queues. */
-        wd_stream_note_mode_frame_locked(net, dirty_frame_tiles, pending_tiles_at_frame_start,
-                                         server->total_tiles, false);
-        wd_stream_collapse_tile_queues_for_video_locked(server);
-        server->scene_dirty = true;
-        pthread_mutex_unlock(&net->lock);
-        return true;
-    }
+    (void)wd_stream_try_publish_video_frame_locked(server, now);
 
     const bool client_loss = wd_stream_client_reporting_tile_loss_locked(&net->stream_policy, &net->stats);
     if (client_loss && net->retransmit_queue_count > 0)
@@ -4300,6 +4625,14 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->tcp_video_channel_rx += src->tcp_video_channel_rx;
     dst->tcp_video_channel_accepted += src->tcp_video_channel_accepted;
     dst->tcp_video_channel_closed += src->tcp_video_channel_closed;
+    dst->video_frames_published += src->video_frames_published;
+    dst->video_frames_superseded += src->video_frames_superseded;
+    dst->video_worker_stale_drops += src->video_worker_stale_drops;
+    dst->video_tile_detection_skipped += src->video_tile_detection_skipped;
+    dst->video_publish_copy_samples += src->video_publish_copy_samples;
+    dst->video_publish_copy_ns += src->video_publish_copy_ns;
+    dst->video_worker_queue_samples += src->video_worker_queue_samples;
+    dst->video_worker_queue_ns += src->video_worker_queue_ns;
     dst->video_frame_attempts += src->video_frame_attempts;
     dst->video_frames_tx += src->video_frames_tx;
     dst->video_keyframe_attempts += src->video_keyframe_attempts;
@@ -4313,6 +4646,21 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->video_end_of_stream_tx += src->video_end_of_stream_tx;
     dst->video_resize_resets += src->video_resize_resets;
     dst->video_resets += src->video_resets;
+    dst->server_frame_timer_samples += src->server_frame_timer_samples;
+    dst->server_frame_timer_sum_ns += src->server_frame_timer_sum_ns;
+    if (src->server_frame_timer_max_ns > dst->server_frame_timer_max_ns)
+    {
+        dst->server_frame_timer_max_ns = src->server_frame_timer_max_ns;
+    }
+    dst->server_render_readback_samples += src->server_render_readback_samples;
+    dst->server_render_readback_sum_ns += src->server_render_readback_sum_ns;
+    if (src->server_render_readback_max_ns > dst->server_render_readback_max_ns)
+    {
+        dst->server_render_readback_max_ns = src->server_render_readback_max_ns;
+    }
+    dst->server_scene_damage_promotions += src->server_scene_damage_promotions;
+    dst->server_render_idle_results += src->server_render_idle_results;
+    dst->server_render_failed_results += src->server_render_failed_results;
     dst->client_stats_rx += src->client_stats_rx;
     dst->client_udp_packets_rx += src->client_udp_packets_rx;
     dst->client_udp_bytes_rx += src->client_udp_bytes_rx;
@@ -4396,6 +4744,11 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->input_net_latency_sum_ns += src->input_net_latency_sum_ns;
     dst->input_queue_latency_samples += src->input_queue_latency_samples;
     dst->input_queue_latency_sum_ns += src->input_queue_latency_sum_ns;
+    dst->input_wakeup_signals += src->input_wakeup_signals;
+    dst->input_wakeup_callbacks += src->input_wakeup_callbacks;
+    dst->input_wakeup_events += src->input_wakeup_events;
+    dst->input_wakeup_coalesced += src->input_wakeup_coalesced;
+    dst->input_wakeup_failures += src->input_wakeup_failures;
     dst->input_to_summary_samples += src->input_to_summary_samples;
     dst->input_to_summary_sum_ns += src->input_to_summary_sum_ns;
     dst->input_to_first_fresh_tile_samples += src->input_to_first_fresh_tile_samples;
@@ -4661,16 +5014,44 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      (unsigned long long)s.encode_thread_wakeups);
     }
 
-    bool video_stream_activity = s.video_frame_attempts != 0 || s.video_frames_tx != 0 ||
-                                 s.video_keyframe_attempts != 0 || s.video_keyframes_tx != 0 ||
+    if (s.server_frame_timer_samples != 0 || s.server_render_readback_samples != 0)
+    {
+        WD_LOG_DEBUG("server-frame/min: ticks=%llu tick_avg_ms=%.2f tick_max_ms=%.2f render_readback=%llu render_readback_avg_ms=%.2f render_readback_max_ms=%.2f scene_promote=%llu render_idle=%llu render_failed=%llu encode_avg_ms=%.2f",
+                     (unsigned long long)s.server_frame_timer_samples,
+                     s.server_frame_timer_samples ?
+                         (double)s.server_frame_timer_sum_ns / (double)s.server_frame_timer_samples / 1000000.0 : 0.0,
+                     (double)s.server_frame_timer_max_ns / 1000000.0,
+                     (unsigned long long)s.server_render_readback_samples,
+                     s.server_render_readback_samples ?
+                         (double)s.server_render_readback_sum_ns / (double)s.server_render_readback_samples / 1000000.0 : 0.0,
+                     (double)s.server_render_readback_max_ns / 1000000.0,
+                     (unsigned long long)s.server_scene_damage_promotions,
+                     (unsigned long long)s.server_render_idle_results,
+                     (unsigned long long)s.server_render_failed_results,
+                     s.video_frame_attempts ?
+                         (double)s.video_encode_ns / (double)s.video_frame_attempts / 1000000.0 : 0.0);
+    }
+
+    bool video_stream_activity = s.video_frames_published != 0 || s.video_frames_superseded != 0 ||
+                                 s.video_worker_stale_drops != 0 || s.video_tile_detection_skipped != 0 ||
+                                 s.video_frame_attempts != 0 ||
+                                 s.video_frames_tx != 0 || s.video_keyframe_attempts != 0 || s.video_keyframes_tx != 0 ||
                                  s.video_tcp_bytes_tx != 0 || s.video_encode_failed != 0 ||
                                  s.video_tcp_send_failed != 0 || s.video_keyframe_skipped_pending != 0 ||
                                  s.video_control_frames_tx != 0 || s.video_end_of_stream_tx != 0 ||
                                  s.video_resize_resets != 0 || s.video_resets != 0;
     if (video_stream_activity)
     {
-        WD_LOG_DEBUG("video-stream/min: mode=%s configured_bitrate_kib=%u frame_attempts=%llu frames_tx=%llu keyframe_attempts=%llu keyframes_tx=%llu control_tx=%llu eos_tx=%llu tcp_kib=%.1f encode_ms=%.2f encode_failed=%llu tcp_send_failed=%llu skipped_pending=%llu resets=%llu resize_resets=%llu",
+        WD_LOG_DEBUG("video-stream/min: mode=%s configured_bitrate_kib=%u published=%llu superseded=%llu worker_stale=%llu tile_detect_skipped=%llu publish_copy_avg_ms=%.2f worker_queue_avg_ms=%.2f frame_attempts=%llu frames_tx=%llu keyframe_attempts=%llu keyframes_tx=%llu control_tx=%llu eos_tx=%llu tcp_kib=%.1f encode_ms=%.2f encode_failed=%llu tcp_send_failed=%llu skipped_pending=%llu resets=%llu resize_resets=%llu",
                      wd_video_mode_name(video_mode), (unsigned)video_bitrate_kib,
+                     (unsigned long long)s.video_frames_published,
+                     (unsigned long long)s.video_frames_superseded,
+                     (unsigned long long)s.video_worker_stale_drops,
+                     (unsigned long long)s.video_tile_detection_skipped,
+                     s.video_publish_copy_samples ?
+                         (double)s.video_publish_copy_ns / (double)s.video_publish_copy_samples / 1000000.0 : 0.0,
+                     s.video_worker_queue_samples ?
+                         (double)s.video_worker_queue_ns / (double)s.video_worker_queue_samples / 1000000.0 : 0.0,
                      (unsigned long long)s.video_frame_attempts,
                      (unsigned long long)s.video_frames_tx,
                      (unsigned long long)s.video_keyframe_attempts,
@@ -4794,10 +5175,12 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                           s.pointer_events_dropped != 0 || s.pointer_button_grab_started != 0 ||
                           s.pointer_button_grab_ended != 0 || s.pointer_button_grab_cleared != 0 ||
                           s.pointer_button_grab_surface_destroyed != 0 || s.input_queue_latency_samples != 0 ||
-                          s.input_to_summary_samples != 0 || s.input_to_first_fresh_tile_samples != 0;
+                          s.input_wakeup_signals != 0 || s.input_wakeup_callbacks != 0 ||
+                          s.input_wakeup_failures != 0 || s.input_to_summary_samples != 0 ||
+                          s.input_to_first_fresh_tile_samples != 0;
     if (input_activity)
     {
-        WD_LOG_DEBUG("input/min: key_rx=%llu key_injected=%llu key_dropped=%llu dup_press=%llu release_without_press=%llu keyboard_enter=%llu pointer_rx=%llu pointer_injected=%llu pointer_dropped=%llu grabs_start=%llu grabs_end=%llu grabs_clear=%llu grab_surface_destroyed=%llu queue_avg_ms=%.2f input_to_summary_avg_ms=%.2f input_to_first_tile_avg_ms=%.2f",
+        WD_LOG_DEBUG("input/min: key_rx=%llu key_injected=%llu key_dropped=%llu dup_press=%llu release_without_press=%llu keyboard_enter=%llu pointer_rx=%llu pointer_injected=%llu pointer_dropped=%llu grabs_start=%llu grabs_end=%llu grabs_clear=%llu grab_surface_destroyed=%llu wake_signals=%llu wake_callbacks=%llu wake_events=%llu wake_coalesced=%llu wake_failures=%llu queue_avg_ms=%.2f input_to_summary_avg_ms=%.2f input_to_first_tile_avg_ms=%.2f",
                      (unsigned long long)s.key_events_rx, (unsigned long long)s.key_events_injected,
                      (unsigned long long)s.key_events_dropped, (unsigned long long)s.key_state_duplicate_presses,
                      (unsigned long long)s.key_state_release_without_press, (unsigned long long)s.keyboard_enter_events,
@@ -4805,6 +5188,9 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      (unsigned long long)s.pointer_events_dropped, (unsigned long long)s.pointer_button_grab_started,
                      (unsigned long long)s.pointer_button_grab_ended, (unsigned long long)s.pointer_button_grab_cleared,
                      (unsigned long long)s.pointer_button_grab_surface_destroyed,
+                     (unsigned long long)s.input_wakeup_signals, (unsigned long long)s.input_wakeup_callbacks,
+                     (unsigned long long)s.input_wakeup_events, (unsigned long long)s.input_wakeup_coalesced,
+                     (unsigned long long)s.input_wakeup_failures,
                      wd_avg_ms(s.input_queue_latency_sum_ns, s.input_queue_latency_samples),
                      wd_avg_ms(s.input_to_summary_sum_ns, s.input_to_summary_samples),
                      wd_avg_ms(s.input_to_first_fresh_tile_sum_ns, s.input_to_first_fresh_tile_samples));

@@ -256,6 +256,14 @@ struct wd_stats {
     uint64_t tcp_video_channel_accepted;
     uint64_t tcp_video_channel_closed;
 
+    uint64_t video_frames_published;
+    uint64_t video_frames_superseded;
+    uint64_t video_worker_stale_drops;
+    uint64_t video_tile_detection_skipped;
+    uint64_t video_publish_copy_samples;
+    uint64_t video_publish_copy_ns;
+    uint64_t video_worker_queue_samples;
+    uint64_t video_worker_queue_ns;
     uint64_t video_frame_attempts;
     uint64_t video_frames_tx;
     uint64_t video_keyframe_attempts;
@@ -269,6 +277,16 @@ struct wd_stats {
     uint64_t video_end_of_stream_tx;
     uint64_t video_resize_resets;
     uint64_t video_resets;
+
+    uint64_t server_frame_timer_samples;
+    uint64_t server_frame_timer_sum_ns;
+    uint64_t server_frame_timer_max_ns;
+    uint64_t server_render_readback_samples;
+    uint64_t server_render_readback_sum_ns;
+    uint64_t server_render_readback_max_ns;
+    uint64_t server_scene_damage_promotions;
+    uint64_t server_render_idle_results;
+    uint64_t server_render_failed_results;
 
     uint64_t client_stats_rx;
     uint64_t client_udp_packets_rx;
@@ -348,6 +366,11 @@ struct wd_stats {
     uint64_t input_net_latency_sum_ns;
     uint64_t input_queue_latency_samples;
     uint64_t input_queue_latency_sum_ns;
+    uint64_t input_wakeup_signals;
+    uint64_t input_wakeup_callbacks;
+    uint64_t input_wakeup_events;
+    uint64_t input_wakeup_coalesced;
+    uint64_t input_wakeup_failures;
     uint64_t input_to_summary_samples;
     uint64_t input_to_summary_sum_ns;
     uint64_t input_to_first_fresh_tile_samples;
@@ -520,6 +543,8 @@ struct wd_net_state {
 
     bool encoder_batch_active;
     void* encoder_pool;
+    void* video_worker;
+    uint64_t video_worker_epoch;
     struct wd_video_encoder* video_encoder;
     pthread_mutex_t video_encoder_lock;
 
@@ -637,7 +662,8 @@ struct wd_server {
     struct wl_listener   new_xwayland_surface;
     bool                 enable_xwayland;
 #endif
-    double output_scale;
+    double   output_scale;
+    uint32_t output_refresh_mhz;
 
     uint32_t display_width;
     uint32_t display_height;
@@ -708,6 +734,8 @@ struct wd_server {
     struct wl_listener request_set_primary_selection;
 
     struct wl_event_source* frame_timer;
+    int                     input_wakeup_fd;
+    struct wl_event_source* input_wakeup_source;
 
     uint8_t*                remote_clipboard_text;
     uint32_t                remote_clipboard_text_size;
@@ -733,12 +761,16 @@ struct wd_server {
 };
 
 /* wd_server.c */
-bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale, uint32_t display_width,
-                    uint32_t display_height, uint16_t tile_width, uint16_t tile_height, bool enable_xwayland);
+bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale,
+                    uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height,
+                    uint16_t tile_width, uint16_t tile_height, bool enable_xwayland);
 
 void wd_server_destroy(struct wd_server* server);
 
 int wd_server_run(struct wd_server* server);
+
+/* Called by network threads after releasing net.lock. */
+void wd_server_wake_input(struct wd_server* server);
 
 /* wd_wlroots_backend.c */
 bool wd_wlroots_init(struct wd_server* server);
@@ -802,7 +834,13 @@ void            wd_scene_handle_output_resize(struct wd_server* server);
 struct wd_view* wd_scene_view_from_xdg_toplevel_resource(struct wd_server* server, struct wl_resource* toplevel_resource);
 
 /* wd_readback.c */
-bool wd_render_scene_and_readback_xrgb8888(struct wd_server* server);
+enum wd_render_result {
+    WD_RENDER_RESULT_ERROR = -1,
+    WD_RENDER_RESULT_IDLE  = 0,
+    WD_RENDER_RESULT_FRAME = 1,
+};
+
+enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* server);
 
 /* wd_stream.c */
 bool wd_stream_init(struct wd_server* server);
