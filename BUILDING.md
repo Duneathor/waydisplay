@@ -33,7 +33,24 @@ cmake --build build
 
 The client defaults to H.265. Use `--video-codec auto` to advertise both H.265
 and H.264, or `--video-codec h264` / `--video-codec h265` to force a specific
-codec. When both peers advertise both codecs, the server prefers H.265.
+codec. In automatic server mode, codec negotiation prefers a codec supported by
+the VA-API device before falling back to software encoding.
+
+The server defaults to `--video-encoder auto`, which tries FFmpeg's VA-API
+encoder first and falls back to `libx264`/`libx265` when the selected codec is
+not supported by the VA device. Select a backend explicitly with:
+
+```sh
+waydisplay_server_wlroots --video-encoder vaapi \
+  --vaapi-device /dev/dri/renderD128 --app foot
+waydisplay_server_wlroots --video-encoder software --app foot
+```
+
+The first VA-API implementation still converts XRGB to NV12 in system memory
+and uploads that frame to a VA surface. It removes software H.264/H.265 encoding
+from the hot path, but is not a zero-copy compositor-to-encoder path. Check
+`vainfo` for `VAEntrypointEncSlice`; older AMD hardware may support H.264 encode
+without HEVC encode, in which case use client option `--video-codec h264`.
 
 ## Tile-size selection
 

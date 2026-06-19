@@ -39,7 +39,8 @@ static uint64_t wd_server_delta_summary_interval_locked(struct wd_server* server
 
     struct wd_net_state* net = &server->net;
     bool active = net->retransmit_queue_count != 0 || net->stats.retx_req_rx != 0 ||
-                  net->stats.retx_req_stale_generation != 0 || net->stats.retx_tiles_superseded_by_fresh != 0 ||
+                  net->stats.retx_req_stale_generation != 0 || net->stats.retx_req_upgraded_generation != 0 ||
+                  net->stats.retx_tiles_superseded_by_fresh != 0 ||
                   net->stats.client_partial_tiles_timed_out != 0 || net->stats.client_retx_requests_tx != 0;
 
     uint64_t interval_ns = active ? net->active_summary_interval_ns : net->clean_summary_interval_ns;
@@ -415,6 +416,7 @@ static int server_frame_timer(void* data) {
 
     bool should_render = wd_stream_policy_should_render_now(server, t);
     bool render_attempted = false;
+    bool tile_stream_pass = false;
     uint64_t render_readback_ns = 0;
     enum wd_render_result render_result = WD_RENDER_RESULT_IDLE;
 
@@ -432,7 +434,7 @@ static int server_frame_timer(void* data) {
 
         if (render_result == WD_RENDER_RESULT_FRAME)
         {
-            wd_stream_send_dirty_tiles(server);
+            tile_stream_pass = wd_stream_send_dirty_tiles(server);
         }
         else
         {
@@ -444,6 +446,14 @@ static int server_frame_timer(void* data) {
              */
             server->scene_dirty = false;
         }
+    }
+
+    /* Dirty and repair queues consume the most recently captured framebuffer;
+     * they do not require wlroots to render an unchanged scene. Service queued
+     * work every compositor tick, including after a static-scene idle result. */
+    if (!tile_stream_pass)
+    {
+        (void)wd_stream_service_tile_queues(server);
     }
 
     if (server->last_summary_ns == 0 || t - server->last_summary_ns >= WD_GENERATION_SUMMARY_FULL_SANITY_INTERVAL_NS)
@@ -820,6 +830,7 @@ struct wd_display_geometry_snapshot {
 
 struct wd_resize_allocations {
     uint32_t* framebuffer_xrgb8888;
+    uint32_t* framebuffer_shadow_xrgb8888;
     struct wd_tile_state* tiles;
     bool* damage_tiles;
     uint16_t* dirty_regions;
@@ -886,6 +897,7 @@ static void wd_resize_allocations_free(struct wd_resize_allocations* allocs) {
     }
 
     free(allocs->framebuffer_xrgb8888);
+    free(allocs->framebuffer_shadow_xrgb8888);
     free(allocs->tiles);
     free(allocs->damage_tiles);
     free(allocs->dirty_regions);
@@ -912,6 +924,7 @@ static bool wd_resize_allocations_prepare(struct wd_resize_allocations* allocs, 
     memset(allocs, 0, sizeof(*allocs));
 
     allocs->framebuffer_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(*allocs->framebuffer_xrgb8888));
+    allocs->framebuffer_shadow_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(*allocs->framebuffer_shadow_xrgb8888));
     allocs->tiles                = calloc(server->total_tiles, sizeof(*allocs->tiles));
     allocs->damage_tiles         = calloc(server->total_base_tiles, sizeof(*allocs->damage_tiles));
     allocs->dirty_regions        = calloc(server->total_tiles, sizeof(*allocs->dirty_regions));
@@ -927,7 +940,8 @@ static bool wd_resize_allocations_prepare(struct wd_resize_allocations* allocs, 
     allocs->summary_dirty_tiles  = calloc(server->total_tiles, sizeof(*allocs->summary_dirty_tiles));
     allocs->summary_dirty_queue  = calloc(server->total_tiles, sizeof(*allocs->summary_dirty_queue));
 
-    if (!allocs->framebuffer_xrgb8888 || !allocs->tiles || !allocs->damage_tiles || !allocs->dirty_regions ||
+    if (!allocs->framebuffer_xrgb8888 || !allocs->framebuffer_shadow_xrgb8888 || !allocs->tiles ||
+        !allocs->damage_tiles || !allocs->dirty_regions ||
         !allocs->dirty_region_queued || !allocs->dirty_epochs || !allocs->dirty_queue || !allocs->dirty_queued ||
         !allocs->dirty_queue_enqueued_ns || !allocs->retransmit_queue || !allocs->retransmit_queued ||
         !allocs->retransmit_queue_enqueued_ns || !allocs->retransmit_requested_generation ||
@@ -1053,9 +1067,12 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     wd_stream_wait_for_encoder_idle_locked(server);
 
     uint32_t* old_framebuffer = server->framebuffer_xrgb8888;
+    uint32_t* old_framebuffer_shadow = server->framebuffer_shadow_xrgb8888;
     wd_server_free_resize_stream_state(server);
 
     server->framebuffer_xrgb8888 = next_allocs.framebuffer_xrgb8888;
+    server->framebuffer_shadow_xrgb8888 = next_allocs.framebuffer_shadow_xrgb8888;
+    server->framebuffer_shadow_valid = false;
     server->net.tiles = next_allocs.tiles;
     server->damage_tiles = next_allocs.damage_tiles;
     server->net.dirty_regions = next_allocs.dirty_regions;
@@ -1073,6 +1090,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     memset(&next_allocs, 0, sizeof(next_allocs));
 
     free(old_framebuffer);
+    free(old_framebuffer_shadow);
 
     server->framebuffer_generation++;
     if (server->framebuffer_generation == 0)
@@ -1112,7 +1130,8 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 
 bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale,
                     uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height,
-                    uint16_t tile_width, uint16_t tile_height, bool enable_xwayland) {
+                    uint16_t tile_width, uint16_t tile_height, bool enable_xwayland,
+                    const char* video_encoder_backend, const char* vaapi_device) {
     memset(server, 0, sizeof(*server));
     server->input_wakeup_fd = -1;
 
@@ -1130,8 +1149,10 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
 
     server->scene_dirty = true;
 
-    server->startup_command   = app_cmd;
-    server->output_scale      = output_scale;
+    server->startup_command      = app_cmd;
+    server->video_encoder_backend = video_encoder_backend;
+    server->vaapi_device         = vaapi_device;
+    server->output_scale         = output_scale;
     server->output_refresh_mhz = (uint32_t)(output_refresh_hz != 0 ? output_refresh_hz : 60u) * 1000u;
 #if WAYDISPLAY_ENABLE_XWAYLAND
     server->enable_xwayland = enable_xwayland;
@@ -1145,13 +1166,19 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
     }
 
     server->framebuffer_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(uint32_t));
-    if (server->framebuffer_xrgb8888)
+    server->framebuffer_shadow_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(uint32_t));
+    if (server->framebuffer_xrgb8888 && server->framebuffer_shadow_xrgb8888)
     {
         server->framebuffer_generation = 1;
+        server->framebuffer_shadow_valid = false;
     }
 
-    if (!server->framebuffer_xrgb8888)
+    if (!server->framebuffer_xrgb8888 || !server->framebuffer_shadow_xrgb8888)
     {
+        free(server->framebuffer_xrgb8888);
+        server->framebuffer_xrgb8888 = NULL;
+        free(server->framebuffer_shadow_xrgb8888);
+        server->framebuffer_shadow_xrgb8888 = NULL;
         return false;
     }
 
@@ -1312,6 +1339,9 @@ void wd_server_destroy(struct wd_server* server) {
 
     free(server->framebuffer_xrgb8888);
     server->framebuffer_xrgb8888 = NULL;
+    free(server->framebuffer_shadow_xrgb8888);
+    server->framebuffer_shadow_xrgb8888 = NULL;
+    server->framebuffer_shadow_valid = false;
 }
 
 int wd_server_run(struct wd_server* server) {

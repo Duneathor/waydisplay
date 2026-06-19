@@ -1108,7 +1108,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                                  summary_to_retx_samples != 0 || retx_response_samples != 0;
     if (repair_activity)
     {
-        WD_LOG_DEBUG("[client repair/min] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu summary_throttled=%llu stale_drop=%llu pressure_drop=%llu summary_promote=%llu summary_scan=%llu summary_candidates=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
+        WD_LOG_DEBUG("[client repair/min] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu summary_throttled=%llu stale_drop=%llu pressure_deferred=%llu summary_promote=%llu summary_scan=%llu summary_candidates=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
                      static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
                      static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(summary_retx_deferred),
                      static_cast<unsigned long long>(summary_retx_throttled),

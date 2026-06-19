@@ -46,19 +46,6 @@ static const char* wd_video_codec_name(uint32_t codec) {
     }
 }
 
-static uint32_t wd_choose_video_codec(uint32_t client_codecs, uint32_t server_codecs) {
-    const uint32_t common = client_codecs & server_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265);
-    if ((common & WD_VIDEO_CODEC_H265) != 0)
-    {
-        return WD_VIDEO_CODEC_H265;
-    }
-    if ((common & WD_VIDEO_CODEC_H264) != 0)
-    {
-        return WD_VIDEO_CODEC_H264;
-    }
-    return 0;
-}
-
 static void wd_format_sockaddr_in(const struct sockaddr_in* addr, char* buf, size_t buf_size) {
     char ip[INET_ADDRSTRLEN];
 
@@ -374,7 +361,8 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     {
         net->udp_tx = NULL;
     }
-    if (!wd_video_encoder_create(&net->video_encoder))
+    if (!wd_video_encoder_create(&net->video_encoder, server->video_encoder_backend,
+                                 server->vaapi_device))
     {
         net->video_encoder = NULL;
     }
@@ -1373,7 +1361,7 @@ void* wd_net_thread_main(void* arg) {
 
         const uint32_t selected_video_codec =
             (hello.capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0 && hello.video_transport == WD_VIDEO_TRANSPORT_TCP
-                ? wd_choose_video_codec(hello.video_codecs, wd_video_encoder_supported_codecs(net->video_encoder))
+                ? wd_video_encoder_choose_codec(net->video_encoder, hello.video_codecs)
                 : 0;
         const bool client_video_tcp = selected_video_codec != 0;
 
@@ -1826,8 +1814,12 @@ void* wd_net_thread_main(void* arg) {
 
                             if (requested_generation != 0 && tile->generation > requested_generation)
                             {
-                                net->stats.retx_req_stale_generation++;
-                                continue;
+                                /* The client asked for an older generation. It
+                                 * still needs this tile, so repair it with the
+                                 * latest framebuffer instead of dropping the
+                                 * request and waiting for another summary. */
+                                net->stats.retx_req_upgraded_generation++;
+                                requested_generation = 0;
                             }
 
                             if (wd_stream_queue_retransmit_tile_locked(server, entries[i].tile_id, requested_generation))

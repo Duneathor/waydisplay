@@ -35,12 +35,15 @@ struct wd_video_encoder_packet {
     const uint8_t* data;
 };
 
-bool wd_video_encoder_create(struct wd_video_encoder** out_encoder);
+bool wd_video_encoder_create(struct wd_video_encoder** out_encoder,
+                             const char* video_encoder_backend,
+                             const char* vaapi_device);
 void wd_video_encoder_destroy(struct wd_video_encoder* encoder);
 void wd_video_encoder_reset(struct wd_video_encoder* encoder);
 
 bool wd_video_encoder_available(const struct wd_video_encoder* encoder);
 uint32_t wd_video_encoder_supported_codecs(const struct wd_video_encoder* encoder);
+uint32_t wd_video_encoder_choose_codec(struct wd_video_encoder* encoder, uint32_t client_codecs);
 const char* wd_video_encoder_backend_name(const struct wd_video_encoder* encoder);
 
 bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config);

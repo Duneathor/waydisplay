@@ -409,6 +409,11 @@ struct wd_stats {
     uint64_t partial_tile_sends;
     uint64_t partial_tile_packets_sent;
     uint64_t dirty_detect_ns;
+    uint64_t framebuffer_diff_ns;
+    uint64_t framebuffer_diff_candidates;
+    uint64_t framebuffer_diff_changed;
+    uint64_t framebuffer_diff_unchanged;
+    uint64_t framebuffer_diff_full_refreshes;
     uint64_t dirty_region_select_ns;
     uint64_t tile_encode_ns;
     uint64_t summary_build_ns;
@@ -419,6 +424,7 @@ struct wd_stats {
     uint64_t encode_worker_ns;
     uint64_t encode_wait_ns;
     uint64_t encode_batches;
+    uint64_t encode_batch_jobs_peak;
     uint64_t encode_worker_threads;
     uint64_t encode_thread_wakeups;
 
@@ -429,6 +435,7 @@ struct wd_stats {
     uint64_t retx_queue_age_samples;
     uint64_t retx_queue_age_sum_ns;
     uint64_t retx_req_stale_generation;
+    uint64_t retx_req_upgraded_generation;
 };
 
 enum wd_stream_mode {
@@ -752,10 +759,14 @@ struct wd_server {
     struct wd_stats_log_state stats_log;
 
     uint32_t* framebuffer_xrgb8888;
-    uint64_t framebuffer_generation;
+    uint32_t* framebuffer_shadow_xrgb8888;
+    bool      framebuffer_shadow_valid;
+    uint64_t  framebuffer_generation;
 
     const char* socket_name;
     const char* startup_command;
+    const char* video_encoder_backend;
+    const char* vaapi_device;
 
     struct wd_net_state net;
 };
@@ -763,7 +774,8 @@ struct wd_server {
 /* wd_server.c */
 bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale,
                     uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height,
-                    uint16_t tile_width, uint16_t tile_height, bool enable_xwayland);
+                    uint16_t tile_width, uint16_t tile_height, bool enable_xwayland,
+                    const char* video_encoder_backend, const char* vaapi_device);
 
 void wd_server_destroy(struct wd_server* server);
 
@@ -848,6 +860,7 @@ void wd_stream_invalidate_all_tiles_locked(struct wd_server* server);
 void wd_stream_wait_for_encoder_idle_locked(struct wd_server* server);
 void wd_stream_destroy(struct wd_server* server);
 bool wd_stream_send_dirty_tiles(struct wd_server* server);
+bool wd_stream_service_tile_queues(struct wd_server* server);
 bool wd_stream_send_generation_summary_locked(struct wd_server* server);
 bool wd_stream_send_pending_generation_summary_locked(struct wd_server* server);
 bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id, uint64_t requested_generation);

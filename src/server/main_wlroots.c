@@ -10,7 +10,7 @@ static void usage(const char* argv0) {
             "Usage:\n"
             "  %s [--port 5000] [--scale 1.0] [--size 1664x1024] [--app <command>] "
             "[--tile-size 128x64|64x64|32x32|16x16] [--refresh-hz 60] "
-            "[--renderer auto|gles2|vulkan|pixman] "
+            "[--renderer auto|gles2|vulkan|pixman] [--video-encoder auto|software|vaapi] [--vaapi-device /dev/dri/renderD128] "
             "[--xwayland|--no-xwayland]\n\n"
             "Examples:\n"
             "  %s --port 5000 --app foot\n"
@@ -31,6 +31,8 @@ int main(int argc, char** argv) {
     uint16_t    output_refresh_hz = 60;
     bool        enable_xwayland = true;
     const char* renderer_name   = NULL;
+    const char* video_encoder_backend = "auto";
+    const char* vaapi_device = "/dev/dri/renderD128";
 
     for (int i = 1; i < argc; ++i)
     {
@@ -189,6 +191,39 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
+        else if (strcmp(argv[i], "--video-encoder") == 0)
+        {
+            if (i + 1 >= argc)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            video_encoder_backend = argv[++i];
+            if (strcmp(video_encoder_backend, "auto") != 0 &&
+                strcmp(video_encoder_backend, "software") != 0 &&
+                strcmp(video_encoder_backend, "vaapi") != 0)
+            {
+                fprintf(stderr, "Invalid --video-encoder value: %s; expected auto, software, or vaapi\n",
+                        video_encoder_backend);
+                usage(argv[0]);
+                return 1;
+            }
+        }
+        else if (strcmp(argv[i], "--vaapi-device") == 0)
+        {
+            if (i + 1 >= argc)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+            vaapi_device = argv[++i];
+            if (vaapi_device[0] == '\0')
+            {
+                fprintf(stderr, "Invalid empty --vaapi-device value\n");
+                return 1;
+            }
+        }
         else if (strcmp(argv[i], "--xwayland") == 0)
         {
             enable_xwayland = true;
@@ -235,7 +270,8 @@ int main(int argc, char** argv) {
     struct wd_server server;
 
     if (!wd_server_init(&server, tcp_port, app_cmd, output_scale, output_refresh_hz,
-                        display_width, display_height, tile_width, tile_height, enable_xwayland))
+                        display_width, display_height, tile_width, tile_height, enable_xwayland,
+                        video_encoder_backend, vaapi_device))
     {
         wd_server_destroy(&server);
         return 1;

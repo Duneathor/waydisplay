@@ -1144,28 +1144,28 @@ bool client_repair_pressure_high_locked(const ClientState& state, uint16_t total
     return state.retx_queue.size() >= pressure_tiles || state.retx_summary_pending_count >= pressure_tiles;
 }
 
-size_t cap_repair_candidates_under_pressure_locked(ClientState& state, uint16_t total_tiles,
-                                                   std::vector<SummaryRepairCandidate>& candidates) {
+size_t limit_repair_candidates_under_pressure_locked(const ClientState& state, uint16_t total_tiles,
+                                                     std::vector<SummaryRepairCandidate>& candidates) {
     if (!client_repair_pressure_high_locked(state, total_tiles) || candidates.size() <= WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES)
     {
         return 0;
     }
 
+    /* Generations are per-tile and are not comparable across different tile IDs.
+     * Prefer the oldest missing tiles, and leave the remaining candidates in the
+     * summary-pending table for the next promotion pass. Clearing them here can
+     * strand a static-screen repair until the next full sanity summary. */
     std::sort(candidates.begin(), candidates.end(), [](const SummaryRepairCandidate& a, const SummaryRepairCandidate& b) {
-        if (a.generation != b.generation)
+        if (a.pending_since_ns != b.pending_since_ns)
         {
-            return a.generation > b.generation;
+            return a.pending_since_ns < b.pending_since_ns;
         }
-        return a.pending_since_ns > b.pending_since_ns;
+        return a.tile_id < b.tile_id;
     });
 
-    const size_t dropped = candidates.size() - WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES;
-    for (size_t i = WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES; i < candidates.size(); ++i)
-    {
-        clear_summary_pending_locked(state, candidates[i].tile_id);
-    }
+    const size_t deferred = candidates.size() - WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES;
     candidates.resize(WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES);
-    return dropped;
+    return deferred;
 }
 
 bool queue_retransmit_tile_locked(ClientState& state, uint16_t tile_id, uint64_t generation, uint16_t total_tiles) {
@@ -1309,10 +1309,10 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             return;
         }
 
-        const size_t pressure_dropped = cap_repair_candidates_under_pressure_locked(state, total_tiles, candidates);
-        if (pressure_dropped != 0)
+        const size_t pressure_deferred = limit_repair_candidates_under_pressure_locked(state, total_tiles, candidates);
+        if (pressure_deferred != 0)
         {
-            state.stats.summary_retx_pressure_dropped.fetch_add(pressure_dropped, std::memory_order_relaxed);
+            state.stats.summary_retx_pressure_dropped.fetch_add(pressure_deferred, std::memory_order_relaxed);
         }
 
         if (large_summary_repair_batch_locked(state, total_tiles, candidates.size(), min_candidate_age_ns, now_ns, true))
@@ -1422,10 +1422,10 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
 
     state.stats.summary_promote_candidates.fetch_add(candidates.size(), std::memory_order_relaxed);
 
-    const size_t pressure_dropped = cap_repair_candidates_under_pressure_locked(state, total_tiles, candidates);
-    if (pressure_dropped != 0)
+    const size_t pressure_deferred = limit_repair_candidates_under_pressure_locked(state, total_tiles, candidates);
+    if (pressure_deferred != 0)
     {
-        state.stats.summary_retx_pressure_dropped.fetch_add(pressure_dropped, std::memory_order_relaxed);
+        state.stats.summary_retx_pressure_dropped.fetch_add(pressure_deferred, std::memory_order_relaxed);
     }
 
     if (large_summary_repair_batch_locked(state, total_tiles, candidates.size(), min_candidate_age_ns, now_ns, true))
