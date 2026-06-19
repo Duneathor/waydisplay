@@ -2279,6 +2279,43 @@ void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t 
         rects.push_back(rect);
     }
 
+    /* Merge vertically adjacent row spans after the horizontal pass. This
+     * turns common rectangular groups of 16x16 tiles into one texture lock. */
+    if (rects.size() > 1)
+    {
+        std::vector<ClientDirtyRect> horizontal = std::move(rects);
+        std::sort(horizontal.begin(), horizontal.end(), [](const ClientDirtyRect& a, const ClientDirtyRect& b) {
+            if (a.x != b.x)
+            {
+                return a.x < b.x;
+            }
+            if (a.w != b.w)
+            {
+                return a.w < b.w;
+            }
+            return a.y < b.y;
+        });
+
+        rects.clear();
+        rects.reserve(horizontal.size());
+        for (const ClientDirtyRect& rect : horizontal)
+        {
+            if (!rects.empty())
+            {
+                ClientDirtyRect& prev = rects.back();
+                const uint32_t prev_end_y = static_cast<uint32_t>(prev.y) + prev.h;
+                const uint32_t rect_end_y = static_cast<uint32_t>(rect.y) + rect.h;
+                if (prev.x == rect.x && prev.w == rect.w && rect.y <= prev_end_y)
+                {
+                    prev.h = static_cast<uint16_t>(std::min<uint32_t>(std::max(prev_end_y, rect_end_y) - prev.y,
+                                                                     UINT16_MAX));
+                    continue;
+                }
+            }
+            rects.push_back(rect);
+        }
+    }
+
     if (rects.size() > WD_CLIENT_DIRTY_RECT_BOUNDS_UPLOAD_THRESHOLD)
     {
         const ClientDirtyRect bounds = bounding_dirty_rect(rects);
@@ -2290,6 +2327,40 @@ void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t 
     }
 }
 
+
+bool upload_argb_texture_locked(SDL_Texture* texture, const SDL_Rect* rect, const uint32_t* source,
+                                int source_pitch, uint32_t width, uint32_t height) {
+    if (!texture || !source || width == 0 || height == 0 || source_pitch <= 0)
+    {
+        return false;
+    }
+
+    void* locked_pixels = nullptr;
+    int locked_pitch = 0;
+    if (!SDL_LockTexture(texture, rect, &locked_pixels, &locked_pitch))
+    {
+        return false;
+    }
+
+    const size_t row_bytes = static_cast<size_t>(width) * WD_BYTES_PER_PIXEL;
+    if (locked_pitch < 0 || static_cast<size_t>(locked_pitch) < row_bytes ||
+        static_cast<size_t>(source_pitch) < row_bytes)
+    {
+        SDL_UnlockTexture(texture);
+        return false;
+    }
+
+    const auto* src = reinterpret_cast<const uint8_t*>(source);
+    auto* dst = static_cast<uint8_t*>(locked_pixels);
+    for (uint32_t y = 0; y < height; ++y)
+    {
+        std::memcpy(dst + static_cast<size_t>(y) * locked_pitch,
+                    src + static_cast<size_t>(y) * source_pitch, row_bytes);
+    }
+
+    SDL_UnlockTexture(texture);
+    return true;
+}
 
 void record_texture_upload_stats(ClientState& state, uint64_t started_ns, uint64_t pixels) {
     const uint64_t elapsed_ns = wd_now_ns() - started_ns;
@@ -2306,7 +2377,9 @@ bool upload_full_texture(ClientState& state, SDL_Texture* texture, uint32_t fram
         std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
         const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
         ok = frame_width != 0 && frame_height != 0 && state.framebuffer.size() >= expected_pixels &&
-             SDL_UpdateTexture(texture, nullptr, state.framebuffer.data(), static_cast<int>(frame_width * WD_BYTES_PER_PIXEL));
+             upload_argb_texture_locked(texture, nullptr, state.framebuffer.data(),
+                                        static_cast<int>(frame_width * WD_BYTES_PER_PIXEL),
+                                        frame_width, frame_height);
     }
 
     if (ok)
@@ -2325,9 +2398,8 @@ struct VideoPresentInfo {
 };
 
 bool upload_pending_video_texture(ClientState& state, SDL_Texture* texture, uint32_t frame_width, uint32_t frame_height,
-                                  VideoPresentInfo& present_info) {
+                                  std::vector<uint32_t>& pixels, VideoPresentInfo& present_info) {
     const uint64_t started_ns = wd_now_ns();
-    std::vector<uint32_t> pixels;
     {
         std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
         if (!state.pending_video_frame_dirty.load(std::memory_order_acquire) ||
@@ -2335,7 +2407,10 @@ bool upload_pending_video_texture(ClientState& state, SDL_Texture* texture, uint
         {
             return false;
         }
-        pixels = state.video_framebuffer;
+        /* Keep a render-thread upload buffer and exchange it with the newest
+         * decoded frame. This avoids copying the full frame while preserving a
+         * reusable buffer for the decoder thread. */
+        pixels.swap(state.video_framebuffer);
         present_info.frame_id = state.video_frame_id;
         present_info.pts_usec = state.video_frame_pts_usec;
         state.pending_video_frame_dirty.store(false, std::memory_order_release);
@@ -2347,7 +2422,9 @@ bool upload_pending_video_texture(ClientState& state, SDL_Texture* texture, uint
         return false;
     }
 
-    const bool ok = SDL_UpdateTexture(texture, nullptr, pixels.data(), static_cast<int>(frame_width * WD_BYTES_PER_PIXEL));
+    const bool ok = upload_argb_texture_locked(texture, nullptr, pixels.data(),
+                                                static_cast<int>(frame_width * WD_BYTES_PER_PIXEL),
+                                                frame_width, frame_height);
     if (ok)
     {
         present_info.valid = true;
@@ -2391,7 +2468,9 @@ bool upload_dirty_texture_rects(ClientState& state, SDL_Texture* texture, const 
             const SDL_Rect sdl_rect{static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(visible_width),
                                     static_cast<int>(visible_height)};
             const uint32_t* pixels = state.framebuffer.data() + static_cast<size_t>(rect.y) * frame_width + rect.x;
-            if (!SDL_UpdateTexture(texture, &sdl_rect, pixels, static_cast<int>(frame_width * WD_BYTES_PER_PIXEL)))
+            if (!upload_argb_texture_locked(texture, &sdl_rect, pixels,
+                                            static_cast<int>(frame_width * WD_BYTES_PER_PIXEL),
+                                            visible_width, visible_height))
             {
                 ok = false;
                 break;
@@ -2812,6 +2891,7 @@ int run_sdl_viewer(ClientState& state) {
     std::vector<uint64_t> present_tile_timestamps;
     std::vector<uint64_t> present_input_sequences;
     std::vector<ClientDirtyRect> dirty_rects;
+    std::vector<uint32_t> video_upload_pixels;
 
     while (state.running.load(std::memory_order_relaxed))
     {
@@ -2953,9 +3033,12 @@ int run_sdl_viewer(ClientState& state) {
                     state.pending_dirty_rects.clear();
                     state.pending_dirty_rect_count.store(0, std::memory_order_release);
                 }
-                const bool texture_updated = upload_video_frame ? upload_pending_video_texture(state, texture, frame_width, frame_height, video_present)
-                                             : (upload_full ? upload_full_texture(state, texture, frame_width, frame_height)
-                                                            : upload_dirty_texture_rects(state, texture, dirty_rects, frame_width, frame_height));
+                const bool texture_updated =
+                    upload_video_frame
+                        ? upload_pending_video_texture(state, texture, frame_width, frame_height, video_upload_pixels,
+                                                       video_present)
+                        : (upload_full ? upload_full_texture(state, texture, frame_width, frame_height)
+                                       : upload_dirty_texture_rects(state, texture, dirty_rects, frame_width, frame_height));
 
                 if (!texture_updated)
                 {

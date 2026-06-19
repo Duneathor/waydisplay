@@ -1661,8 +1661,10 @@ bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_
 }
 
 
-bool publish_decoded_video_frame(ClientState& state, const ClientDecodedVideoFrame& frame) {
-    if (!frame.pixels || frame.width == 0 || frame.height == 0 || frame.stride_pixels < frame.width)
+bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder,
+                                 const ClientDecodedVideoFrame& frame) {
+    if (!decoder || !frame.pixels || frame.width == 0 || frame.height == 0 ||
+        frame.stride_pixels < frame.width)
     {
         return false;
     }
@@ -1683,15 +1685,18 @@ bool publish_decoded_video_frame(ClientState& state, const ClientDecodedVideoFra
     const size_t expected_pixels = static_cast<size_t>(frame.width) * frame.height;
     {
         std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
+        /* Exchange ownership with the decoder instead of copying the decoded
+         * BGRA frame. The decoder receives a previously-used buffer and can
+         * reuse it on the next frame. */
+        if (!client_video_decoder_swap_output_pixels(decoder, state.video_framebuffer))
+        {
+            return false;
+        }
         if (state.video_framebuffer.size() != expected_pixels)
         {
-            state.video_framebuffer.assign(expected_pixels, 0xff000000u);
-        }
-        for (uint32_t y = 0; y < frame.height; ++y)
-        {
-            const uint32_t* src = frame.pixels + static_cast<size_t>(y) * frame.stride_pixels;
-            uint32_t* dst = state.video_framebuffer.data() + static_cast<size_t>(y) * frame.width;
-            std::memcpy(dst, src, static_cast<size_t>(frame.width) * WD_BYTES_PER_PIXEL);
+            /* Restore the decoder-owned buffer before reporting failure. */
+            (void)client_video_decoder_swap_output_pixels(decoder, state.video_framebuffer);
+            return false;
         }
         state.video_frame_width  = frame.width;
         state.video_frame_height = frame.height;
@@ -1758,11 +1763,6 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
 
     state.stats.video_last_frame_id_rx.store(packet.header.frame_id, std::memory_order_relaxed);
 
-    std::vector<uint32_t> decoded_pixels;
-    ClientDecodedVideoFrame publish_frame{};
-    uint64_t decode_elapsed_ns = 0;
-    bool decoded_output = false;
-
     {
         std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
         if (state.video_decoder_needs_keyframe && (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
@@ -1791,7 +1791,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         ClientDecodedVideoFrame frame{};
         const uint64_t decode_start_ns = wd_now_ns();
         bool decoded = client_video_decoder_decode(state.video_decoder, packet, &frame);
-        decode_elapsed_ns = wd_now_ns() - decode_start_ns;
+        const uint64_t decode_elapsed_ns = wd_now_ns() - decode_start_ns;
         state.stats.video_decode_sum_ns.fetch_add(decode_elapsed_ns, std::memory_order_relaxed);
         state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
 
@@ -1825,44 +1825,15 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
             return;
         }
 
-        const size_t pixel_count = static_cast<size_t>(frame.width) * frame.height;
-        try
-        {
-            decoded_pixels.resize(pixel_count);
-        }
-        catch (...)
+        state.stats.video_frames_decoded.fetch_add(1, std::memory_order_relaxed);
+        if (!publish_decoded_video_frame(state, state.video_decoder, frame))
         {
             state.stats.video_publish_failed.fetch_add(1, std::memory_order_relaxed);
             state.video_decoder_needs_keyframe = true;
             return;
         }
-        for (uint32_t y = 0; y < frame.height; ++y)
-        {
-            const uint32_t* src = frame.pixels + static_cast<size_t>(y) * frame.stride_pixels;
-            uint32_t* dst = decoded_pixels.data() + static_cast<size_t>(y) * frame.width;
-            std::memcpy(dst, src, static_cast<size_t>(frame.width) * sizeof(*dst));
-        }
 
-        publish_frame = frame;
-        publish_frame.pixels = decoded_pixels.data();
-        publish_frame.stride_pixels = frame.width;
-        decoded_output = true;
         state.video_decoder_needs_keyframe = false;
-    }
-
-    if (!decoded_output)
-    {
-        return;
-    }
-
-    state.stats.video_frames_decoded.fetch_add(1, std::memory_order_relaxed);
-
-    if (!publish_decoded_video_frame(state, publish_frame))
-    {
-        state.stats.video_publish_failed.fetch_add(1, std::memory_order_relaxed);
-        std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
-        state.video_decoder_needs_keyframe = true;
-        return;
     }
 
     /* Actual video presentation is recorded by the SDL render thread after

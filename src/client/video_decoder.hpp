@@ -3,6 +3,7 @@
 #include "waydisplay/wd_protocol.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace waydisplay {
 
@@ -45,5 +46,9 @@ bool        client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* 
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config);
 bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoPacket& packet,
                                  ClientDecodedVideoFrame* out_frame);
+/* Swap the decoder-owned visible BGRA frame into an application buffer.
+ * Call this while excluding concurrent decoder use and immediately after a
+ * successful decode whose output frame points at the decoder buffer. */
+bool client_video_decoder_swap_output_pixels(ClientVideoDecoder* decoder, std::vector<uint32_t>& pixels);
 
 } // namespace waydisplay

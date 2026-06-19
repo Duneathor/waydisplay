@@ -37,7 +37,6 @@ struct ClientVideoDecoder {
     ClientVideoDecoderConfig config{};
     bool                     configured = false;
     std::vector<uint32_t>    pixels{};
-    std::vector<uint32_t>    coded_pixels{};
 
 #if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
     const AVCodec*    codec     = nullptr;
@@ -227,9 +226,14 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket&
         return false;
     }
 
+    /* The encoder only pads the right and bottom edges to coded dimensions.
+     * Convert the visible top-left region directly instead of converting the
+     * padded frame and copying/cropping a second full-size BGRA buffer. */
+    const int visible_width = static_cast<int>(packet.header.width);
+    const int visible_height = static_cast<int>(packet.header.height);
     const auto src_format = static_cast<AVPixelFormat>(src_frame->format);
-    decoder->sws_ctx = sws_getCachedContext(decoder->sws_ctx, coded_width, coded_height,
-                                            src_format, coded_width, coded_height,
+    decoder->sws_ctx = sws_getCachedContext(decoder->sws_ctx, visible_width, visible_height,
+                                            src_format, visible_width, visible_height,
                                             AV_PIX_FMT_BGRA, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
     if (!decoder->sws_ctx)
     {
@@ -238,38 +242,25 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket&
     decoder->sws_src_format = src_format;
 
     const size_t expected_pixels = static_cast<size_t>(packet.header.width) * packet.header.height;
-    const size_t expected_coded_pixels = static_cast<size_t>(coded_width) * coded_height;
     try
     {
         if (decoder->pixels.size() != expected_pixels)
         {
             decoder->pixels.assign(expected_pixels, 0xff000000u);
         }
-        if (decoder->coded_pixels.size() != expected_coded_pixels)
-        {
-            decoder->coded_pixels.assign(expected_coded_pixels, 0xff000000u);
-        }
     }
     catch (...)
     {
         decoder->pixels.clear();
-        decoder->coded_pixels.clear();
         return false;
     }
 
-    uint8_t* const dst_slices[4] = {reinterpret_cast<uint8_t*>(decoder->coded_pixels.data()), nullptr, nullptr, nullptr};
-    const int      dst_stride[4] = {coded_width * static_cast<int>(sizeof(uint32_t)), 0, 0, 0};
-    if (sws_scale(decoder->sws_ctx, src_frame->data, src_frame->linesize, 0, coded_height,
-                  dst_slices, dst_stride) != coded_height)
+    uint8_t* const dst_slices[4] = {reinterpret_cast<uint8_t*>(decoder->pixels.data()), nullptr, nullptr, nullptr};
+    const int      dst_stride[4] = {visible_width * static_cast<int>(sizeof(uint32_t)), 0, 0, 0};
+    if (sws_scale(decoder->sws_ctx, src_frame->data, src_frame->linesize, 0, visible_height,
+                  dst_slices, dst_stride) != visible_height)
     {
         return false;
-    }
-
-    for (uint32_t y = 0; y < packet.header.height; ++y)
-    {
-        const uint32_t* src = decoder->coded_pixels.data() + static_cast<size_t>(y) * coded_width;
-        uint32_t* dst = decoder->pixels.data() + static_cast<size_t>(y) * packet.header.width;
-        std::memcpy(dst, src, static_cast<size_t>(packet.header.width) * sizeof(*dst));
     }
 
     if (out_frame)
@@ -323,7 +314,16 @@ void client_video_decoder_reset(ClientVideoDecoder* decoder) {
     decoder->config     = ClientVideoDecoderConfig{};
     decoder->configured = false;
     decoder->pixels.clear();
-    decoder->coded_pixels.clear();
+}
+
+bool client_video_decoder_swap_output_pixels(ClientVideoDecoder* decoder, std::vector<uint32_t>& pixels) {
+    if (!decoder || decoder->pixels.empty())
+    {
+        return false;
+    }
+
+    pixels.swap(decoder->pixels);
+    return true;
 }
 
 bool client_video_decoder_available(const ClientVideoDecoder* decoder) {
