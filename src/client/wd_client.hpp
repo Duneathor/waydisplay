@@ -320,6 +320,7 @@ struct ClientState {
     uint32_t                video_frame_width  = 0;
     uint32_t                video_frame_height = 0;
     uint64_t                video_frame_id     = 0;
+    uint64_t                video_frame_pts_usec = 0;
     std::atomic<bool>       pending_video_frame_dirty{false};
 
     std::mutex udp_processing_mutex;

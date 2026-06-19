@@ -1696,6 +1696,7 @@ bool publish_decoded_video_frame(ClientState& state, const ClientDecodedVideoFra
         state.video_frame_width  = frame.width;
         state.video_frame_height = frame.height;
         state.video_frame_id     = frame.frame_id;
+        state.video_frame_pts_usec = frame.pts_usec;
     }
 
     state.pending_video_frame_dirty.store(true, std::memory_order_release);
@@ -1736,14 +1737,26 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
     }
 
     state.stats.video_data_frames_rx.fetch_add(1, std::memory_order_relaxed);
-    state.stats.video_last_frame_id_rx.store(packet.header.frame_id, std::memory_order_relaxed);
 
     const uint64_t last_presented = state.stats.video_last_frame_id_presented.load(std::memory_order_relaxed);
     if (last_presented != 0 && packet.header.frame_id <= last_presented)
     {
-        state.stats.video_stale_frames_dropped.fetch_add(1, std::memory_order_relaxed);
-        return;
+        /* A fresh keyframe with a lower ID means the sender restarted its
+         * codec/sequence without changing the display session. Recover rather
+         * than dropping the restarted stream forever. */
+        if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0 &&
+            packet.header.frame_id < last_presented)
+        {
+            reset_video_decoder(state, "video frame id restart");
+        }
+        else
+        {
+            state.stats.video_stale_frames_dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
     }
+
+    state.stats.video_last_frame_id_rx.store(packet.header.frame_id, std::memory_order_relaxed);
 
     std::vector<uint32_t> decoded_pixels;
     ClientDecodedVideoFrame publish_frame{};
@@ -1852,18 +1865,9 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         return;
     }
 
-    state.stats.video_frames_presented.fetch_add(1, std::memory_order_relaxed);
-    state.stats.video_last_frame_id_presented.store(packet.header.frame_id, std::memory_order_relaxed);
-    if (packet.header.pts_usec != 0)
-    {
-        const uint64_t pts_ns = packet.header.pts_usec * 1000ull;
-        const uint64_t now_ns = wd_now_ns();
-        if (now_ns >= pts_ns)
-        {
-            state.stats.video_present_latency_samples.fetch_add(1, std::memory_order_relaxed);
-            state.stats.video_present_latency_sum_ns.fetch_add(now_ns - pts_ns, std::memory_order_relaxed);
-        }
-    }
+    /* Actual video presentation is recorded by the SDL render thread after
+     * SDL_RenderPresent succeeds. Publishing only makes the decoded frame
+     * available for upload. */
 }
 
 void video_tcp_reader_main(ClientState* state) {

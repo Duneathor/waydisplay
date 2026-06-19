@@ -2106,6 +2106,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
             state.video_frame_width = 0;
             state.video_frame_height = 0;
             state.video_frame_id = 0;
+            state.video_frame_pts_usec = 0;
             state.pending_video_frame_dirty.store(false, std::memory_order_release);
         }
         state.pending_dirty_rects.clear();
@@ -2317,7 +2318,14 @@ bool upload_full_texture(ClientState& state, SDL_Texture* texture, uint32_t fram
     return ok;
 }
 
-bool upload_pending_video_texture(ClientState& state, SDL_Texture* texture, uint32_t frame_width, uint32_t frame_height) {
+struct VideoPresentInfo {
+    bool     valid = false;
+    uint64_t frame_id = 0;
+    uint64_t pts_usec = 0;
+};
+
+bool upload_pending_video_texture(ClientState& state, SDL_Texture* texture, uint32_t frame_width, uint32_t frame_height,
+                                  VideoPresentInfo& present_info) {
     const uint64_t started_ns = wd_now_ns();
     std::vector<uint32_t> pixels;
     {
@@ -2328,6 +2336,8 @@ bool upload_pending_video_texture(ClientState& state, SDL_Texture* texture, uint
             return false;
         }
         pixels = state.video_framebuffer;
+        present_info.frame_id = state.video_frame_id;
+        present_info.pts_usec = state.video_frame_pts_usec;
         state.pending_video_frame_dirty.store(false, std::memory_order_release);
     }
 
@@ -2340,6 +2350,7 @@ bool upload_pending_video_texture(ClientState& state, SDL_Texture* texture, uint
     const bool ok = SDL_UpdateTexture(texture, nullptr, pixels.data(), static_cast<int>(frame_width * WD_BYTES_PER_PIXEL));
     if (ok)
     {
+        present_info.valid = true;
         state.stats.sdl_texture_full_uploads.fetch_add(1, std::memory_order_relaxed);
         state.stats.sdl_video_texture_uploads.fetch_add(1, std::memory_order_relaxed);
         state.stats.sdl_video_texture_upload_pixels.fetch_add(expected_pixels, std::memory_order_relaxed);
@@ -2621,8 +2632,9 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
 }
 
 bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* texture, const ContextMenu& context_menu,
-                       bool remote_texture_updated, std::vector<uint64_t>& present_tile_timestamps,
-                       std::vector<uint64_t>& present_input_sequences, uint64_t& last_present_ns) {
+                       bool remote_texture_updated, const VideoPresentInfo& video_present,
+                       std::vector<uint64_t>& present_tile_timestamps, std::vector<uint64_t>& present_input_sequences,
+                       uint64_t& last_present_ns) {
     if (!SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255))
     {
         return log_sdl_error("SDL_SetRenderDrawColor");
@@ -2664,6 +2676,22 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
 
     const uint64_t present_ns = wd_now_ns();
     last_present_ns          = present_ns;
+
+    if (video_present.valid)
+    {
+        state.stats.video_frames_presented.fetch_add(1, std::memory_order_relaxed);
+        state.stats.video_last_frame_id_presented.store(video_present.frame_id, std::memory_order_relaxed);
+        if (video_present.pts_usec != 0)
+        {
+            const uint64_t pts_ns = video_present.pts_usec * 1000ull;
+            if (present_ns >= pts_ns)
+            {
+                state.stats.video_present_latency_samples.fetch_add(1, std::memory_order_relaxed);
+                state.stats.video_present_latency_sum_ns.fetch_add(present_ns - pts_ns, std::memory_order_relaxed);
+            }
+        }
+    }
+
     for (uint64_t tile_timestamp_ns : present_tile_timestamps)
     {
         if (tile_timestamp_ns != 0 && present_ns >= tile_timestamp_ns)
@@ -2884,11 +2912,11 @@ int run_sdl_viewer(ClientState& state) {
             const uint32_t frame_width  = state.config.width;
             const uint32_t frame_height = state.config.height;
 
+            VideoPresentInfo video_present;
             if (texture_needs_full_upload || remote_frame_dirty)
             {
                 dirty_rects.clear();
-                const bool upload_video_frame = !texture_needs_full_upload &&
-                                                state.pending_video_frame_dirty.load(std::memory_order_acquire);
+                const bool upload_video_frame = state.pending_video_frame_dirty.load(std::memory_order_acquire);
                 if (!texture_needs_full_upload && !upload_video_frame)
                 {
                     std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
@@ -2908,7 +2936,8 @@ int run_sdl_viewer(ClientState& state) {
                     coalesce_dirty_texture_rects(dirty_rects, frame_width, frame_height, used_bounds_upload);
                 }
 
-                const bool upload_full = texture_needs_full_upload || (!upload_video_frame && should_upload_full_texture(state, dirty_rects));
+                const bool upload_full = !upload_video_frame &&
+                                         (texture_needs_full_upload || should_upload_full_texture(state, dirty_rects));
                 if (source_dirty_rect_count != 0)
                 {
                     state.stats.sdl_texture_source_dirty_rects.fetch_add(source_dirty_rect_count, std::memory_order_relaxed);
@@ -2918,13 +2947,13 @@ int run_sdl_viewer(ClientState& state) {
                         state.stats.sdl_texture_bounds_uploads.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
-                if (upload_full)
+                if (upload_full || upload_video_frame)
                 {
                     std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
                     state.pending_dirty_rects.clear();
                     state.pending_dirty_rect_count.store(0, std::memory_order_release);
                 }
-                const bool texture_updated = upload_video_frame ? upload_pending_video_texture(state, texture, frame_width, frame_height)
+                const bool texture_updated = upload_video_frame ? upload_pending_video_texture(state, texture, frame_width, frame_height, video_present)
                                              : (upload_full ? upload_full_texture(state, texture, frame_width, frame_height)
                                                             : upload_dirty_texture_rects(state, texture, dirty_rects, frame_width, frame_height));
 
@@ -2940,8 +2969,8 @@ int run_sdl_viewer(ClientState& state) {
             const bool should_present = local_frame_dirty || remote_texture_updated;
             if (should_present)
             {
-                if (!present_sdl_frame(state, renderer, texture, context_menu, remote_texture_updated, present_tile_timestamps,
-                                       present_input_sequences, last_present_ns))
+                if (!present_sdl_frame(state, renderer, texture, context_menu, remote_texture_updated, video_present,
+                                       present_tile_timestamps, present_input_sequences, last_present_ns))
                 {
                     state.running.store(false, std::memory_order_relaxed);
                     break;
@@ -2964,7 +2993,8 @@ int run_sdl_viewer(ClientState& state) {
             }
         }
 
-        const bool pending_remote_dirty = state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0;
+        const bool pending_remote_dirty = state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0 ||
+                                          state.pending_video_frame_dirty.load(std::memory_order_acquire);
         if (!frame_dirty && !pending_remote_dirty)
         {
             SDL_Delay(WD_CLIENT_FRAME_DELAY_MS);

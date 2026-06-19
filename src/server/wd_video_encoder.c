@@ -287,6 +287,13 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
         return true;
     }
 
+    /* frame_id is a session-level wire sequence, not an encoder-instance
+     * sequence. Adaptive bitrate changes reopen the codec, but must not make
+     * frame IDs run backwards or the client will reject the new keyframe and
+     * every following frame as stale. */
+    const bool new_session = !encoder->configured ||
+                             encoder->config.session_id != config->session_id;
+
     wd_video_encoder_release_backend(encoder);
 
     encoder->codec_ctx = avcodec_alloc_context3(encoder->codec);
@@ -354,7 +361,10 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
     encoder->config             = *config;
     encoder->configured         = true;
     encoder->keyframe_requested = true;
-    encoder->next_frame_id      = 1;
+    if (new_session || encoder->next_frame_id == 0)
+    {
+        encoder->next_frame_id = 1;
+    }
     return true;
 #else
     encoder->config              = *config;
