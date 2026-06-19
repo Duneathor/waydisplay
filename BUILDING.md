@@ -85,3 +85,18 @@ waydisplay-client <server> 5000 6000 --wan
 The requested budget is a cap: the server will not raise its throughput-probed
 safe ceiling to satisfy it. This is useful when the link is shared or when the
 startup probe overestimates sustainable long-haul throughput. On a clean Wi-Fi link, start with 2048-4096 KiB/s and raise it after checking client completion and retransmit telemetry.
+
+## Client tile texture uploads
+
+The SDL client coalesces incoming tile rectangles, then chooses the cheapest of
+three streaming-texture upload plans: one lock per coalesced rectangle, one
+fully initialized bounding-box lock, or one full-frame lock. SDL texture locks
+are write-only, so bounding/full locks always copy every pixel in the locked
+region from the client framebuffer.
+
+The cost model treats one texture lock as roughly 128K copied pixels. Runtime
+telemetry exposes `texture_locks`, `bounds_uploads`, `cost_full`, `source_mpix`,
+and `upload_mpix` in `[client render/min]`. Compare `source_mpix` with
+`upload_mpix` to see the extra copy area accepted to reduce lock calls, and
+compare `texture_locks` with `remote_frames` to verify that fragmented tile
+updates are usually reduced to one lock per presented frame.

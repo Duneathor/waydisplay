@@ -224,6 +224,9 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.sdl_texture_source_dirty_rects += src.sdl_texture_source_dirty_rects;
     dst.sdl_texture_coalesced_dirty_rects += src.sdl_texture_coalesced_dirty_rects;
     dst.sdl_texture_bounds_uploads += src.sdl_texture_bounds_uploads;
+    dst.sdl_texture_cost_full_uploads += src.sdl_texture_cost_full_uploads;
+    dst.sdl_texture_lock_calls += src.sdl_texture_lock_calls;
+    dst.sdl_texture_source_pixels += src.sdl_texture_source_pixels;
     dst.sdl_texture_upload_pixels += src.sdl_texture_upload_pixels;
     dst.sdl_texture_upload_samples += src.sdl_texture_upload_samples;
     dst.sdl_texture_upload_sum_ns += src.sdl_texture_upload_sum_ns;
@@ -1066,6 +1069,9 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t sdl_texture_source_dirty_rects = logged.sdl_texture_source_dirty_rects;
     const uint64_t sdl_texture_coalesced_dirty_rects = logged.sdl_texture_coalesced_dirty_rects;
     const uint64_t sdl_texture_bounds_uploads = logged.sdl_texture_bounds_uploads;
+    const uint64_t sdl_texture_cost_full_uploads = logged.sdl_texture_cost_full_uploads;
+    const uint64_t sdl_texture_lock_calls = logged.sdl_texture_lock_calls;
+    const uint64_t sdl_texture_source_pixels = logged.sdl_texture_source_pixels;
     const uint64_t sdl_texture_upload_pixels = logged.sdl_texture_upload_pixels;
     const uint64_t sdl_texture_upload_samples = logged.sdl_texture_upload_samples;
     const uint64_t sdl_texture_upload_sum_ns = logged.sdl_texture_upload_sum_ns;
@@ -1190,17 +1196,20 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
 
     if (sdl_render_frames != 0 || sdl_texture_upload_samples != 0 || sdl_present_samples != 0)
     {
-        WD_LOG_DEBUG("[client render/min] frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu video_full=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu upload_mpix=%.2f video_upload_mpix=%.2f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
+        WD_LOG_DEBUG("[client render/min] frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu video_full=%llu texture_locks=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu cost_full=%llu source_mpix=%.2f upload_mpix=%.2f video_upload_mpix=%.2f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
                      static_cast<unsigned long long>(sdl_render_frames),
                      static_cast<unsigned long long>(sdl_remote_frames),
                      static_cast<unsigned long long>(sdl_empty_remote_wakeups),
                      static_cast<unsigned long long>(sdl_texture_full_uploads),
                      static_cast<unsigned long long>(sdl_texture_partial_uploads),
                      static_cast<unsigned long long>(sdl_video_texture_uploads),
+                     static_cast<unsigned long long>(sdl_texture_lock_calls),
                      static_cast<unsigned long long>(sdl_texture_dirty_rects),
                      static_cast<unsigned long long>(sdl_texture_source_dirty_rects),
                      static_cast<unsigned long long>(sdl_texture_coalesced_dirty_rects),
                      static_cast<unsigned long long>(sdl_texture_bounds_uploads),
+                     static_cast<unsigned long long>(sdl_texture_cost_full_uploads),
+                     static_cast<double>(sdl_texture_source_pixels) / 1000000.0,
                      static_cast<double>(sdl_texture_upload_pixels) / 1000000.0,
                      static_cast<double>(sdl_video_texture_upload_pixels) / 1000000.0,
                      avg_ms(sdl_texture_upload_sum_ns, sdl_texture_upload_samples),
@@ -1302,6 +1311,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t sdl_texture_source_dirty_rects = take_stat(state.stats.sdl_texture_source_dirty_rects);
     const uint64_t sdl_texture_coalesced_dirty_rects = take_stat(state.stats.sdl_texture_coalesced_dirty_rects);
     const uint64_t sdl_texture_bounds_uploads = take_stat(state.stats.sdl_texture_bounds_uploads);
+    const uint64_t sdl_texture_cost_full_uploads = take_stat(state.stats.sdl_texture_cost_full_uploads);
+    const uint64_t sdl_texture_lock_calls      = take_stat(state.stats.sdl_texture_lock_calls);
+    const uint64_t sdl_texture_source_pixels   = take_stat(state.stats.sdl_texture_source_pixels);
     const uint64_t sdl_texture_upload_pixels  = take_stat(state.stats.sdl_texture_upload_pixels);
     const uint64_t sdl_texture_upload_samples = take_stat(state.stats.sdl_texture_upload_samples);
     const uint64_t sdl_texture_upload_sum_ns  = take_stat(state.stats.sdl_texture_upload_sum_ns);
@@ -1401,6 +1413,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.sdl_texture_source_dirty_rects = sdl_texture_source_dirty_rects;
     sample.sdl_texture_coalesced_dirty_rects = sdl_texture_coalesced_dirty_rects;
     sample.sdl_texture_bounds_uploads = sdl_texture_bounds_uploads;
+    sample.sdl_texture_cost_full_uploads = sdl_texture_cost_full_uploads;
+    sample.sdl_texture_lock_calls = sdl_texture_lock_calls;
+    sample.sdl_texture_source_pixels = sdl_texture_source_pixels;
     sample.sdl_texture_upload_pixels = sdl_texture_upload_pixels;
     sample.sdl_texture_upload_samples = sdl_texture_upload_samples;
     sample.sdl_texture_upload_sum_ns = sdl_texture_upload_sum_ns;
@@ -2157,26 +2172,6 @@ uint64_t dirty_rect_pixel_count(const std::vector<ClientDirtyRect>& rects) {
     return pixels;
 }
 
-bool should_upload_full_texture(ClientState& state, const std::vector<ClientDirtyRect>& rects) {
-    if (rects.empty())
-    {
-        return true;
-    }
-
-    if (rects.size() >= WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_THRESHOLD)
-    {
-        return true;
-    }
-
-    const uint64_t frame_pixels = static_cast<uint64_t>(state.config.width) * static_cast<uint64_t>(state.config.height);
-    if (frame_pixels == 0)
-    {
-        return true;
-    }
-
-    const uint64_t dirty_pixels = dirty_rect_pixel_count(rects);
-    return dirty_pixels * 100ull >= frame_pixels * static_cast<uint64_t>(WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_PERCENT);
-}
 bool clamp_dirty_rect(const ClientDirtyRect& in, uint32_t frame_width, uint32_t frame_height, ClientDirtyRect& out) {
     if (in.w == 0 || in.h == 0 || in.x >= frame_width || in.y >= frame_height)
     {
@@ -2224,9 +2219,7 @@ ClientDirtyRect bounding_dirty_rect(const std::vector<ClientDirtyRect>& rects) {
     return out;
 }
 
-void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t frame_width, uint32_t frame_height,
-                                  bool& used_bounds_upload) {
-    used_bounds_upload = false;
+void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t frame_width, uint32_t frame_height) {
     if (rects.empty())
     {
         return;
@@ -2279,8 +2272,7 @@ void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t 
         rects.push_back(rect);
     }
 
-    /* Merge vertically adjacent row spans after the horizontal pass. This
-     * turns common rectangular groups of 16x16 tiles into one texture lock. */
+    /* Merge vertically adjacent row spans after the horizontal pass. */
     if (rects.size() > 1)
     {
         std::vector<ClientDirtyRect> horizontal = std::move(rects);
@@ -2315,18 +2307,63 @@ void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t 
             rects.push_back(rect);
         }
     }
-
-    if (rects.size() > WD_CLIENT_DIRTY_RECT_BOUNDS_UPLOAD_THRESHOLD)
-    {
-        const ClientDirtyRect bounds = bounding_dirty_rect(rects);
-        if (bounds.w != 0 && bounds.h != 0)
-        {
-            rects.assign(1, bounds);
-            used_bounds_upload = true;
-        }
-    }
 }
 
+enum class DirtyTextureUploadMode : uint8_t {
+    Rects,
+    Bounds,
+    Full,
+};
+
+struct DirtyTextureUploadPlan {
+    DirtyTextureUploadMode mode = DirtyTextureUploadMode::Rects;
+    ClientDirtyRect        bounds{};
+    uint64_t               source_pixels = 0;
+};
+
+DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRect>& rects,
+                                                  uint32_t frame_width, uint32_t frame_height) {
+    DirtyTextureUploadPlan plan{};
+    plan.source_pixels = dirty_rect_pixel_count(rects);
+
+    const uint64_t frame_pixels = static_cast<uint64_t>(frame_width) * static_cast<uint64_t>(frame_height);
+    if (rects.empty() || frame_pixels == 0)
+    {
+        plan.mode = DirtyTextureUploadMode::Full;
+        return plan;
+    }
+
+    if (rects.size() >= WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_THRESHOLD ||
+        plan.source_pixels * 100ull >= frame_pixels * static_cast<uint64_t>(WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_PERCENT))
+    {
+        plan.mode = DirtyTextureUploadMode::Full;
+        return plan;
+    }
+
+    const uint64_t lock_cost = WD_CLIENT_TEXTURE_LOCK_EQUIVALENT_PIXELS;
+    uint64_t best_cost = plan.source_pixels + static_cast<uint64_t>(rects.size()) * lock_cost;
+
+    const ClientDirtyRect bounds = bounding_dirty_rect(rects);
+    if (bounds.w != 0 && bounds.h != 0)
+    {
+        const uint64_t bounds_pixels = static_cast<uint64_t>(bounds.w) * static_cast<uint64_t>(bounds.h);
+        const uint64_t bounds_cost = bounds_pixels + lock_cost;
+        if (bounds_cost < best_cost)
+        {
+            plan.mode = DirtyTextureUploadMode::Bounds;
+            plan.bounds = bounds;
+            best_cost = bounds_cost;
+        }
+    }
+
+    const uint64_t full_cost = frame_pixels + lock_cost;
+    if (full_cost < best_cost)
+    {
+        plan.mode = DirtyTextureUploadMode::Full;
+    }
+
+    return plan;
+}
 
 bool upload_argb_texture_locked(SDL_Texture* texture, const SDL_Rect* rect, const uint32_t* source,
                                 int source_pitch, uint32_t width, uint32_t height) {
@@ -2385,6 +2422,7 @@ bool upload_full_texture(ClientState& state, SDL_Texture* texture, uint32_t fram
     if (ok)
     {
         state.stats.sdl_texture_full_uploads.fetch_add(1, std::memory_order_relaxed);
+        state.stats.sdl_texture_lock_calls.fetch_add(1, std::memory_order_relaxed);
         record_texture_upload_stats(state, started_ns, static_cast<uint64_t>(frame_width) * static_cast<uint64_t>(frame_height));
     }
 
@@ -2429,6 +2467,7 @@ bool upload_pending_video_texture(ClientState& state, SDL_Texture* texture, uint
     {
         present_info.valid = true;
         state.stats.sdl_texture_full_uploads.fetch_add(1, std::memory_order_relaxed);
+        state.stats.sdl_texture_lock_calls.fetch_add(1, std::memory_order_relaxed);
         state.stats.sdl_video_texture_uploads.fetch_add(1, std::memory_order_relaxed);
         state.stats.sdl_video_texture_upload_pixels.fetch_add(expected_pixels, std::memory_order_relaxed);
         record_texture_upload_stats(state, started_ns, static_cast<uint64_t>(frame_width) * static_cast<uint64_t>(frame_height));
@@ -2437,7 +2476,7 @@ bool upload_pending_video_texture(ClientState& state, SDL_Texture* texture, uint
 }
 
 bool upload_dirty_texture_rects(ClientState& state, SDL_Texture* texture, const std::vector<ClientDirtyRect>& rects,
-                                uint32_t frame_width, uint32_t frame_height) {
+                                const DirtyTextureUploadPlan& plan, uint32_t frame_width, uint32_t frame_height) {
     const uint64_t started_ns = wd_now_ns();
     uint64_t uploaded_pixels = 0;
     uint64_t uploaded_rects = 0;
@@ -2451,18 +2490,17 @@ bool upload_dirty_texture_rects(ClientState& state, SDL_Texture* texture, const 
             return false;
         }
 
-        for (const ClientDirtyRect& rect : rects)
-        {
+        const auto upload_rect = [&](const ClientDirtyRect& rect) {
             if (rect.w == 0 || rect.h == 0 || rect.x >= frame_width || rect.y >= frame_height)
             {
-                continue;
+                return true;
             }
 
             const uint32_t visible_width  = std::min<uint32_t>(rect.w, frame_width - rect.x);
             const uint32_t visible_height = std::min<uint32_t>(rect.h, frame_height - rect.y);
             if (visible_width == 0 || visible_height == 0)
             {
-                continue;
+                return true;
             }
 
             const SDL_Rect sdl_rect{static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(visible_width),
@@ -2472,12 +2510,28 @@ bool upload_dirty_texture_rects(ClientState& state, SDL_Texture* texture, const 
                                             static_cast<int>(frame_width * WD_BYTES_PER_PIXEL),
                                             visible_width, visible_height))
             {
-                ok = false;
-                break;
+                return false;
             }
 
             uploaded_pixels += static_cast<uint64_t>(visible_width) * static_cast<uint64_t>(visible_height);
             ++uploaded_rects;
+            return true;
+        };
+
+        if (plan.mode == DirtyTextureUploadMode::Bounds)
+        {
+            ok = upload_rect(plan.bounds);
+        }
+        else
+        {
+            for (const ClientDirtyRect& rect : rects)
+            {
+                if (!upload_rect(rect))
+                {
+                    ok = false;
+                    break;
+                }
+            }
         }
     }
 
@@ -2485,6 +2539,7 @@ bool upload_dirty_texture_rects(ClientState& state, SDL_Texture* texture, const 
     {
         state.stats.sdl_texture_partial_uploads.fetch_add(1, std::memory_order_relaxed);
         state.stats.sdl_texture_dirty_rects.fetch_add(uploaded_rects, std::memory_order_relaxed);
+        state.stats.sdl_texture_lock_calls.fetch_add(uploaded_rects, std::memory_order_relaxed);
         record_texture_upload_stats(state, started_ns, uploaded_pixels);
     }
 
@@ -3004,27 +3059,35 @@ int run_sdl_viewer(ClientState& state) {
                     state.pending_dirty_rect_count.store(0, std::memory_order_release);
                 }
 
-                bool used_bounds_upload = false;
                 const uint64_t source_dirty_rect_count = dirty_rects.size();
                 if (remote_frame_dirty && !texture_needs_full_upload && !upload_video_frame && source_dirty_rect_count == 0)
                 {
                     state.stats.sdl_empty_remote_wakeups.fetch_add(1, std::memory_order_relaxed);
                     remote_frame_dirty = false;
                 }
+
+                DirtyTextureUploadPlan upload_plan{};
                 if (!texture_needs_full_upload && source_dirty_rect_count != 0)
                 {
-                    coalesce_dirty_texture_rects(dirty_rects, frame_width, frame_height, used_bounds_upload);
+                    coalesce_dirty_texture_rects(dirty_rects, frame_width, frame_height);
+                    upload_plan = plan_dirty_texture_upload(dirty_rects, frame_width, frame_height);
                 }
 
-                const bool upload_full = !upload_video_frame &&
-                                         (texture_needs_full_upload || should_upload_full_texture(state, dirty_rects));
+                const bool cost_selected_full = !texture_needs_full_upload && source_dirty_rect_count != 0 &&
+                                                upload_plan.mode == DirtyTextureUploadMode::Full;
+                const bool upload_full = !upload_video_frame && (texture_needs_full_upload || cost_selected_full);
                 if (source_dirty_rect_count != 0)
                 {
                     state.stats.sdl_texture_source_dirty_rects.fetch_add(source_dirty_rect_count, std::memory_order_relaxed);
                     state.stats.sdl_texture_coalesced_dirty_rects.fetch_add(dirty_rects.size(), std::memory_order_relaxed);
-                    if (used_bounds_upload)
+                    state.stats.sdl_texture_source_pixels.fetch_add(upload_plan.source_pixels, std::memory_order_relaxed);
+                    if (upload_plan.mode == DirtyTextureUploadMode::Bounds)
                     {
                         state.stats.sdl_texture_bounds_uploads.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    else if (cost_selected_full)
+                    {
+                        state.stats.sdl_texture_cost_full_uploads.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
                 if (upload_full || upload_video_frame)
@@ -3038,7 +3101,8 @@ int run_sdl_viewer(ClientState& state) {
                         ? upload_pending_video_texture(state, texture, frame_width, frame_height, video_upload_pixels,
                                                        video_present)
                         : (upload_full ? upload_full_texture(state, texture, frame_width, frame_height)
-                                       : upload_dirty_texture_rects(state, texture, dirty_rects, frame_width, frame_height));
+                                       : upload_dirty_texture_rects(state, texture, dirty_rects, upload_plan,
+                                                                    frame_width, frame_height));
 
                 if (!texture_updated)
                 {

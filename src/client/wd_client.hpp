@@ -151,6 +151,9 @@ struct ClientStats {
     std::atomic<uint64_t> sdl_texture_source_dirty_rects{0};
     std::atomic<uint64_t> sdl_texture_coalesced_dirty_rects{0};
     std::atomic<uint64_t> sdl_texture_bounds_uploads{0};
+    std::atomic<uint64_t> sdl_texture_cost_full_uploads{0};
+    std::atomic<uint64_t> sdl_texture_lock_calls{0};
+    std::atomic<uint64_t> sdl_texture_source_pixels{0};
     std::atomic<uint64_t> sdl_texture_upload_pixels{0};
     std::atomic<uint64_t> sdl_texture_upload_samples{0};
     std::atomic<uint64_t> sdl_texture_upload_sum_ns{0};
@@ -251,6 +254,9 @@ struct ClientStatsSnapshot {
     uint64_t sdl_texture_source_dirty_rects = 0;
     uint64_t sdl_texture_coalesced_dirty_rects = 0;
     uint64_t sdl_texture_bounds_uploads = 0;
+    uint64_t sdl_texture_cost_full_uploads = 0;
+    uint64_t sdl_texture_lock_calls = 0;
+    uint64_t sdl_texture_source_pixels = 0;
     uint64_t sdl_texture_upload_pixels = 0;
     uint64_t sdl_texture_upload_samples = 0;
     uint64_t sdl_texture_upload_sum_ns = 0;
