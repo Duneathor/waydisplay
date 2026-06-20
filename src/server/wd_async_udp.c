@@ -1,4 +1,5 @@
 #include "wd_async_udp.h"
+#include "wd_async_udp_accounting.h"
 
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
@@ -27,6 +28,8 @@ struct wd_async_udp_packet {
     uint8_t*                    packet;
     bool                        prepared;
     bool                        submitted;
+    wd_async_udp_completion_fn completion;
+    void*                       completion_data;
 };
 
 struct wd_async_udp_sender {
@@ -39,13 +42,9 @@ struct wd_async_udp_sender {
     uint32_t                    free_packet_count;
     uint32_t                    free_packet_limit;
 
-    uint32_t prepared_submit;
-
-    uint64_t inflight;
+    struct wd_async_udp_accounting accounting;
     uint64_t inflight_max;
-    uint64_t queued;
-    uint64_t completed;
-    uint64_t failed;
+    uint64_t local_failures;
     uint64_t fallbacks;
 };
 
@@ -196,24 +195,26 @@ void wd_async_udp_sender_reap(struct wd_async_udp_sender* sender) {
         return;
     }
 
+    /* A partial or temporarily failed submit must not require another tile to
+     * arrive before the remaining SQEs are retried. */
+    if (sender->accounting.prepared != 0)
+    {
+        (void)wd_async_udp_sender_flush(sender);
+    }
+
     struct io_uring_cqe* cqe = NULL;
     while (io_uring_peek_cqe(&sender->ring, &cqe) == 0 && cqe)
     {
         struct wd_async_udp_packet* packet = io_uring_cqe_get_data(cqe);
-        if (cqe->res < 0)
-        {
-            sender->failed++;
-        }
-        else
-        {
-            sender->completed++;
-        }
+        const bool success = packet && cqe->res == (int)packet->packet_size;
+        (void)wd_async_udp_accounting_complete(&sender->accounting, success);
         if (packet)
         {
-            if (packet->submitted && sender->inflight > 0)
+            if (packet->completion)
             {
-                sender->inflight--;
+                packet->completion(packet->completion_data, success);
             }
+            packet->submitted = false;
             wd_async_udp_pending_remove(sender, packet);
             wd_async_udp_packet_release(sender, packet);
         }
@@ -231,60 +232,49 @@ static uint32_t wd_async_udp_mark_submitted(struct wd_async_udp_sender* sender, 
         {
             packet->prepared = false;
             packet->submitted = true;
-            sender->inflight++;
             marked++;
         }
     }
-    if (sender && sender->inflight > sender->inflight_max)
+    if (sender && sender->accounting.submitted > sender->inflight_max)
     {
-        sender->inflight_max = sender->inflight;
+        sender->inflight_max = sender->accounting.submitted;
     }
     return marked;
 }
 
 bool wd_async_udp_sender_flush(struct wd_async_udp_sender* sender) {
-    if (!sender || !sender->ring_ready || sender->prepared_submit == 0)
+    if (!sender || !sender->ring_ready || sender->accounting.prepared == 0)
     {
         return true;
     }
 
-    int rc = io_uring_submit(&sender->ring);
-    if (rc <= 0)
+    const int rc = io_uring_submit(&sender->ring);
+    const uint32_t submitted = wd_async_udp_accounting_submit_result(&sender->accounting, rc);
+    if (submitted != 0)
     {
-        if (rc < 0)
+        const uint32_t marked = wd_async_udp_mark_submitted(sender, submitted);
+        if (marked != submitted)
         {
-            sender->failed++;
+            /* The accounting and packet list must move in lockstep. Treat a
+             * mismatch as fatal to the sender rather than guessing ownership. */
+            sender->local_failures++;
+            return false;
         }
-        return false;
     }
 
-    uint32_t submitted = (uint32_t)rc;
-    if (submitted > sender->prepared_submit)
-    {
-        submitted = sender->prepared_submit;
-    }
-    uint32_t marked = wd_async_udp_mark_submitted(sender, submitted);
-    if (marked > sender->prepared_submit)
-    {
-        sender->prepared_submit = 0;
-    }
-    else
-    {
-        sender->prepared_submit -= marked;
-    }
-
-    return sender->prepared_submit == 0;
+    return sender->accounting.prepared == 0;
 }
 
 bool wd_async_udp_send_packet(struct wd_async_udp_sender* sender, int fd, const struct sockaddr_in* addr, const void* header,
-                              uint32_t header_size, const void* payload, uint32_t payload_size) {
+                              uint32_t header_size, const void* payload, uint32_t payload_size,
+                              wd_async_udp_completion_fn completion, void* completion_data) {
     if (!sender || !sender->ring_ready || fd < 0)
     {
         return false;
     }
     if (!addr || !header || header_size == 0 || header_size > WD_UDP_TILE_HEADER_MAX_SIZE || (payload_size != 0 && !payload))
     {
-        sender->failed++;
+        sender->local_failures++;
         return false;
     }
 
@@ -304,18 +294,20 @@ bool wd_async_udp_send_packet(struct wd_async_udp_sender* sender, int fd, const 
     size_t packet_size = (size_t)header_size + (size_t)payload_size;
     if (packet_size > UINT32_MAX)
     {
-        sender->failed++;
+        sender->local_failures++;
         return false;
     }
 
     struct wd_async_udp_packet* packet = wd_async_udp_packet_acquire(sender, packet_size);
     if (!packet)
     {
-        sender->failed++;
+        sender->local_failures++;
         return false;
     }
 
     packet->addr = *addr;
+    packet->completion = completion;
+    packet->completion_data = completion_data;
     memcpy(packet->packet, header, header_size);
     if (payload_size != 0)
     {
@@ -335,26 +327,25 @@ bool wd_async_udp_send_packet(struct wd_async_udp_sender* sender, int fd, const 
 
     wd_async_udp_pending_add(sender, packet);
     packet->prepared = true;
-    sender->queued++;
-    sender->prepared_submit++;
+    wd_async_udp_accounting_queue(&sender->accounting);
 
     return true;
 }
 
 uint64_t wd_async_udp_sender_inflight(const struct wd_async_udp_sender* sender) {
-    return sender ? sender->inflight : 0;
+    return sender ? sender->accounting.submitted : 0;
 }
 
 uint64_t wd_async_udp_sender_queued(const struct wd_async_udp_sender* sender) {
-    return sender ? sender->queued : 0;
+    return sender ? sender->accounting.queued_total : 0;
 }
 
 uint64_t wd_async_udp_sender_completed(const struct wd_async_udp_sender* sender) {
-    return sender ? sender->completed : 0;
+    return sender ? sender->accounting.completed_total : 0;
 }
 
 uint64_t wd_async_udp_sender_failed(const struct wd_async_udp_sender* sender) {
-    return sender ? sender->failed : 0;
+    return sender ? sender->accounting.failed_total + sender->accounting.submit_failures + sender->local_failures : 0;
 }
 
 uint64_t wd_async_udp_sender_fallbacks(const struct wd_async_udp_sender* sender) {
@@ -365,16 +356,22 @@ uint64_t wd_async_udp_sender_inflight_max(const struct wd_async_udp_sender* send
     return sender ? sender->inflight_max : 0;
 }
 
-static void wd_async_udp_sender_fail_unsubmitted(struct wd_async_udp_sender* sender) {
-    struct wd_async_udp_packet* packet = sender ? sender->pending_head : NULL;
+static void wd_async_udp_sender_cancel_unsubmitted_after_ring_exit(struct wd_async_udp_sender* sender) {
+    if (!sender || sender->ring_ready)
+    {
+        return;
+    }
+
+    (void)wd_async_udp_accounting_cancel_prepared(&sender->accounting);
+    struct wd_async_udp_packet* packet = sender->pending_head;
     while (packet)
     {
         struct wd_async_udp_packet* next = packet->next;
         if (!packet->submitted)
         {
-            if (packet->prepared && sender->prepared_submit > 0)
+            if (packet->completion)
             {
-                sender->prepared_submit--;
+                packet->completion(packet->completion_data, false);
             }
             wd_async_udp_pending_remove(sender, packet);
             wd_async_udp_packet_release(sender, packet);
@@ -384,14 +381,7 @@ static void wd_async_udp_sender_fail_unsubmitted(struct wd_async_udp_sender* sen
 }
 
 static bool wd_async_udp_sender_has_submitted(const struct wd_async_udp_sender* sender) {
-    for (const struct wd_async_udp_packet* packet = sender ? sender->pending_head : NULL; packet; packet = packet->next)
-    {
-        if (packet->submitted)
-        {
-            return true;
-        }
-    }
-    return false;
+    return sender && sender->accounting.submitted != 0;
 }
 
 bool wd_async_udp_sender_drain(struct wd_async_udp_sender* sender) {
@@ -404,12 +394,20 @@ bool wd_async_udp_sender_drain(struct wd_async_udp_sender* sender) {
     {
         (void)wd_async_udp_sender_flush(sender);
         wd_async_udp_sender_reap(sender);
-        wd_async_udp_sender_fail_unsubmitted(sender);
-        if (!wd_async_udp_sender_has_submitted(sender))
+        if (!wd_async_udp_sender_has_submitted(sender) && sender->accounting.prepared == 0)
         {
             break;
         }
         usleep(WD_ASYNC_UDP_DRAIN_SLEEP_US);
+    }
+
+    if (!wd_async_udp_sender_has_submitted(sender) && sender->accounting.prepared != 0)
+    {
+        /* Unsubmitted SQEs still reference packet storage. Drop the ring first,
+         * then fail callbacks and recycle buffers. */
+        io_uring_queue_exit(&sender->ring);
+        sender->ring_ready = false;
+        wd_async_udp_sender_cancel_unsubmitted_after_ring_exit(sender);
     }
     return sender->pending_head == NULL;
 }
@@ -425,7 +423,7 @@ void wd_async_udp_sender_destroy(struct wd_async_udp_sender* sender) {
         WD_LOG_WARN("async UDP sender destroy timed out; leaking pending ring buffers safely");
         return;
     }
-    wd_async_udp_sender_fail_unsubmitted(sender);
+    wd_async_udp_sender_cancel_unsubmitted_after_ring_exit(sender);
 
     struct wd_async_udp_packet* packet = sender->free_packets;
     while (packet)

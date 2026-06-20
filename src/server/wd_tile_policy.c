@@ -1,0 +1,245 @@
+#include "wd_tile_policy.h"
+
+#include <limits.h>
+#include <string.h>
+
+uint16_t wd_tile_normalize_udp_payload_target(uint16_t udp_payload_target, uint16_t default_target,
+                                              uint16_t maximum_target) {
+    if (maximum_target == 0)
+    {
+        return 0;
+    }
+    if (default_target == 0 || default_target > maximum_target)
+    {
+        default_target = maximum_target;
+    }
+    if (udp_payload_target < 512)
+    {
+        return default_target;
+    }
+    return udp_payload_target > maximum_target ? maximum_target : udp_payload_target;
+}
+
+uint16_t wd_tile_packet_count_for_payload(uint32_t payload_size, uint16_t udp_payload_target) {
+    if (payload_size == 0 || udp_payload_target == 0)
+    {
+        return 0;
+    }
+    const uint32_t count = (payload_size + (uint32_t)udp_payload_target - 1u) / (uint32_t)udp_payload_target;
+    return count > UINT16_MAX ? 0 : (uint16_t)count;
+}
+
+uint32_t wd_tile_wire_bytes_for_payload(uint32_t payload_size, uint16_t udp_payload_target,
+                                        uint16_t packet_header_size, uint16_t first_packet_header_size) {
+    const uint16_t packet_count = wd_tile_packet_count_for_payload(payload_size, udp_payload_target);
+    if (packet_count == 0 || packet_header_size == 0 || first_packet_header_size < packet_header_size)
+    {
+        return 0;
+    }
+
+    const uint64_t wire_bytes = (uint64_t)payload_size + first_packet_header_size +
+                                (uint64_t)(packet_count - 1u) * packet_header_size;
+    return wire_bytes > UINT32_MAX ? 0 : (uint32_t)wire_bytes;
+}
+
+bool wd_tile_compression_is_worthwhile(uint32_t compressed_size, uint32_t uncompressed_size,
+                                       uint16_t udp_payload_target, uint16_t packet_header_size,
+                                       uint16_t first_packet_header_size, uint32_t minimum_savings_bytes,
+                                       uint8_t minimum_savings_percent) {
+    if (compressed_size == 0 || uncompressed_size == 0 || compressed_size >= uncompressed_size)
+    {
+        return false;
+    }
+
+    const uint32_t compressed_wire = wd_tile_wire_bytes_for_payload(
+        compressed_size, udp_payload_target, packet_header_size, first_packet_header_size);
+    const uint32_t uncompressed_wire = wd_tile_wire_bytes_for_payload(
+        uncompressed_size, udp_payload_target, packet_header_size, first_packet_header_size);
+    if (compressed_wire == 0 || uncompressed_wire == 0 || compressed_wire >= uncompressed_wire)
+    {
+        return false;
+    }
+
+    const uint32_t saved = uncompressed_wire - compressed_wire;
+    if (saved < minimum_savings_bytes)
+    {
+        return false;
+    }
+    if (minimum_savings_percent != 0 &&
+        (uint64_t)saved * 100u < (uint64_t)uncompressed_wire * minimum_savings_percent)
+    {
+        return false;
+    }
+    return true;
+}
+
+bool wd_tile_xrgb_payload_may_compress(const uint8_t* payload, uint32_t payload_size) {
+    const uint32_t pixel_count = payload_size / 4u;
+    if (!payload || pixel_count == 0)
+    {
+        return false;
+    }
+    if (pixel_count <= 16u)
+    {
+        return true;
+    }
+
+    enum { SAMPLE_COUNT = 64 };
+    uint32_t colors[SAMPLE_COUNT];
+    uint32_t unique_count = 0;
+    uint32_t adjacent_repeats = 0;
+    uint32_t repeated_deltas = 0;
+    uint32_t previous_color = 0;
+    uint32_t previous_delta = 0;
+    bool have_previous = false;
+    bool have_delta = false;
+
+    const uint32_t samples = pixel_count < SAMPLE_COUNT ? pixel_count : SAMPLE_COUNT;
+    for (uint32_t i = 0; i < samples; ++i)
+    {
+        const uint32_t pixel_index = samples == 1 ? 0 :
+            (uint32_t)(((uint64_t)i * (pixel_count - 1u)) / (samples - 1u));
+        uint32_t color = 0;
+        memcpy(&color, payload + (size_t)pixel_index * 4u, sizeof(color));
+        color &= 0x00ffffffu;
+
+        bool seen = false;
+        for (uint32_t j = 0; j < unique_count; ++j)
+        {
+            if (colors[j] == color)
+            {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen)
+        {
+            colors[unique_count++] = color;
+        }
+
+        if (have_previous)
+        {
+            if (color == previous_color)
+            {
+                adjacent_repeats++;
+            }
+            const uint32_t delta = color - previous_color;
+            if (have_delta && delta == previous_delta)
+            {
+                repeated_deltas++;
+            }
+            previous_delta = delta;
+            have_delta = true;
+        }
+        previous_color = color;
+        have_previous = true;
+    }
+
+    return unique_count <= samples * 7u / 8u || adjacent_repeats >= 2u || repeated_deltas >= samples / 8u;
+}
+
+void wd_tile_delivery_status_add(struct wd_tile_delivery_status* status) {
+    if (status)
+    {
+        status->pending++;
+    }
+}
+
+static bool wd_tile_delivery_status_ready(struct wd_tile_delivery_status* status, bool* out_failed) {
+    if (!status || !status->sealed || status->pending != 0)
+    {
+        return false;
+    }
+    if (out_failed)
+    {
+        *out_failed = status->failed;
+    }
+    return true;
+}
+
+bool wd_tile_delivery_status_complete(struct wd_tile_delivery_status* status, bool success, bool* out_failed) {
+    if (!status || status->pending == 0)
+    {
+        return false;
+    }
+    status->pending--;
+    status->failed = status->failed || !success;
+    return wd_tile_delivery_status_ready(status, out_failed);
+}
+
+bool wd_tile_delivery_status_seal(struct wd_tile_delivery_status* status, bool* out_failed) {
+    if (!status)
+    {
+        return false;
+    }
+    status->sealed = true;
+    return wd_tile_delivery_status_ready(status, out_failed);
+}
+
+static uint32_t wd_tile_region_distance(uint16_t lhs, uint16_t rhs, uint16_t regions_x) {
+    if (regions_x == 0)
+    {
+        return UINT32_MAX;
+    }
+    const uint32_t lhs_x = lhs % regions_x;
+    const uint32_t lhs_y = lhs / regions_x;
+    const uint32_t rhs_x = rhs % regions_x;
+    const uint32_t rhs_y = rhs / regions_x;
+    const uint32_t dx = lhs_x > rhs_x ? lhs_x - rhs_x : rhs_x - lhs_x;
+    const uint32_t dy = lhs_y > rhs_y ? lhs_y - rhs_y : rhs_y - lhs_y;
+    return dx + dy;
+}
+
+size_t wd_tile_select_local_region_index(const uint16_t* region_ids, size_t region_count,
+                                         uint16_t regions_x, uint16_t cursor_region_id,
+                                         const uint64_t* region_enqueued_ns, size_t region_capacity,
+                                         uint64_t now_ns, uint64_t starvation_ns) {
+    if (!region_ids || region_count == 0 || regions_x == 0)
+    {
+        return SIZE_MAX;
+    }
+
+    size_t oldest_index = 0;
+    const uint16_t first_id = region_ids[0];
+    uint64_t oldest_ns = region_enqueued_ns && first_id < region_capacity ? region_enqueued_ns[first_id] : 0;
+    for (size_t i = 1; i < region_count; ++i)
+    {
+        const uint16_t region_id = region_ids[i];
+        const uint64_t queued = region_enqueued_ns && region_id < region_capacity ? region_enqueued_ns[region_id] : 0;
+        if (queued != 0 && (oldest_ns == 0 || queued < oldest_ns))
+        {
+            oldest_index = i;
+            oldest_ns = queued;
+        }
+    }
+    if (starvation_ns != 0 && oldest_ns != 0 && now_ns >= oldest_ns && now_ns - oldest_ns >= starvation_ns)
+    {
+        return oldest_index;
+    }
+
+    size_t best_index = 0;
+    uint32_t best_distance = wd_tile_region_distance(region_ids[0], cursor_region_id, regions_x);
+    for (size_t i = 1; i < region_count; ++i)
+    {
+        const uint32_t distance = wd_tile_region_distance(region_ids[i], cursor_region_id, regions_x);
+        if (distance < best_distance)
+        {
+            best_index = i;
+            best_distance = distance;
+            continue;
+        }
+        if (distance == best_distance)
+        {
+            const uint16_t best_id = region_ids[best_index];
+            const uint16_t region_id = region_ids[i];
+            const uint64_t best_queued = region_enqueued_ns && best_id < region_capacity ? region_enqueued_ns[best_id] : 0;
+            const uint64_t queued = region_enqueued_ns && region_id < region_capacity ? region_enqueued_ns[region_id] : 0;
+            if ((queued != 0 && (best_queued == 0 || queued < best_queued)) ||
+                (queued == best_queued && region_id < best_id))
+            {
+                best_index = i;
+            }
+        }
+    }
+    return best_index;
+}

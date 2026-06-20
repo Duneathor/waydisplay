@@ -13,6 +13,8 @@ struct wd_video_encoder;
 
 struct wd_video_encoder_config {
     uint8_t  session_id;
+    uint64_t connection_token;
+    uint64_t content_epoch;
     uint16_t width;
     uint16_t height;
     uint16_t target_fps;

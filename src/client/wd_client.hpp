@@ -1,7 +1,11 @@
 #pragma once
+#include "present_telemetry.hpp"
 
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_protocol.h"
+#include "render_planning.hpp"
+#include "render_wakeup.hpp"
+#include "stream_ownership.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -50,13 +54,6 @@ struct ClientStreamConfig {
     bool     disable_vsync                 = false;
 };
 
-struct ClientDirtyRect {
-    uint16_t x = 0;
-    uint16_t y = 0;
-    uint16_t w = 0;
-    uint16_t h = 0;
-};
-
 struct ClientStats {
     std::atomic<uint64_t> udp_packets_rx{0};
     std::atomic<uint64_t> udp_bytes_rx{0};
@@ -81,6 +78,10 @@ struct ClientStats {
     std::atomic<uint64_t> udp_completed_compressed_bytes{0};
     std::atomic<uint64_t> udp_completed_packets{0};
     std::atomic<uint64_t> partial_tiles_timed_out{0};
+    std::atomic<uint64_t> reassembly_budget_evictions{0};
+    std::atomic<uint64_t> reassembly_budget_drops{0};
+    std::atomic<uint64_t> tile_decompress_failures{0};
+    std::atomic<uint64_t> tile_fragment_conflicts{0};
     std::atomic<uint64_t> partial_tile_missing_packets{0};
     std::atomic<uint64_t> partial_tile_retx_queued{0};
     std::atomic<uint64_t> retx_response_samples{0};
@@ -153,6 +154,7 @@ struct ClientStats {
     std::atomic<uint64_t> sdl_texture_bounds_uploads{0};
     std::atomic<uint64_t> sdl_texture_cost_full_uploads{0};
     std::atomic<uint64_t> sdl_texture_lock_calls{0};
+    std::atomic<uint64_t> sdl_texture_update_calls{0};
     std::atomic<uint64_t> sdl_texture_source_pixels{0};
     std::atomic<uint64_t> sdl_texture_upload_pixels{0};
     std::atomic<uint64_t> sdl_texture_upload_samples{0};
@@ -256,6 +258,7 @@ struct ClientStatsSnapshot {
     uint64_t sdl_texture_bounds_uploads = 0;
     uint64_t sdl_texture_cost_full_uploads = 0;
     uint64_t sdl_texture_lock_calls = 0;
+    uint64_t sdl_texture_update_calls = 0;
     uint64_t sdl_texture_source_pixels = 0;
     uint64_t sdl_texture_upload_pixels = 0;
     uint64_t sdl_texture_upload_samples = 0;
@@ -319,7 +322,9 @@ struct ClientState {
     wd_server_config_payload config{};
 
     std::vector<uint32_t> framebuffer;
-    std::vector<uint64_t> displayed_generation;
+    std::vector<uint64_t> received_generation;
+    std::vector<uint64_t> presented_generation;
+    std::vector<uint64_t> pending_present_generation;
 
     std::mutex              video_frame_mutex;
     std::vector<uint32_t>   video_framebuffer;
@@ -327,19 +332,24 @@ struct ClientState {
     uint32_t                video_frame_height = 0;
     uint64_t                video_frame_id     = 0;
     uint64_t                video_frame_pts_usec = 0;
+    uint64_t                video_frame_epoch = 0;
     std::atomic<bool>       pending_video_frame_dirty{false};
 
     std::mutex udp_processing_mutex;
     std::mutex framebuffer_mutex;
-    std::atomic<bool> frame_dirty{false};
+    ClientRenderWake render_wake;
     std::atomic<uint64_t> pending_dirty_rect_count{0};
-    std::mutex dirty_rect_mutex;
-    std::vector<ClientDirtyRect> pending_dirty_rects;
+    std::mutex          dirty_rect_mutex;
+    ClientDirtyTileGrid pending_dirty_tiles;
+    uint64_t            pending_dirty_epoch = 1;
+    ClientStreamOwnership stream_ownership;
+    std::mutex remote_content_mutex;
+    uint64_t remote_content_epoch = 0;
+    ClientContentOwner remote_content_owner = ClientContentOwner::Tiles;
     std::atomic<uint64_t> client_config_generation{1};
 
     std::mutex present_mutex;
-    std::vector<uint64_t> pending_present_tile_timestamps;
-    std::vector<uint64_t> pending_present_input_sequences;
+    std::vector<ClientPendingTileTelemetry> pending_tile_telemetry;
 
     std::mutex               config_mutex;
     wd_server_config_payload pending_config{};

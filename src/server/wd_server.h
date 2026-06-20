@@ -554,15 +554,17 @@ struct wd_net_state {
     uint64_t active_summary_interval_ns;
     uint64_t clean_summary_interval_ns;
 
-    uint32_t dirty_region_rng;
+    uint16_t  dirty_region_cursor;
     uint16_t* dirty_regions;
     bool*     dirty_region_queued;
+    uint64_t* dirty_region_enqueued_ns;
     uint16_t  dirty_region_count;
 
     uint64_t* dirty_epochs;
 
     bool encoder_batch_active;
     void* encoder_pool;
+    void* encode_workspace;
     void* video_worker;
     uint64_t video_worker_epoch;
     struct wd_video_encoder* video_encoder;
@@ -612,7 +614,12 @@ struct wd_net_state {
     int udp_fd;
 
     uint16_t tcp_port;
+    uint16_t udp_port;
     uint8_t  session_id;
+    uint64_t connection_token;
+    uint64_t connection_epoch;
+    uint64_t config_epoch;
+    uint64_t content_epoch;
     bool     config_update_pending;
     uint64_t config_update_sent_ns;
 
@@ -902,7 +909,7 @@ void wd_server_set_default_geometry(struct wd_server* server);
 /* wd_clipboard.c */
 bool wd_clipboard_init(struct wd_server* server);
 void wd_clipboard_destroy(struct wd_server* server);
-void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expected_session_id, const uint8_t* payload,
+void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expected_session_id, uint64_t expected_connection_token, const uint8_t* payload,
                                           uint32_t payload_size, bool primary);
 void wd_clipboard_drain_and_apply(struct wd_server* server);
 

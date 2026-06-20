@@ -111,7 +111,7 @@ uint32_t supported_decoder_codecs() {
 
 
 bool decoder_config_matches(const ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {
-    return decoder && decoder->configured && decoder->codec_ctx && decoder->config.session_id == config.session_id &&
+    return decoder && decoder->configured && decoder->codec_ctx && decoder->config.session_id == config.session_id && decoder->config.connection_token == config.connection_token && decoder->config.content_epoch == config.content_epoch &&
            decoder->config.width == config.width && decoder->config.height == config.height &&
            decoder->config.coded_width == config.coded_width && decoder->config.coded_height == config.coded_height &&
            decoder->config.target_fps == config.target_fps && decoder->config.codec == config.codec &&
@@ -270,6 +270,7 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket&
         out_frame->height        = packet.header.height;
         out_frame->stride_pixels = packet.header.width;
         out_frame->frame_id      = packet.header.frame_id;
+        out_frame->content_epoch = packet.header.content_epoch;
         out_frame->pts_usec      = packet.header.pts_usec;
     }
 

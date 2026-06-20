@@ -16,6 +16,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(WAYDISPLAY_BUILD_CLIENT_SDL "Build the SDL WayDisplay client" ON)
 option(WAYDISPLAY_BUILD_WLROOTS_SERVER "Build the wlroots headless compositor server" ON)
 option(WAYDISPLAY_BUILD_LEGACY_PROTO "Build the old monolithic prototype" OFF)
+option(WAYDISPLAY_BUILD_TESTS "Build WayDisplay unit tests" ON)
 option(WAYDISPLAY_ENABLE_LOGGING "Enable WayDisplay runtime logging" ON)
 option(WAYDISPLAY_ENABLE_DEBUG_LOGGING "Enable WayDisplay debug-level logging" OFF)
 option(WAYDISPLAY_ENABLE_XWAYLAND "Enable Xwayland support in the wlroots server" ON)
@@ -140,6 +141,64 @@ target_link_libraries(waydisplay_common PUBLIC
     PkgConfig::ZSTD
 )
 
+
+add_library(waydisplay_server_tile_policy STATIC
+    src/server/wd_tile_policy.c
+    src/server/wd_async_udp_accounting.c
+)
+
+waydisplay_apply_common_warnings(waydisplay_server_tile_policy)
+
+target_include_directories(waydisplay_server_tile_policy PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+add_library(waydisplay_client_config STATIC
+    src/client/client_config_validation.cpp
+)
+
+waydisplay_apply_common_warnings(waydisplay_client_config)
+
+target_include_directories(waydisplay_client_config PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(waydisplay_client_config PUBLIC
+    waydisplay_common
+)
+
+add_library(waydisplay_client_render_planning STATIC
+    src/client/render_planning.cpp
+    src/client/content_order.cpp
+    src/client/present_telemetry.cpp
+    src/client/render_wakeup.cpp
+    src/client/stream_ownership.cpp
+)
+
+waydisplay_apply_common_warnings(waydisplay_client_render_planning)
+
+target_include_directories(waydisplay_client_render_planning PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+add_library(waydisplay_client_tile_reassembly STATIC
+    src/client/tile_reassembly.cpp
+)
+
+waydisplay_apply_common_warnings(waydisplay_client_tile_reassembly)
+
+target_include_directories(waydisplay_client_tile_reassembly PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+)
+
+target_link_libraries(waydisplay_client_tile_reassembly PUBLIC
+    waydisplay_common
+    Threads::Threads
+)
+
 # -----------------------------------------------------------------------------
 # SDL client
 # -----------------------------------------------------------------------------
@@ -153,7 +212,6 @@ if(WAYDISPLAY_BUILD_CLIENT_SDL)
         src/client/client_net.cpp
         src/client/client_async_tcp.cpp
         src/client/client_async_udp.cpp
-        src/client/tile_reassembly.cpp
         src/client/video_decoder.cpp
         src/client/sdl_input.cpp
         src/client/sdl_viewer.cpp
@@ -173,6 +231,9 @@ if(WAYDISPLAY_BUILD_CLIENT_SDL)
 
     target_link_libraries(waydisplay_client_sdl PRIVATE
         waydisplay_common
+        waydisplay_client_config
+        waydisplay_client_render_planning
+        waydisplay_client_tile_reassembly
         PkgConfig::SDL3
         PkgConfig::LIBURING
         Threads::Threads
@@ -355,6 +416,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
 
         target_link_libraries(waydisplay_server_wlroots PRIVATE
             waydisplay_common
+            waydisplay_server_tile_policy
             PkgConfig::WLROOTS
             PkgConfig::WAYLAND_SERVER
             PkgConfig::XKBCOMMON
@@ -411,6 +473,56 @@ if(WAYDISPLAY_BUILD_LEGACY_PROTO)
 endif()
 
 # -----------------------------------------------------------------------------
+# Tests
+# -----------------------------------------------------------------------------
+
+if(WAYDISPLAY_BUILD_TESTS)
+    include(CTest)
+
+    add_executable(waydisplay_test_client_config
+        tests/test_client_config.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_client_config)
+    target_link_libraries(waydisplay_test_client_config PRIVATE waydisplay_client_config)
+    add_test(NAME waydisplay.client_config COMMAND waydisplay_test_client_config)
+
+    add_executable(waydisplay_test_tile_protocol
+        tests/test_tile_protocol.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_tile_protocol)
+    target_link_libraries(waydisplay_test_tile_protocol PRIVATE waydisplay_common)
+    add_test(NAME waydisplay.tile_protocol COMMAND waydisplay_test_tile_protocol)
+
+    add_executable(waydisplay_test_tile_reassembly
+        tests/test_tile_reassembly.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_tile_reassembly)
+    target_link_libraries(waydisplay_test_tile_reassembly PRIVATE waydisplay_client_tile_reassembly)
+    add_test(NAME waydisplay.tile_reassembly COMMAND waydisplay_test_tile_reassembly)
+
+    add_executable(waydisplay_test_server_tile_policy
+        tests/test_server_tile_policy.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_server_tile_policy)
+    target_link_libraries(waydisplay_test_server_tile_policy PRIVATE waydisplay_server_tile_policy)
+    add_test(NAME waydisplay.server_tile_policy COMMAND waydisplay_test_server_tile_policy)
+
+    add_executable(waydisplay_test_async_udp_accounting
+        tests/test_async_udp_accounting.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_async_udp_accounting)
+    target_link_libraries(waydisplay_test_async_udp_accounting PRIVATE waydisplay_server_tile_policy)
+    add_test(NAME waydisplay.async_udp_accounting COMMAND waydisplay_test_async_udp_accounting)
+
+    add_executable(waydisplay_test_render_planning
+        tests/test_render_planning.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_render_planning)
+    target_link_libraries(waydisplay_test_render_planning PRIVATE waydisplay_client_render_planning Threads::Threads)
+    add_test(NAME waydisplay.render_planning COMMAND waydisplay_test_render_planning)
+endif()
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 
@@ -418,6 +530,7 @@ message(STATUS "WayDisplay build options:")
 message(STATUS "  WAYDISPLAY_BUILD_CLIENT_SDL=${WAYDISPLAY_BUILD_CLIENT_SDL}")
 message(STATUS "  WAYDISPLAY_BUILD_WLROOTS_SERVER=${WAYDISPLAY_BUILD_WLROOTS_SERVER}")
 message(STATUS "  WAYDISPLAY_BUILD_LEGACY_PROTO=${WAYDISPLAY_BUILD_LEGACY_PROTO}")
+message(STATUS "  WAYDISPLAY_BUILD_TESTS=${WAYDISPLAY_BUILD_TESTS}")
 message(STATUS "  WAYDISPLAY_ENABLE_LOGGING=${WAYDISPLAY_ENABLE_LOGGING}")
 message(STATUS "  WAYDISPLAY_ENABLE_DEBUG_LOGGING=${WAYDISPLAY_ENABLE_DEBUG_LOGGING}")
 message(STATUS "  WAYDISPLAY_ENABLE_XWAYLAND=${WAYDISPLAY_ENABLE_XWAYLAND}")

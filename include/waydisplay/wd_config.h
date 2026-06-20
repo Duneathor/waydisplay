@@ -149,9 +149,10 @@ extern "C" {
 #define WD_CLIENT_FRAME_DELAY_MS               8
 #define WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_THRESHOLD 256u
 #define WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_PERCENT   60u
-/* Approximate fixed SDL streaming-texture lock cost, expressed as copy pixels.
- * The client compares per-rectangle, bounding-box, and full-frame upload plans. */
-#define WD_CLIENT_TEXTURE_LOCK_EQUIVALENT_PIXELS (128ull * 1024ull)
+/* Approximate fixed SDL upload-call costs, expressed as copy pixels. Sparse
+ * rectangles use SDL_UpdateTexture; bounding/full uploads lock the texture. */
+#define WD_CLIENT_TEXTURE_UPDATE_EQUIVALENT_PIXELS (16ull * 1024ull)
+#define WD_CLIENT_TEXTURE_LOCK_EQUIVALENT_PIXELS   (128ull * 1024ull)
 #define WD_CLIENT_MIN_WINDOW_WIDTH             64
 #define WD_CLIENT_MIN_WINDOW_HEIGHT            64
 #define WD_CLIENT_MAX_DIMENSION                16384u

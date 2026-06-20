@@ -290,7 +290,7 @@ static uint32_t wd_video_encoder_detect_supported_codecs(struct wd_video_encoder
 static bool wd_video_encoder_config_matches(const struct wd_video_encoder* encoder,
                                             const struct wd_video_encoder_config* config) {
     return encoder && config && encoder->configured && encoder->codec_ctx &&
-           encoder->config.session_id == config->session_id && encoder->config.width == config->width &&
+           encoder->config.session_id == config->session_id && encoder->config.connection_token == config->connection_token && encoder->config.content_epoch == config->content_epoch && encoder->config.width == config->width &&
            encoder->config.height == config->height && encoder->config.target_fps == config->target_fps &&
            encoder->config.bitrate_kib_per_second == config->bitrate_kib_per_second &&
            encoder->config.codec == config->codec;
@@ -592,6 +592,8 @@ static bool wd_video_encoder_copy_packet(struct wd_video_encoder* encoder, const
 
     memset(packet, 0, sizeof(*packet));
     packet->header.session_id = encoder->config.session_id;
+    packet->header.connection_token = encoder->config.connection_token;
+    packet->header.content_epoch = encoder->config.content_epoch;
     packet->header.codec      = encoder->config.codec;
     packet->header.flags      = 0;
     if ((src->flags & AV_PKT_FLAG_KEY) != 0)
@@ -806,7 +808,9 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder,
     }
 
     const bool new_session = !encoder->configured ||
-                             encoder->config.session_id != config->session_id;
+                             encoder->config.session_id != config->session_id ||
+                             encoder->config.connection_token != config->connection_token ||
+                             encoder->config.content_epoch != config->content_epoch;
 
     wd_video_encoder_release_backend(encoder);
     encoder->configured = false;

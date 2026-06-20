@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 struct wd_async_udp_sender;
+typedef void (*wd_async_udp_completion_fn)(void* user_data, bool success);
 
 bool wd_async_udp_sender_create(struct wd_async_udp_sender** out_sender, uint32_t entries);
 void wd_async_udp_sender_destroy(struct wd_async_udp_sender* sender);
@@ -18,7 +19,8 @@ bool wd_async_udp_sender_flush(struct wd_async_udp_sender* sender);
 bool wd_async_udp_sender_drain(struct wd_async_udp_sender* sender);
 
 bool wd_async_udp_send_packet(struct wd_async_udp_sender* sender, int fd, const struct sockaddr_in* addr, const void* header,
-                              uint32_t header_size, const void* payload, uint32_t payload_size);
+                              uint32_t header_size, const void* payload, uint32_t payload_size,
+                              wd_async_udp_completion_fn completion, void* completion_data);
 
 uint64_t wd_async_udp_sender_inflight(const struct wd_async_udp_sender* sender);
 uint64_t wd_async_udp_sender_queued(const struct wd_async_udp_sender* sender);

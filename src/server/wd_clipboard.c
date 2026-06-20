@@ -233,7 +233,7 @@ void wd_clipboard_destroy(struct wd_server* server) {
     server->remote_primary_text_size = 0;
 }
 
-static bool payload_to_text_copy(uint8_t expected_session_id, const uint8_t* payload, uint32_t payload_size, uint8_t** out_text,
+static bool payload_to_text_copy(uint8_t expected_session_id, uint64_t expected_connection_token, const uint8_t* payload, uint32_t payload_size, uint8_t** out_text,
                                  uint32_t* out_text_size) {
     if (out_text)
     {
@@ -253,7 +253,7 @@ static bool payload_to_text_copy(uint8_t expected_session_id, const uint8_t* pay
     struct wd_selection_payload_header header;
     memcpy(&header, payload, sizeof(header));
 
-    if (header.session_id != expected_session_id ||
+    if (header.session_id != expected_session_id || header.connection_token != expected_connection_token ||
         (header.mime_type != WD_SELECTION_MIME_TEXT_UTF8 && header.mime_type != WD_SELECTION_MIME_TEXT_PLAIN) ||
         header.data_size > WD_SELECTION_MAX_TEXT_BYTES)
     {
@@ -282,7 +282,7 @@ static bool payload_to_text_copy(uint8_t expected_session_id, const uint8_t* pay
     return true;
 }
 
-void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expected_session_id, const uint8_t* payload,
+void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expected_session_id, uint64_t expected_connection_token, const uint8_t* payload,
                                           uint32_t payload_size, bool primary) {
     if (!net)
     {
@@ -292,7 +292,7 @@ void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expe
     uint8_t* text      = NULL;
     uint32_t text_size = 0;
 
-    if (!payload_to_text_copy(expected_session_id, payload, payload_size, &text, &text_size))
+    if (!payload_to_text_copy(expected_session_id, expected_connection_token, payload, payload_size, &text, &text_size))
     {
         return;
     }

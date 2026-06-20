@@ -11,6 +11,8 @@ struct ClientVideoDecoder;
 
 struct ClientVideoDecoderConfig {
     uint8_t  session_id = 0;
+    uint64_t connection_token = 0;
+    uint64_t content_epoch = 0;
     uint16_t width        = 0;
     uint16_t height       = 0;
     uint16_t coded_width  = 0;
@@ -31,6 +33,7 @@ struct ClientDecodedVideoFrame {
     uint32_t        height        = 0;
     uint32_t        stride_pixels = 0;
     uint64_t        frame_id      = 0;
+    uint64_t        content_epoch = 0;
     uint64_t        pts_usec      = 0;
 };
 

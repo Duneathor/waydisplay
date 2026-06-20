@@ -86,6 +86,7 @@ static bool wd_cursor_send_shape_locked(struct wd_server* server, uint16_t shape
     struct wd_cursor_shape_payload payload;
     memset(&payload, 0, sizeof(payload));
     payload.session_id = net->session_id;
+    payload.connection_token = net->connection_token;
     payload.shape      = shape;
 
     bool ok = false;

@@ -721,6 +721,12 @@ bool wd_server_set_tile_size(struct wd_server* server, uint16_t tile_width, uint
         return false;
     }
 
+    uint8_t tile_size = 0;
+    if (!wd_tile_size_code_for_dimensions(tile_width, tile_height, &tile_size))
+    {
+        return false;
+    }
+
     /* Keep tile buffers comfortably within the existing TCP/UDP payload limits and
      * client framebuffer limits. These are protocol dimensions, not renderer pixels. */
     uint32_t tile_bytes = (uint32_t)tile_width * (uint32_t)tile_height * WD_BYTES_PER_PIXEL;
@@ -835,6 +841,7 @@ struct wd_resize_allocations {
     bool* damage_tiles;
     uint16_t* dirty_regions;
     bool* dirty_region_queued;
+    uint64_t* dirty_region_enqueued_ns;
     uint64_t* dirty_epochs;
     uint16_t* dirty_queue;
     bool* dirty_queued;
@@ -902,6 +909,7 @@ static void wd_resize_allocations_free(struct wd_resize_allocations* allocs) {
     free(allocs->damage_tiles);
     free(allocs->dirty_regions);
     free(allocs->dirty_region_queued);
+    free(allocs->dirty_region_enqueued_ns);
     free(allocs->dirty_epochs);
     free(allocs->dirty_queue);
     free(allocs->dirty_queued);
@@ -929,6 +937,7 @@ static bool wd_resize_allocations_prepare(struct wd_resize_allocations* allocs, 
     allocs->damage_tiles         = calloc(server->total_base_tiles, sizeof(*allocs->damage_tiles));
     allocs->dirty_regions        = calloc(server->total_tiles, sizeof(*allocs->dirty_regions));
     allocs->dirty_region_queued  = calloc(server->total_tiles, sizeof(*allocs->dirty_region_queued));
+    allocs->dirty_region_enqueued_ns = calloc(server->total_tiles, sizeof(*allocs->dirty_region_enqueued_ns));
     allocs->dirty_epochs         = calloc(server->total_tiles, sizeof(*allocs->dirty_epochs));
     allocs->dirty_queue          = calloc(server->total_tiles, sizeof(*allocs->dirty_queue));
     allocs->dirty_queued         = calloc(server->total_tiles, sizeof(*allocs->dirty_queued));
@@ -942,7 +951,7 @@ static bool wd_resize_allocations_prepare(struct wd_resize_allocations* allocs, 
 
     if (!allocs->framebuffer_xrgb8888 || !allocs->framebuffer_shadow_xrgb8888 || !allocs->tiles ||
         !allocs->damage_tiles || !allocs->dirty_regions ||
-        !allocs->dirty_region_queued || !allocs->dirty_epochs || !allocs->dirty_queue || !allocs->dirty_queued ||
+        !allocs->dirty_region_queued || !allocs->dirty_region_enqueued_ns || !allocs->dirty_epochs || !allocs->dirty_queue || !allocs->dirty_queued ||
         !allocs->dirty_queue_enqueued_ns || !allocs->retransmit_queue || !allocs->retransmit_queued ||
         !allocs->retransmit_queue_enqueued_ns || !allocs->retransmit_requested_generation ||
         !allocs->summary_dirty_tiles || !allocs->summary_dirty_queue)
@@ -964,6 +973,8 @@ static void wd_server_free_net_resize_arrays(struct wd_net_state* net) {
     net->dirty_regions = NULL;
     free(net->dirty_region_queued);
     net->dirty_region_queued = NULL;
+    free(net->dirty_region_enqueued_ns);
+    net->dirty_region_enqueued_ns = NULL;
     free(net->dirty_epochs);
     net->dirty_epochs = NULL;
     free(net->dirty_queue);
@@ -1078,6 +1089,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     server->damage_tiles = next_allocs.damage_tiles;
     server->net.dirty_regions = next_allocs.dirty_regions;
     server->net.dirty_region_queued = next_allocs.dirty_region_queued;
+    server->net.dirty_region_enqueued_ns = next_allocs.dirty_region_enqueued_ns;
     server->net.dirty_epochs = next_allocs.dirty_epochs;
     server->net.dirty_queue = next_allocs.dirty_queue;
     server->net.dirty_queued = next_allocs.dirty_queued;
@@ -1098,8 +1110,13 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     {
         server->framebuffer_generation = 1;
     }
+    server->net.config_epoch++;
+    if (server->net.config_epoch == 0)
+    {
+        server->net.config_epoch = 1;
+    }
 
-    server->net.dirty_region_rng       = 0;
+    server->net.dirty_region_cursor    = 0;
     server->net.dirty_region_count     = 0;
     server->net.dirty_queue_read       = 0;
     server->net.dirty_queue_write      = 0;
