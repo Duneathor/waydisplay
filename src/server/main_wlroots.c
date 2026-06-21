@@ -12,7 +12,7 @@ static void usage(const char* argv0) {
             "  %s [--port 5000] [--scale 1.0] [--size 1664x1024] [--app <command>] "
             "[--tile-size 128x64|64x64|32x32|16x16] [--tile-compression auto|off|attempt|force] [--refresh-hz 60] "
             "[--renderer auto|gles2|vulkan|pixman] [--video-encoder auto|software|vaapi] [--vaapi-device /dev/dri/renderD128] "
-            "[--xwayland|--no-xwayland]\n\n"
+            "[--xwayland|--no-xwayland] [--xdg-dialog|--no-xdg-dialog]\n\n"
             "Examples:\n"
             "  %s --port 5000 --app foot\n"
             "  %s --port 5000 --scale 1.25 --size 1366x768 --app foot\n"
@@ -31,6 +31,7 @@ int main(int argc, char** argv) {
     uint16_t    tile_height     = WD_TILE_HEIGHT;
     uint16_t    output_refresh_hz = 60;
     bool        enable_xwayland = true;
+    bool        enable_xdg_dialog = true;
     const char* renderer_name   = NULL;
     const char* video_encoder_backend = "auto";
     const char* vaapi_device = "/dev/dri/renderD128";
@@ -251,6 +252,14 @@ int main(int argc, char** argv) {
         {
             enable_xwayland = false;
         }
+        else if (strcmp(argv[i], "--xdg-dialog") == 0)
+        {
+            enable_xdg_dialog = true;
+        }
+        else if (strcmp(argv[i], "--no-xdg-dialog") == 0)
+        {
+            enable_xdg_dialog = false;
+        }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
         {
             usage(argv[0]);
@@ -290,7 +299,7 @@ int main(int argc, char** argv) {
 
     if (!wd_server_init(&server, tcp_port, app_cmd, output_scale, output_refresh_hz,
                         display_width, display_height, tile_width, tile_height, enable_xwayland,
-                        video_encoder_backend, vaapi_device))
+                        enable_xdg_dialog, video_encoder_backend, vaapi_device))
     {
         wd_server_destroy(&server);
         return 1;

@@ -666,6 +666,124 @@ void wd_server_mark_rect_dirty(struct wd_server* server, int x, int y, int width
     }
 }
 
+struct wd_scene_damage_bounds {
+    struct wd_server* server;
+    int               offset_x;
+    int               offset_y;
+    bool              have_bounds;
+    struct wlr_box    bounds;
+};
+
+static void scene_damage_buffer_iterator(struct wlr_scene_buffer* scene_buffer, int sx, int sy, void* data) {
+    struct wd_scene_damage_bounds* state = data;
+    if (!state || !scene_buffer)
+    {
+        return;
+    }
+
+    int width  = scene_buffer->dst_width;
+    int height = scene_buffer->dst_height;
+
+    struct wlr_scene_surface* scene_surface = wlr_scene_surface_try_from_buffer(scene_buffer);
+    if (scene_surface && scene_surface->surface)
+    {
+        if (width <= 0)
+        {
+            width = scene_surface->surface->current.width;
+        }
+        if (height <= 0)
+        {
+            height = scene_surface->surface->current.height;
+        }
+    }
+
+    if (scene_buffer->buffer)
+    {
+        if (width <= 0)
+        {
+            width = scene_buffer->buffer->width;
+        }
+        if (height <= 0)
+        {
+            height = scene_buffer->buffer->height;
+        }
+    }
+
+    if (width <= 0 || height <= 0)
+    {
+        return;
+    }
+
+    sx += state->offset_x;
+    sy += state->offset_y;
+
+    if (!state->have_bounds)
+    {
+        state->bounds = (struct wlr_box){.x = sx, .y = sy, .width = width, .height = height};
+        state->have_bounds = true;
+    }
+    else
+    {
+        int x1 = sx < state->bounds.x ? sx : state->bounds.x;
+        int y1 = sy < state->bounds.y ? sy : state->bounds.y;
+        int x2 = sx + width;
+        int y2 = sy + height;
+        int old_x2 = state->bounds.x + state->bounds.width;
+        int old_y2 = state->bounds.y + state->bounds.height;
+        if (old_x2 > x2)
+        {
+            x2 = old_x2;
+        }
+        if (old_y2 > y2)
+        {
+            y2 = old_y2;
+        }
+        state->bounds = (struct wlr_box){.x = x1, .y = y1, .width = x2 - x1, .height = y2 - y1};
+    }
+
+    if (state->server)
+    {
+        wd_server_mark_rect_dirty(state->server, sx, sy, width, height);
+    }
+}
+
+static bool scene_node_damage(struct wd_server* server, struct wlr_scene_node* node, int offset_x, int offset_y,
+                              struct wlr_box* out_box) {
+    if (!node)
+    {
+        return false;
+    }
+
+    struct wd_scene_damage_bounds state = {
+        .server   = server,
+        .offset_x = offset_x,
+        .offset_y = offset_y,
+    };
+    wlr_scene_node_for_each_buffer(node, scene_damage_buffer_iterator, &state);
+
+    if (state.have_bounds && out_box)
+    {
+        *out_box = state.bounds;
+    }
+    return state.have_bounds;
+}
+
+bool wd_server_scene_node_bounds(struct wlr_scene_node* node, struct wlr_box* out_box) {
+    if (!out_box)
+    {
+        return false;
+    }
+    return scene_node_damage(NULL, node, 0, 0, out_box);
+}
+
+void wd_server_mark_scene_node_dirty(struct wd_server* server, struct wlr_scene_node* node) {
+    if (!server || !node)
+    {
+        return;
+    }
+    scene_node_damage(server, node, 0, 0, NULL);
+}
+
 static void view_bounds_for_damage(struct wd_view* view, int origin_x, int origin_y, int* out_x, int* out_y, int* out_width,
                                    int* out_height) {
     if (!view || !out_x || !out_y || !out_width || !out_height)
@@ -728,6 +846,10 @@ void wd_server_mark_view_dirty(struct wd_view* view) {
     int height = 0;
     view_bounds_for_damage(view, view->x, view->y, &x, &y, &width, &height);
     wd_server_mark_rect_dirty(view->server, x, y, width, height);
+    if (view->scene_tree)
+    {
+        wd_server_mark_scene_node_dirty(view->server, &view->scene_tree->node);
+    }
 }
 
 void wd_server_mark_view_move_dirty(struct wd_view* view, int old_x, int old_y) {
@@ -745,6 +867,14 @@ void wd_server_mark_view_move_dirty(struct wd_view* view, int old_x, int old_y) 
 
     view_bounds_for_damage(view, view->x, view->y, &x, &y, &width, &height);
     wd_server_mark_rect_dirty(view->server, x, y, width, height);
+
+    if (view->scene_tree)
+    {
+        /* The node has already moved. Damage its current buffers and the same
+         * buffer rectangles translated back to the previous view origin. */
+        scene_node_damage(view->server, &view->scene_tree->node, 0, 0, NULL);
+        scene_node_damage(view->server, &view->scene_tree->node, old_x - view->x, old_y - view->y, NULL);
+    }
 }
 
 bool wd_server_set_tile_size(struct wd_server* server, uint16_t tile_width, uint16_t tile_height) {
@@ -1123,6 +1253,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     server->framebuffer_xrgb8888 = next_allocs.framebuffer_xrgb8888;
     server->framebuffer_shadow_xrgb8888 = next_allocs.framebuffer_shadow_xrgb8888;
     server->framebuffer_shadow_valid = false;
+    server->framebuffer_content_valid = false;
     server->net.tiles = next_allocs.tiles;
     server->damage_tiles = next_allocs.damage_tiles;
     server->net.dirty_regions = next_allocs.dirty_regions;
@@ -1188,7 +1319,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale,
                     uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height,
                     uint16_t tile_width, uint16_t tile_height, bool enable_xwayland,
-                    const char* video_encoder_backend, const char* vaapi_device) {
+                    bool enable_xdg_dialog, const char* video_encoder_backend, const char* vaapi_device) {
     memset(server, 0, sizeof(*server));
     server->input_wakeup_fd = -1;
 
@@ -1216,6 +1347,7 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
 #else
     (void)enable_xwayland;
 #endif
+    server->enable_xdg_dialog = enable_xdg_dialog;
 
     if (server->output_scale <= 0.0)
     {
@@ -1228,6 +1360,7 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
     {
         server->framebuffer_generation = 1;
         server->framebuffer_shadow_valid = false;
+        server->framebuffer_content_valid = false;
     }
 
     if (!server->framebuffer_xrgb8888 || !server->framebuffer_shadow_xrgb8888)
@@ -1331,10 +1464,22 @@ void wd_server_destroy(struct wd_server* server) {
         server->input_wakeup_fd = -1;
     }
 
-    wd_clipboard_destroy(server);
 #if WAYDISPLAY_ENABLE_XWAYLAND
+    /* Stop the embedded X server while every compositor subsystem its surface
+     * destruction callbacks can touch is still alive. */
     wd_xwayland_destroy(server);
 #endif
+
+    /* Destroy client resources before tearing down protocol managers, scene
+     * ownership, clipboard state, or the network/stream locks used by view and
+     * popup destruction callbacks. Destroying these in the opposite order can
+     * turn normal wl_resource teardown into use-after-free during shutdown. */
+    if (server->display)
+    {
+        wl_display_destroy_clients(server->display);
+    }
+
+    wd_clipboard_destroy(server);
     wd_keyboard_shortcuts_inhibit_destroy(server);
     wd_cursor_destroy(server);
     wd_xdg_activation_destroy(server);
@@ -1383,7 +1528,6 @@ void wd_server_destroy(struct wd_server* server) {
 
     if (server->display)
     {
-        wl_display_destroy_clients(server->display);
         wl_display_destroy(server->display);
         server->display = NULL;
     }
@@ -1399,6 +1543,7 @@ void wd_server_destroy(struct wd_server* server) {
     free(server->framebuffer_shadow_xrgb8888);
     server->framebuffer_shadow_xrgb8888 = NULL;
     server->framebuffer_shadow_valid = false;
+    server->framebuffer_content_valid = false;
 }
 
 int wd_server_run(struct wd_server* server) {

@@ -142,6 +142,25 @@ bool wd_wlroots_init(struct wd_server* server) {
         return false;
     }
 
+    /* Keep compositor-managed windows in an explicit layer. This prevents
+     * raising a view from accidentally reordering future root-level scene
+     * nodes such as drag icons, cursor overlays, or compositor UI. Popups stay
+     * in their protocol parent's subtree so a view and its transient surfaces
+     * move and stack as one unit. */
+    server->scene_views = wlr_scene_tree_create(&server->scene->tree);
+    if (!server->scene_views)
+    {
+        WD_LOG_ERROR("failed to create scene view layer");
+        return false;
+    }
+
+    server->scene_layout = wlr_scene_attach_output_layout(server->scene, server->output_layout);
+    if (!server->scene_layout)
+    {
+        WD_LOG_ERROR("failed to attach scene to output layout");
+        return false;
+    }
+
     server->xdg_shell = wlr_xdg_shell_create(server->display, 6);
     if (!server->xdg_shell)
     {
@@ -158,9 +177,16 @@ bool wd_wlroots_init(struct wd_server* server) {
         return false;
     }
 
-    if (!wd_xdg_dialog_init(server))
+    if (server->enable_xdg_dialog)
     {
-        return false;
+        if (!wd_xdg_dialog_init(server))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        WD_LOG_INFO("xdg-dialog disabled by --no-xdg-dialog");
     }
 
     if (!wd_xdg_toplevel_icon_init(server))
@@ -180,6 +206,22 @@ bool wd_wlroots_init(struct wd_server* server) {
     }
 
     wlr_seat_set_capabilities(server->seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
+
+    /*
+     * Advertise pointer-gestures-unstable-v1 unconditionally. wlroots owns
+     * the protocol resources and safely accepts swipe, pinch, and hold
+     * subscriptions for wl_pointer objects. WayDisplay currently has no
+     * remote gesture input messages, so the subscriptions remain idle until
+     * a gesture source is added; an idle implementation is preferable to a
+     * missing global because clients are required to tolerate no events.
+     */
+    server->pointer_gestures = wlr_pointer_gestures_v1_create(server->display);
+    if (!server->pointer_gestures)
+    {
+        WD_LOG_ERROR("failed to create pointer gestures manager");
+        return false;
+    }
+    WD_LOG_INFO("pointer gestures enabled (swipe, pinch, hold)");
 
     if (!wd_cursor_init(server))
     {
@@ -266,9 +308,15 @@ bool wd_wlroots_create_headless_output(struct wd_server* server) {
      * xdg-output is driven by wlr_output_layout. WayDisplay has one logical
      * output at compositor-space origin 0,0.
      */
+    struct wlr_output_layout_output* layout_output = NULL;
     if (server->output_layout)
     {
-        wlr_output_layout_add(server->output_layout, server->output, 0, 0);
+        layout_output = wlr_output_layout_add(server->output_layout, server->output, 0, 0);
+        if (!layout_output)
+        {
+            WD_LOG_ERROR("failed to add headless output to layout");
+            return false;
+        }
     }
 
     server->scene_output = wlr_scene_output_create(server->scene, server->output);
@@ -278,7 +326,10 @@ bool wd_wlroots_create_headless_output(struct wd_server* server) {
         return false;
     }
 
-    wlr_scene_output_set_position(server->scene_output, 0, 0);
+    if (server->scene_layout && layout_output)
+    {
+        wlr_scene_output_layout_add_output(server->scene_layout, layout_output, server->scene_output);
+    }
 
     server->output_frame.notify = output_handle_frame;
     wl_signal_add(&server->output->events.frame, &server->output_frame);

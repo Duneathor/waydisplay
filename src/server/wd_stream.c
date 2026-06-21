@@ -1659,6 +1659,40 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
     return should;
 }
 
+uint16_t wd_stream_queue_cached_full_refresh_locked(struct wd_server* server) {
+    if (!server || !server->framebuffer_content_valid || !server->framebuffer_xrgb8888 ||
+        !server->net.tiles || !server->net.dirty_queue || !server->net.dirty_queued)
+    {
+        return 0;
+    }
+
+    const uint32_t limit = server->total_base_tiles < server->total_tiles ?
+                               server->total_base_tiles : server->total_tiles;
+    uint16_t queued = 0;
+
+    for (uint32_t tile_id = 0; tile_id < limit; ++tile_id)
+    {
+        const bool was_queued = server->net.dirty_queued[tile_id];
+        wd_detect_one_dirty_tile_into_queue_locked(server, (uint16_t)tile_id);
+        if (!was_queued && server->net.dirty_queued[tile_id])
+        {
+            queued++;
+        }
+    }
+
+    /* The cached pixels are now the baseline for subsequent wlroots damage.
+     * Keeping the shadow synchronized avoids a second full refresh if the
+     * scheduled scene render is idle or contains only a small new damage set. */
+    if (server->framebuffer_shadow_xrgb8888)
+    {
+        memcpy(server->framebuffer_shadow_xrgb8888, server->framebuffer_xrgb8888,
+               server->framebuffer_bytes);
+        server->framebuffer_shadow_valid = true;
+    }
+
+    return queued;
+}
+
 void wd_stream_invalidate_all_tiles_locked(struct wd_server* server) {
     if (!server)
     {

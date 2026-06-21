@@ -1,5 +1,7 @@
 #include "wd_server.h"
 
+#include <wlr/types/wlr_xdg_foreign_v1.h>
+
 bool wd_xdg_foreign_init(struct wd_server* server) {
     if (!server || !server->display || !server->xdg_shell)
     {
@@ -24,13 +26,25 @@ bool wd_xdg_foreign_init(struct wd_server* server) {
         return false;
     }
 
+    /*
+     * Advertise both protocol generations. Qt/KDE dialog integration still
+     * contains code paths which bind the v1 exporter, while newer QtWayland
+     * paths use v2. Reference compositors such as Sway expose both managers
+     * over one shared registry so exported-parent handles interoperate.
+     */
+    if (!wlr_xdg_foreign_v1_create(server->display, server->xdg_foreign_registry))
+    {
+        WD_LOG_ERROR("failed to create xdg-foreign v1 manager");
+        return false;
+    }
+
     if (!wlr_xdg_foreign_v2_create(server->display, server->xdg_foreign_registry))
     {
         WD_LOG_ERROR("failed to create xdg-foreign v2 manager");
         return false;
     }
 
-    WD_LOG_INFO("xdg-foreign v2 enabled");
+    WD_LOG_INFO("xdg-foreign v1/v2 enabled");
     return true;
 }
 

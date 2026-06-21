@@ -41,6 +41,7 @@ struct wd_dirty_region_scheduler;
 #include <wlr/types/wlr_keyboard_shortcuts_inhibit_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_pointer_gestures_v1.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
@@ -91,6 +92,8 @@ struct wd_view {
     struct wlr_xwayland_surface* xwayland_surface;
 #endif
     struct wlr_scene_tree* scene_tree;
+    /* XDG content subtree. scene_tree is the compositor-owned placement wrapper. */
+    struct wlr_scene_tree* xdg_surface_tree;
 #if WAYDISPLAY_ENABLE_XWAYLAND
     struct wlr_scene_tree* xwayland_surface_tree;
     struct wlr_scene_rect* xwayland_titlebar_rect;
@@ -686,6 +689,8 @@ struct wd_server {
     struct wlr_output_layout*         output_layout;
     struct wlr_xdg_output_manager_v1* xdg_output_manager;
     struct wlr_scene*                 scene;
+    struct wlr_scene_tree*            scene_views;
+    struct wlr_scene_output_layout*   scene_layout;
     struct wlr_scene_output*          scene_output;
     bool                              scene_dirty;
     bool                              damage_all_tiles;
@@ -699,6 +704,7 @@ struct wd_server {
     struct wl_global*                        xdg_dialog_manager_global;
     struct wlr_xdg_toplevel_icon_manager_v1* xdg_toplevel_icon_manager;
     struct wlr_cursor_shape_manager_v1*      cursor_shape_manager;
+    struct wlr_pointer_gestures_v1*          pointer_gestures;
     struct wlr_fractional_scale_manager_v1*  fractional_scale_manager;
     struct wlr_viewporter*                   viewporter;
 #if WAYDISPLAY_ENABLE_XWAYLAND
@@ -707,6 +713,7 @@ struct wd_server {
     struct wl_listener   new_xwayland_surface;
     bool                 enable_xwayland;
 #endif
+    bool     enable_xdg_dialog;
     double   output_scale;
     uint32_t output_refresh_mhz;
     uint8_t  tile_compression_benchmark_mode;
@@ -800,6 +807,7 @@ struct wd_server {
     uint32_t* framebuffer_xrgb8888;
     uint32_t* framebuffer_shadow_xrgb8888;
     bool      framebuffer_shadow_valid;
+    bool      framebuffer_content_valid;
     uint64_t  framebuffer_generation;
 
     const char* socket_name;
@@ -814,7 +822,7 @@ struct wd_server {
 bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale,
                     uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height,
                     uint16_t tile_width, uint16_t tile_height, bool enable_xwayland,
-                    const char* video_encoder_backend, const char* vaapi_device);
+                    bool enable_xdg_dialog, const char* video_encoder_backend, const char* vaapi_device);
 
 void wd_server_destroy(struct wd_server* server);
 
@@ -878,6 +886,7 @@ void wd_cursor_queue_current_locked(struct wd_server* server);
 /* wd_scene.c */
 void            wd_scene_init_listeners(struct wd_server* server);
 void            wd_scene_focus_view(struct wd_view* view);
+void            wd_scene_focus_topmost(struct wd_server* server, struct wd_view* exclude);
 void            wd_scene_deactivate_view(struct wd_view* view);
 void            wd_scene_set_view_position(struct wd_view* view);
 void            wd_scene_note_dialog_state(struct wd_view* view);
@@ -896,6 +905,7 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
 /* wd_stream.c */
 bool wd_stream_init(struct wd_server* server);
 void wd_stream_invalidate_all_tiles_locked(struct wd_server* server);
+uint16_t wd_stream_queue_cached_full_refresh_locked(struct wd_server* server);
 void wd_stream_wait_for_encoder_idle_locked(struct wd_server* server);
 void wd_stream_destroy(struct wd_server* server);
 bool wd_stream_send_dirty_tiles(struct wd_server* server);
@@ -913,6 +923,8 @@ void     wd_stream_policy_set_limited_udp_byte_rate(struct wd_stream_policy* pol
 bool     wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_ns);
 void wd_server_mark_scene_dirty(struct wd_server* server);
 void wd_server_mark_rect_dirty(struct wd_server* server, int x, int y, int width, int height);
+bool wd_server_scene_node_bounds(struct wlr_scene_node* node, struct wlr_box* out_box);
+void wd_server_mark_scene_node_dirty(struct wd_server* server, struct wlr_scene_node* node);
 void wd_server_mark_view_dirty(struct wd_view* view);
 void wd_server_mark_view_move_dirty(struct wd_view* view, int old_x, int old_y);
 bool wd_server_set_tile_size(struct wd_server* server, uint16_t tile_width, uint16_t tile_height);
@@ -957,7 +969,7 @@ void wd_pointer_clear_button_grab(struct wd_server* server);
 void wd_pointer_clear_button_grab_for_view(struct wd_server* server, struct wd_view* view);
 void wd_pointer_clear_button_grab_for_surface(struct wd_server* server, struct wlr_surface* surface);
 
-struct wd_view* wd_scene_view_at(struct wd_server* server, double lx, double ly, double* sx, double* sy);
+struct wd_view* wd_scene_view_from_node(struct wd_server* server, struct wlr_scene_node* node);
 
 void wd_scene_raise_view(struct wd_view* view);
 

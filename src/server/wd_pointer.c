@@ -9,25 +9,6 @@
 #define WD_BTN_LEFT        0x110
 #define WD_BTN_RIGHT       0x111
 
-static struct wd_view* view_from_scene_node(struct wlr_scene_node* node) {
-    while (node)
-    {
-        if (node->data)
-        {
-            return node->data;
-        }
-
-        if (!node->parent)
-        {
-            break;
-        }
-
-        node = &node->parent->node;
-    }
-
-    return NULL;
-}
-
 static bool scene_surface_at(struct wd_server* server, double lx, double ly, struct wd_view** out_view, struct wlr_surface** out_surface,
                              double* out_sx, double* out_sy) {
     if (out_view)
@@ -74,7 +55,7 @@ static bool scene_surface_at(struct wd_server* server, double lx, double ly, str
         scene_surface = wlr_scene_surface_try_from_buffer(scene_buffer);
     }
 
-    struct wd_view* view = view_from_scene_node(node);
+    struct wd_view* view = wd_scene_view_from_node(server, node);
 
     if (!view)
     {

@@ -233,6 +233,7 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
 
     enum wd_render_result result = WD_RENDER_RESULT_ERROR;
     bool                  built_state = false;
+    bool                  captured_complete_frame = false;
 
     if (!wlr_scene_output_build_state(server->scene_output, &state, NULL))
     {
@@ -299,6 +300,7 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
 
         if (readback_buffer_data_ptr_xrgb8888(server, state.buffer, full_read_width, full_read_height))
         {
+            captured_complete_frame = true;
             result = WD_RENDER_RESULT_FRAME;
             goto commit_only;
         }
@@ -347,6 +349,7 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
     }
 
     wlr_texture_destroy(texture);
+    captured_complete_frame = full_readback;
     result = WD_RENDER_RESULT_FRAME;
 
 commit_only:
@@ -368,5 +371,13 @@ commit_only:
 
 out:
     wlr_output_state_finish(&state);
+
+    if (result == WD_RENDER_RESULT_FRAME && captured_complete_frame)
+    {
+        pthread_mutex_lock(&server->net.lock);
+        server->framebuffer_content_valid = true;
+        pthread_mutex_unlock(&server->net.lock);
+    }
+
     return result;
 }

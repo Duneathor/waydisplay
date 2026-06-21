@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 
 static const char* wd_log_level_name(enum wd_log_level level) {
     switch (level)
@@ -20,10 +21,51 @@ static const char* wd_log_level_name(enum wd_log_level level) {
     return "log";
 }
 
+static bool wd_log_format_timestamp(char* buffer, size_t buffer_size) {
+    if (!buffer || buffer_size == 0)
+    {
+        return false;
+    }
+
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0)
+    {
+        return false;
+    }
+
+    struct tm local_time;
+    if (!localtime_r(&now.tv_sec, &local_time))
+    {
+        return false;
+    }
+
+    const size_t date_length = strftime(buffer, buffer_size, "%Y-%m-%d %H:%M:%S", &local_time);
+    if (date_length == 0 || date_length >= buffer_size)
+    {
+        return false;
+    }
+
+    const int written = snprintf(buffer + date_length, buffer_size - date_length, ".%03ld",
+                                 now.tv_nsec / 1000000L);
+    return written > 0 && (size_t)written < buffer_size - date_length;
+}
+
 void wd_log_message_va(enum wd_log_level level, const char* fmt, va_list args) {
-    fprintf(stderr, "WayDisplay [%s]: ", wd_log_level_name(level));
+    char timestamp[32];
+    const bool have_timestamp = wd_log_format_timestamp(timestamp, sizeof(timestamp));
+
+    flockfile(stderr);
+    if (have_timestamp)
+    {
+        fprintf(stderr, "[%s] WayDisplay [%s]: ", timestamp, wd_log_level_name(level));
+    }
+    else
+    {
+        fprintf(stderr, "WayDisplay [%s]: ", wd_log_level_name(level));
+    }
     vfprintf(stderr, fmt, args);
     fputc('\n', stderr);
+    funlockfile(stderr);
 }
 
 void wd_log_message(enum wd_log_level level, const char* fmt, ...) {

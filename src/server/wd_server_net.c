@@ -1,6 +1,7 @@
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_time.h"
 #include "wd_server.h"
+#include "wd_connection_identity.h"
 #include "wd_async_tcp.h"
 #include "wd_async_udp.h"
 #include "wd_dirty_region_scheduler.h"
@@ -1464,15 +1465,7 @@ void* wd_net_thread_main(void* arg) {
             net->content_epoch = 1;
         }
 
-        if (net->session_id == 0)
-        {
-            net->session_id = (uint8_t)(wd_now_ns() ^ 0x9e3779b9u);
-            if (net->session_id == 0)
-            {
-                net->session_id = 1;
-            }
-        }
-
+        net->session_id = wd_connection_next_session_id(net->session_id);
         session_id = net->session_id;
 
         pthread_mutex_unlock(&net->lock);
@@ -1601,8 +1594,21 @@ void* wd_net_thread_main(void* arg) {
         net->retransmit_queue_count = 0;
         net->summary_dirty_count    = 0;
         wd_stream_invalidate_all_tiles_locked(server);
+        const uint16_t cached_refresh_tiles = wd_stream_queue_cached_full_refresh_locked(server);
+        net->stream_policy.last_frame_send_ns = 0;
         server->last_summary_ns       = 0;
         server->last_delta_summary_ns = 0;
+
+        if (cached_refresh_tiles != 0)
+        {
+            WD_LOG_INFO("queued cached framebuffer refresh for new client: session=%u tiles=%u content_epoch=%llu",
+                        net->session_id, cached_refresh_tiles,
+                        (unsigned long long)net->content_epoch);
+        }
+        else
+        {
+            WD_LOG_DEBUG("no valid cached framebuffer for new client; waiting for scene render");
+        }
 
         net->stats.tcp_hello_rx++;
         net->stats.tcp_config_tx++;

@@ -461,9 +461,15 @@ static void handle_xwayland_surface_unmap(struct wl_listener* listener, void* da
         return;
     }
 
+    bool was_focused = view->server && view->server->focused_view == view;
+
     view->mapped    = false;
     view->activated = false;
     xwayland_view_clear_focus_and_grabs(view);
+    if (was_focused)
+    {
+        wd_scene_focus_topmost(view->server, view);
+    }
 
     if (view->server)
     {
@@ -493,9 +499,15 @@ static void xwayland_view_disassociate(struct wd_view* view) {
         view->xwayland_minimize_rect = NULL;
     }
 
+    bool was_focused = view->server && view->server->focused_view == view;
+
     view->mapped    = false;
     view->activated = false;
     xwayland_view_clear_focus_and_grabs(view);
+    if (was_focused)
+    {
+        wd_scene_focus_topmost(view->server, view);
+    }
 
     if (view->server)
     {
@@ -538,7 +550,7 @@ static void xwayland_view_associate(struct wd_view* view) {
 
     if (!view->scene_tree)
     {
-        view->scene_tree = wlr_scene_tree_create(&view->server->scene->tree);
+        view->scene_tree = wlr_scene_tree_create(view->server->scene_views);
         if (view->scene_tree)
         {
             view->scene_tree->node.data = view;
@@ -756,15 +768,8 @@ static void handle_xwayland_request_minimize(struct wl_listener* listener, void*
 
     if (minimize && view->server->focused_view == view)
     {
-        view->server->focused_view    = NULL;
-        view->server->focused_surface = NULL;
-        wd_keyboard_shortcuts_inhibit_refresh(view->server);
-
-        if (view->server->seat)
-        {
-            wlr_seat_pointer_notify_clear_focus(view->server->seat);
-            wlr_seat_keyboard_notify_clear_focus(view->server->seat);
-        }
+        xwayland_view_clear_focus_and_grabs(view);
+        wd_scene_focus_topmost(view->server, view);
     }
     else if (!minimize)
     {
@@ -823,7 +828,8 @@ static void handle_xwayland_surface_destroy(struct wl_listener* listener, void* 
         return;
     }
 
-    struct wd_server* server = view->server;
+    struct wd_server* server      = view->server;
+    bool              was_focused = server && server->focused_view == view;
 
     if (view->xwayland_surface && view->xwayland_surface->data == view)
     {
@@ -849,6 +855,11 @@ static void handle_xwayland_surface_destroy(struct wl_listener* listener, void* 
     {
         wl_list_remove(&view->link);
         wl_list_init(&view->link);
+    }
+
+    if (was_focused)
+    {
+        wd_scene_focus_topmost(server, view);
     }
 
     if (view->scene_tree)

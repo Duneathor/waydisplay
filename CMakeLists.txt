@@ -149,6 +149,8 @@ add_library(waydisplay_server_tile_policy STATIC
     src/server/wd_async_udp_accounting.c
     src/server/wd_video_transition.c
     src/server/wd_input_correlation.c
+    src/server/wd_scene_policy.c
+    src/server/wd_connection_identity.c
 )
 
 waydisplay_apply_common_warnings(waydisplay_server_tile_policy)
@@ -526,6 +528,14 @@ if(WAYDISPLAY_BUILD_TESTS)
     waydisplay_apply_common_warnings(waydisplay_test_async_udp_accounting)
     target_link_libraries(waydisplay_test_async_udp_accounting PRIVATE waydisplay_server_tile_policy)
     add_test(NAME waydisplay.async_udp_accounting COMMAND waydisplay_test_async_udp_accounting)
+
+
+    add_executable(waydisplay_test_scene_policy
+        tests/test_scene_policy.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_scene_policy)
+    target_link_libraries(waydisplay_test_scene_policy PRIVATE waydisplay_server_tile_policy)
+    add_test(NAME waydisplay.scene_policy COMMAND waydisplay_test_scene_policy)
 
     add_executable(waydisplay_test_transition_integrity
         tests/test_transition_integrity.cpp

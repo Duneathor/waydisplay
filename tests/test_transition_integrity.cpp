@@ -1,3 +1,4 @@
+#include "wd_connection_identity.h"
 #include "udp_transport_lifecycle.hpp"
 #include "wd_video_transition.h"
 #include "wd_input_correlation.h"
@@ -108,7 +109,24 @@ void test_client_video_transition_state_machine() {
 
 } // namespace
 
+
+static void test_connection_session_rotation() {
+    require(wd_connection_next_session_id(0) == 1, "first connection session must be non-zero");
+    require(wd_connection_next_session_id(1) == 2, "reconnect must advance the session ID");
+    require(wd_connection_next_session_id(254) == 255, "session increment before wrap");
+    require(wd_connection_next_session_id(255) == 1, "session wrap must skip zero");
+
+    uint8_t session = 1;
+    for (unsigned i = 0; i < 1024; ++i)
+    {
+        const uint8_t previous = session;
+        session = wd_connection_next_session_id(session);
+        require(session != 0, "rotated session must never be zero");
+        require(session != previous, "rotated session must differ from previous connection");
+    }
+}
 int main() {
+    test_connection_session_rotation();
     test_first_keyframe_reserves_next_epoch_without_early_commit();
     test_nonentry_frames_keep_current_epoch();
     test_udp_fallback_never_reuses_a_socket_still_owned_by_io_uring();
