@@ -300,10 +300,38 @@ void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t 
 
 namespace {
 
-uint64_t texture_pixel_cost_ns(const ClientTextureUploadCostModel& costs, uint64_t pixels) {
-    const __uint128_t scaled = static_cast<__uint128_t>(pixels) * costs.pixel_cost_q16;
+constexpr uint32_t COST_MODEL_MIN_SAMPLES = 4;
+constexpr uint64_t DEFAULT_PIXEL_COST_Q16 = 1ull << 16u;
+constexpr uint64_t DEFAULT_SNAPSHOT_PIXEL_COST_Q16 = 1ull << 16u;
+constexpr uint64_t DEFAULT_UPDATE_CALL_COST_NS = 16384;
+constexpr uint64_t DEFAULT_LOCK_CALL_COST_NS = 131072;
+
+uint64_t scaled_pixel_cost_ns(uint64_t cost_q16, uint64_t pixels) {
+    const __uint128_t scaled = static_cast<__uint128_t>(pixels) * cost_q16;
     const __uint128_t ns = scaled >> 16u;
     return ns > UINT64_MAX ? UINT64_MAX : static_cast<uint64_t>(ns);
+}
+
+uint64_t texture_pixel_cost_ns(const ClientTextureUploadCostModel& costs, uint64_t pixels) {
+    const uint64_t cost_q16 = costs.pixel_samples >= COST_MODEL_MIN_SAMPLES ?
+                                  costs.pixel_cost_q16 : DEFAULT_PIXEL_COST_Q16;
+    return scaled_pixel_cost_ns(cost_q16, pixels);
+}
+
+uint64_t snapshot_pixel_cost_ns(const ClientTextureUploadCostModel& costs, uint64_t pixels) {
+    const uint64_t cost_q16 = costs.snapshot_samples >= COST_MODEL_MIN_SAMPLES ?
+                                  costs.snapshot_pixel_cost_q16 : DEFAULT_SNAPSHOT_PIXEL_COST_Q16;
+    return scaled_pixel_cost_ns(cost_q16, pixels);
+}
+
+uint64_t update_call_cost_ns(const ClientTextureUploadCostModel& costs) {
+    return costs.update_samples >= COST_MODEL_MIN_SAMPLES ?
+               costs.update_call_cost_ns : DEFAULT_UPDATE_CALL_COST_NS;
+}
+
+uint64_t lock_call_cost_ns(const ClientTextureUploadCostModel& costs) {
+    return costs.lock_samples >= COST_MODEL_MIN_SAMPLES ?
+               costs.lock_call_cost_ns : DEFAULT_LOCK_CALL_COST_NS;
 }
 
 uint64_t saturating_add(uint64_t a, uint64_t b) {
@@ -318,32 +346,80 @@ uint64_t saturating_multiply(uint64_t a, uint64_t b) {
     return a > UINT64_MAX / b ? UINT64_MAX : a * b;
 }
 
+uint64_t bounded_ewma(uint64_t current, uint64_t sample, uint32_t samples) {
+    if (samples == 0)
+    {
+        return sample;
+    }
+    if (samples >= COST_MODEL_MIN_SAMPLES && current != 0)
+    {
+        const uint64_t low = std::max<uint64_t>(1, current / 4u);
+        const uint64_t high = current > UINT64_MAX / 4u ? UINT64_MAX : current * 4u;
+        sample = std::clamp(sample, low, high);
+    }
+    return (current * 7ull + sample) / 8ull;
+}
+
+uint64_t upload_path_cost(const ClientTextureUploadCostModel& costs, uint64_t pixels,
+                          uint64_t fixed_call_cost_ns, uint64_t call_count) {
+    uint64_t cost = saturating_add(texture_pixel_cost_ns(costs, pixels),
+                                   snapshot_pixel_cost_ns(costs, pixels));
+    return saturating_add(cost, saturating_multiply(call_count, fixed_call_cost_ns));
+}
+
+bool materially_cheaper(uint64_t candidate, uint64_t current, uint32_t required_saving_percent) {
+    if (current == 0)
+    {
+        return candidate == 0;
+    }
+    const __uint128_t candidate_scaled = static_cast<__uint128_t>(candidate) * 100u;
+    const __uint128_t threshold = static_cast<__uint128_t>(current) * (100u - required_saving_percent);
+    return candidate_scaled <= threshold;
+}
+
 } // namespace
 
 void observe_texture_upload_call(ClientTextureUploadCostModel& model, bool texture_lock,
                                  uint64_t elapsed_ns, uint64_t pixels) {
     uint64_t& call_cost = texture_lock ? model.lock_call_cost_ns : model.update_call_cost_ns;
     uint32_t& call_samples = texture_lock ? model.lock_samples : model.update_samples;
-    const uint64_t pixel_cost = texture_pixel_cost_ns(model, pixels);
+
+    const uint64_t old_call_cost = call_cost;
+    const uint64_t pixel_cost = scaled_pixel_cost_ns(model.pixel_cost_q16, pixels);
     const uint64_t fixed_sample = elapsed_ns > pixel_cost ? elapsed_ns - pixel_cost : 0;
-    call_cost = call_samples == 0 ? fixed_sample : (call_cost * 7ull + fixed_sample) / 8ull;
+    call_cost = bounded_ewma(call_cost, fixed_sample, call_samples);
     if (call_samples != UINT32_MAX)
     {
         ++call_samples;
     }
 
-    if (pixels >= 64u * 1024u && elapsed_ns > call_cost)
+    if (pixels >= 64u * 1024u && elapsed_ns > old_call_cost)
     {
-        const uint64_t variable_ns = elapsed_ns - call_cost;
+        const uint64_t variable_ns = elapsed_ns - old_call_cost;
         const __uint128_t scaled = static_cast<__uint128_t>(variable_ns) << 16u;
         uint64_t sample_q16 = static_cast<uint64_t>(scaled / pixels);
-        sample_q16 = std::clamp<uint64_t>(sample_q16, 1u << 10u, 1000ull << 16u);
-        model.pixel_cost_q16 = model.pixel_samples == 0 ? sample_q16
-                                                        : (model.pixel_cost_q16 * 7ull + sample_q16) / 8ull;
+        sample_q16 = std::clamp<uint64_t>(sample_q16, 1u << 8u, 1000ull << 16u);
+        model.pixel_cost_q16 = bounded_ewma(model.pixel_cost_q16, sample_q16, model.pixel_samples);
         if (model.pixel_samples != UINT32_MAX)
         {
             ++model.pixel_samples;
         }
+    }
+}
+
+void observe_framebuffer_snapshot(ClientTextureUploadCostModel& model, uint64_t elapsed_ns, uint64_t pixels) {
+    if (pixels == 0)
+    {
+        return;
+    }
+    const __uint128_t scaled = static_cast<__uint128_t>(elapsed_ns) << 16u;
+    uint64_t sample_q16 = static_cast<uint64_t>(scaled / pixels);
+    sample_q16 = std::clamp<uint64_t>(sample_q16, 1u << 8u, 1000ull << 16u);
+    model.snapshot_pixel_cost_q16 = bounded_ewma(model.snapshot_pixel_cost_q16, sample_q16,
+                                                 model.snapshot_samples);
+    if (model.snapshot_samples != UINT32_MAX)
+    {
+        ++model.snapshot_samples;
     }
 }
 
@@ -372,16 +448,15 @@ DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRe
         return plan;
     }
 
-    uint64_t best_cost = saturating_add(texture_pixel_cost_ns(costs, plan.source_pixels),
-                                        saturating_multiply(rects.size(), costs.update_call_cost_ns));
+    uint64_t best_cost = upload_path_cost(costs, plan.source_pixels,
+                                          update_call_cost_ns(costs), rects.size());
 
     const ClientDirtyRect bounds = bounding_dirty_rect(rects);
     if (bounds.w != 0 && bounds.h != 0)
     {
         const uint64_t bounds_pixels = static_cast<uint64_t>(bounds.w) * static_cast<uint64_t>(bounds.h);
-        const uint64_t bounds_cost = saturating_add(texture_pixel_cost_ns(costs, bounds_pixels),
-                                                    costs.lock_call_cost_ns);
-        if (bounds_cost < best_cost)
+        const uint64_t bounds_cost = upload_path_cost(costs, bounds_pixels, lock_call_cost_ns(costs), 1);
+        if (materially_cheaper(bounds_cost, best_cost, 15))
         {
             plan.mode = DirtyTextureUploadMode::Bounds;
             plan.bounds = bounds;
@@ -389,9 +464,8 @@ DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRe
         }
     }
 
-    const uint64_t full_cost = saturating_add(texture_pixel_cost_ns(costs, frame_pixels),
-                                              costs.lock_call_cost_ns);
-    if (full_cost < best_cost)
+    const uint64_t full_cost = upload_path_cost(costs, frame_pixels, lock_call_cost_ns(costs), 1);
+    if (materially_cheaper(full_cost, best_cost, 20))
     {
         plan.mode = DirtyTextureUploadMode::Full;
     }
@@ -399,24 +473,6 @@ DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRe
     return plan;
 }
 
-
-FramebufferUploadPath choose_framebuffer_upload_path(const DirtyTextureUploadPlan& plan,
-                                                      size_t rect_count,
-                                                      uint64_t recent_lock_wait_ns) {
-    if (plan.mode != DirtyTextureUploadMode::Rects)
-    {
-        return FramebufferUploadPath::Staged;
-    }
-    constexpr size_t DIRECT_RECT_LIMIT = 4;
-    constexpr uint64_t DIRECT_PIXEL_LIMIT = 64u * 1024u;
-    constexpr uint64_t CONTENTION_LIMIT_NS = 200000ull;
-    if (rect_count <= DIRECT_RECT_LIMIT && plan.source_pixels <= DIRECT_PIXEL_LIMIT &&
-        recent_lock_wait_ns < CONTENTION_LIMIT_NS)
-    {
-        return FramebufferUploadPath::Direct;
-    }
-    return FramebufferUploadPath::Staged;
-}
 
 
 void claim_pending_tile_generations(std::vector<uint64_t>& pending,

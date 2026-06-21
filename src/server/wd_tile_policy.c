@@ -54,6 +54,63 @@ uint32_t wd_tile_wire_bytes_for_payload(uint32_t payload_size, uint16_t udp_payl
     return wire_bytes > UINT32_MAX ? 0 : (uint32_t)wire_bytes;
 }
 
+static uint16_t wd_percent_clamped(uint64_t numerator, uint64_t denominator) {
+    if (denominator == 0)
+    {
+        return 0;
+    }
+    const uint64_t percent = numerator > UINT64_MAX / 100u
+                                 ? UINT64_MAX
+                                 : (numerator * 100u) / denominator;
+    return percent > UINT16_MAX ? UINT16_MAX : (uint16_t)percent;
+}
+
+struct wd_video_auto_entry_result wd_video_auto_entry_evaluate(
+    const struct wd_video_auto_entry_metrics* metrics) {
+    struct wd_video_auto_entry_result result;
+    memset(&result, 0, sizeof(result));
+    if (!metrics || metrics->frame_samples == 0 || metrics->changed_frame_samples == 0)
+    {
+        return result;
+    }
+
+    result.changed_frame_percent = wd_percent_clamped(metrics->changed_frame_samples, metrics->frame_samples);
+    result.changed_dirty_percent = wd_percent_clamped(
+        metrics->dirty_coverage_per_mille_sum, metrics->changed_frame_samples * 10u);
+    result.tile_budget_percent = wd_percent_clamped(metrics->tile_wire_bytes,
+                                                     metrics->tile_budget_bytes_per_second);
+
+    const uint16_t min_dirty = metrics->minimum_dirty_percent != 0
+                                   ? metrics->minimum_dirty_percent
+                                   : 60u;
+    uint16_t motion_dirty_floor = min_dirty / 3u;
+    if (motion_dirty_floor < 15u)
+    {
+        motion_dirty_floor = 15u;
+    }
+    const uint16_t peak_dirty_percent = (uint16_t)(metrics->dirty_coverage_per_mille_peak / 10u);
+    uint16_t peak_floor = min_dirty;
+    if (peak_floor < 50u)
+    {
+        peak_floor = 50u;
+    }
+
+    const bool sustained_motion = result.changed_frame_percent >= 25u;
+    const bool broad_motion = result.changed_dirty_percent >= min_dirty;
+    const bool concentrated_motion = result.changed_dirty_percent >= motion_dirty_floor &&
+                                     peak_dirty_percent >= peak_floor;
+    const bool wire_pressure = metrics->tile_budget_bytes_per_second != 0 &&
+                               result.tile_budget_percent >= 65u;
+    const bool fps_suppressed = metrics->requested_capture_fps != 0 &&
+                                (uint32_t)metrics->adaptive_capture_fps * 100u <
+                                    (uint32_t)metrics->requested_capture_fps * 85u;
+    const bool queue_pressure = metrics->send_pressure_events != 0;
+
+    result.candidate = sustained_motion && (broad_motion || concentrated_motion) &&
+                       (wire_pressure || fps_suppressed || queue_pressure);
+    return result;
+}
+
 bool wd_tile_compression_is_worthwhile(uint32_t compressed_size, uint32_t uncompressed_size,
                                        uint16_t udp_payload_target, uint16_t packet_header_size,
                                        uint16_t first_packet_header_size, uint32_t minimum_savings_bytes,

@@ -213,8 +213,11 @@ int main(int argc, char** argv) {
         }
         else if (std::strcmp(argv[i], "--size") == 0)
         {
-            if (i + 1 >= argc || !parse_size(argv[i + 1], desired_width, desired_height))
+            if (i + 1 >= argc || !parse_size(argv[i + 1], desired_width, desired_height) ||
+                desired_width > WD_MAX_RENDER_WIDTH || desired_height > WD_MAX_RENDER_HEIGHT)
             {
+                WD_LOG_ERROR("invalid --size; maximum render size is %ux%u",
+                             WD_MAX_RENDER_WIDTH, WD_MAX_RENDER_HEIGHT);
                 usage(argv[0]);
                 return 1;
             }

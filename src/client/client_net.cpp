@@ -1191,6 +1191,7 @@ void ensure_retransmit_tracking_locked(ClientState& state, uint16_t total_tiles)
     if (reset_summary_pending)
     {
         state.retx_summary_pending_tiles.clear();
+        state.retx_summary_due_queue.clear();
         state.retx_summary_pending_count = 0;
     }
 }
@@ -1211,10 +1212,15 @@ void clear_summary_pending_locked(ClientState& state, uint16_t tile_id) {
     state.retx_summary_pending_count = static_cast<uint32_t>(state.retx_summary_pending_tiles.size());
 }
 
+void schedule_summary_pending_due_locked(ClientState& state, uint16_t tile_id, uint64_t generation, uint64_t due_ns) {
+    state.retx_summary_due_queue.push_back({tile_id, generation, due_ns});
+}
+
 void set_summary_pending_locked(ClientState& state, uint16_t tile_id, uint64_t generation, uint64_t now_ns) {
     if (generation == 0 || tile_id >= state.retx_summary_pending_generation.size() ||
         tile_id >= state.retx_summary_pending_since_ns.size() ||
-        tile_id >= state.retx_summary_pending_position.size())
+        tile_id >= state.retx_summary_pending_position.size() ||
+        state.retx_summary_pending_generation[tile_id] >= generation)
     {
         return;
     }
@@ -1226,6 +1232,9 @@ void set_summary_pending_locked(ClientState& state, uint16_t tile_id, uint64_t g
     }
     state.retx_summary_pending_generation[tile_id] = generation;
     state.retx_summary_pending_since_ns[tile_id] = now_ns;
+    const uint64_t grace_ns = summary_retransmit_grace_ns(state);
+    schedule_summary_pending_due_locked(state, tile_id, generation,
+                                        now_ns > UINT64_MAX - grace_ns ? UINT64_MAX : now_ns + grace_ns);
     state.retx_summary_pending_count = static_cast<uint32_t>(state.retx_summary_pending_tiles.size());
 }
 
@@ -1472,63 +1481,70 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
     }
 
     ensure_retransmit_tracking_locked(state, total_tiles);
-    if (state.retx_summary_pending_count == 0)
+    if (state.retx_summary_pending_count == 0 || state.retx_summary_due_queue.empty())
     {
         return;
     }
 
     state.stats.summary_promote_passes.fetch_add(1, std::memory_order_relaxed);
-    const std::vector<uint16_t> pending_tiles = state.retx_summary_pending_tiles;
-    state.stats.summary_promote_scanned.fetch_add(pending_tiles.size(), std::memory_order_relaxed);
-
     const uint64_t now_ns = wd_now_ns();
     std::vector<SummaryRepairCandidate> candidates;
-    candidates.reserve(pending_tiles.size());
     uint64_t min_candidate_age_ns = UINT64_MAX;
+    uint64_t scanned = 0;
 
-    for (uint16_t tile_id : pending_tiles)
+    while (!state.retx_summary_due_queue.empty() && state.retx_summary_due_queue.front().due_ns <= now_ns)
     {
-        if (tile_id >= total_tiles)
-        {
-            continue;
-        }
-        const uint64_t generation = state.retx_summary_pending_generation[tile_id];
-        const uint64_t since_ns   = state.retx_summary_pending_since_ns[tile_id];
+        const ClientSummaryRepairDue due = state.retx_summary_due_queue.front();
+        state.retx_summary_due_queue.pop_front();
+        scanned++;
 
-        if (generation == 0 || since_ns == 0)
+        if (due.tile_id >= total_tiles ||
+            state.retx_summary_pending_generation[due.tile_id] != due.generation)
         {
             continue;
         }
 
-        if (state.received_generation[tile_id] >= generation)
+        const uint64_t since_ns = state.retx_summary_pending_since_ns[due.tile_id];
+        if (since_ns == 0)
         {
-            clear_summary_pending_locked(state, tile_id);
+            continue;
+        }
+
+        if (state.received_generation[due.tile_id] >= due.generation)
+        {
+            clear_summary_pending_locked(state, due.tile_id);
             state.stats.summary_retx_tiles_stale_dropped.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
 
-        if (now_ns - since_ns < summary_retransmit_grace_ns(state))
+        uint64_t retry_due_ns = 0;
+        if (state.retx_inflight_generation[due.tile_id] >= due.generation &&
+            state.retx_inflight_since_ns[due.tile_id] != 0)
         {
-            continue;
+            const uint64_t grace_ns = retransmit_inflight_grace_ns_locked(state);
+            retry_due_ns = state.retx_inflight_since_ns[due.tile_id] > UINT64_MAX - grace_ns ?
+                               UINT64_MAX : state.retx_inflight_since_ns[due.tile_id] + grace_ns;
         }
-
-        if (state.retx_inflight_generation[tile_id] >= generation && state.retx_inflight_since_ns[tile_id] != 0 &&
-            now_ns - state.retx_inflight_since_ns[tile_id] < retransmit_inflight_grace_ns_locked(state))
+        if (state.retx_last_requested_generation[due.tile_id] >= due.generation &&
+            state.retx_last_request_ns[due.tile_id] != 0)
         {
-            continue;
+            const uint64_t rerequest_ns = retransmit_rerequest_interval_ns(state);
+            const uint64_t request_due_ns = state.retx_last_request_ns[due.tile_id] > UINT64_MAX - rerequest_ns ?
+                                                UINT64_MAX : state.retx_last_request_ns[due.tile_id] + rerequest_ns;
+            retry_due_ns = std::max(retry_due_ns, request_due_ns);
         }
-
-        if (state.retx_last_requested_generation[tile_id] >= generation && state.retx_last_request_ns[tile_id] != 0 &&
-            now_ns - state.retx_last_request_ns[tile_id] < retransmit_rerequest_interval_ns(state))
+        if (retry_due_ns > now_ns)
         {
+            schedule_summary_pending_due_locked(state, due.tile_id, due.generation, retry_due_ns);
             continue;
         }
 
         const uint64_t candidate_age_ns = now_ns >= since_ns ? now_ns - since_ns : 0;
         min_candidate_age_ns = std::min(min_candidate_age_ns, candidate_age_ns);
-        candidates.push_back({tile_id, generation, since_ns});
+        candidates.push_back({due.tile_id, due.generation, since_ns});
     }
 
+    state.stats.summary_promote_scanned.fetch_add(scanned, std::memory_order_relaxed);
     if (candidates.empty())
     {
         return;
@@ -1536,14 +1552,36 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
 
     state.stats.summary_promote_candidates.fetch_add(candidates.size(), std::memory_order_relaxed);
 
-    const size_t pressure_deferred = limit_repair_candidates_under_pressure_locked(state, total_tiles, candidates);
-    if (pressure_deferred != 0)
+    if (client_repair_pressure_high_locked(state, total_tiles) &&
+        candidates.size() > WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES)
     {
-        state.stats.summary_retx_pressure_dropped.fetch_add(pressure_deferred, std::memory_order_relaxed);
+        std::sort(candidates.begin(), candidates.end(), [](const SummaryRepairCandidate& a,
+                                                           const SummaryRepairCandidate& b) {
+            if (a.pending_since_ns != b.pending_since_ns)
+            {
+                return a.pending_since_ns < b.pending_since_ns;
+            }
+            return a.tile_id < b.tile_id;
+        });
+        const size_t keep = WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES;
+        for (size_t i = keep; i < candidates.size(); ++i)
+        {
+            schedule_summary_pending_due_locked(state, candidates[i].tile_id, candidates[i].generation,
+                                                now_ns + 10000000ull);
+        }
+        state.stats.summary_retx_pressure_dropped.fetch_add(candidates.size() - keep,
+                                                            std::memory_order_relaxed);
+        candidates.resize(keep);
     }
 
     if (large_summary_repair_batch_locked(state, total_tiles, candidates.size(), min_candidate_age_ns, now_ns, true))
     {
+        const uint64_t retry_ns = std::max<uint64_t>(now_ns + 10000000ull,
+                                                     state.summary_large_repair_not_before_ns);
+        for (const SummaryRepairCandidate& candidate : candidates)
+        {
+            schedule_summary_pending_due_locked(state, candidate.tile_id, candidate.generation, retry_ns);
+        }
         return;
     }
 
@@ -1680,10 +1718,12 @@ void discard_pending_video_frame(ClientState& state) {
     }
 }
 
-void reset_video_decoder(ClientState& state, const char* reason) {
+void reset_video_decoder(ClientState& state, const char* reason,
+                         ClientVideoPhase next_phase = ClientVideoPhase::AwaitingKeyframe) {
     std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
     client_video_decoder_reset(state.video_decoder);
-    state.video_decoder_needs_keyframe = true;
+    state.video_decoder_needs_keyframe = next_phase != ClientVideoPhase::Video;
+    state.video_phase = next_phase;
     state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
     state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
     state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
@@ -1837,8 +1877,8 @@ bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_
 
 bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder,
                                  const ClientDecodedVideoFrame& frame) {
-    if (!decoder || !frame.pixels || frame.width == 0 || frame.height == 0 ||
-        frame.stride_pixels < frame.width)
+    if (!decoder || frame.format != ClientVideoPixelFormat::IYUV ||
+        frame.width == 0 || frame.height == 0)
     {
         return false;
     }
@@ -1856,7 +1896,6 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
         return false;
     }
 
-    const size_t expected_pixels = static_cast<size_t>(frame.width) * frame.height;
     {
         std::lock_guard<std::mutex> content_lock(state.remote_content_mutex);
         if (frame.content_epoch != state.remote_content_epoch || state.remote_content_owner != ClientContentOwner::Video)
@@ -1867,20 +1906,27 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
         std::lock_guard<std::mutex> generation_lock(state.generation_mutex);
         std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
         /* Exchange ownership with the decoder instead of copying the decoded
-         * BGRA frame. The decoder receives a previously-used buffer and can
+         * IYUV frame. The decoder receives a previously-used buffer and can
          * reuse it on the next frame. */
-        if (!client_video_decoder_swap_output_pixels(decoder, state.video_framebuffer))
+        if (!client_video_decoder_swap_output_frame(decoder, state.video_framebuffer))
         {
             return false;
         }
-        if (state.video_framebuffer.size() != expected_pixels)
+        if (!state.video_framebuffer.valid() || state.video_framebuffer.width != frame.width ||
+            state.video_framebuffer.height != frame.height)
         {
             /* Restore the decoder-owned buffer before reporting failure. */
-            (void)client_video_decoder_swap_output_pixels(decoder, state.video_framebuffer);
+            (void)client_video_decoder_swap_output_frame(decoder, state.video_framebuffer);
             return false;
         }
 
-        const uint64_t video_epoch = state.stream_ownership.begin_video_frame();
+        const ClientContentOwnershipSnapshot ownership = state.stream_ownership.snapshot();
+        if (ownership.owner != ClientContentOwner::Video)
+        {
+            (void)client_video_decoder_swap_output_frame(decoder, state.video_framebuffer);
+            return false;
+        }
+        const uint64_t video_epoch = ownership.epoch;
         state.pending_dirty_tiles.clear();
         state.pending_dirty_rect_count.store(0, std::memory_order_release);
         std::fill(state.pending_present_generation.begin(), state.pending_present_generation.end(), 0);
@@ -1914,33 +1960,41 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         state.stats.video_stale_frames_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    if (content_decision == ClientContentEpochDecision::Advanced && content_owner == ClientContentOwner::Video)
+    const bool resize = (packet.header.flags & WD_VIDEO_FRAME_RESIZE) != 0;
+    const bool end_of_stream = (packet.header.flags & WD_VIDEO_FRAME_END_OF_STREAM) != 0;
+    const bool keyframe = (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
+    ClientVideoTransitionDecision transition{};
     {
-        reset_video_decoder(state, "video content epoch advanced");
+        std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
+        transition = client_video_transition(state.video_phase,
+                                             content_decision == ClientContentEpochDecision::Advanced &&
+                                                 content_owner == ClientContentOwner::Video,
+                                             end_of_stream, resize, keyframe,
+                                             packet.header.data_size != 0);
+        if (transition.reset_decoder)
+        {
+            client_video_decoder_reset(state.video_decoder);
+            state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
+            state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
+            state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
+            WD_LOG_INFO("video decoder reset: reason=%s", resize ? "video resize" :
+                        end_of_stream ? "video end-of-stream" : "video content epoch advanced");
+        }
+        state.video_phase = transition.next_phase;
+        state.video_decoder_needs_keyframe = state.video_phase != ClientVideoPhase::Video;
     }
 
-    if ((packet.header.flags & WD_VIDEO_FRAME_RESIZE) != 0)
+    if (end_of_stream)
     {
-        /* The following SERVER_CONFIG carries the authoritative session and
-         * geometry. Avoid a duplicate decoder teardown here; just require the
-         * next video payload after the config reset to be a keyframe. */
-        {
-            std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
-            state.video_decoder_needs_keyframe = true;
-        }
-        if (packet.header.data_size == 0)
-        {
-            return;
-        }
-    }
-    else if ((packet.header.flags & WD_VIDEO_FRAME_END_OF_STREAM) != 0)
-    {
-        reset_video_decoder(state, "video end-of-stream");
         state.video_unavailable.store(true, std::memory_order_release);
-        if (packet.header.data_size == 0)
+    }
+    if (!transition.accept_payload)
+    {
+        if (packet.header.data_size != 0 && !keyframe)
         {
-            return;
+            state.stats.video_need_keyframe_drops.fetch_add(1, std::memory_order_relaxed);
         }
+        return;
     }
 
     state.stats.video_data_frames_rx.fetch_add(1, std::memory_order_relaxed);
@@ -1988,6 +2042,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         if (!client_video_decoder_configure(state.video_decoder, config))
         {
             state.video_decoder_needs_keyframe = true;
+            state.video_phase = ClientVideoPhase::AwaitingKeyframe;
             state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
             return;
         }
@@ -2022,9 +2077,10 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         {
             state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
             state.video_decoder_needs_keyframe = true;
+            state.video_phase = ClientVideoPhase::AwaitingKeyframe;
             return;
         }
-        if (!frame.pixels)
+        if (frame.format == ClientVideoPixelFormat::None)
         {
             return;
         }
@@ -2034,10 +2090,12 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         {
             state.stats.video_publish_failed.fetch_add(1, std::memory_order_relaxed);
             state.video_decoder_needs_keyframe = true;
+            state.video_phase = ClientVideoPhase::AwaitingKeyframe;
             return;
         }
 
         state.video_decoder_needs_keyframe = false;
+        state.video_phase = ClientVideoPhase::Video;
     }
 
     /* Actual video presentation is recorded by the SDL render thread after
@@ -2059,7 +2117,10 @@ void video_tcp_reader_main(ClientState* state) {
         uint8_t* payload      = nullptr;
         uint32_t payload_size = 0;
 
-        if (!wd_recv_tcp_message(fd, &message_type, &payload, &payload_size))
+        const uint32_t video_payload_limit =
+            static_cast<uint32_t>(sizeof(wd_video_frame_payload_header)) + WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES;
+        if (!wd_recv_tcp_message_limited(fd, video_payload_limit,
+                                         &message_type, &payload, &payload_size))
         {
             break;
         }
@@ -2079,7 +2140,7 @@ void video_tcp_reader_main(ClientState* state) {
         std::free(payload);
     }
 
-    reset_video_decoder(*state, "video TCP channel closed");
+    reset_video_decoder(*state, "video TCP channel closed", ClientVideoPhase::Tiles);
     discard_pending_video_frame(*state);
     {
         std::lock_guard<std::mutex> lock(state->video_tcp_mutex);
@@ -2239,6 +2300,7 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         state.retx_summary_pending_since_ns.assign(state.tile_count(), 0);
         state.retx_summary_pending_tiles.clear();
         state.retx_summary_pending_position.assign(state.tile_count(), UINT32_MAX);
+        state.retx_summary_due_queue.clear();
         state.retx_summary_pending_count = 0;
         state.next_summary_promote_ns = 0;
         state.summary_large_repair_not_before_ns = 0;

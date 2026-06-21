@@ -4,6 +4,7 @@
 #include "wd_client.hpp"
 #include "render_wakeup.hpp"
 #include "stream_ownership.hpp"
+#include "video_decoder.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -198,23 +199,45 @@ void test_render_wakeup_sequence_and_wait() {
     require(wake.wait_for_change(observed, 500), "a signal before waiting should not be lost");
 }
 
+void test_iyuv_frame_buffer_layout_validation() {
+    ClientVideoFrameBuffer frame{};
+    frame.format = ClientVideoPixelFormat::IYUV;
+    frame.width = 5;
+    frame.height = 3;
+    frame.y_pitch = 5;
+    frame.uv_pitch = 3;
+    frame.u_offset = 15;
+    frame.v_offset = 21;
+    frame.bytes.resize(27);
+    require(frame.valid(), "IYUV frame should accept odd visible dimensions with rounded chroma planes");
+
+    frame.v_offset--;
+    require(!frame.valid(), "overlapping chroma planes must be rejected");
+}
+
 void test_stream_ownership_epochs() {
     ClientStreamOwnership ownership;
     const ClientContentOwnershipSnapshot initial = ownership.snapshot();
     require(initial.owner == ClientContentOwner::Tiles, "initial owner should be tiles");
 
-    const uint64_t video_epoch = ownership.begin_video_frame();
-    require(video_epoch > initial.epoch, "video frame should advance ownership epoch");
+    const uint64_t video_epoch = ownership.begin_video_stream();
+    require(video_epoch > initial.epoch, "video entry should advance ownership epoch");
     require(ownership.is_current(video_epoch, ClientContentOwner::Video), "video epoch should be current");
 
-    const uint64_t next_video_epoch = ownership.begin_video_frame();
-    require(next_video_epoch > video_epoch, "newer video frame should supersede older frame");
-    require(!ownership.is_current(video_epoch, ClientContentOwner::Video), "older video frame should become stale");
+    const uint64_t same_video_epoch = ownership.begin_video_stream();
+    require(same_video_epoch == video_epoch,
+            "new video frames must not invalidate an upload from the same stream");
+    require(ownership.is_current(video_epoch, ClientContentOwner::Video),
+            "same-stream video uploads should remain current");
+
+    const uint64_t reset_video_epoch = ownership.reset_to_video();
+    require(reset_video_epoch > video_epoch,
+            "a remote video content-epoch change must invalidate older uploads");
 
     const uint64_t tile_epoch = ownership.end_video_stream();
-    require(tile_epoch > next_video_epoch, "end-of-stream should advance ownership epoch");
+    require(tile_epoch > reset_video_epoch, "end-of-stream should advance ownership epoch");
     require(ownership.is_current(tile_epoch, ClientContentOwner::Tiles), "tiles should own content after end-of-stream");
-    require(!ownership.is_current(next_video_epoch, ClientContentOwner::Video), "video should be stale after end-of-stream");
+    require(!ownership.is_current(reset_video_epoch, ClientContentOwner::Video), "video should be stale after end-of-stream");
 }
 
 void test_remote_content_epochs_reject_late_cross_transport_packets() {
@@ -347,6 +370,8 @@ void test_texture_upload_cost_calibration_changes_plan() {
     ClientTextureUploadCostModel low_call_cost{};
     low_call_cost.update_call_cost_ns = 1;
     low_call_cost.lock_call_cost_ns = 1000000;
+    low_call_cost.update_samples = 4;
+    low_call_cost.lock_samples = 4;
     DirtyTextureUploadPlan sparse = plan_dirty_texture_upload(rects, 1024, 1024, low_call_cost);
     require(sparse.mode == DirtyTextureUploadMode::Rects,
             "low update-call overhead should preserve sparse rectangles");
@@ -364,22 +389,21 @@ void test_texture_upload_cost_calibration_changes_plan() {
     require(observed.update_call_cost_ns > 100000, "slow update call should raise calibrated fixed cost");
     observe_texture_upload_call(observed, true, 700000, 1024);
     require(observed.lock_samples == 1, "lock observation should be counted");
+
+    ClientTextureUploadCostModel robust{};
+    for (int i = 0; i < 8; ++i)
+    {
+        observe_texture_upload_call(robust, false, 100000, 1024);
+        observe_framebuffer_snapshot(robust, 50000, 65536);
+    }
+    const uint64_t fixed_before_spike = robust.update_call_cost_ns;
+    observe_texture_upload_call(robust, false, 100000000, 1024);
+    require(robust.update_call_cost_ns < fixed_before_spike * 2,
+            "one upload stall should be bounded instead of dominating the model");
+    require(robust.snapshot_samples == 8, "snapshot observations should be tracked independently");
 }
 
-void test_adaptive_framebuffer_upload_path() {
-    DirtyTextureUploadPlan plan{};
-    plan.mode = DirtyTextureUploadMode::Rects;
-    plan.source_pixels = 4096;
-    require(choose_framebuffer_upload_path(plan, 2, 0) == FramebufferUploadPath::Direct,
-            "small uncontended sparse upload should remain direct");
-    require(choose_framebuffer_upload_path(plan, 2, 300000) == FramebufferUploadPath::Staged,
-            "contended sparse upload should stage");
-    require(choose_framebuffer_upload_path(plan, 8, 0) == FramebufferUploadPath::Staged,
-            "many sparse rectangles should stage");
-    plan.mode = DirtyTextureUploadMode::Bounds;
-    require(choose_framebuffer_upload_path(plan, 1, 0) == FramebufferUploadPath::Staged,
-            "bounding upload should stage");
-}
+
 
 } // namespace
 
@@ -392,13 +416,13 @@ int main() {
     test_dirty_tile_grid_randomized_exact_coverage();
     test_video_upload_preserves_pending_tile_work();
     test_render_wakeup_sequence_and_wait();
+    test_iyuv_frame_buffer_layout_validation();
     test_stream_ownership_epochs();
     test_remote_content_epochs_reject_late_cross_transport_packets();
     test_present_telemetry_claims_only_matching_generation_batch();
     test_present_telemetry_input_sequence_set_is_bounded();
     test_present_telemetry_counts_large_tile_completion_once();
     test_tile_generation_claim_commit_and_requeue();
-    test_adaptive_framebuffer_upload_path();
     test_texture_upload_cost_calibration_changes_plan();
     test_summary_pending_index_tracks_only_active_tiles();
     return 0;

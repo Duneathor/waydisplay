@@ -1,10 +1,16 @@
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_tile.h"
+#include "waydisplay/wd_config.h"
+#include "waydisplay/wd_net.h"
 
 #include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <thread>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -142,6 +148,23 @@ void test_rejects_invalid_extensions_and_flags() {
     wire.content_epoch = 0;
     std::memcpy(packet.data(), &wire, sizeof(wire));
     require(!wd_udp_tile_packet_decode(packet.data(), packet.size(), &decoded), "zero content epoch should be rejected");
+
+    wire.content_epoch = 5;
+    wire.session_id = 0;
+    std::memcpy(packet.data(), &wire, sizeof(wire));
+    require(!wd_udp_tile_packet_decode(packet.data(), packet.size(), &decoded), "zero tile session should be rejected");
+
+    wire.session_id = 1;
+    wire.tile_size = 0xff;
+    std::memcpy(packet.data(), &wire, sizeof(wire));
+    require(!wd_udp_tile_packet_decode(packet.data(), packet.size(), &decoded), "unknown tile size should be rejected");
+
+    wire.tile_size = WD_TILE_16x16;
+    wire.payload_size = 2;
+    wire.tile_payload_size = 1;
+    std::memcpy(packet.data(), &wire, sizeof(wire));
+    require(!wd_udp_tile_packet_decode(packet.data(), packet.size(), &decoded),
+            "a fragment cannot exceed its declared tile payload");
 }
 
 void test_decode_rejects_trailing_bytes_and_reserved_data() {
@@ -241,6 +264,12 @@ void test_client_hello_strict_validation() {
     require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello)),
             "reserved client hello bits should be rejected");
     hello.video_reserved = 0;
+    hello.desired_width = WD_MAX_RENDER_WIDTH + 1u;
+    hello.desired_height = 1080;
+    require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello)),
+            "client hello should reject render geometry above the protocol limit");
+    hello.desired_width = 0;
+    hello.desired_height = 0;
     hello.capabilities |= 0x80000000u;
     require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello)),
             "unknown client capabilities should be rejected");
@@ -257,6 +286,7 @@ void test_video_frame_strict_validation() {
     frame.codec = WD_VIDEO_CODEC_H265;
     frame.flags = WD_VIDEO_FRAME_KEYFRAME | WD_VIDEO_FRAME_CONFIG;
     frame.frame_id = 1;
+    frame.pts_usec = 1;
     frame.width = 1280;
     frame.height = 720;
     frame.coded_width = 1280;
@@ -273,12 +303,23 @@ void test_video_frame_strict_validation() {
             "config video frames must also be keyframes");
 
     frame.flags = WD_VIDEO_FRAME_END_OF_STREAM;
+    frame.frame_id = 0;
     frame.data_size = 0;
     require(wd_video_frame_payload_size_is_valid(&frame, sizeof(frame)),
             "canonical video EOS should validate");
     frame.flags |= WD_VIDEO_FRAME_KEYFRAME;
     require(!wd_video_frame_payload_size_is_valid(&frame, sizeof(frame)),
             "control frames cannot also be keyframes");
+
+    frame.flags = WD_VIDEO_FRAME_RESIZE;
+    require(!wd_video_frame_payload_size_is_valid(&frame, sizeof(frame)),
+            "resize controls must also terminate the old video stream");
+    frame.flags = WD_VIDEO_FRAME_END_OF_STREAM | WD_VIDEO_FRAME_RESIZE;
+    require(wd_video_frame_payload_size_is_valid(&frame, sizeof(frame)),
+            "canonical resize EOS should validate");
+    frame.frame_id = 7;
+    require(!wd_video_frame_payload_size_is_valid(&frame, sizeof(frame)),
+            "control frames must not carry a data sequence id");
 }
 
 
@@ -315,6 +356,56 @@ void test_input_payload_strict_validation() {
             "unknown pointer modifier bits should be rejected");
 }
 
+void test_channel_specific_tcp_payload_limits() {
+    int sockets[2] = {-1, -1};
+    require(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0, "create TCP framing socket pair");
+
+    const uint32_t large_size = WD_TCP_MAX_PAYLOAD_SIZE + 4096u;
+    std::vector<uint8_t> payload(large_size, 0x5a);
+    std::thread sender([&]() {
+        require(wd_send_tcp_message(sockets[0], WD_MSG_VIDEO_FRAME, payload.data(), large_size),
+                "send channel-specific large frame");
+        close(sockets[0]);
+    });
+
+    uint16_t type = 0;
+    uint8_t* received = nullptr;
+    uint32_t received_size = 0;
+    require(wd_recv_tcp_message_limited(sockets[1], large_size, &type, &received, &received_size),
+            "video channel limit should allow payloads above the control limit");
+    require(type == WD_MSG_VIDEO_FRAME && received_size == large_size,
+            "large channel payload should retain framing metadata");
+    require(received && received[0] == 0x5a && received[large_size - 1] == 0x5a,
+            "large channel payload should be received intact");
+    std::free(received);
+    close(sockets[1]);
+    sender.join();
+
+    require(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0, "create limit rejection socket pair");
+    wd_tcp_header header{};
+    header.magic = WD_TCP_MAGIC;
+    header.protocol_version = WD_PROTOCOL_VERSION;
+    header.message_type = WD_MSG_VIDEO_FRAME;
+    header.payload_size = WD_TCP_MAX_PAYLOAD_SIZE + 1u;
+    require(wd_send_all(sockets[0], &header, sizeof(header)), "send oversized control header");
+    received = reinterpret_cast<uint8_t*>(1);
+    received_size = 1;
+    require(!wd_recv_tcp_message(sockets[1], &type, &received, &received_size),
+            "default control receiver should retain the strict 2 MiB limit");
+    require(received == nullptr && received_size == 0, "failed receive should clear outputs");
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
+void test_tile_count_helpers_reject_overflow() {
+    require(wd_total_tiles_for_size_with_tile(WD_MAX_RENDER_WIDTH, WD_MAX_RENDER_HEIGHT, 16, 16) != 0,
+            "maximum supported render geometry should fit the 16-bit tile grid");
+    require(wd_total_tiles_for_size_with_tile(7680, 4320, 16, 16) == 0,
+            "8K base-tile count must be rejected instead of truncating");
+    require(wd_tiles_for_width_with_tile(UINT32_MAX, 1) == 0,
+            "per-axis tile count overflow must be rejected");
+}
+
 } // namespace
 
 int main() {
@@ -329,5 +420,7 @@ int main() {
     test_client_hello_strict_validation();
     test_video_frame_strict_validation();
     test_input_payload_strict_validation();
+    test_channel_specific_tcp_payload_limits();
+    test_tile_count_helpers_reject_overflow();
     return 0;
 }

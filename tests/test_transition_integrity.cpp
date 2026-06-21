@@ -1,6 +1,7 @@
 #include "udp_transport_lifecycle.hpp"
 #include "wd_video_transition.h"
 #include "wd_input_correlation.h"
+#include "video_transition.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -77,6 +78,34 @@ void test_input_correlation_commits_only_matching_successful_delivery() {
             "stale completion cannot alter current correlation state");
 }
 
+void test_client_video_transition_state_machine() {
+    using namespace waydisplay;
+
+    ClientVideoTransitionDecision decision = client_video_transition(
+        ClientVideoPhase::Tiles, true, false, false, false, true);
+    require(!decision.accept_payload && decision.next_phase == ClientVideoPhase::AwaitingKeyframe,
+            "a video epoch cannot begin on a non-keyframe");
+    require(decision.reset_decoder, "a new video epoch should reset a tile-owned decoder");
+
+    decision = client_video_transition(ClientVideoPhase::AwaitingKeyframe,
+                                       true, false, false, true, true);
+    require(decision.accept_payload && decision.next_phase == ClientVideoPhase::Video,
+            "the first matching keyframe should enter video ownership");
+    require(!decision.reset_decoder,
+            "a config reset followed by the same transition keyframe must not reset twice");
+
+    decision = client_video_transition(ClientVideoPhase::Video,
+                                       false, true, true, false, false);
+    require(!decision.accept_payload && decision.next_phase == ClientVideoPhase::AwaitingKeyframe,
+            "resize EOS should wait for the next configured keyframe");
+    require(decision.reset_decoder, "resize should invalidate an active decoder once");
+
+    decision = client_video_transition(ClientVideoPhase::AwaitingKeyframe,
+                                       false, false, true, false, false);
+    require(!decision.reset_decoder,
+            "a duplicate resize control must not tear down an already-reset decoder");
+}
+
 } // namespace
 
 int main() {
@@ -84,5 +113,6 @@ int main() {
     test_nonentry_frames_keep_current_epoch();
     test_udp_fallback_never_reuses_a_socket_still_owned_by_io_uring();
     test_input_correlation_commits_only_matching_successful_delivery();
+    test_client_video_transition_state_machine();
     return 0;
 }

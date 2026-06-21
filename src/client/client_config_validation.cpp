@@ -38,8 +38,8 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
         return fail(ClientConfigValidationError::MissingConfigurationEpoch, out_error);
     }
 
-    if (config.width == 0 || config.height == 0 || config.width > WD_CLIENT_MAX_DIMENSION ||
-        config.height > WD_CLIENT_MAX_DIMENSION)
+    if (config.width == 0 || config.height == 0 || config.width > WD_MAX_RENDER_WIDTH ||
+        config.height > WD_MAX_RENDER_HEIGHT)
     {
         return fail(ClientConfigValidationError::UnsupportedDisplayDimensions, out_error);
     }
@@ -150,6 +150,8 @@ uint32_t client_classify_server_config_change(const wd_server_config_payload& cu
     {
         flags |= ClientConfigChangeGeometry;
     }
+    /* session/token describe the transport lifetime. Geometry and epoch
+     * changes intentionally do not force UDP receiver recreation. */
     if (current.session_id != next.session_id ||
         current.connection_token != next.connection_token ||
         current.server_udp_port != next.server_udp_port ||

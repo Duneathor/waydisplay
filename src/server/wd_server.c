@@ -774,7 +774,7 @@ bool wd_server_set_tile_size(struct wd_server* server, uint16_t tile_width, uint
 }
 
 bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t height) {
-    if (!server || width == 0 || height == 0 || width > UINT16_MAX || height > UINT16_MAX)
+    if (!server || width == 0 || height == 0 || width > WD_MAX_RENDER_WIDTH || height > WD_MAX_RENDER_HEIGHT)
     {
         return false;
     }
@@ -824,7 +824,7 @@ void wd_server_set_default_geometry(struct wd_server* server) {
 
 
 bool wd_server_request_display_size(struct wd_server* server, uint32_t width, uint32_t height) {
-    if (!server || width == 0 || height == 0 || width > UINT16_MAX || height > UINT16_MAX)
+    if (!server || width == 0 || height == 0 || width > WD_MAX_RENDER_WIDTH || height > WD_MAX_RENDER_HEIGHT)
     {
         return false;
     }
@@ -1049,25 +1049,28 @@ static void wd_server_free_resize_stream_state(struct wd_server* server) {
     wd_server_free_net_resize_arrays(&server->net);
 }
 
-static void wd_server_advance_stream_session_locked(struct wd_server* server) {
+static void wd_server_begin_config_update_locked(struct wd_server* server) {
     if (!server)
     {
         return;
     }
 
-    uint8_t next_session_id = (uint8_t)(server->net.session_id + 1u);
-    if (next_session_id == 0)
-    {
-        next_session_id = 1;
-    }
-
-    server->net.session_id            = next_session_id;
+    /* session_id and connection_token identify the transport lifetime. A
+     * resize is only a new configuration/content epoch. Keeping the transport
+     * identity stable lets the client retain its UDP socket and io_uring
+     * receiver. UDP safety comes from two independent barriers:
+     *
+     *  - resize advances content_epoch, so packets queued before the resize
+     *    are stale after the new configuration is installed; and
+     *  - config_update_pending blocks all newly generated tile traffic until
+     *    the client acknowledges the matching config_epoch.
+     */
     server->net.config_update_pending = true;
     server->net.config_update_sent_ns = 0;
 }
 
 bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint32_t height) {
-    if (!server || width == 0 || height == 0 || width > UINT16_MAX || height > UINT16_MAX)
+    if (!server || width == 0 || height == 0 || width > WD_MAX_RENDER_WIDTH || height > WD_MAX_RENDER_HEIGHT)
     {
         return false;
     }
@@ -1162,7 +1165,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     server->last_summary_ns            = 0;
     server->last_delta_summary_ns      = 0;
     wd_stream_video_reset_locked(server, "display resize", true, true);
-    wd_server_advance_stream_session_locked(server);
+    wd_server_begin_config_update_locked(server);
     wd_stream_invalidate_all_tiles_locked(server);
 
     pthread_mutex_unlock(&server->net.lock);

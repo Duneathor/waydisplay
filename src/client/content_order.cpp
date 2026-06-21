@@ -21,8 +21,11 @@ void reset_pending_content_locked(ClientState& state, ClientContentOwner owner) 
     state.video_frame_epoch = 0;
     state.pending_video_frame_dirty.store(false, std::memory_order_release);
 
+    /* A remote content-epoch advance invalidates any upload already in
+     * progress even when ownership remains on the same transport. Ordinary
+     * video frames do not change this local ownership epoch. */
     const uint64_t local_epoch = owner == ClientContentOwner::Video
-                                     ? state.stream_ownership.begin_video_frame()
+                                     ? state.stream_ownership.reset_to_video()
                                      : state.stream_ownership.reset_to_tiles();
     state.pending_dirty_epoch = local_epoch;
 }

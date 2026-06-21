@@ -88,15 +88,19 @@ void test_rejects_inconsistent_grid() {
 
 void test_rejects_oversized_framebuffer() {
     wd_server_config_payload config = valid_config();
-    config.width = WD_CLIENT_MAX_DIMENSION;
-    config.height = WD_CLIENT_MAX_DIMENSION;
-    config.tiles_x = static_cast<uint16_t>(config.width / config.tile_width);
-    config.tiles_y = static_cast<uint16_t>(config.height / config.tile_height);
-    config.total_tiles = 0;
+    config.width = WD_MAX_RENDER_WIDTH + 1u;
     ClientConfigValidationError error{};
-    require(!client_normalize_and_validate_server_config(config, &error), "oversized framebuffer should fail");
-    require(error == ClientConfigValidationError::UnsupportedFramebufferSize, "framebuffer error code");
+    require(!client_normalize_and_validate_server_config(config, &error),
+            "render width above the protocol limit should fail");
+    require(error == ClientConfigValidationError::UnsupportedDisplayDimensions,
+            "oversized geometry should report the dimension limit");
+
+    config = valid_config();
+    config.height = WD_MAX_RENDER_HEIGHT + 1u;
+    require(!client_normalize_and_validate_server_config(config, &error),
+            "render height above the protocol limit should fail");
 }
+
 
 void test_rejects_invalid_udp_payload_target() {
     wd_server_config_payload config = valid_config();
@@ -123,6 +127,21 @@ void test_classifies_transport_changes_independently_of_geometry() {
     next.udp_payload_target -= 16;
     flags = client_classify_server_config_change(current, next);
     require((flags & ClientConfigChangeTransport) != 0, "UDP payload target change should recreate receiver");
+
+    next = current;
+    next.config_epoch++;
+    next.content_epoch++;
+    next.width = 1366;
+    next.height = 720;
+    next.tiles_x = 86;
+    next.tiles_y = 45;
+    next.total_tiles = 3870;
+    flags = client_classify_server_config_change(current, next);
+    require((flags & ClientConfigChangeGeometry) != 0, "resize should change geometry");
+    require((flags & ClientConfigChangeContent) != 0, "resize should advance content epoch");
+    require((flags & ClientConfigChangeEpoch) != 0, "resize should advance config epoch");
+    require((flags & ClientConfigChangeTransport) == 0,
+            "resize with stable session/token must retain UDP transport");
 
     next = current;
     next.link_rtt_ms++;

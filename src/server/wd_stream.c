@@ -414,16 +414,23 @@ static void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
     const double dirty_peak_pct = wd_stream_coverage_pct(stats->stream_mode_dirty_coverage_per_mille_peak);
     const double budget_pressure_pct = ((double)stats->stream_mode_budget_pressure_frames / (double)sample_count) * 100.0;
 
-    const bool fps_limited = policy->requested_capture_fps > 0 &&
-                             (uint32_t)policy->adaptive_capture_fps * 2u < (uint32_t)policy->requested_capture_fps;
     const uint8_t min_dirty_pct = policy->video_min_dirty_percent != 0
                                       ? policy->video_min_dirty_percent
                                       : WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT;
-    double peak_dirty_threshold_pct = (double)min_dirty_pct + 20.0;
-    if (peak_dirty_threshold_pct > 100.0)
-    {
-        peak_dirty_threshold_pct = 100.0;
-    }
+    const struct wd_video_auto_entry_metrics entry_metrics = {
+        .frame_samples = stats->stream_mode_frame_samples,
+        .changed_frame_samples = stats->stream_mode_changed_frame_samples,
+        .dirty_coverage_per_mille_sum = stats->stream_mode_dirty_coverage_per_mille_sum,
+        .dirty_coverage_per_mille_peak = stats->stream_mode_dirty_coverage_per_mille_peak,
+        .tile_wire_bytes = stats->udp_bytes_sent,
+        .tile_budget_bytes_per_second = policy->limited_udp_bytes_per_second,
+        .send_pressure_events = stats->udp_send_pressure_drops,
+        .requested_capture_fps = policy->requested_capture_fps,
+        .adaptive_capture_fps = policy->adaptive_capture_fps,
+        .minimum_dirty_percent = min_dirty_pct,
+    };
+    const struct wd_video_auto_entry_result auto_entry =
+        wd_video_auto_entry_evaluate(&entry_metrics);
 
     const uint8_t exit_dirty_pct = policy->video_exit_dirty_percent != 0
                                        ? policy->video_exit_dirty_percent
@@ -432,15 +439,21 @@ static void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
                                       ? policy->video_exit_seconds
                                       : WD_VIDEO_EXIT_SECONDS_DEFAULT;
 
-    const bool high_dirty = dirty_avg_pct >= (double)min_dirty_pct && dirty_peak_pct >= peak_dirty_threshold_pct;
     const bool low_dirty = stats->stream_mode_frame_samples != 0 && dirty_avg_pct <= (double)exit_dirty_pct;
-    const bool budget_pressure = budget_pressure_pct >= 25.0;
     const bool video_ready = video_negotiated && video_channel_connected && video_encoder_available;
     const bool video_forced = policy->video_mode == WD_VIDEO_MODE_FORCE;
     const bool video_disabled = policy->video_mode == WD_VIDEO_MODE_OFF;
     const bool video_entry_candidate = !video_disabled &&
-                                       (video_forced ||
-                                        (stats->stream_mode_frame_samples != 0 && high_dirty && budget_pressure && fps_limited));
+                                       (video_forced || auto_entry.candidate);
+
+    if (auto_entry.candidate && policy->stream_mode != WD_STREAM_MODE_VIDEO_ACTIVE)
+    {
+        WD_LOG_DEBUG("video auto candidate: changed_frames=%u%% changed_dirty=%u%% tile_budget=%u%% send_pressure=%llu",
+                     (unsigned)auto_entry.changed_frame_percent,
+                     (unsigned)auto_entry.changed_dirty_percent,
+                     (unsigned)auto_entry.tile_budget_percent,
+                     (unsigned long long)stats->udp_send_pressure_drops);
+    }
 
     if (video_disabled || !video_ready)
     {
@@ -477,13 +490,13 @@ static void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
         if (video_forced || policy->video_candidate_seconds >= enter_seconds)
         {
             wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_VIDEO_READY,
-                                             video_forced ? "video forced" : "video criteria stable",
+                                             video_forced ? "video forced" : "sustained tile cost",
                                              dirty_avg_pct, dirty_peak_pct, budget_pressure_pct, video_channel_connected,
                                              video_encoder_available);
         }
         else
         {
-            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_VIDEO_CANDIDATE, "video criteria observed",
+            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_VIDEO_CANDIDATE, "sustained tile cost observed",
                                              dirty_avg_pct, dirty_peak_pct, budget_pressure_pct, video_channel_connected,
                                              video_encoder_available);
         }
@@ -2267,13 +2280,29 @@ static bool wd_stream_send_tile_payload_sized_locked(struct wd_server* server, u
         {
             wd_tile_delivery_status_add(&delivery->status);
         }
-        bool async_queued = wd_async_udp_send_packet(net->udp_tx, net->udp_fd, &net->client_udp_addr, header_buf,
-                                                     header_size, (uint8_t*)tile_payload + offset, payload_size,
-                                                     delivery ? wd_stream_udp_tile_packet_completion : NULL, delivery);
+        const enum wd_async_udp_send_status async_status =
+            wd_async_udp_send_packet(net->udp_tx, net->udp_fd, &net->client_udp_addr, header_buf,
+                                     header_size, (uint8_t*)tile_payload + offset, payload_size,
+                                     delivery ? wd_stream_udp_tile_packet_completion : NULL, delivery);
+        const bool async_queued = async_status == WD_ASYNC_UDP_SEND_QUEUED;
         if (!async_queued && delivery)
         {
             bool ignored_failed = false;
-            (void)wd_tile_delivery_status_complete(&delivery->status, true, &ignored_failed);
+            (void)wd_tile_delivery_status_complete(&delivery->status,
+                                                    async_status == WD_ASYNC_UDP_SEND_FAILED,
+                                                    &ignored_failed);
+        }
+        if (async_status == WD_ASYNC_UDP_SEND_SATURATED)
+        {
+            /* Never bypass an older asynchronous backlog with a synchronous
+             * send. Treat saturation as congestion and retry the whole tile
+             * from the normal dirty queue after completions make progress. */
+            wd_note_udp_send_pressure_locked(net, EAGAIN);
+            if (result)
+            {
+                result->send_blocked = true;
+            }
+            break;
         }
         if (!async_queued)
         {

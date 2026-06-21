@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "tests",
+      "displayName": "WayDisplay unit tests",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-tests",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "WAYDISPLAY_BUILD_CLIENT_SDL": "OFF",
+        "WAYDISPLAY_BUILD_WLROOTS_SERVER": "OFF",
+        "WAYDISPLAY_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "tests",
+      "configurePreset": "tests"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "tests",
+      "configurePreset": "tests",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

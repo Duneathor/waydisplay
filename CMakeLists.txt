@@ -180,6 +180,7 @@ add_library(waydisplay_client_render_planning STATIC
     src/client/render_wakeup.cpp
     src/client/stream_ownership.cpp
     src/client/udp_transport_lifecycle.cpp
+    src/client/video_transition.cpp
 )
 
 waydisplay_apply_common_warnings(waydisplay_client_render_planning)
@@ -556,6 +557,17 @@ if(WAYDISPLAY_BUILD_TESTS)
     waydisplay_apply_common_warnings(waydisplay_test_protocol_fuzz)
     target_link_libraries(waydisplay_test_protocol_fuzz PRIVATE waydisplay_client_tile_reassembly)
     add_test(NAME waydisplay.protocol_fuzz COMMAND waydisplay_test_protocol_fuzz)
+
+    add_executable(waydisplay_test_transition_stress
+        tests/test_transition_stress.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_transition_stress)
+    target_link_libraries(waydisplay_test_transition_stress PRIVATE
+        waydisplay_client_config
+        waydisplay_client_render_planning
+        waydisplay_server_tile_policy
+    )
+    add_test(NAME waydisplay.transition_stress COMMAND waydisplay_test_transition_stress)
 endif()
 
 if(WAYDISPLAY_BUILD_FUZZERS)

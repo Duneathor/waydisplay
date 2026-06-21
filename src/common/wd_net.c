@@ -146,7 +146,9 @@ bool wd_send_tcp_message(int fd, uint16_t message_type, const void* payload, uin
     return wd_writev_all(fd, iov, 2);
 }
 
-bool wd_recv_tcp_message(int fd, uint16_t* out_message_type, uint8_t** out_payload, uint32_t* out_payload_size) {
+bool wd_recv_tcp_message_limited(int fd, uint32_t max_payload_size,
+                                 uint16_t* out_message_type, uint8_t** out_payload,
+                                 uint32_t* out_payload_size) {
     struct wd_tcp_header header;
     uint8_t*             payload = NULL;
 
@@ -180,7 +182,7 @@ bool wd_recv_tcp_message(int fd, uint16_t* out_message_type, uint8_t** out_paylo
         return false;
     }
 
-    if (header.payload_size > WD_TCP_MAX_PAYLOAD_SIZE)
+    if (max_payload_size == 0 || header.payload_size > max_payload_size)
     {
         return false;
     }
@@ -205,6 +207,11 @@ bool wd_recv_tcp_message(int fd, uint16_t* out_message_type, uint8_t** out_paylo
     *out_payload_size = header.payload_size;
 
     return true;
+}
+
+bool wd_recv_tcp_message(int fd, uint16_t* out_message_type, uint8_t** out_payload, uint32_t* out_payload_size) {
+    return wd_recv_tcp_message_limited(fd, WD_TCP_MAX_PAYLOAD_SIZE,
+                                       out_message_type, out_payload, out_payload_size);
 }
 
 int wd_set_nonblocking(int fd) {

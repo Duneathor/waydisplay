@@ -100,3 +100,27 @@ and `upload_mpix` in `[client render/min]`. Compare `source_mpix` with
 `upload_mpix` to see the extra copy area accepted to reduce lock calls, and
 compare `texture_locks` with `remote_frames` to verify that fragmented tile
 updates are usually reduced to one lock per presented frame.
+
+## Render geometry limit
+
+WayDisplay protocol v37 limits the negotiated render surface to **4096x2160**.
+The tile protocol uses 16-bit base-tile IDs and counts with a fixed 16x16 base
+grid; enforcing this 4K-class limit prevents grid-count truncation and keeps
+framebuffer allocation bounded. Both client-requested sizes and server config
+updates are rejected when they exceed this limit.
+
+## Relocatable unit-test workflow
+
+Do not copy or invoke a generated `CTestTestfile.cmake` from another checkout;
+CMake build trees intentionally contain absolute paths. From any source-tree
+location, regenerate the test build with the checked-in presets:
+
+```sh
+cmake --preset tests
+cmake --build --preset tests
+ctest --preset tests
+```
+
+The preset disables the optional SDL and wlroots executables so protocol,
+transition, repair, and planning tests do not depend on desktop development
+packages.

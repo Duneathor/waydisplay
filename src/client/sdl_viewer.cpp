@@ -2376,7 +2376,19 @@ SDL_Texture* create_frame_texture(SDL_Renderer* renderer, uint32_t width, uint32
     return texture;
 }
 
-bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Renderer* renderer, SDL_Texture*& texture) {
+SDL_Texture* create_video_texture(SDL_Renderer* renderer, uint32_t width, uint32_t height) {
+    SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING,
+                                             static_cast<int>(width), static_cast<int>(height));
+    if (texture && !SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_LINEAR))
+    {
+        log_sdl_warning("SDL_SetTextureScaleMode(video)");
+    }
+    return texture;
+}
+
+bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Renderer* renderer,
+                                 SDL_Texture*& texture, SDL_Texture*& video_texture,
+                                 SDL_Texture*& active_texture) {
     wd_server_config_payload config{};
 
     {
@@ -2448,11 +2460,13 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         return false;
     }
 
-    SDL_Texture* new_texture =
-        create_frame_texture(renderer, config.width, config.height);
+    SDL_Texture* new_texture = create_frame_texture(renderer, config.width, config.height);
+    SDL_Texture* new_video_texture = create_video_texture(renderer, config.width, config.height);
 
-    if (!new_texture)
+    if (!new_texture || !new_video_texture)
     {
+        SDL_DestroyTexture(new_texture);
+        SDL_DestroyTexture(new_video_texture);
         WD_LOG_ERROR("SDL_CreateTexture after resize failed: %s", SDL_GetError());
         state.running.store(false, std::memory_order_relaxed);
         return false;
@@ -2463,6 +2477,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         if (transport_changed && !client_reconfigure_udp_transport_locked(state, config))
         {
             SDL_DestroyTexture(new_texture);
+            SDL_DestroyTexture(new_video_texture);
             WD_LOG_ERROR("failed to apply UDP transport update for session=%u", config.session_id);
             state.running.store(false, std::memory_order_relaxed);
             return false;
@@ -2517,7 +2532,10 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     client_reset_content_epoch(state, config.content_epoch, ClientContentOwner::Tiles);
 
     SDL_DestroyTexture(texture);
+    SDL_DestroyTexture(video_texture);
     texture = new_texture;
+    video_texture = new_video_texture;
+    active_texture = texture;
 
     g_client_config = &state.config;
     if (!SDL_SetWindowMinimumSize(window, WD_CLIENT_MIN_WINDOW_WIDTH, WD_CLIENT_MIN_WINDOW_HEIGHT))
@@ -2603,8 +2621,10 @@ void record_texture_call_cost(ClientState& state, ClientTextureUploadCostModel& 
     state.stats.sdl_texture_model_pixel_cost_q16.store(costs.pixel_cost_q16, std::memory_order_relaxed);
 }
 
-void record_framebuffer_snapshot_stats(ClientState& state, uint64_t started_ns, uint64_t pixels) {
+void record_framebuffer_snapshot_stats(ClientState& state, ClientTextureUploadCostModel& costs,
+                                         uint64_t started_ns, uint64_t pixels) {
     const uint64_t elapsed_ns = wd_now_ns() - started_ns;
+    observe_framebuffer_snapshot(costs, elapsed_ns, pixels);
     state.stats.framebuffer_snapshot_samples.fetch_add(1, std::memory_order_relaxed);
     state.stats.framebuffer_snapshot_sum_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
     state.stats.framebuffer_snapshot_pixels.fetch_add(pixels, std::memory_order_relaxed);
@@ -2624,7 +2644,7 @@ void record_framebuffer_lock_stats(ClientState& state, uint64_t wait_ns, uint64_
 }
 
 bool snapshot_full_framebuffer(ClientState& state, uint32_t frame_width, uint32_t frame_height,
-                               std::vector<uint32_t>& staging) {
+                               std::vector<uint32_t>& staging, ClientTextureUploadCostModel& costs) {
     const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
     if (frame_width == 0 || frame_height == 0 || expected_pixels == 0)
     {
@@ -2643,14 +2663,14 @@ bool snapshot_full_framebuffer(ClientState& state, uint32_t frame_width, uint32_
     const uint64_t lock_released_ns = wd_now_ns();
     framebuffer_lock.unlock();
     record_framebuffer_lock_stats(state, lock_acquired_ns - lock_started_ns, lock_released_ns - lock_acquired_ns);
-    record_framebuffer_snapshot_stats(state, started_ns, expected_pixels);
+    record_framebuffer_snapshot_stats(state, costs, started_ns, expected_pixels);
     return true;
 }
 
 bool upload_full_texture(ClientState& state, SDL_Texture* texture, uint32_t frame_width, uint32_t frame_height,
                          std::vector<uint32_t>& staging, ClientTextureUploadCostModel& costs) {
     const uint64_t started_ns = wd_now_ns();
-    if (!snapshot_full_framebuffer(state, frame_width, frame_height, staging))
+    if (!snapshot_full_framebuffer(state, frame_width, frame_height, staging, costs))
     {
         return false;
     }
@@ -2687,9 +2707,8 @@ enum class VideoTextureUploadResult : uint8_t {
 
 VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Texture* texture,
                                                       uint32_t frame_width, uint32_t frame_height,
-                                                      std::vector<uint32_t>& pixels,
-                                                      VideoPresentInfo& present_info,
-                                                      ClientTextureUploadCostModel& costs) {
+                                                      ClientVideoFrameBuffer& frame,
+                                                      VideoPresentInfo& present_info) {
     const uint64_t started_ns = wd_now_ns();
     uint64_t frame_epoch = 0;
     {
@@ -2706,7 +2725,7 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
         /* Keep a render-thread upload buffer and exchange it with the newest
          * decoded frame. This avoids copying the full frame while preserving a
          * reusable buffer for the decoder thread. */
-        pixels.swap(state.video_framebuffer);
+        std::swap(frame, state.video_framebuffer);
         present_info.frame_id = state.video_frame_id;
         present_info.pts_usec = state.video_frame_pts_usec;
         frame_epoch = state.video_frame_epoch;
@@ -2720,26 +2739,27 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
     }
 
     const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
-    if (frame_width == 0 || frame_height == 0 || pixels.size() < expected_pixels)
+    if (frame_width == 0 || frame_height == 0 || !frame.valid() ||
+        frame.width != frame_width || frame.height != frame_height ||
+        frame.u_offset >= frame.bytes.size() || frame.v_offset >= frame.bytes.size())
     {
         return VideoTextureUploadResult::Failed;
     }
 
-    const uint64_t call_started_ns = wd_now_ns();
-    const bool ok = upload_argb_texture_locked(texture, nullptr, pixels.data(),
-                                                static_cast<int>(frame_width * WD_BYTES_PER_PIXEL),
-                                                frame_width, frame_height);
-    record_texture_call_cost(state, costs, true, call_started_ns, expected_pixels);
-    if (!ok)
+    const uint8_t* y = frame.bytes.data();
+    const uint8_t* u = frame.bytes.data() + frame.u_offset;
+    const uint8_t* v = frame.bytes.data() + frame.v_offset;
+    if (!SDL_UpdateYUVTexture(texture, nullptr, y, static_cast<int>(frame.y_pitch),
+                              u, static_cast<int>(frame.uv_pitch),
+                              v, static_cast<int>(frame.uv_pitch)))
     {
         return VideoTextureUploadResult::Failed;
     }
 
     state.stats.sdl_texture_full_uploads.fetch_add(1, std::memory_order_relaxed);
-    state.stats.sdl_texture_lock_calls.fetch_add(1, std::memory_order_relaxed);
     state.stats.sdl_video_texture_uploads.fetch_add(1, std::memory_order_relaxed);
     state.stats.sdl_video_texture_upload_pixels.fetch_add(expected_pixels, std::memory_order_relaxed);
-    record_texture_upload_stats(state, started_ns, static_cast<uint64_t>(frame_width) * static_cast<uint64_t>(frame_height));
+    record_texture_upload_stats(state, started_ns, expected_pixels);
 
     if (!state.stream_ownership.is_current(frame_epoch, ClientContentOwner::Video))
     {
@@ -2836,7 +2856,7 @@ bool upload_dirty_texture_rects_staged(ClientState& state, SDL_Texture* texture,
     const uint64_t lock_released_ns = wd_now_ns();
     framebuffer_lock.unlock();
     record_framebuffer_lock_stats(state, lock_acquired_ns - lock_started_ns, lock_released_ns - lock_acquired_ns);
-    record_framebuffer_snapshot_stats(state, snapshot_started_ns, total_pixels);
+    record_framebuffer_snapshot_stats(state, costs, snapshot_started_ns, total_pixels);
 
     uint64_t texture_lock_calls = 0;
     uint64_t texture_update_calls = 0;
@@ -2875,67 +2895,15 @@ bool upload_dirty_texture_rects_staged(ClientState& state, SDL_Texture* texture,
     return true;
 }
 
-bool upload_dirty_texture_rects_direct(ClientState& state, SDL_Texture* texture,
-                                       const std::vector<ClientDirtyRect>& rects,
-                                       uint32_t frame_width, uint32_t frame_height,
-                                       ClientTextureUploadCostModel& costs) {
-    const uint64_t started_ns = wd_now_ns();
-    const uint64_t lock_started_ns = wd_now_ns();
-    std::unique_lock<std::mutex> framebuffer_lock(state.framebuffer_mutex);
-    const uint64_t lock_acquired_ns = wd_now_ns();
-    const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
-    if (frame_width == 0 || frame_height == 0 || state.framebuffer.size() < expected_pixels)
-    {
-        return false;
-    }
-
-    uint64_t total_pixels = 0;
-    uint64_t update_calls = 0;
-    for (const ClientDirtyRect& input : rects)
-    {
-        ClientDirtyRect rect{};
-        if (!clamp_dirty_rect(input, frame_width, frame_height, rect))
-        {
-            continue;
-        }
-        SDL_Rect sdl_rect{static_cast<int>(rect.x), static_cast<int>(rect.y),
-                          static_cast<int>(rect.w), static_cast<int>(rect.h)};
-        const uint32_t* source = state.framebuffer.data() +
-            static_cast<size_t>(rect.y) * frame_width + rect.x;
-        const uint64_t call_started_ns = wd_now_ns();
-        const bool uploaded = update_argb_texture(texture, sdl_rect, source,
-                                                  static_cast<int>(frame_width * WD_BYTES_PER_PIXEL),
-                                                  rect.w, rect.h);
-        record_texture_call_cost(state, costs, false, call_started_ns,
-                                 static_cast<uint64_t>(rect.w) * rect.h);
-        if (!uploaded)
-        {
-            return false;
-        }
-        total_pixels += static_cast<uint64_t>(rect.w) * rect.h;
-        ++update_calls;
-    }
-    const uint64_t lock_released_ns = wd_now_ns();
-    framebuffer_lock.unlock();
-    record_framebuffer_lock_stats(state, lock_acquired_ns - lock_started_ns, lock_released_ns - lock_acquired_ns);
-    state.stats.framebuffer_direct_uploads.fetch_add(1, std::memory_order_relaxed);
-    state.stats.sdl_texture_partial_uploads.fetch_add(1, std::memory_order_relaxed);
-    state.stats.sdl_texture_dirty_rects.fetch_add(update_calls, std::memory_order_relaxed);
-    state.stats.sdl_texture_update_calls.fetch_add(update_calls, std::memory_order_relaxed);
-    record_texture_upload_stats(state, started_ns, total_pixels);
-    return true;
-}
 
 bool upload_dirty_texture_rects(ClientState& state, SDL_Texture* texture, const std::vector<ClientDirtyRect>& rects,
                                 const DirtyTextureUploadPlan& plan, uint32_t frame_width, uint32_t frame_height,
                                 std::vector<uint32_t>& staging, std::vector<StagedTextureRect>& staged_rects,
                                 ClientTextureUploadCostModel& costs) {
-    const FramebufferUploadPath path = choose_framebuffer_upload_path(
-        plan, rects.size(), state.framebuffer_lock_wait_ewma_ns.load(std::memory_order_relaxed));
-    if (path == FramebufferUploadPath::Direct)
-    {
-        return upload_dirty_texture_rects_direct(state, texture, rects, frame_width, frame_height, costs);
-    }
+    /* Never call into SDL while the network producer's framebuffer mutex is
+     * held. Even a small SDL_UpdateTexture() can block in a driver or backend.
+     * Snapshot the selected pixels first, then perform all renderer calls after
+     * releasing the model lock. */
     return upload_dirty_texture_rects_staged(state, texture, rects, plan, frame_width, frame_height, staging, staged_rects, costs);
 }
 
@@ -3311,10 +3279,14 @@ int run_sdl_viewer(ClientState& state) {
     }
 
     SDL_Texture* texture = create_frame_texture(renderer, state.config.width, state.config.height);
+    SDL_Texture* video_texture = create_video_texture(renderer, state.config.width, state.config.height);
+    SDL_Texture* active_texture = texture;
 
-    if (!texture)
+    if (!texture || !video_texture)
     {
         WD_LOG_ERROR("SDL_CreateTexture failed: %s", SDL_GetError());
+        SDL_DestroyTexture(texture);
+        SDL_DestroyTexture(video_texture);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
         SDL_Quit();
@@ -3338,7 +3310,7 @@ int run_sdl_viewer(ClientState& state) {
     std::vector<ClientDirtyRect> dirty_rects;
     std::vector<uint16_t> dirty_tile_ids;
     std::vector<ClientTileGenerationUpdate> tile_generation_updates;
-    std::vector<uint32_t> video_upload_pixels;
+    ClientVideoFrameBuffer video_upload_frame;
     std::vector<uint32_t> tile_upload_pixels;
     std::vector<StagedTextureRect> staged_texture_rects;
     ClientTextureUploadCostModel texture_upload_costs;
@@ -3349,7 +3321,7 @@ int run_sdl_viewer(ClientState& state) {
         apply_pending_cursor_shape(state);
         drain_remote_selection_updates(state);
 
-        if (apply_pending_server_config(state, window, renderer, texture))
+        if (apply_pending_server_config(state, window, renderer, texture, video_texture, active_texture))
         {
             last_requested_width    = state.config.width;
             last_requested_height   = state.config.height;
@@ -3453,8 +3425,8 @@ int run_sdl_viewer(ClientState& state) {
                 VideoTextureUploadResult video_result = VideoTextureUploadResult::NoFrame;
                 if (state.pending_video_frame_dirty.load(std::memory_order_acquire))
                 {
-                    video_result = upload_pending_video_texture(state, texture, frame_width, frame_height,
-                                                                video_upload_pixels, video_present, texture_upload_costs);
+                    video_result = upload_pending_video_texture(state, video_texture, frame_width, frame_height,
+                                                                video_upload_frame, video_present);
                     if (video_result == VideoTextureUploadResult::Failed)
                     {
                         WD_LOG_ERROR("failed to update SDL video texture: %s", SDL_GetError());
@@ -3465,6 +3437,7 @@ int run_sdl_viewer(ClientState& state) {
 
                 if (video_result == VideoTextureUploadResult::Uploaded)
                 {
+                    active_texture = video_texture;
                     uploaded_ownership = {video_present.epoch, ClientContentOwner::Video};
                     upload_has_ownership = true;
                     content_texture_updated = true;
@@ -3581,6 +3554,7 @@ int run_sdl_viewer(ClientState& state) {
                     }
                     if (tile_texture_updated)
                     {
+                        active_texture = texture;
                         content_texture_updated = true;
                     }
                     remote_texture_updated = tile_texture_updated &&
@@ -3624,7 +3598,7 @@ int run_sdl_viewer(ClientState& state) {
                     claim_tile_present_telemetry(state.pending_tile_telemetry, tile_generation_updates,
                                                  content_epoch, wd_now_ns(), tile_telemetry_batch);
                 }
-                if (!present_sdl_frame(state, renderer, texture, context_menu, remote_texture_updated, video_present,
+                if (!present_sdl_frame(state, renderer, active_texture, context_menu, remote_texture_updated, video_present,
                                        tile_telemetry_batch, last_present_ns))
                 {
                     if (!tile_generation_updates.empty())
@@ -3690,6 +3664,7 @@ int run_sdl_viewer(ClientState& state) {
     }
 
     SDL_DestroyTexture(texture);
+    SDL_DestroyTexture(video_texture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     free_cached_cursors();

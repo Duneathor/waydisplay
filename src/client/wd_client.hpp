@@ -6,6 +6,8 @@
 #include "render_planning.hpp"
 #include "render_wakeup.hpp"
 #include "stream_ownership.hpp"
+#include "video_decoder.hpp"
+#include "video_transition.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -19,7 +21,6 @@ namespace waydisplay {
 
 struct ClientAsyncTcpSender;
 struct ClientAsyncUdpReceiver;
-struct ClientVideoDecoder;
 
 struct ClientAsyncTcpStatsSeen {
     uint64_t queued            = 0;
@@ -342,6 +343,12 @@ struct ClientInputEventStamp {
     uint64_t timestamp_ns = 0;
 };
 
+struct ClientSummaryRepairDue {
+    uint16_t tile_id    = 0;
+    uint64_t generation = 0;
+    uint64_t due_ns     = 0;
+};
+
 struct ClientState {
     std::atomic<bool> running{false};
 
@@ -358,6 +365,7 @@ struct ClientState {
     ClientVideoDecoder*     video_decoder      = nullptr;
     std::mutex              video_decoder_mutex;
     bool                    video_decoder_needs_keyframe = true;
+    ClientVideoPhase        video_phase = ClientVideoPhase::Tiles;
     std::atomic<bool>       video_tcp_connected{false};
     std::atomic<bool>       video_unavailable{false};
     std::mutex              video_tcp_mutex;
@@ -387,7 +395,7 @@ struct ClientState {
     std::vector<uint64_t> pending_present_generation;
 
     std::mutex              video_frame_mutex;
-    std::vector<uint32_t>   video_framebuffer;
+    ClientVideoFrameBuffer  video_framebuffer;
     uint32_t                video_frame_width  = 0;
     uint32_t                video_frame_height = 0;
     uint64_t                video_frame_id     = 0;
@@ -446,6 +454,7 @@ struct ClientState {
     std::vector<uint64_t>           retx_summary_pending_since_ns;
     std::vector<uint16_t>           retx_summary_pending_tiles;
     std::vector<uint32_t>           retx_summary_pending_position;
+    std::deque<ClientSummaryRepairDue> retx_summary_due_queue;
     uint64_t                        retx_inflight_grace_ns = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
     std::atomic<uint64_t>             summary_retransmit_grace_ns{WD_LINK_SUMMARY_GRACE_DEFAULT_NS};
     std::atomic<uint64_t>             retransmit_rerequest_interval_ns{WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS};

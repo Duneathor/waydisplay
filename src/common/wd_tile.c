@@ -8,7 +8,8 @@ uint16_t wd_tiles_for_width_with_tile(uint32_t width, uint16_t tile_width) {
         return 0;
     }
 
-    return (uint16_t)((width + tile_width - 1u) / tile_width);
+    const uint64_t count = ((uint64_t)width + tile_width - 1u) / tile_width;
+    return count == 0 || count > UINT16_MAX ? 0 : (uint16_t)count;
 }
 
 uint16_t wd_tiles_for_height_with_tile(uint32_t height, uint16_t tile_height) {
@@ -17,11 +18,15 @@ uint16_t wd_tiles_for_height_with_tile(uint32_t height, uint16_t tile_height) {
         return 0;
     }
 
-    return (uint16_t)((height + tile_height - 1u) / tile_height);
+    const uint64_t count = ((uint64_t)height + tile_height - 1u) / tile_height;
+    return count == 0 || count > UINT16_MAX ? 0 : (uint16_t)count;
 }
 
 uint16_t wd_total_tiles_for_size_with_tile(uint32_t width, uint32_t height, uint16_t tile_width, uint16_t tile_height) {
-    return (uint16_t)(wd_tiles_for_width_with_tile(width, tile_width) * wd_tiles_for_height_with_tile(height, tile_height));
+    const uint16_t tiles_x = wd_tiles_for_width_with_tile(width, tile_width);
+    const uint16_t tiles_y = wd_tiles_for_height_with_tile(height, tile_height);
+    const uint32_t total = (uint32_t)tiles_x * (uint32_t)tiles_y;
+    return tiles_x == 0 || tiles_y == 0 || total == 0 || total > UINT16_MAX ? 0 : (uint16_t)total;
 }
 
 uint16_t wd_tiles_for_width(uint32_t width) {

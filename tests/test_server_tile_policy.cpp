@@ -24,6 +24,45 @@ void test_wire_bytes_account_for_one_extended_header() {
             "single packet should use the first-packet header size");
 }
 
+void test_auto_video_entry_uses_sustained_wire_cost() {
+    wd_video_auto_entry_metrics metrics{};
+    metrics.frame_samples = 1048;
+    metrics.changed_frame_samples = 753;
+    metrics.dirty_coverage_per_mille_sum = 200168;
+    metrics.dirty_coverage_per_mille_peak = 1000;
+    metrics.tile_wire_bytes = 9u * 1024u * 1024u;
+    metrics.tile_budget_bytes_per_second = 10u * 1024u * 1024u;
+    metrics.requested_capture_fps = 120;
+    metrics.adaptive_capture_fps = 120;
+    metrics.minimum_dirty_percent = 60;
+
+    const wd_video_auto_entry_result video = wd_video_auto_entry_evaluate(&metrics);
+    require(video.candidate,
+            "sustained partial-screen video near the tile budget should enter video mode");
+    require(video.changed_frame_percent >= 70 && video.changed_dirty_percent >= 20,
+            "classifier should expose changed-frame and changed-only coverage signals");
+
+    metrics.changed_frame_samples = 2;
+    metrics.dirty_coverage_per_mille_sum = 2000;
+    const wd_video_auto_entry_result burst = wd_video_auto_entry_evaluate(&metrics);
+    require(!burst.candidate, "isolated full-screen bursts should not look like video");
+
+    metrics.frame_samples = 60;
+    metrics.changed_frame_samples = 30;
+    metrics.dirty_coverage_per_mille_sum = 9000;
+    metrics.dirty_coverage_per_mille_peak = 400;
+    metrics.tile_wire_bytes = 1024;
+    metrics.tile_budget_bytes_per_second = 10u * 1024u * 1024u;
+    const wd_video_auto_entry_result cheap = wd_video_auto_entry_evaluate(&metrics);
+    require(!cheap.candidate, "cheap small animations should stay on tiles");
+
+    metrics.dirty_coverage_per_mille_sum = 36000;
+    metrics.dirty_coverage_per_mille_peak = 900;
+    metrics.adaptive_capture_fps = 60;
+    const wd_video_auto_entry_result suppressed = wd_video_auto_entry_evaluate(&metrics);
+    require(suppressed.candidate, "capture suppression should be a usable cost signal");
+}
+
 void test_compression_requires_material_savings() {
     require(!wd_tile_compression_is_worthwhile(980, 1000, 400, 20, 20, 64, 3),
             "minor byte savings should not pay compression cost");
@@ -163,6 +202,7 @@ void test_periodic_capture_is_capped_to_output_refresh() {
 
 int main() {
     test_wire_bytes_account_for_one_extended_header();
+    test_auto_video_entry_uses_sustained_wire_cost();
     test_compression_requires_material_savings();
     test_locality_with_starvation_bound();
     test_xrgb_compression_prefilter();

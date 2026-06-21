@@ -68,9 +68,11 @@ int main(int argc, char** argv) {
 
             unsigned int width  = 0;
             unsigned int height = 0;
-            if (sscanf(argv[++i], "%ux%u", &width, &height) != 2 || width == 0 || height == 0 || width > UINT16_MAX || height > UINT16_MAX)
+            if (sscanf(argv[++i], "%ux%u", &width, &height) != 2 || width == 0 || height == 0 ||
+                width > WD_MAX_RENDER_WIDTH || height > WD_MAX_RENDER_HEIGHT)
             {
-                fprintf(stderr, "Invalid --size value: %s\n", argv[i]);
+                fprintf(stderr, "Invalid --size value: %s; maximum render size is %ux%u\n",
+                        argv[i], WD_MAX_RENDER_WIDTH, WD_MAX_RENDER_HEIGHT);
                 usage(argv[0]);
                 return 1;
             }

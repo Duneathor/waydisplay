@@ -18,12 +18,14 @@ struct ClientContentOwnershipSnapshot {
 class ClientStreamOwnership {
   public:
     ClientContentOwnershipSnapshot snapshot() const;
-    uint64_t begin_video_frame();
+    uint64_t begin_video_stream();
     uint64_t end_video_stream();
+    uint64_t reset_to_video();
     uint64_t reset_to_tiles();
     bool is_current(uint64_t epoch, ClientContentOwner owner) const;
 
   private:
+    uint64_t transition_to(ClientContentOwner owner);
     uint64_t advance(ClientContentOwner owner);
 
     static constexpr uint64_t pack(uint64_t epoch, ClientContentOwner owner) {

@@ -211,9 +211,17 @@ enum wd_server_capability {
     (WD_SERVER_CAP_INPUT_CHANNEL | WD_SERVER_CAP_SELECTION_CHANNEL | WD_SERVER_CAP_VIDEO_STREAM)
 
 struct wd_server_config_payload {
+    /* Stable for the lifetime of one control/UDP transport connection. */
     uint8_t session_id;
     uint64_t connection_token;
+
+    /* Advances whenever configuration fields change. The server does not send
+     * new-configuration UDP tiles until WD_MSG_CONFIG_APPLIED acknowledges it. */
     uint64_t config_epoch;
+
+    /* Advances on framebuffer/stream ownership invalidation. UDP and video
+     * payloads from older epochs must be discarded, including packets that
+     * were already in flight when a resize began. */
     uint64_t content_epoch;
     uint16_t server_udp_port;
     uint16_t width;
@@ -581,9 +589,14 @@ static inline bool wd_tile_dimensions_for_size_code(uint8_t tile_size, uint16_t*
 
 static inline bool wd_udp_tile_packet_encode_header(void* destination, size_t destination_size,
                                                      const struct wd_udp_tile_packet_decoded* header) {
-    if (!destination || !header || header->connection_token == 0 || header->content_epoch == 0 || header->tile_pkt_count == 0 ||
+    uint16_t tile_width = 0;
+    uint16_t tile_height = 0;
+    if (!destination || !header || header->session_id == 0 || header->connection_token == 0 ||
+        header->content_epoch == 0 || header->tile_pkt_count == 0 ||
         header->tile_pkt_id >= header->tile_pkt_count || header->payload_size == 0 ||
-        header->tile_payload_size == 0 || header->tile_generation == 0)
+        header->tile_payload_size == 0 || header->payload_size > header->tile_payload_size ||
+        header->tile_generation == 0 ||
+        !wd_tile_dimensions_for_size_code(header->tile_size, &tile_width, &tile_height))
     {
         return false;
     }
@@ -628,9 +641,14 @@ static inline bool wd_udp_tile_packet_decode(const void* packet, size_t packet_s
     struct wd_udp_tile_packet_header wire;
     memcpy(&wire, packet, sizeof(wire));
     const uint16_t header_size = wd_udp_tile_header_size_for_flags(wire.flags);
-    if (header_size == 0 || packet_size < header_size || wire.connection_token == 0 || wire.content_epoch == 0 || wire.reserved != 0 || wire.tile_pkt_count == 0 ||
-        wire.tile_pkt_id >= wire.tile_pkt_count || wire.payload_size == 0 || wire.tile_payload_size == 0 ||
-        wire.tile_generation == 0)
+    uint16_t tile_width = 0;
+    uint16_t tile_height = 0;
+    if (header_size == 0 || packet_size < header_size || wire.session_id == 0 ||
+        wire.connection_token == 0 || wire.content_epoch == 0 || wire.reserved != 0 ||
+        wire.tile_pkt_count == 0 || wire.tile_pkt_id >= wire.tile_pkt_count ||
+        wire.payload_size == 0 || wire.tile_payload_size == 0 ||
+        wire.payload_size > wire.tile_payload_size || wire.tile_generation == 0 ||
+        !wd_tile_dimensions_for_size_code(wire.tile_size, &tile_width, &tile_height))
     {
         return false;
     }
@@ -909,7 +927,8 @@ static inline bool wd_client_hello_payload_is_valid(const struct wd_client_hello
         hello->video_exit_dirty_percent > WD_VIDEO_EXIT_DIRTY_PERCENT_MAX ||
         hello->video_enter_seconds > WD_VIDEO_ENTER_SECONDS_MAX ||
         hello->video_exit_seconds > WD_VIDEO_EXIT_SECONDS_MAX ||
-        ((hello->desired_width == 0) != (hello->desired_height == 0)))
+        ((hello->desired_width == 0) != (hello->desired_height == 0)) ||
+        hello->desired_width > WD_MAX_RENDER_WIDTH || hello->desired_height > WD_MAX_RENDER_HEIGHT)
     {
         return false;
     }
@@ -924,8 +943,9 @@ static inline bool wd_client_hello_payload_is_valid(const struct wd_client_hello
 
 static inline bool wd_video_frame_payload_size_is_valid(const struct wd_video_frame_payload_header* header,
                                                         uint32_t tcp_payload_size) {
-    if (!header || tcp_payload_size < sizeof(*header) || header->connection_token == 0 ||
-        header->content_epoch == 0 || (header->flags & ~WD_VIDEO_FRAME_FLAG_MASK) != 0 ||
+    if (!header || tcp_payload_size < sizeof(*header) || header->session_id == 0 ||
+        header->connection_token == 0 || header->content_epoch == 0 ||
+        (header->flags & ~WD_VIDEO_FRAME_FLAG_MASK) != 0 ||
         header->codec == 0 || (header->codec & ~WD_VIDEO_CODEC_MASK) != 0 ||
         (header->codec & (header->codec - 1u)) != 0)
     {
@@ -938,14 +958,20 @@ static inline bool wd_video_frame_payload_size_is_valid(const struct wd_video_fr
         return false;
     }
 
-    const bool control = (header->flags & (WD_VIDEO_FRAME_END_OF_STREAM | WD_VIDEO_FRAME_RESIZE)) != 0;
+    const bool end_of_stream = (header->flags & WD_VIDEO_FRAME_END_OF_STREAM) != 0;
+    const bool resize = (header->flags & WD_VIDEO_FRAME_RESIZE) != 0;
+    const bool control = end_of_stream || resize;
     if (control)
     {
-        return header->data_size == 0 &&
+        return header->data_size == 0 && header->frame_id == 0 &&
+               header->width != 0 && header->height != 0 &&
+               header->coded_width == header->width && header->coded_height == header->height &&
+               (!resize || end_of_stream) &&
                (header->flags & (WD_VIDEO_FRAME_CONFIG | WD_VIDEO_FRAME_KEYFRAME)) == 0;
     }
 
-    return header->data_size != 0 && header->width != 0 && header->height != 0 &&
+    return header->data_size != 0 && header->frame_id != 0 && header->pts_usec != 0 &&
+           header->width != 0 && header->height != 0 &&
            header->coded_width >= header->width && header->coded_height >= header->height &&
            ((header->flags & WD_VIDEO_FRAME_CONFIG) == 0 ||
             (header->flags & WD_VIDEO_FRAME_KEYFRAME) != 0);

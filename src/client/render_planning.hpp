@@ -55,13 +55,16 @@ struct ClientTextureUploadCostModel {
     uint64_t pixel_cost_q16 = 1ull << 16u;
     uint64_t update_call_cost_ns = 16384;
     uint64_t lock_call_cost_ns = 131072;
+    uint64_t snapshot_pixel_cost_q16 = 1ull << 16u;
     uint32_t update_samples = 0;
     uint32_t lock_samples = 0;
     uint32_t pixel_samples = 0;
+    uint32_t snapshot_samples = 0;
 };
 
 void observe_texture_upload_call(ClientTextureUploadCostModel& model, bool texture_lock,
                                  uint64_t elapsed_ns, uint64_t pixels);
+void observe_framebuffer_snapshot(ClientTextureUploadCostModel& model, uint64_t elapsed_ns, uint64_t pixels);
 
 
 uint64_t dirty_rect_pixel_count(const std::vector<ClientDirtyRect>& rects);
@@ -73,16 +76,6 @@ DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRe
 DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRect>& rects,
                                                   uint32_t frame_width, uint32_t frame_height,
                                                   const ClientTextureUploadCostModel& costs);
-enum class FramebufferUploadPath : uint8_t {
-    Direct,
-    Staged,
-};
-
-FramebufferUploadPath choose_framebuffer_upload_path(const DirtyTextureUploadPlan& plan,
-                                                      size_t rect_count,
-                                                      uint64_t recent_lock_wait_ns);
-
-
 struct ClientTileGenerationUpdate {
     uint16_t tile_id = 0;
     uint64_t generation = 0;

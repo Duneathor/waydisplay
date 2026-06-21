@@ -12,6 +12,12 @@ extern "C" {
 #define WD_DISPLAY_WIDTH  1664u
 #define WD_DISPLAY_HEIGHT 1024u
 
+/* Protocol v37 uses 16-bit base-tile IDs and counts. Keep the advertised
+ * render surface within a documented 4K-class envelope that is safely
+ * representable by the fixed 16x16 base grid. */
+#define WD_MAX_RENDER_WIDTH  4096u
+#define WD_MAX_RENDER_HEIGHT 2160u
+
 #define WD_TILE_WIDTH  16u
 #define WD_TILE_HEIGHT 16u
 
@@ -155,7 +161,6 @@ extern "C" {
 #define WD_CLIENT_TEXTURE_LOCK_EQUIVALENT_PIXELS   (128ull * 1024ull)
 #define WD_CLIENT_MIN_WINDOW_WIDTH             64
 #define WD_CLIENT_MIN_WINDOW_HEIGHT            64
-#define WD_CLIENT_MAX_DIMENSION                16384u
 #define WD_CLIENT_MAX_FRAMEBUFFER_BYTES        (512ull * 1024ull * 1024ull)
 #define WD_CLIENT_WHEEL_AXIS_STEP              60
 #define WD_CLIENT_CONTEXT_MENU_PADDING_X       8
