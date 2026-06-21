@@ -138,6 +138,35 @@ bool wd_tile_xrgb_payload_may_compress(const uint8_t* payload, uint32_t payload_
     return unique_count <= samples * 7u / 8u || adjacent_repeats >= 2u || repeated_deltas >= samples / 8u;
 }
 
+
+bool wd_tile_compression_advisor_should_attempt(struct wd_tile_compression_advisor* advisor) {
+    if (!advisor || advisor->bypass_remaining == 0)
+    {
+        return true;
+    }
+    advisor->bypass_remaining--;
+    return (advisor->bypass_remaining % 16u) == 0;
+}
+
+void wd_tile_compression_advisor_record(struct wd_tile_compression_advisor* advisor, bool worthwhile) {
+    if (!advisor)
+    {
+        return;
+    }
+    if (worthwhile)
+    {
+        advisor->poor_streak = 0;
+        advisor->bypass_remaining = 0;
+        return;
+    }
+    advisor->poor_streak++;
+    if (advisor->poor_streak >= 8u)
+    {
+        advisor->poor_streak = 0;
+        advisor->bypass_remaining = 64u;
+    }
+}
+
 void wd_tile_delivery_status_add(struct wd_tile_delivery_status* status) {
     if (status)
     {

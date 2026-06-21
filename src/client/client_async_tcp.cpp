@@ -483,7 +483,7 @@ bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_
     }
 
     const bool coalesce_pointer_motion = message_type == WD_MSG_POINTER_EVENT &&
-                                         payload_size >= sizeof(wd_pointer_event_payload) && payload &&
+                                         payload_size == sizeof(wd_pointer_event_payload) && payload &&
                                          static_cast<const wd_pointer_event_payload*>(payload)->event_type ==
                                              WD_POINTER_EVENT_MOTION;
     if (coalesce_pointer_motion)

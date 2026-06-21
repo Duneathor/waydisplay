@@ -9,6 +9,7 @@
 namespace waydisplay {
 
 struct ClientPendingTileTelemetry {
+    uint64_t completion_id = 0;
     uint64_t content_epoch = 0;
     uint64_t generation = 0;
     uint64_t completed_ns = 0;

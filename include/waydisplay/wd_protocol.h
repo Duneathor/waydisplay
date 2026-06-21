@@ -11,12 +11,12 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 36u
+#define WD_PROTOCOL_VERSION 37u
 
 /*
- * Wire structs are intentionally host-endian for now. WayDisplay targets
- * same-endian Linux peers and compares integer values directly. Bump the
- * protocol version before changing struct layout or byte order.
+ * WayDisplay peers are little-endian Linux systems and transmit packed
+ * integer fields directly. Protocol versions still change whenever a wire
+ * structure changes.
  */
 #define WD_TCP_MAGIC             0x54434457u
 #define WD_UDP_TILE_ID_MTU_PROBE        0xffffu
@@ -77,11 +77,13 @@ enum wd_compression_mode {
 enum wd_client_capability {
     WD_CLIENT_CAP_VIDEO_STREAM = 1u << 0,
 };
+#define WD_CLIENT_CAP_MASK WD_CLIENT_CAP_VIDEO_STREAM
 
 enum wd_video_codec {
     WD_VIDEO_CODEC_H265 = 1u << 0,
     WD_VIDEO_CODEC_H264 = 1u << 1,
 };
+#define WD_VIDEO_CODEC_MASK (WD_VIDEO_CODEC_H265 | WD_VIDEO_CODEC_H264)
 
 enum wd_video_transport {
     WD_VIDEO_TRANSPORT_TCP = 1,
@@ -109,6 +111,8 @@ enum wd_video_frame_flags {
     WD_VIDEO_FRAME_RESIZE        = 1u << 2,
     WD_VIDEO_FRAME_END_OF_STREAM = 1u << 3,
 };
+#define WD_VIDEO_FRAME_FLAG_MASK \
+    (WD_VIDEO_FRAME_CONFIG | WD_VIDEO_FRAME_KEYFRAME | WD_VIDEO_FRAME_RESIZE | WD_VIDEO_FRAME_END_OF_STREAM)
 
 enum wd_cursor_shape {
     WD_CURSOR_SHAPE_DEFAULT     = 0,
@@ -203,10 +207,13 @@ enum wd_server_capability {
     WD_SERVER_CAP_SELECTION_CHANNEL = 1u << 1,
     WD_SERVER_CAP_VIDEO_STREAM      = 1u << 2,
 };
+#define WD_SERVER_CAP_MASK \
+    (WD_SERVER_CAP_INPUT_CHANNEL | WD_SERVER_CAP_SELECTION_CHANNEL | WD_SERVER_CAP_VIDEO_STREAM)
 
 struct wd_server_config_payload {
     uint8_t session_id;
     uint64_t connection_token;
+    uint64_t config_epoch;
     uint64_t content_epoch;
     uint16_t server_udp_port;
     uint16_t width;
@@ -252,6 +259,7 @@ struct wd_tile_generation_entry {
 enum wd_tile_summary_flags {
     WD_TILE_SUMMARY_DELTA = 1u << 0,
 };
+#define WD_TILE_SUMMARY_FLAG_MASK WD_TILE_SUMMARY_DELTA
 
 struct wd_tile_summary_payload_header {
     uint8_t session_id;
@@ -282,6 +290,7 @@ struct wd_tile_repair_entry {
 enum wd_client_stats_flags {
     WD_CLIENT_STATS_RENDER_VISIBLE = 1u << 0,
 };
+#define WD_CLIENT_STATS_FLAG_MASK WD_CLIENT_STATS_RENDER_VISIBLE
 
 struct wd_client_stats_payload {
     uint8_t session_id;
@@ -760,6 +769,7 @@ struct wd_display_resize_payload {
 struct wd_config_applied_payload {
     uint8_t session_id;
     uint64_t connection_token;
+    uint64_t config_epoch;
 };
 
 WD_PACKED_END
@@ -772,7 +782,7 @@ static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size
 static_assert(sizeof(struct wd_udp_tile_packet_header) == 36, "unexpected wd_udp_tile_packet_header size");
 static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 44, "unexpected maximum wd_udp_tile_packet_header size");
 static_assert(sizeof(struct wd_client_hello_payload) == 34, "unexpected wd_client_hello_payload size");
-static_assert(sizeof(struct wd_server_config_payload) == 65, "unexpected wd_server_config_payload size");
+static_assert(sizeof(struct wd_server_config_payload) == 73, "unexpected wd_server_config_payload size");
 static_assert(sizeof(struct wd_tile_generation_entry) == 10, "unexpected wd_tile_generation_entry size");
 static_assert(sizeof(struct wd_tile_summary_payload_header) == 28, "unexpected wd_tile_summary_payload_header size");
 static_assert(sizeof(struct wd_tile_repair_request_payload_header) == 19, "unexpected wd_tile_repair_request_payload_header size");
@@ -791,13 +801,13 @@ static_assert(sizeof(struct wd_video_frame_payload_header) == 51, "unexpected wd
 static_assert(sizeof(struct wd_selection_payload_header) == 15, "unexpected wd_selection_payload_header size");
 static_assert(sizeof(struct wd_cursor_shape_payload) == 11, "unexpected wd_cursor_shape_payload size");
 static_assert(sizeof(struct wd_display_resize_payload) == 13, "unexpected wd_display_resize_payload size");
-static_assert(sizeof(struct wd_config_applied_payload) == 9, "unexpected wd_config_applied_payload size");
+static_assert(sizeof(struct wd_config_applied_payload) == 17, "unexpected wd_config_applied_payload size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(sizeof(struct wd_udp_tile_packet_header) == 36, "unexpected wd_udp_tile_packet_header size");
 _Static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 44, "unexpected maximum wd_udp_tile_packet_header size");
 _Static_assert(sizeof(struct wd_client_hello_payload) == 34, "unexpected wd_client_hello_payload size");
-_Static_assert(sizeof(struct wd_server_config_payload) == 65, "unexpected wd_server_config_payload size");
+_Static_assert(sizeof(struct wd_server_config_payload) == 73, "unexpected wd_server_config_payload size");
 _Static_assert(sizeof(struct wd_tile_generation_entry) == 10, "unexpected wd_tile_generation_entry size");
 _Static_assert(sizeof(struct wd_tile_summary_payload_header) == 28, "unexpected wd_tile_summary_payload_header size");
 _Static_assert(sizeof(struct wd_tile_repair_request_payload_header) == 19, "unexpected wd_tile_repair_request_payload_header size");
@@ -816,20 +826,129 @@ _Static_assert(sizeof(struct wd_video_frame_payload_header) == 51, "unexpected w
 _Static_assert(sizeof(struct wd_selection_payload_header) == 15, "unexpected wd_selection_payload_header size");
 _Static_assert(sizeof(struct wd_cursor_shape_payload) == 11, "unexpected wd_cursor_shape_payload size");
 _Static_assert(sizeof(struct wd_display_resize_payload) == 13, "unexpected wd_display_resize_payload size");
-_Static_assert(sizeof(struct wd_config_applied_payload) == 9, "unexpected wd_config_applied_payload size");
+_Static_assert(sizeof(struct wd_config_applied_payload) == 17, "unexpected wd_config_applied_payload size");
 #endif
 
 
-static inline bool wd_video_frame_payload_size_is_valid(const struct wd_video_frame_payload_header* header,
-                                                        uint32_t tcp_payload_size) {
-    if (!header || tcp_payload_size < sizeof(*header))
+static inline bool wd_config_applied_matches(const struct wd_config_applied_payload* applied,
+                                             uint8_t session_id, uint64_t connection_token,
+                                             uint64_t config_epoch) {
+    return applied && session_id != 0 && connection_token != 0 && config_epoch != 0 &&
+           applied->session_id == session_id && applied->connection_token == connection_token &&
+           applied->config_epoch == config_epoch;
+}
+
+static inline bool wd_fixed_payload_size_is_valid(uint32_t payload_size, size_t expected_size) {
+    return (size_t)payload_size == expected_size;
+}
+
+static inline bool wd_keyboard_event_payload_is_valid(const struct wd_keyboard_event_payload* key,
+                                                      uint32_t payload_size) {
+    return key && wd_fixed_payload_size_is_valid(payload_size, sizeof(*key)) &&
+           key->session_id != 0 && key->connection_token != 0 && key->client_timestamp_ns != 0 &&
+           key->input_sequence != 0 && key->evdev_key_code != 0 && key->pressed <= 1;
+}
+
+static inline bool wd_pointer_event_payload_is_valid(const struct wd_pointer_event_payload* pointer,
+                                                     uint32_t payload_size) {
+    if (!pointer || !wd_fixed_payload_size_is_valid(payload_size, sizeof(*pointer)) ||
+        pointer->session_id == 0 || pointer->connection_token == 0 || pointer->client_timestamp_ns == 0 ||
+        pointer->input_sequence == 0 || (pointer->modifiers & ~0x0fu) != 0)
     {
         return false;
     }
 
-    const uint32_t max_data_size = WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES;
+    switch (pointer->event_type)
+    {
+        case WD_POINTER_EVENT_MOTION:
+            return pointer->button == 0 && pointer->button_state == 0 && pointer->axis == 0 &&
+                   pointer->axis_value == 0;
+        case WD_POINTER_EVENT_BUTTON:
+            return pointer->button != 0 && pointer->button_state <= WD_POINTER_BUTTON_PRESSED &&
+                   pointer->axis == 0 && pointer->axis_value == 0;
+        case WD_POINTER_EVENT_AXIS:
+            return pointer->button == 0 && pointer->button_state == 0 &&
+                   pointer->axis <= WD_POINTER_AXIS_HORIZONTAL && pointer->axis_value != 0;
+        default:
+            return false;
+    }
+}
+
+static inline bool wd_counted_payload_size_is_valid(uint32_t payload_size, size_t header_size,
+                                                     uint32_t count, size_t entry_size) {
+    if (entry_size != 0 && (size_t)count > (SIZE_MAX - header_size) / entry_size)
+    {
+        return false;
+    }
+    return (size_t)payload_size == header_size + (size_t)count * entry_size;
+}
+
+static inline bool wd_selection_payload_size_is_valid(const struct wd_selection_payload_header* header,
+                                                       uint32_t payload_size) {
+    return header && header->data_size <= WD_SELECTION_MAX_TEXT_BYTES &&
+           wd_counted_payload_size_is_valid(payload_size, sizeof(*header), header->data_size, 1u);
+}
+
+static inline bool wd_tile_summary_count_is_valid(uint16_t flags, uint16_t tile_count,
+                                                  uint16_t total_tiles) {
+    return total_tiles != 0 && tile_count <= total_tiles &&
+           ((flags & WD_TILE_SUMMARY_DELTA) != 0 || tile_count == total_tiles);
+}
+
+static inline bool wd_tile_repair_count_is_valid(uint16_t request_count, uint16_t total_tiles) {
+    return total_tiles != 0 && request_count != 0 && request_count <= total_tiles;
+}
+
+static inline bool wd_client_hello_payload_is_valid(const struct wd_client_hello_payload* hello,
+                                                     uint32_t payload_size) {
+    if (!hello || !wd_fixed_payload_size_is_valid(payload_size, sizeof(*hello)) ||
+        (hello->capabilities & ~WD_CLIENT_CAP_MASK) != 0 ||
+        (hello->video_codecs & ~WD_VIDEO_CODEC_MASK) != 0 || hello->video_reserved != 0 ||
+        hello->video_mode > WD_VIDEO_MODE_FORCE ||
+        hello->video_min_dirty_percent > WD_VIDEO_MIN_DIRTY_PERCENT_MAX ||
+        hello->video_exit_dirty_percent > WD_VIDEO_EXIT_DIRTY_PERCENT_MAX ||
+        hello->video_enter_seconds > WD_VIDEO_ENTER_SECONDS_MAX ||
+        hello->video_exit_seconds > WD_VIDEO_EXIT_SECONDS_MAX ||
+        ((hello->desired_width == 0) != (hello->desired_height == 0)))
+    {
+        return false;
+    }
+
+    const bool video = (hello->capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0;
+    if (video)
+    {
+        return hello->video_codecs != 0 && hello->video_transport == WD_VIDEO_TRANSPORT_TCP;
+    }
+    return hello->video_codecs == 0 && hello->video_transport == 0;
+}
+
+static inline bool wd_video_frame_payload_size_is_valid(const struct wd_video_frame_payload_header* header,
+                                                        uint32_t tcp_payload_size) {
+    if (!header || tcp_payload_size < sizeof(*header) || header->connection_token == 0 ||
+        header->content_epoch == 0 || (header->flags & ~WD_VIDEO_FRAME_FLAG_MASK) != 0 ||
+        header->codec == 0 || (header->codec & ~WD_VIDEO_CODEC_MASK) != 0 ||
+        (header->codec & (header->codec - 1u)) != 0)
+    {
+        return false;
+    }
+
     const uint32_t expected_data_size = tcp_payload_size - (uint32_t)sizeof(*header);
-    return header->data_size == expected_data_size && header->data_size <= max_data_size;
+    if (header->data_size != expected_data_size || header->data_size > WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES)
+    {
+        return false;
+    }
+
+    const bool control = (header->flags & (WD_VIDEO_FRAME_END_OF_STREAM | WD_VIDEO_FRAME_RESIZE)) != 0;
+    if (control)
+    {
+        return header->data_size == 0 &&
+               (header->flags & (WD_VIDEO_FRAME_CONFIG | WD_VIDEO_FRAME_KEYFRAME)) == 0;
+    }
+
+    return header->data_size != 0 && header->width != 0 && header->height != 0 &&
+           header->coded_width >= header->width && header->coded_height >= header->height &&
+           ((header->flags & WD_VIDEO_FRAME_CONFIG) == 0 ||
+            (header->flags & WD_VIDEO_FRAME_KEYFRAME) != 0);
 }
 
 static inline const uint8_t* wd_video_frame_payload_data(const void* payload, uint32_t tcp_payload_size) {

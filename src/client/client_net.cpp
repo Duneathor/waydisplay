@@ -340,8 +340,8 @@ void destroy_client_tcp_sender(ClientAsyncTcpSender*& sender) {
     }
 }
 
-size_t client_async_udp_packet_bytes(const ClientState& state) {
-    uint16_t udp_payload_target = state.config.udp_payload_target;
+size_t client_async_udp_packet_bytes(const wd_server_config_payload& config) {
+    uint16_t udp_payload_target = config.udp_payload_target;
     if (udp_payload_target == 0)
     {
         udp_payload_target = WD_UDP_PAYLOAD_TARGET;
@@ -349,8 +349,8 @@ size_t client_async_udp_packet_bytes(const ClientState& state) {
     return WD_UDP_TILE_HEADER_MAX_SIZE + static_cast<size_t>(udp_payload_target) + CLIENT_ASYNC_UDP_PACKET_SLACK;
 }
 
-ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state) {
-    const size_t packet_bytes = client_async_udp_packet_bytes(state);
+ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state, const wd_server_config_payload& config) {
+    const size_t packet_bytes = client_async_udp_packet_bytes(config);
     ClientAsyncUdpReceiver* receiver = client_async_udp_receiver_create(state.udp_fd, CLIENT_ASYNC_UDP_RING_ENTRIES,
                                                                         packet_bytes);
     if (!receiver)
@@ -361,6 +361,10 @@ ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state) {
         }
         WD_LOG_WARN("io_uring UDP receiver unavailable; using synchronous recv fallback");
     }
+    else if (!client_async_udp_receiver_ready(receiver))
+    {
+        WD_LOG_ERROR("io_uring UDP receiver setup failed with outstanding receives; reconnect required");
+    }
     else
     {
         WD_LOG_INFO("UDP io_uring receive enabled entries=%u buffer=%zu", CLIENT_ASYNC_UDP_RING_ENTRIES, packet_bytes);
@@ -368,12 +372,18 @@ ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state) {
     return receiver;
 }
 
-void destroy_client_udp_receiver(ClientState& state) {
-    if (state.udp_receiver)
+ClientAsyncUdpDetachResult destroy_client_udp_receiver(ClientState& state) {
+    if (!state.udp_receiver)
     {
-        client_async_udp_receiver_destroy(state.udp_receiver);
+        return ClientAsyncUdpDetachResult::Detached;
+    }
+
+    const ClientAsyncUdpDetachResult result = client_async_udp_receiver_destroy(state.udp_receiver);
+    if (result == ClientAsyncUdpDetachResult::Detached)
+    {
         state.udp_receiver = nullptr;
     }
+    return result;
 }
 
 ClientAsyncTcpSender* sender_for_fd(ClientState& state, int fd) {
@@ -563,15 +573,15 @@ bool open_udp_socket(ClientState& state) {
     return true;
 }
 
-bool connect_udp_socket_to_server(ClientState& state) {
-    if (state.udp_fd < 0 || state.config.server_udp_port == 0)
+bool connect_udp_socket_to_server(ClientState& state, const wd_server_config_payload& config) {
+    if (state.udp_fd < 0 || config.server_udp_port == 0)
     {
         return false;
     }
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port   = htons(state.config.server_udp_port);
+    addr.sin_port   = htons(config.server_udp_port);
     if (::inet_pton(AF_INET, state.server_host.c_str(), &addr.sin_addr) != 1)
     {
         WD_LOG_ERROR("invalid IPv4 address for UDP peer: %s", state.server_host.c_str());
@@ -582,7 +592,7 @@ bool connect_udp_socket_to_server(ClientState& state) {
         WD_LOG_ERROR("connect UDP peer failed: %s", std::strerror(errno));
         return false;
     }
-    WD_LOG_INFO("UDP peer connected: %s:%u", state.server_host.c_str(), state.config.server_udp_port);
+    WD_LOG_INFO("UDP peer connected: %s:%u", state.server_host.c_str(), config.server_udp_port);
     return true;
 }
 
@@ -715,7 +725,7 @@ bool open_video_tcp_socket(ClientState& state) {
 }
 
 bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
-    if (payload_size < sizeof(wd_mtu_probe_start_payload))
+    if (payload_size != sizeof(wd_mtu_probe_start_payload))
     {
         return false;
     }
@@ -835,7 +845,7 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
 }
 
 bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
-    if (payload_size < sizeof(wd_throughput_probe_start_payload))
+    if (payload_size != sizeof(wd_throughput_probe_start_payload))
     {
         return false;
     }
@@ -929,7 +939,7 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
 }
 
 bool handle_link_probe_ping(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
-    if (!payload || payload_size < sizeof(wd_link_probe_payload))
+    if (!payload || payload_size != sizeof(wd_link_probe_payload))
     {
         return false;
     }
@@ -1033,7 +1043,7 @@ bool receive_server_config(ClientState& state) {
             continue;
         }
 
-        if (message_type == WD_MSG_SERVER_CONFIG && payload_size >= sizeof(wd_server_config_payload))
+        if (message_type == WD_MSG_SERVER_CONFIG && payload_size == sizeof(wd_server_config_payload))
         {
             std::memcpy(&state.config, payload, sizeof(state.config));
             std::free(payload);
@@ -1224,10 +1234,9 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
     const uint64_t now_ns = wd_now_ns();
 
-    const size_t needed =
-        sizeof(wd_tile_summary_payload_header) + static_cast<size_t>(summary.tile_count) * sizeof(wd_tile_generation_entry);
-
-    if (payload_size < needed)
+    if (!wd_counted_payload_size_is_valid(payload_size, sizeof(wd_tile_summary_payload_header),
+                                             summary.tile_count, sizeof(wd_tile_generation_entry)) ||
+        (summary.flags & ~WD_TILE_SUMMARY_FLAG_MASK) != 0)
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -1244,6 +1253,12 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
         }
         total_tiles = state.config.total_tiles;
     }
+    if (!wd_tile_summary_count_is_valid(summary.flags, summary.tile_count, total_tiles))
+    {
+        state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
     if (client_accept_content_epoch(state, summary.content_epoch, ClientContentOwner::Tiles) ==
         ClientContentEpochDecision::Stale)
     {
@@ -1509,8 +1524,7 @@ bool selection_payload_to_string(const uint8_t* payload, uint32_t payload_size, 
         return false;
     }
 
-    const size_t needed = sizeof(header) + static_cast<size_t>(header.data_size);
-    if (payload_size < needed)
+    if (!wd_selection_payload_size_is_valid(&header, payload_size))
     {
         return false;
     }
@@ -1548,7 +1562,7 @@ void store_selection_text(ClientState& state, const uint8_t* payload, uint32_t p
 }
 
 void store_cursor_shape(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
-    if (!payload || payload_size < sizeof(wd_cursor_shape_payload))
+    if (!payload || payload_size != sizeof(wd_cursor_shape_payload))
     {
         return;
     }
@@ -1612,7 +1626,7 @@ void reset_video_decoder(ClientState& state, const char* reason) {
 }
 
 void store_server_config_update(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
-    if (!payload || payload_size < sizeof(wd_server_config_payload))
+    if (!payload || payload_size != sizeof(wd_server_config_payload))
     {
         return;
     }
@@ -1641,6 +1655,38 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
     bool reset_video = false;
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
+        const bool same_connection = state.config.session_id == config.session_id &&
+                                     state.config.connection_token == config.connection_token;
+        uint64_t newest_config_epoch = same_connection ? state.config.config_epoch : 0;
+        const wd_server_config_payload* same_epoch_config = same_connection ? &state.config : nullptr;
+        if (state.pending_config_valid && state.pending_config.session_id == config.session_id &&
+            state.pending_config.connection_token == config.connection_token)
+        {
+            if (state.pending_config.config_epoch > newest_config_epoch)
+            {
+                newest_config_epoch = state.pending_config.config_epoch;
+                same_epoch_config = &state.pending_config;
+            }
+            else if (state.pending_config.config_epoch == newest_config_epoch)
+            {
+                same_epoch_config = &state.pending_config;
+            }
+        }
+        if (config.config_epoch < newest_config_epoch)
+        {
+            WD_LOG_DEBUG("ignoring stale server config epoch=%llu newest=%llu",
+                         static_cast<unsigned long long>(config.config_epoch),
+                         static_cast<unsigned long long>(newest_config_epoch));
+            return;
+        }
+        if (config.config_epoch == newest_config_epoch && same_epoch_config &&
+            std::memcmp(same_epoch_config, &config, sizeof(config)) != 0)
+        {
+            WD_LOG_ERROR("rejecting conflicting server config epoch=%llu",
+                         static_cast<unsigned long long>(config.config_epoch));
+            return;
+        }
+
         const bool have_current_config = state.config.session_id != 0;
         reset_video = have_current_config &&
                       (state.config.session_id != config.session_id || state.config.connection_token != config.connection_token || state.config.width != config.width ||
@@ -2071,7 +2117,7 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         client_disconnect(state);
         return false;
     }
-    if (!connect_udp_socket_to_server(state))
+    if (!connect_udp_socket_to_server(state, state.config))
     {
         client_disconnect(state);
         return false;
@@ -2130,7 +2176,12 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
     }
 
     state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + state.config.udp_payload_target + 512, 0);
-    state.udp_receiver = create_client_udp_receiver(state);
+    state.udp_receiver = create_client_udp_receiver(state, state.config);
+    if (state.udp_receiver && !client_async_udp_receiver_ready(state.udp_receiver))
+    {
+        client_disconnect(state);
+        return false;
+    }
 
     state.running.store(true, std::memory_order_relaxed);
 
@@ -2228,6 +2279,41 @@ void client_reap_async_udp_receives(ClientState& state) {
     update_async_udp_seen(state);
 }
 
+bool client_reconfigure_udp_transport_locked(ClientState& state, const wd_server_config_payload& config) {
+    const ClientAsyncUdpDetachResult detach_result = destroy_client_udp_receiver(state);
+    if (detach_result != ClientAsyncUdpDetachResult::Detached)
+    {
+        WD_LOG_ERROR("cannot reconfigure UDP transport while io_uring still owns the old socket");
+        return false;
+    }
+
+    if (state.udp_fd >= 0)
+    {
+        ::close(state.udp_fd);
+        state.udp_fd = -1;
+    }
+    state.udp_seen = ClientAsyncUdpStatsSeen{};
+
+    if (!open_udp_socket(state) || !connect_udp_socket_to_server(state, config))
+    {
+        if (state.udp_fd >= 0)
+        {
+            ::close(state.udp_fd);
+            state.udp_fd = -1;
+        }
+        return false;
+    }
+
+    state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + config.udp_payload_target + 512, 0);
+    state.udp_receiver = create_client_udp_receiver(state, config);
+    if (state.udp_receiver && !client_async_udp_receiver_ready(state.udp_receiver))
+    {
+        WD_LOG_ERROR("replacement UDP io_uring receiver failed with outstanding receives");
+        return false;
+    }
+    return true;
+}
+
 bool client_disable_async_udp_receiver(ClientState& state) {
     if (!state.udp_receiver)
     {
@@ -2235,7 +2321,12 @@ bool client_disable_async_udp_receiver(ClientState& state) {
     }
 
     update_async_udp_seen(state);
-    destroy_client_udp_receiver(state);
+    const ClientAsyncUdpDetachResult detach_result = destroy_client_udp_receiver(state);
+    if (client_udp_fallback_action(detach_result, state.udp_fd >= 0) != ClientUdpFallbackAction::ReuseSocket)
+    {
+        WD_LOG_ERROR("UDP io_uring receiver still owns the socket; stopping the session instead of starting a second receiver");
+        return false;
+    }
     state.udp_seen = ClientAsyncUdpStatsSeen{};
 
     if (state.udp_fd >= 0 && wd_set_nonblocking(state.udp_fd) < 0)
@@ -2411,8 +2502,8 @@ bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t hei
 }
 
 
-bool client_send_config_applied(ClientState& state, uint8_t session_id) {
-    if (state.tcp_fd < 0 || session_id == 0)
+bool client_send_config_applied(ClientState& state, uint8_t session_id, uint64_t config_epoch) {
+    if (state.tcp_fd < 0 || session_id == 0 || config_epoch == 0)
     {
         return false;
     }
@@ -2423,6 +2514,7 @@ bool client_send_config_applied(ClientState& state, uint8_t session_id) {
         std::lock_guard<std::mutex> lock(state.config_mutex);
         applied.connection_token = state.config.connection_token;
     }
+    applied.config_epoch = config_epoch;
     return client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_CONFIG_APPLIED, &applied, sizeof(applied));
 }
 

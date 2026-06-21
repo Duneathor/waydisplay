@@ -31,6 +31,7 @@
 
 struct wd_async_tcp_sender;
 struct wd_async_udp_sender;
+struct wd_dirty_region_scheduler;
 
 #include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_data_device.h>
@@ -230,6 +231,12 @@ struct wd_stats {
     uint64_t tile_choice_uncompressed_wire_sum;
     uint64_t tile_choice_chosen_wire_sum;
     uint64_t tile_choice_saved_wire_sum;
+    uint64_t compression_attempts;
+    uint64_t compression_wins;
+    uint64_t compression_entropy_skips;
+    uint64_t compression_adaptive_skips;
+    uint64_t compression_ns;
+    uint64_t compression_saved_wire_bytes;
 
     uint64_t stream_mode_frame_samples;
     /* Scene frames whose framebuffer diff contained at least one changed
@@ -385,6 +392,7 @@ struct wd_stats {
     uint64_t input_to_summary_sum_ns;
     uint64_t input_to_first_fresh_tile_samples;
     uint64_t input_to_first_fresh_tile_sum_ns;
+    uint64_t input_correlation_delivery_failed;
 
     uint64_t tcp_summary_full_tx;
     uint64_t tcp_summary_delta_tx;
@@ -408,6 +416,8 @@ struct wd_stats {
     uint64_t udp_async_completion_failed;
     uint64_t udp_async_fallback_sync;
     uint64_t udp_async_inflight_max;
+    uint64_t udp_async_submit_calls;
+    uint64_t udp_async_partial_submits;
 
     uint64_t rate_decreases;
     uint64_t rate_increases;
@@ -555,6 +565,7 @@ struct wd_net_state {
     uint64_t clean_summary_interval_ns;
 
     uint16_t  dirty_region_cursor;
+    struct wd_dirty_region_scheduler* dirty_region_scheduler;
     uint16_t* dirty_regions;
     bool*     dirty_region_queued;
     uint64_t* dirty_region_enqueued_ns;
@@ -601,10 +612,13 @@ struct wd_net_state {
     uint64_t                    control_tx_completed_seen;
     uint64_t                    control_tx_partial_seen;
     uint64_t                    control_tx_overflow_seen;
+    uint64_t                    video_tx_failed_seen;
     uint64_t                    udp_tx_failed_seen;
     uint64_t                    udp_tx_queued_seen;
     uint64_t                    udp_tx_completed_seen;
     uint64_t                    udp_tx_fallback_seen;
+    uint64_t                    udp_tx_submit_calls_seen;
+    uint64_t                    udp_tx_partial_submits_seen;
 
     int listen_fd;
     int tcp_fd;
@@ -636,6 +650,7 @@ struct wd_net_state {
     bool                   input_since_last_summary;
     bool                   input_since_last_fresh_tile;
     uint64_t               last_input_sequence;
+    uint64_t               input_correlation_inflight_sequence;
     uint64_t               udp_send_pressure_log_ns;
     uint64_t               udp_send_pressure_drops;
 

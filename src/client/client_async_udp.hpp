@@ -1,11 +1,19 @@
 #pragma once
 
+#include "udp_transport_lifecycle.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
 namespace waydisplay {
 
 struct ClientAsyncUdpReceiver;
+
+enum class ClientAsyncUdpWaitResult : uint8_t {
+    Ready,
+    Timeout,
+    Failed,
+};
 
 struct ClientAsyncUdpReceiverStats {
     uint64_t posted       = 0;
@@ -19,7 +27,9 @@ struct ClientAsyncUdpReceiverStats {
 using ClientAsyncUdpPacketHandler = bool (*)(void* userdata, const uint8_t* data, size_t size);
 
 ClientAsyncUdpReceiver* client_async_udp_receiver_create(int fd, uint32_t entries, size_t packet_size);
-void client_async_udp_receiver_destroy(ClientAsyncUdpReceiver* receiver);
+ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpReceiver* receiver);
+bool client_async_udp_receiver_ready(ClientAsyncUdpReceiver* receiver);
+ClientAsyncUdpWaitResult client_async_udp_receiver_wait(ClientAsyncUdpReceiver* receiver, uint64_t timeout_ns);
 
 bool client_async_udp_receiver_drain(ClientAsyncUdpReceiver* receiver, void* userdata,
                                      ClientAsyncUdpPacketHandler handler, uint32_t max_packets);

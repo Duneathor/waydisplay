@@ -160,6 +160,10 @@ struct ClientStats {
     std::atomic<uint64_t> sdl_texture_upload_samples{0};
     std::atomic<uint64_t> sdl_texture_upload_sum_ns{0};
     std::atomic<uint64_t> sdl_texture_upload_max_ns{0};
+    std::atomic<uint64_t> framebuffer_snapshot_pixels{0};
+    std::atomic<uint64_t> framebuffer_snapshot_samples{0};
+    std::atomic<uint64_t> framebuffer_snapshot_sum_ns{0};
+    std::atomic<uint64_t> framebuffer_snapshot_max_ns{0};
     std::atomic<uint64_t> sdl_video_texture_uploads{0};
     std::atomic<uint64_t> sdl_video_texture_upload_pixels{0};
     std::atomic<uint64_t> sdl_present_samples{0};
@@ -264,6 +268,10 @@ struct ClientStatsSnapshot {
     uint64_t sdl_texture_upload_samples = 0;
     uint64_t sdl_texture_upload_sum_ns = 0;
     uint64_t sdl_texture_upload_max_ns = 0;
+    uint64_t framebuffer_snapshot_pixels = 0;
+    uint64_t framebuffer_snapshot_samples = 0;
+    uint64_t framebuffer_snapshot_sum_ns = 0;
+    uint64_t framebuffer_snapshot_max_ns = 0;
     uint64_t sdl_video_texture_uploads = 0;
     uint64_t sdl_video_texture_upload_pixels = 0;
     uint64_t sdl_present_samples = 0;
@@ -350,6 +358,7 @@ struct ClientState {
 
     std::mutex present_mutex;
     std::vector<ClientPendingTileTelemetry> pending_tile_telemetry;
+    uint64_t next_tile_completion_id = 1;
 
     std::mutex               config_mutex;
     wd_server_config_payload pending_config{};

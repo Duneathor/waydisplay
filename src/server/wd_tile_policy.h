@@ -21,6 +21,15 @@ bool wd_tile_compression_is_worthwhile(uint32_t compressed_size, uint32_t uncomp
 bool wd_tile_xrgb_payload_may_compress(const uint8_t* payload, uint32_t payload_size);
 
 
+
+struct wd_tile_compression_advisor {
+    uint16_t poor_streak;
+    uint16_t bypass_remaining;
+};
+
+bool wd_tile_compression_advisor_should_attempt(struct wd_tile_compression_advisor* advisor);
+void wd_tile_compression_advisor_record(struct wd_tile_compression_advisor* advisor, bool worthwhile);
+
 struct wd_tile_delivery_status {
     uint32_t pending;
     bool sealed;

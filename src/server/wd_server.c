@@ -1,4 +1,5 @@
 #include "wd_server.h"
+#include "wd_dirty_region_scheduler.h"
 #include "wd_async_tcp.h"
 #include "wd_async_udp.h"
 
@@ -323,12 +324,33 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
         }
     }
 
+    if (server->net.video_tx)
+    {
+        const uint64_t failed = wd_async_tcp_sender_failed(server->net.video_tx);
+        if (failed > server->net.video_tx_failed_seen)
+        {
+            const uint64_t new_failures = failed - server->net.video_tx_failed_seen;
+            server->net.video_tx_failed_seen = failed;
+            server->net.stats.video_tcp_send_failed += new_failures;
+
+            if (server->net.video_tcp_fd >= 0)
+            {
+                WD_LOG_ERROR("video TCP async completion failed; returning display ownership to tiles");
+                wd_stream_video_reset_locked(server, "video async completion failed", false, false);
+                wd_stream_invalidate_all_tiles_locked(server);
+                (void)shutdown(server->net.video_tcp_fd, SHUT_RDWR);
+            }
+        }
+    }
+
     if (server->net.udp_tx)
     {
         uint64_t queued = wd_async_udp_sender_queued(server->net.udp_tx);
         uint64_t completed = wd_async_udp_sender_completed(server->net.udp_tx);
         uint64_t failed = wd_async_udp_sender_failed(server->net.udp_tx);
         uint64_t fallbacks = wd_async_udp_sender_fallbacks(server->net.udp_tx);
+        uint64_t submit_calls = wd_async_udp_sender_submit_calls(server->net.udp_tx);
+        uint64_t partial_submits = wd_async_udp_sender_partial_submits(server->net.udp_tx);
         if (queued > server->net.udp_tx_queued_seen)
         {
             server->net.stats.udp_async_queued += queued - server->net.udp_tx_queued_seen;
@@ -343,6 +365,16 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
         {
             server->net.stats.udp_async_fallback_sync += fallbacks - server->net.udp_tx_fallback_seen;
             server->net.udp_tx_fallback_seen = fallbacks;
+        }
+        if (submit_calls > server->net.udp_tx_submit_calls_seen)
+        {
+            server->net.stats.udp_async_submit_calls += submit_calls - server->net.udp_tx_submit_calls_seen;
+            server->net.udp_tx_submit_calls_seen = submit_calls;
+        }
+        if (partial_submits > server->net.udp_tx_partial_submits_seen)
+        {
+            server->net.stats.udp_async_partial_submits += partial_submits - server->net.udp_tx_partial_submits_seen;
+            server->net.udp_tx_partial_submits_seen = partial_submits;
         }
         uint64_t inflight_max = wd_async_udp_sender_inflight_max(server->net.udp_tx);
         if (inflight_max > server->net.stats.udp_async_inflight_max)
@@ -969,6 +1001,9 @@ static void wd_server_free_net_resize_arrays(struct wd_net_state* net) {
         return;
     }
 
+    wd_dirty_region_scheduler_destroy(net->dirty_region_scheduler);
+    net->dirty_region_scheduler = NULL;
+
     free(net->dirty_regions);
     net->dirty_regions = NULL;
     free(net->dirty_region_queued);
@@ -1111,6 +1146,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
         server->framebuffer_generation = 1;
     }
     server->net.config_epoch++;
+    server->net.input_correlation_inflight_sequence = 0;
     if (server->net.config_epoch == 0)
     {
         server->net.config_epoch = 1;

@@ -1,0 +1,20 @@
+# CMake/build outputs
+/build*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+cmake_install.cmake
+
+# Binaries and libraries
+/waydisplay_client_sdl
+/waydisplay_server_wlroots
+/waydisplay_proto
+*.a
+*.so
+*.o
+
+# Editor/OS noise
+*.swp
+*~
+.DS_Store

@@ -21,11 +21,10 @@ struct wd_async_udp_packet {
     struct wd_async_udp_packet* prev;
     struct wd_async_udp_packet* free_next;
     struct sockaddr_in          addr;
-    struct iovec                iov;
+    struct iovec                iov[2];
     struct msghdr               msg;
     size_t                      packet_size;
-    size_t                      capacity;
-    uint8_t*                    packet;
+    uint8_t                     header[WD_UDP_TILE_HEADER_MAX_SIZE];
     bool                        prepared;
     bool                        submitted;
     wd_async_udp_completion_fn completion;
@@ -46,6 +45,8 @@ struct wd_async_udp_sender {
     uint64_t inflight_max;
     uint64_t local_failures;
     uint64_t fallbacks;
+    uint64_t submit_calls;
+    uint64_t partial_submits;
 };
 
 static void wd_async_udp_pending_add(struct wd_async_udp_sender* sender, struct wd_async_udp_packet* packet) {
@@ -86,15 +87,10 @@ static void wd_async_udp_pending_remove(struct wd_async_udp_sender* sender, stru
 }
 
 static void wd_async_udp_packet_free(struct wd_async_udp_packet* packet) {
-    if (!packet)
-    {
-        return;
-    }
-    free(packet->packet);
     free(packet);
 }
 
-static struct wd_async_udp_packet* wd_async_udp_packet_acquire(struct wd_async_udp_sender* sender, size_t packet_size) {
+static struct wd_async_udp_packet* wd_async_udp_packet_acquire(struct wd_async_udp_sender* sender) {
     struct wd_async_udp_packet* packet = sender->free_packets;
     if (packet)
     {
@@ -104,35 +100,10 @@ static struct wd_async_udp_packet* wd_async_udp_packet_acquire(struct wd_async_u
         {
             sender->free_packet_count--;
         }
+        memset(packet, 0, sizeof(*packet));
+        return packet;
     }
-    else
-    {
-        packet = calloc(1, sizeof(*packet));
-        if (!packet)
-        {
-            return NULL;
-        }
-    }
-
-    if (packet->capacity < packet_size)
-    {
-        uint8_t* resized = realloc(packet->packet, packet_size);
-        if (!resized)
-        {
-            wd_async_udp_packet_free(packet);
-            return NULL;
-        }
-        packet->packet = resized;
-        packet->capacity = packet_size;
-    }
-
-    uint8_t* data = packet->packet;
-    size_t capacity = packet->capacity;
-    memset(packet, 0, sizeof(*packet));
-    packet->packet = data;
-    packet->capacity = capacity;
-    packet->packet_size = packet_size;
-    return packet;
+    return calloc(1, sizeof(*packet));
 }
 
 static void wd_async_udp_packet_release(struct wd_async_udp_sender* sender, struct wd_async_udp_packet* packet) {
@@ -248,8 +219,14 @@ bool wd_async_udp_sender_flush(struct wd_async_udp_sender* sender) {
         return true;
     }
 
+    const uint32_t prepared_before = sender->accounting.prepared;
+    sender->submit_calls++;
     const int rc = io_uring_submit(&sender->ring);
     const uint32_t submitted = wd_async_udp_accounting_submit_result(&sender->accounting, rc);
+    if (submitted < prepared_before)
+    {
+        sender->partial_submits++;
+    }
     if (submitted != 0)
     {
         const uint32_t marked = wd_async_udp_mark_submitted(sender, submitted);
@@ -278,6 +255,20 @@ bool wd_async_udp_send_packet(struct wd_async_udp_sender* sender, int fd, const 
         return false;
     }
 
+    const size_t packet_size = (size_t)header_size + (size_t)payload_size;
+    if (packet_size > UINT32_MAX)
+    {
+        sender->local_failures++;
+        return false;
+    }
+
+    struct wd_async_udp_packet* packet = wd_async_udp_packet_acquire(sender);
+    if (!packet)
+    {
+        sender->local_failures++;
+        return false;
+    }
+
     struct io_uring_sqe* sqe = io_uring_get_sqe(&sender->ring);
     if (!sqe)
     {
@@ -287,40 +278,26 @@ bool wd_async_udp_send_packet(struct wd_async_udp_sender* sender, int fd, const 
         if (!sqe)
         {
             sender->fallbacks++;
+            wd_async_udp_packet_release(sender, packet);
             return false;
         }
-    }
-
-    size_t packet_size = (size_t)header_size + (size_t)payload_size;
-    if (packet_size > UINT32_MAX)
-    {
-        sender->local_failures++;
-        return false;
-    }
-
-    struct wd_async_udp_packet* packet = wd_async_udp_packet_acquire(sender, packet_size);
-    if (!packet)
-    {
-        sender->local_failures++;
-        return false;
     }
 
     packet->addr = *addr;
     packet->completion = completion;
     packet->completion_data = completion_data;
-    memcpy(packet->packet, header, header_size);
-    if (payload_size != 0)
-    {
-        memcpy(packet->packet + header_size, payload, payload_size);
-    }
+    packet->packet_size = packet_size;
+    memcpy(packet->header, header, header_size);
 
-    packet->iov.iov_base = packet->packet;
-    packet->iov.iov_len  = packet_size;
+    packet->iov[0].iov_base = packet->header;
+    packet->iov[0].iov_len = header_size;
+    packet->iov[1].iov_base = (void*)payload;
+    packet->iov[1].iov_len = payload_size;
 
     packet->msg.msg_name    = &packet->addr;
     packet->msg.msg_namelen = sizeof(packet->addr);
-    packet->msg.msg_iov     = &packet->iov;
-    packet->msg.msg_iovlen  = 1;
+    packet->msg.msg_iov     = packet->iov;
+    packet->msg.msg_iovlen  = payload_size != 0 ? 2u : 1u;
 
     io_uring_prep_sendmsg(sqe, fd, &packet->msg, 0);
     io_uring_sqe_set_data(sqe, packet);
@@ -439,4 +416,12 @@ void wd_async_udp_sender_destroy(struct wd_async_udp_sender* sender) {
         sender->ring_ready = false;
     }
     free(sender);
+}
+
+uint64_t wd_async_udp_sender_submit_calls(const struct wd_async_udp_sender* sender) {
+    return sender ? sender->submit_calls : 0;
+}
+
+uint64_t wd_async_udp_sender_partial_submits(const struct wd_async_udp_sender* sender) {
+    return sender ? sender->partial_submits : 0;
 }

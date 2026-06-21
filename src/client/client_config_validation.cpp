@@ -33,6 +33,10 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
     {
         return fail(ClientConfigValidationError::MissingConnectionIdentity, out_error);
     }
+    if (config.config_epoch == 0)
+    {
+        return fail(ClientConfigValidationError::MissingConfigurationEpoch, out_error);
+    }
 
     if (config.width == 0 || config.height == 0 || config.width > WD_CLIENT_MAX_DIMENSION ||
         config.height > WD_CLIENT_MAX_DIMENSION)
@@ -70,9 +74,21 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
     {
         return fail(ClientConfigValidationError::UnsupportedPixelFormat, out_error);
     }
-    if (config.compression_mode != WD_COMPRESSION_ZSTD)
+    if (config.compression_mode != WD_COMPRESSION_ZSTD || config.zstd_level == 0 || config.zstd_level > 22)
     {
         return fail(ClientConfigValidationError::UnsupportedCompression, out_error);
+    }
+
+    if ((config.capabilities & ~WD_SERVER_CAP_MASK) != 0 ||
+        (config.video_codecs & ~WD_VIDEO_CODEC_MASK) != 0)
+    {
+        return fail(ClientConfigValidationError::InvalidCapabilities, out_error);
+    }
+    const bool video = (config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0;
+    if ((video && (config.video_codecs == 0 || config.video_transport != WD_VIDEO_TRANSPORT_TCP)) ||
+        (!video && (config.video_codecs != 0 || config.video_transport != 0)))
+    {
+        return fail(ClientConfigValidationError::InvalidCapabilities, out_error);
     }
 
     if (config.udp_payload_target == 0)
@@ -97,6 +113,8 @@ const char* client_config_validation_error_name(ClientConfigValidationError erro
             return "missing session";
         case ClientConfigValidationError::MissingConnectionIdentity:
             return "missing connection identity";
+        case ClientConfigValidationError::MissingConfigurationEpoch:
+            return "missing configuration epoch";
         case ClientConfigValidationError::UnsupportedDisplayDimensions:
             return "unsupported display dimensions";
         case ClientConfigValidationError::UnsupportedFramebufferSize:
@@ -109,10 +127,66 @@ const char* client_config_validation_error_name(ClientConfigValidationError erro
             return "unsupported pixel format";
         case ClientConfigValidationError::UnsupportedCompression:
             return "unsupported compression";
+        case ClientConfigValidationError::InvalidCapabilities:
+            return "invalid capabilities";
         case ClientConfigValidationError::InvalidUdpPayloadTarget:
             return "invalid UDP payload target";
     }
     return "unknown";
+}
+
+
+uint32_t client_classify_server_config_change(const wd_server_config_payload& current,
+                                              const wd_server_config_payload& next) {
+    uint32_t flags = ClientConfigChangeNone;
+    if (current.config_epoch != next.config_epoch)
+    {
+        flags |= ClientConfigChangeEpoch;
+    }
+    if (current.width != next.width || current.height != next.height ||
+        current.tile_width != next.tile_width || current.tile_height != next.tile_height ||
+        current.tiles_x != next.tiles_x || current.tiles_y != next.tiles_y ||
+        current.total_tiles != next.total_tiles)
+    {
+        flags |= ClientConfigChangeGeometry;
+    }
+    if (current.session_id != next.session_id ||
+        current.connection_token != next.connection_token ||
+        current.server_udp_port != next.server_udp_port ||
+        current.udp_payload_target != next.udp_payload_target)
+    {
+        flags |= ClientConfigChangeTransport;
+    }
+    if (current.content_epoch != next.content_epoch)
+    {
+        flags |= ClientConfigChangeContent;
+    }
+    if (current.pixel_format != next.pixel_format || current.compression_mode != next.compression_mode ||
+        current.zstd_level != next.zstd_level)
+    {
+        flags |= ClientConfigChangeFormat;
+    }
+    if (current.capabilities != next.capabilities || current.video_codecs != next.video_codecs ||
+        current.video_transport != next.video_transport)
+    {
+        flags |= ClientConfigChangeVideo;
+    }
+    if (current.link_rtt_ms != next.link_rtt_ms ||
+        current.summary_retransmit_grace_ms != next.summary_retransmit_grace_ms ||
+        current.retransmit_rerequest_ms != next.retransmit_rerequest_ms ||
+        current.retransmit_inflight_grace_ms != next.retransmit_inflight_grace_ms ||
+        current.tile_reassembly_timeout_ms != next.tile_reassembly_timeout_ms ||
+        current.active_summary_interval_ms != next.active_summary_interval_ms ||
+        current.clean_summary_interval_ms != next.clean_summary_interval_ms)
+    {
+        flags |= ClientConfigChangeTimers;
+    }
+    return flags;
+}
+
+bool client_config_change_requires_stream_reset(uint32_t flags) {
+    return (flags & (ClientConfigChangeGeometry | ClientConfigChangeTransport |
+                     ClientConfigChangeContent | ClientConfigChangeFormat)) != 0;
 }
 
 } // namespace waydisplay

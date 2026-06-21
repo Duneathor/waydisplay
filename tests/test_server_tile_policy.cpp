@@ -74,6 +74,29 @@ void test_xrgb_compression_prefilter() {
             "high-entropy tiles should bypass zstd");
 }
 
+
+void test_compression_advisor_backs_off_and_resamples() {
+    wd_tile_compression_advisor advisor{};
+    for (int i = 0; i < 8; ++i)
+    {
+        require(wd_tile_compression_advisor_should_attempt(&advisor),
+                "advisor should initially sample every candidate");
+        wd_tile_compression_advisor_record(&advisor, false);
+    }
+    uint32_t attempts = 0;
+    for (int i = 0; i < 32; ++i)
+    {
+        if (wd_tile_compression_advisor_should_attempt(&advisor))
+        {
+            attempts++;
+        }
+    }
+    require(attempts == 2, "backoff should periodically resample rather than disable compression permanently");
+    wd_tile_compression_advisor_record(&advisor, true);
+    require(wd_tile_compression_advisor_should_attempt(&advisor),
+            "a successful sample should immediately restore normal attempts");
+}
+
 void test_delivery_status_waits_for_seal_and_reports_failure() {
     wd_tile_delivery_status status{};
     wd_tile_delivery_status_add(&status);
@@ -95,6 +118,7 @@ int main() {
     test_compression_requires_material_savings();
     test_locality_with_starvation_bound();
     test_xrgb_compression_prefilter();
+    test_compression_advisor_backs_off_and_resamples();
     test_delivery_status_waits_for_seal_and_reports_failure();
     return 0;
 }

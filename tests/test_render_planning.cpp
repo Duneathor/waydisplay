@@ -243,28 +243,28 @@ void test_remote_content_epochs_reject_late_cross_transport_packets() {
 
 void test_present_telemetry_claims_only_matching_generation_batch() {
     std::vector<ClientPendingTileTelemetry> pending(4);
-    pending[0] = {7, 5, 100, 11};
-    pending[1] = {7, 4, 120, 11};
-    pending[2] = {6, 9, 140, 12};
-    pending[3] = {7, 10, 160, 13};
+    pending[0] = {1, 7, 5, 100, 11};
+    pending[1] = {2, 7, 4, 120, 11};
+    pending[2] = {3, 6, 9, 140, 12};
+    pending[3] = {4, 7, 10, 160, 13};
 
     std::vector<ClientTileGenerationUpdate> updates{{0, 5}, {1, 6}, {2, 9}, {3, 9}};
     ClientPresentTelemetryBatch batch;
     claim_tile_present_telemetry(pending, updates, 7, 200, batch);
 
     require(batch.content_epoch == 7, "claimed telemetry should retain content epoch");
-    require(batch.tile_count == 2 && batch.completion_count == 2,
-            "only matching epoch and presented generations should be claimed");
-    require(batch.claimed_ns == 200 && batch.completion_age_sum_ns == 180 &&
-                batch.oldest_completion_ns == 100 && batch.newest_completion_ns == 120,
+    require(batch.tile_count == 1 && batch.completion_count == 1,
+            "only the exact epoch and generation should be claimed");
+    require(batch.claimed_ns == 200 && batch.completion_age_sum_ns == 100 &&
+                batch.oldest_completion_ns == 100 && batch.newest_completion_ns == 100,
             "claimed completion timing should be aggregated without absolute-time overflow");
     require(batch.input_sequence_count == 1 && batch.input_sequences[0] == 11,
             "input sequences should be deduplicated and bounded");
     require(pending[0].generation == 5 && pending[1].generation == 4,
             "claiming should not remove telemetry before presentation succeeds");
     commit_tile_present_telemetry(pending, updates, 7);
-    require(pending[0].generation == 0 && pending[1].generation == 0,
-            "successful presentation should remove matching records");
+    require(pending[0].generation == 0 && pending[1].generation == 4,
+            "successful presentation should remove only the exact matching record");
     require(pending[2].generation == 9 && pending[3].generation == 10,
             "stale-epoch and not-yet-presented records should remain pending");
 }
@@ -274,7 +274,8 @@ void test_present_telemetry_input_sequence_set_is_bounded() {
     std::vector<ClientTileGenerationUpdate> updates;
     for (uint16_t tile_id = 0; tile_id < pending.size(); ++tile_id)
     {
-        pending[tile_id] = {3, 1, 100ull + tile_id, 1000ull + tile_id};
+        pending[tile_id] = {static_cast<uint64_t>(tile_id) + 1u, 3, 1,
+                            100ull + tile_id, 1000ull + tile_id};
         updates.push_back({tile_id, 1});
     }
     ClientPresentTelemetryBatch batch;
@@ -282,6 +283,26 @@ void test_present_telemetry_input_sequence_set_is_bounded() {
     require(batch.completion_count == pending.size(), "all matching tile completion samples should aggregate");
     require(batch.input_sequence_count == batch.input_sequences.size(),
             "input correlation set should remain bounded");
+}
+
+
+void test_present_telemetry_counts_large_tile_completion_once() {
+    std::vector<ClientPendingTileTelemetry> pending(4);
+    std::vector<ClientTileGenerationUpdate> updates;
+    for (uint16_t tile_id = 0; tile_id < pending.size(); ++tile_id)
+    {
+        pending[tile_id] = {42, 9, 12, 500, 77};
+        updates.push_back({tile_id, 12});
+    }
+
+    ClientPresentTelemetryBatch batch;
+    claim_tile_present_telemetry(pending, updates, 9, 700, batch);
+    require(batch.tile_count == 1 && batch.completion_count == 1,
+            "one wire-tile completion covering multiple base tiles should count once");
+    require(batch.completion_age_sum_ns == 200,
+            "deduplicated wire-tile completion should contribute one latency sample");
+    require(batch.input_sequence_count == 1 && batch.input_sequences[0] == 77,
+            "large-tile input correlation should be reported once");
 }
 
 void test_tile_generation_claim_commit_and_requeue() {
@@ -317,6 +338,7 @@ int main() {
     test_remote_content_epochs_reject_late_cross_transport_packets();
     test_present_telemetry_claims_only_matching_generation_batch();
     test_present_telemetry_input_sequence_set_is_bounded();
+    test_present_telemetry_counts_large_tile_completion_once();
     test_tile_generation_claim_commit_and_requeue();
     return 0;
 }

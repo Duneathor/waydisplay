@@ -27,6 +27,7 @@ void initialize_state(ClientState& state, uint16_t width = 64, uint16_t height =
     state.config.session_id = 3;
     state.config.connection_token = 0xabcddcba12344321ull;
     state.config.content_epoch = 1;
+    state.config.config_epoch = 1;
     state.config.server_udp_port = 5001;
     state.config.width = width;
     state.config.height = height;
@@ -432,6 +433,33 @@ void test_conflicting_duplicate_fragment_poisoning_is_rejected() {
     require(!state.retx_queue.empty(), "fragment conflict should queue repair");
 }
 
+
+void test_conflicting_duplicate_fragment_zero_metadata_is_rejected() {
+    ClientState state;
+    initialize_state(state, 64, 64, 400);
+    const auto packets = make_packets(state, WD_TILE_16x16, 0, 61,
+                                      make_tile_bytes(WD_TILE_16x16, 131), false, true);
+    require(packets.size() > 1, "metadata conflict test requires a fragmented tile");
+
+    TileReassembler reassembler;
+    require(!reassembler.process_udp_packet(state, packets[0].data(), packets[0].size()).valid,
+            "first fragment should remain partial");
+
+    std::vector<uint8_t> conflicting = packets[0];
+    wd_udp_tile_input_sequence_extension extension{};
+    std::memcpy(&extension, conflicting.data() + sizeof(wd_udp_tile_packet_header), sizeof(extension));
+    extension.input_sequence++;
+    std::memcpy(conflicting.data() + sizeof(wd_udp_tile_packet_header), &extension, sizeof(extension));
+
+    require(!reassembler.process_udp_packet(state, conflicting.data(), conflicting.size()).valid,
+            "duplicate fragment zero with different metadata should be rejected");
+    require(state.stats.tile_fragment_conflicts.load() == 1,
+            "fragment-zero metadata conflict should be counted");
+    require(reassembler.active_entry_count() == 0,
+            "metadata-conflicted partial tile should be discarded");
+    require(!state.retx_queue.empty(), "metadata conflict should queue immediate repair");
+}
+
 } // namespace
 
 int main() {
@@ -449,5 +477,6 @@ int main() {
     test_bounds_active_reassembly_memory_and_evicts_oldest();
     test_decompression_failure_immediately_queues_repair();
     test_conflicting_duplicate_fragment_poisoning_is_rejected();
+    test_conflicting_duplicate_fragment_zero_metadata_is_rejected();
     return 0;
 }

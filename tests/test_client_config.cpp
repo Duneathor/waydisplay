@@ -22,6 +22,7 @@ wd_server_config_payload valid_config() {
     config.session_id = 1;
     config.connection_token = 0x1234;
     config.content_epoch = 1;
+    config.config_epoch = 1;
     config.server_udp_port = 5001;
     config.width = 1920;
     config.height = 1080;
@@ -32,6 +33,7 @@ wd_server_config_payload valid_config() {
     config.total_tiles = 8160;
     config.pixel_format = WD_PIXEL_FORMAT_XRGB8888;
     config.compression_mode = WD_COMPRESSION_ZSTD;
+    config.zstd_level = 1;
     config.udp_payload_target = 1200;
     return config;
 }
@@ -108,6 +110,52 @@ void test_rejects_invalid_udp_payload_target() {
     require(!client_normalize_and_validate_server_config(config, &error), "large UDP target should fail");
 }
 
+void test_classifies_transport_changes_independently_of_geometry() {
+    wd_server_config_payload current = valid_config();
+    wd_server_config_payload next = current;
+    next.server_udp_port++;
+    uint32_t flags = client_classify_server_config_change(current, next);
+    require((flags & ClientConfigChangeTransport) != 0, "UDP endpoint change should be transport change");
+    require((flags & ClientConfigChangeGeometry) == 0, "UDP endpoint change should not imply geometry change");
+    require(client_config_change_requires_stream_reset(flags), "transport change must reset stream state");
+
+    next = current;
+    next.udp_payload_target -= 16;
+    flags = client_classify_server_config_change(current, next);
+    require((flags & ClientConfigChangeTransport) != 0, "UDP payload target change should recreate receiver");
+
+    next = current;
+    next.link_rtt_ms++;
+    flags = client_classify_server_config_change(current, next);
+    require(flags == ClientConfigChangeTimers, "timer-only update should remain lightweight");
+    require(!client_config_change_requires_stream_reset(flags), "timer-only update should not reset stream");
+}
+
+
+void test_rejects_missing_config_epoch_and_invalid_capabilities() {
+    wd_server_config_payload config = valid_config();
+    config.config_epoch = 0;
+    ClientConfigValidationError error{};
+    require(!client_normalize_and_validate_server_config(config, &error),
+            "zero config epoch should fail");
+    require(error == ClientConfigValidationError::MissingConfigurationEpoch,
+            "zero config epoch should report the barrier identity failure");
+
+    config = valid_config();
+    config.capabilities = 0x80000000u;
+    require(!client_normalize_and_validate_server_config(config, &error),
+            "unknown server capabilities should fail");
+    require(error == ClientConfigValidationError::InvalidCapabilities,
+            "unknown server capabilities should report a capability failure");
+
+    config = valid_config();
+    config.capabilities = WD_SERVER_CAP_VIDEO_STREAM;
+    config.video_codecs = 0;
+    config.video_transport = WD_VIDEO_TRANSPORT_TCP;
+    require(!client_normalize_and_validate_server_config(config, &error),
+            "video capability without a codec should fail");
+}
+
 } // namespace
 
 int main() {
@@ -117,5 +165,7 @@ int main() {
     test_rejects_inconsistent_grid();
     test_rejects_oversized_framebuffer();
     test_rejects_invalid_udp_payload_target();
+    test_classifies_transport_changes_independently_of_geometry();
+    test_rejects_missing_config_epoch_and_invalid_capabilities();
     return 0;
 }

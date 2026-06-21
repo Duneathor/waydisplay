@@ -260,8 +260,7 @@ static bool payload_to_text_copy(uint8_t expected_session_id, uint64_t expected_
         return false;
     }
 
-    size_t needed = sizeof(header) + (size_t)header.data_size;
-    if (payload_size < needed)
+    if (!wd_selection_payload_size_is_valid(&header, payload_size))
     {
         return false;
     }

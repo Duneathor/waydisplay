@@ -1,6 +1,7 @@
 #include "present_telemetry.hpp"
 
 #include <algorithm>
+#include <unordered_set>
 
 namespace waydisplay {
 namespace {
@@ -33,6 +34,8 @@ void claim_tile_present_telemetry(const std::vector<ClientPendingTileTelemetry>&
     out_batch.content_epoch = content_epoch;
     out_batch.claimed_ns = claimed_ns;
 
+    std::unordered_set<uint64_t> claimed_completion_ids;
+    claimed_completion_ids.reserve(updates.size());
     for (const ClientTileGenerationUpdate& update : updates)
     {
         if (update.tile_id >= pending.size())
@@ -40,7 +43,9 @@ void claim_tile_present_telemetry(const std::vector<ClientPendingTileTelemetry>&
             continue;
         }
         const ClientPendingTileTelemetry& item = pending[update.tile_id];
-        if (item.generation == 0 || item.generation > update.generation || item.content_epoch != content_epoch)
+        if (item.completion_id == 0 || item.generation != update.generation ||
+            item.content_epoch != content_epoch ||
+            !claimed_completion_ids.insert(item.completion_id).second)
         {
             continue;
         }
@@ -73,8 +78,8 @@ void commit_tile_present_telemetry(std::vector<ClientPendingTileTelemetry>& pend
             continue;
         }
         ClientPendingTileTelemetry& item = pending[update.tile_id];
-        if (item.content_epoch == content_epoch && item.generation != 0 &&
-            item.generation <= update.generation)
+        if (item.content_epoch == content_epoch && item.completion_id != 0 &&
+            item.generation == update.generation)
         {
             item = ClientPendingTileTelemetry{};
         }

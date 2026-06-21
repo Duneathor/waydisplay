@@ -144,7 +144,10 @@ target_link_libraries(waydisplay_common PUBLIC
 
 add_library(waydisplay_server_tile_policy STATIC
     src/server/wd_tile_policy.c
+    src/server/wd_dirty_region_scheduler.c
     src/server/wd_async_udp_accounting.c
+    src/server/wd_video_transition.c
+    src/server/wd_input_correlation.c
 )
 
 waydisplay_apply_common_warnings(waydisplay_server_tile_policy)
@@ -175,6 +178,7 @@ add_library(waydisplay_client_render_planning STATIC
     src/client/present_telemetry.cpp
     src/client/render_wakeup.cpp
     src/client/stream_ownership.cpp
+    src/client/udp_transport_lifecycle.cpp
 )
 
 waydisplay_apply_common_warnings(waydisplay_client_render_planning)
@@ -507,12 +511,29 @@ if(WAYDISPLAY_BUILD_TESTS)
     target_link_libraries(waydisplay_test_server_tile_policy PRIVATE waydisplay_server_tile_policy)
     add_test(NAME waydisplay.server_tile_policy COMMAND waydisplay_test_server_tile_policy)
 
+    add_executable(waydisplay_test_dirty_region_scheduler
+        tests/test_dirty_region_scheduler.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_dirty_region_scheduler)
+    target_link_libraries(waydisplay_test_dirty_region_scheduler PRIVATE waydisplay_server_tile_policy)
+    add_test(NAME waydisplay.dirty_region_scheduler COMMAND waydisplay_test_dirty_region_scheduler)
+
     add_executable(waydisplay_test_async_udp_accounting
         tests/test_async_udp_accounting.cpp
     )
     waydisplay_apply_common_warnings(waydisplay_test_async_udp_accounting)
     target_link_libraries(waydisplay_test_async_udp_accounting PRIVATE waydisplay_server_tile_policy)
     add_test(NAME waydisplay.async_udp_accounting COMMAND waydisplay_test_async_udp_accounting)
+
+    add_executable(waydisplay_test_transition_integrity
+        tests/test_transition_integrity.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_transition_integrity)
+    target_link_libraries(waydisplay_test_transition_integrity PRIVATE
+        waydisplay_server_tile_policy
+        waydisplay_client_render_planning
+    )
+    add_test(NAME waydisplay.transition_integrity COMMAND waydisplay_test_transition_integrity)
 
     add_executable(waydisplay_test_render_planning
         tests/test_render_planning.cpp

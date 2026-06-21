@@ -13,9 +13,11 @@
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
 
+#include <poll.h>
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <errno.h>
@@ -236,6 +238,10 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.sdl_texture_upload_samples += src.sdl_texture_upload_samples;
     dst.sdl_texture_upload_sum_ns += src.sdl_texture_upload_sum_ns;
     dst.sdl_texture_upload_max_ns = std::max(dst.sdl_texture_upload_max_ns, src.sdl_texture_upload_max_ns);
+    dst.framebuffer_snapshot_pixels += src.framebuffer_snapshot_pixels;
+    dst.framebuffer_snapshot_samples += src.framebuffer_snapshot_samples;
+    dst.framebuffer_snapshot_sum_ns += src.framebuffer_snapshot_sum_ns;
+    dst.framebuffer_snapshot_max_ns = std::max(dst.framebuffer_snapshot_max_ns, src.framebuffer_snapshot_max_ns);
     dst.sdl_video_texture_uploads += src.sdl_video_texture_uploads;
     dst.sdl_video_texture_upload_pixels += src.sdl_video_texture_upload_pixels;
     dst.sdl_present_samples += src.sdl_present_samples;
@@ -1082,6 +1088,10 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t sdl_texture_upload_samples = logged.sdl_texture_upload_samples;
     const uint64_t sdl_texture_upload_sum_ns = logged.sdl_texture_upload_sum_ns;
     const uint64_t sdl_texture_upload_max_ns = logged.sdl_texture_upload_max_ns;
+    const uint64_t framebuffer_snapshot_pixels = logged.framebuffer_snapshot_pixels;
+    const uint64_t framebuffer_snapshot_samples = logged.framebuffer_snapshot_samples;
+    const uint64_t framebuffer_snapshot_sum_ns = logged.framebuffer_snapshot_sum_ns;
+    const uint64_t framebuffer_snapshot_max_ns = logged.framebuffer_snapshot_max_ns;
     const uint64_t sdl_video_texture_uploads = logged.sdl_video_texture_uploads;
     const uint64_t sdl_video_texture_upload_pixels = logged.sdl_video_texture_upload_pixels;
     const uint64_t sdl_present_samples = logged.sdl_present_samples;
@@ -1202,7 +1212,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
 
     if (sdl_render_frames != 0 || sdl_texture_upload_samples != 0 || sdl_present_samples != 0)
     {
-        WD_LOG_DEBUG("[client render/min] frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu video_full=%llu texture_locks=%llu texture_updates=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu cost_full=%llu source_mpix=%.2f upload_mpix=%.2f video_upload_mpix=%.2f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
+        WD_LOG_DEBUG("[client render/min] frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu video_full=%llu texture_locks=%llu texture_updates=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu cost_full=%llu source_mpix=%.2f upload_mpix=%.2f video_upload_mpix=%.2f snapshot_mpix=%.2f snapshot_avg_ms=%.2f snapshot_max_ms=%.2f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
                      static_cast<unsigned long long>(sdl_render_frames),
                      static_cast<unsigned long long>(sdl_remote_frames),
                      static_cast<unsigned long long>(sdl_empty_remote_wakeups),
@@ -1219,6 +1229,9 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                      static_cast<double>(sdl_texture_source_pixels) / 1000000.0,
                      static_cast<double>(sdl_texture_upload_pixels) / 1000000.0,
                      static_cast<double>(sdl_video_texture_upload_pixels) / 1000000.0,
+                     static_cast<double>(framebuffer_snapshot_pixels) / 1000000.0,
+                     avg_ms(framebuffer_snapshot_sum_ns, framebuffer_snapshot_samples),
+                     static_cast<double>(framebuffer_snapshot_max_ns) / 1000000.0,
                      avg_ms(sdl_texture_upload_sum_ns, sdl_texture_upload_samples),
                      static_cast<double>(sdl_texture_upload_max_ns) / 1000000.0,
                      avg_ms(sdl_present_sum_ns, sdl_present_samples),
@@ -1326,6 +1339,10 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t sdl_texture_upload_samples = take_stat(state.stats.sdl_texture_upload_samples);
     const uint64_t sdl_texture_upload_sum_ns  = take_stat(state.stats.sdl_texture_upload_sum_ns);
     const uint64_t sdl_texture_upload_max_ns  = take_stat(state.stats.sdl_texture_upload_max_ns);
+    const uint64_t framebuffer_snapshot_pixels = take_stat(state.stats.framebuffer_snapshot_pixels);
+    const uint64_t framebuffer_snapshot_samples = take_stat(state.stats.framebuffer_snapshot_samples);
+    const uint64_t framebuffer_snapshot_sum_ns = take_stat(state.stats.framebuffer_snapshot_sum_ns);
+    const uint64_t framebuffer_snapshot_max_ns = take_stat(state.stats.framebuffer_snapshot_max_ns);
     const uint64_t sdl_video_texture_uploads  = take_stat(state.stats.sdl_video_texture_uploads);
     const uint64_t sdl_video_texture_upload_pixels = take_stat(state.stats.sdl_video_texture_upload_pixels);
     const uint64_t sdl_present_samples        = take_stat(state.stats.sdl_present_samples);
@@ -1429,6 +1446,10 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.sdl_texture_upload_samples = sdl_texture_upload_samples;
     sample.sdl_texture_upload_sum_ns = sdl_texture_upload_sum_ns;
     sample.sdl_texture_upload_max_ns = sdl_texture_upload_max_ns;
+    sample.framebuffer_snapshot_pixels = framebuffer_snapshot_pixels;
+    sample.framebuffer_snapshot_samples = framebuffer_snapshot_samples;
+    sample.framebuffer_snapshot_sum_ns = framebuffer_snapshot_sum_ns;
+    sample.framebuffer_snapshot_max_ns = framebuffer_snapshot_max_ns;
     sample.sdl_video_texture_uploads = sdl_video_texture_uploads;
     sample.sdl_video_texture_upload_pixels = sdl_video_texture_upload_pixels;
     sample.sdl_present_samples = sdl_present_samples;
@@ -1603,8 +1624,10 @@ void clear_completed_repair_tracking_locked(ClientState& state, uint32_t base_id
     }
 }
 
-void mark_completed_base_generations(ClientState& state, const CompletedTile& completed) {
-    if (state.config.tile_width == 0 || state.config.tile_height == 0 || completed.tile_width == 0 || completed.tile_height == 0)
+template <typename Fn>
+void for_each_completed_base_tile(const ClientState& state, const CompletedTile& completed, Fn&& fn) {
+    if (state.config.tile_width == 0 || state.config.tile_height == 0 ||
+        completed.tile_width == 0 || completed.tile_height == 0)
     {
         return;
     }
@@ -1617,43 +1640,48 @@ void mark_completed_base_generations(ClientState& state, const CompletedTile& co
 
     const uint32_t x = wd_tile_start_x_for_tile(completed.tile_id, tiles_x, completed.tile_width);
     const uint32_t y = wd_tile_start_y_for_tile(completed.tile_id, tiles_x, completed.tile_height);
-    const uint32_t w = wd_tile_visible_width_for_tile(state.config.width, completed.tile_id, tiles_x, completed.tile_width);
-    const uint32_t h = wd_tile_visible_height_for_tile(state.config.height, completed.tile_id, tiles_x, completed.tile_height);
+    const uint32_t w = wd_tile_visible_width_for_tile(state.config.width, completed.tile_id, tiles_x,
+                                                       completed.tile_width);
+    const uint32_t h = wd_tile_visible_height_for_tile(state.config.height, completed.tile_id, tiles_x,
+                                                        completed.tile_height);
     if (w == 0 || h == 0)
     {
         return;
     }
 
-    uint32_t bx0 = x / state.config.tile_width;
-    uint32_t by0 = y / state.config.tile_height;
-    uint32_t bx1 = (x + w - 1u) / state.config.tile_width;
-    uint32_t by1 = (y + h - 1u) / state.config.tile_height;
-    if (bx1 >= state.config.tiles_x)
-    {
-        bx1 = static_cast<uint32_t>(state.config.tiles_x) - 1u;
-    }
-    if (by1 >= state.config.tiles_y)
-    {
-        by1 = static_cast<uint32_t>(state.config.tiles_y) - 1u;
-    }
+    const uint32_t bx0 = x / state.config.tile_width;
+    const uint32_t by0 = y / state.config.tile_height;
+    const uint32_t bx1 = std::min<uint32_t>((x + w - 1u) / state.config.tile_width,
+                                             static_cast<uint32_t>(state.config.tiles_x) - 1u);
+    const uint32_t by1 = std::min<uint32_t>((y + h - 1u) / state.config.tile_height,
+                                             static_cast<uint32_t>(state.config.tiles_y) - 1u);
 
     for (uint32_t by = by0; by <= by1; ++by)
     {
         for (uint32_t bx = bx0; bx <= bx1; ++bx)
         {
             const uint32_t base_id = by * static_cast<uint32_t>(state.config.tiles_x) + bx;
-            if (base_id < state.received_generation.size() && completed.generation > state.received_generation[base_id])
+            if (base_id < state.config.total_tiles)
             {
-                state.received_generation[base_id] = completed.generation;
+                fn(static_cast<uint16_t>(base_id));
             }
-            if (base_id < state.pending_present_generation.size() &&
-                completed.generation > state.pending_present_generation[base_id])
-            {
-                state.pending_present_generation[base_id] = completed.generation;
-            }
-            clear_completed_repair_tracking_locked(state, base_id);
         }
     }
+}
+
+void mark_completed_base_generations(ClientState& state, const CompletedTile& completed) {
+    for_each_completed_base_tile(state, completed, [&](uint16_t base_id) {
+        if (base_id < state.received_generation.size() && completed.generation > state.received_generation[base_id])
+        {
+            state.received_generation[base_id] = completed.generation;
+        }
+        if (base_id < state.pending_present_generation.size() &&
+            completed.generation > state.pending_present_generation[base_id])
+        {
+            state.pending_present_generation[base_id] = completed.generation;
+        }
+        clear_completed_repair_tracking_locked(state, base_id);
+    });
 }
 
 void collect_base_tile_ids_for_rects(const wd_server_config_payload& config,
@@ -1815,23 +1843,29 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
             mark_completed_base_generations(state, completed);
         }
 
-        if (completed.completed_timestamp_ns != 0 && state.config.tile_width != 0 && state.config.tile_height != 0)
+        if (completed.completed_timestamp_ns != 0)
         {
-            const uint32_t base_x = dirty_rect.x / state.config.tile_width;
-            const uint32_t base_y = dirty_rect.y / state.config.tile_height;
-            const uint32_t base_id = base_y * static_cast<uint32_t>(state.config.tiles_x) + base_x;
             std::lock_guard<std::mutex> present_lock(state.present_mutex);
-            if (base_id < state.pending_tile_telemetry.size())
+            uint64_t completion_id = state.next_tile_completion_id++;
+            if (completion_id == 0)
             {
+                completion_id = state.next_tile_completion_id++;
+            }
+            for_each_completed_base_tile(state, completed, [&](uint16_t base_id) {
+                if (base_id >= state.pending_tile_telemetry.size())
+                {
+                    return;
+                }
                 ClientPendingTileTelemetry& telemetry = state.pending_tile_telemetry[base_id];
                 if (completed.generation >= telemetry.generation)
                 {
+                    telemetry.completion_id = completion_id;
                     telemetry.content_epoch = completed.content_epoch;
                     telemetry.generation = completed.generation;
                     telemetry.completed_ns = completed.completed_timestamp_ns;
                     telemetry.input_sequence = completed.input_sequence;
                 }
-            }
+            });
         }
     }
 
@@ -1944,6 +1978,64 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler) {
 }
 
 
+uint64_t client_udp_next_deadline_ns(ClientState& state, const TileReassembler& reassembler, uint64_t now_ns) {
+    constexpr uint64_t MAX_IDLE_WAIT_NS = 50000000ull;
+    uint64_t deadline_ns = now_ns + MAX_IDLE_WAIT_NS;
+
+    const uint64_t reassembly_deadline_ns = reassembler.next_expiry_deadline_ns(state);
+    if (reassembly_deadline_ns != 0 && reassembly_deadline_ns < deadline_ns)
+    {
+        deadline_ns = reassembly_deadline_ns;
+    }
+    if (state.next_summary_promote_ns == 0 || state.next_summary_promote_ns <= now_ns)
+    {
+        deadline_ns = now_ns;
+    }
+    else if (state.next_summary_promote_ns < deadline_ns)
+    {
+        deadline_ns = state.next_summary_promote_ns;
+    }
+
+    {
+        std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+        if (!state.retx_queue.empty())
+        {
+            deadline_ns = now_ns;
+        }
+    }
+    return deadline_ns;
+}
+
+bool client_wait_for_udp_activity(ClientState& state, uint64_t timeout_ns) {
+    if (timeout_ns == 0)
+    {
+        return true;
+    }
+
+    std::lock_guard<std::mutex> processing_lock(state.udp_processing_mutex);
+    if (state.udp_receiver)
+    {
+        const ClientAsyncUdpWaitResult result = client_async_udp_receiver_wait(state.udp_receiver, timeout_ns);
+        return result != ClientAsyncUdpWaitResult::Failed;
+    }
+
+    if (state.udp_fd < 0)
+    {
+        return false;
+    }
+    const uint64_t timeout_ms64 = (timeout_ns + 999999ull) / 1000000ull;
+    const int timeout_ms = static_cast<int>(std::min<uint64_t>(timeout_ms64, static_cast<uint64_t>(INT_MAX)));
+    pollfd descriptor{};
+    descriptor.fd = state.udp_fd;
+    descriptor.events = POLLIN;
+    int rc = 0;
+    do
+    {
+        rc = ::poll(&descriptor, 1, timeout_ms);
+    } while (rc < 0 && errno == EINTR);
+    return rc >= 0;
+}
+
 void udp_reader_main(ClientState* state) {
     TileReassembler reassembler;
     uint64_t observed_config_generation = state->client_config_generation.load(std::memory_order_acquire);
@@ -1959,7 +2051,11 @@ void udp_reader_main(ClientState* state) {
 
         if (client_has_pending_server_config(*state))
         {
-            SDL_Delay(1);
+            if (!client_wait_for_udp_activity(*state, 10000000ull))
+            {
+                state->running.store(false, std::memory_order_relaxed);
+                break;
+            }
             continue;
         }
 
@@ -1987,10 +2083,14 @@ void udp_reader_main(ClientState* state) {
             break;
         }
 
-        /* The render thread is explicitly signaled when dirty work first
-         * appears, so pending render work must not turn this polling loop into
-         * a busy spin while the local presentation cap is active. */
-        SDL_Delay(1);
+        const uint64_t wait_now_ns = wd_now_ns();
+        const uint64_t deadline_ns = client_udp_next_deadline_ns(*state, reassembler, wait_now_ns);
+        const uint64_t timeout_ns = deadline_ns > wait_now_ns ? deadline_ns - wait_now_ns : 0;
+        if (!client_wait_for_udp_activity(*state, timeout_ns))
+        {
+            state->running.store(false, std::memory_order_relaxed);
+            break;
+        }
     }
 }
 
@@ -2168,24 +2268,30 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         return false;
     }
 
-    if (config.session_id == state.config.session_id && config.connection_token == state.config.connection_token && config.width == state.config.width && config.height == state.config.height &&
-        config.tile_width == state.config.tile_width && config.tile_height == state.config.tile_height &&
-        config.tiles_x == state.config.tiles_x && config.tiles_y == state.config.tiles_y && config.total_tiles == state.config.total_tiles)
+    const uint32_t change_flags = client_classify_server_config_change(state.config, config);
+    const bool transport_changed = (change_flags & ClientConfigChangeTransport) != 0;
+    const bool stream_reset_required = client_config_change_requires_stream_reset(change_flags);
+
+    if (!stream_reset_required)
     {
-        const bool content_changed = config.content_epoch != state.config.content_epoch;
         {
             std::lock_guard<std::mutex> lock(state.config_mutex);
             state.config = config;
         }
-        if (content_changed)
+        if (!client_send_config_applied(state, config.session_id, config.config_epoch))
         {
-            client_reset_content_epoch(state, config.content_epoch, ClientContentOwner::Tiles);
+            WD_LOG_ERROR("failed to acknowledge lightweight server config session=%u", config.session_id);
+            state.running.store(false, std::memory_order_relaxed);
+            return false;
         }
+        WD_LOG_DEBUG("acknowledged lightweight server config session=%u changes=0x%x",
+                     config.session_id, change_flags);
         return false;
     }
 
-    WD_LOG_INFO("server config updated: session=%u display=%ux%u tile=%ux%u grid=%ux%u total=%u", config.session_id,
-                config.width, config.height, config.tile_width, config.tile_height, config.tiles_x, config.tiles_y, config.total_tiles);
+    WD_LOG_INFO("server config updated: session=%u display=%ux%u tile=%ux%u grid=%ux%u total=%u changes=0x%x", config.session_id,
+                config.width, config.height, config.tile_width, config.tile_height, config.tiles_x, config.tiles_y, config.total_tiles,
+                change_flags);
 
     std::vector<uint32_t> new_framebuffer(static_cast<size_t>(config.width) * config.height, 0xff202020u);
     std::vector<uint64_t> new_received_generation(config.total_tiles, 0);
@@ -2220,6 +2326,13 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
 
     {
         std::lock_guard<std::mutex> processing_lock(state.udp_processing_mutex);
+        if (transport_changed && !client_reconfigure_udp_transport_locked(state, config))
+        {
+            SDL_DestroyTexture(new_texture);
+            WD_LOG_ERROR("failed to apply UDP transport update for session=%u", config.session_id);
+            state.running.store(false, std::memory_order_relaxed);
+            return false;
+        }
         std::lock_guard<std::mutex> config_lock(state.config_mutex);
         std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
         std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
@@ -2277,7 +2390,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     }
     update_window_size(window);
 
-    if (!client_send_config_applied(state, config.session_id))
+    if (!client_send_config_applied(state, config.session_id, config.config_epoch))
     {
         WD_LOG_ERROR("failed to acknowledge applied server config session=%u", config.session_id);
         state.running.store(false, std::memory_order_relaxed);
@@ -2346,25 +2459,51 @@ void record_texture_upload_stats(ClientState& state, uint64_t started_ns, uint64
     record_atomic_max(state.stats.sdl_texture_upload_max_ns, elapsed_ns);
 }
 
-bool upload_full_texture(ClientState& state, SDL_Texture* texture, uint32_t frame_width, uint32_t frame_height) {
+void record_framebuffer_snapshot_stats(ClientState& state, uint64_t started_ns, uint64_t pixels) {
+    const uint64_t elapsed_ns = wd_now_ns() - started_ns;
+    state.stats.framebuffer_snapshot_samples.fetch_add(1, std::memory_order_relaxed);
+    state.stats.framebuffer_snapshot_sum_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
+    state.stats.framebuffer_snapshot_pixels.fetch_add(pixels, std::memory_order_relaxed);
+    record_atomic_max(state.stats.framebuffer_snapshot_max_ns, elapsed_ns);
+}
+
+bool snapshot_full_framebuffer(ClientState& state, uint32_t frame_width, uint32_t frame_height,
+                               std::vector<uint32_t>& staging) {
+    const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
+    if (frame_width == 0 || frame_height == 0 || expected_pixels == 0)
+    {
+        return false;
+    }
+    staging.resize(expected_pixels);
     const uint64_t started_ns = wd_now_ns();
-    bool ok = false;
     {
         std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
-        const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
-        ok = frame_width != 0 && frame_height != 0 && state.framebuffer.size() >= expected_pixels &&
-             upload_argb_texture_locked(texture, nullptr, state.framebuffer.data(),
-                                        static_cast<int>(frame_width * WD_BYTES_PER_PIXEL),
-                                        frame_width, frame_height);
+        if (state.framebuffer.size() < expected_pixels)
+        {
+            return false;
+        }
+        std::memcpy(staging.data(), state.framebuffer.data(), expected_pixels * sizeof(uint32_t));
     }
+    record_framebuffer_snapshot_stats(state, started_ns, expected_pixels);
+    return true;
+}
 
+bool upload_full_texture(ClientState& state, SDL_Texture* texture, uint32_t frame_width, uint32_t frame_height,
+                         std::vector<uint32_t>& staging) {
+    const uint64_t started_ns = wd_now_ns();
+    if (!snapshot_full_framebuffer(state, frame_width, frame_height, staging))
+    {
+        return false;
+    }
+    const bool ok = upload_argb_texture_locked(texture, nullptr, staging.data(),
+                                                static_cast<int>(frame_width * WD_BYTES_PER_PIXEL),
+                                                frame_width, frame_height);
     if (ok)
     {
         state.stats.sdl_texture_full_uploads.fetch_add(1, std::memory_order_relaxed);
         state.stats.sdl_texture_lock_calls.fetch_add(1, std::memory_order_relaxed);
-        record_texture_upload_stats(state, started_ns, static_cast<uint64_t>(frame_width) * static_cast<uint64_t>(frame_height));
+        record_texture_upload_stats(state, started_ns, static_cast<uint64_t>(frame_width) * frame_height);
     }
-
     return ok;
 }
 
@@ -2444,15 +2583,69 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
     present_info.valid = true;
     return VideoTextureUploadResult::Uploaded;
 }
-bool upload_dirty_texture_rects(ClientState& state, SDL_Texture* texture, const std::vector<ClientDirtyRect>& rects,
-                                const DirtyTextureUploadPlan& plan, uint32_t frame_width, uint32_t frame_height) {
-    const uint64_t started_ns = wd_now_ns();
-    uint64_t uploaded_pixels = 0;
-    uint64_t uploaded_rects = 0;
-    uint64_t texture_lock_calls = 0;
-    uint64_t texture_update_calls = 0;
-    bool ok = true;
+struct StagedTextureRect {
+    SDL_Rect rect{};
+    size_t pixel_offset = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    bool use_texture_lock = false;
+};
 
+bool upload_dirty_texture_rects(ClientState& state, SDL_Texture* texture, const std::vector<ClientDirtyRect>& rects,
+                                const DirtyTextureUploadPlan& plan, uint32_t frame_width, uint32_t frame_height,
+                                std::vector<uint32_t>& staging, std::vector<StagedTextureRect>& staged_rects) {
+    const uint64_t started_ns = wd_now_ns();
+    staged_rects.clear();
+    uint64_t total_pixels = 0;
+
+    const auto add_rect = [&](const ClientDirtyRect& rect, bool use_texture_lock) {
+        if (rect.w == 0 || rect.h == 0 || rect.x >= frame_width || rect.y >= frame_height)
+        {
+            return true;
+        }
+        const uint32_t width = std::min<uint32_t>(rect.w, frame_width - rect.x);
+        const uint32_t height = std::min<uint32_t>(rect.h, frame_height - rect.y);
+        if (width == 0 || height == 0)
+        {
+            return true;
+        }
+        const uint64_t pixels = static_cast<uint64_t>(width) * height;
+        if (pixels > SIZE_MAX || total_pixels > SIZE_MAX - pixels)
+        {
+            return false;
+        }
+        StagedTextureRect staged{};
+        staged.rect = {static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(width), static_cast<int>(height)};
+        staged.pixel_offset = static_cast<size_t>(total_pixels);
+        staged.width = width;
+        staged.height = height;
+        staged.use_texture_lock = use_texture_lock;
+        staged_rects.push_back(staged);
+        total_pixels += pixels;
+        return true;
+    };
+
+    staged_rects.reserve(plan.mode == DirtyTextureUploadMode::Bounds ? 1u : rects.size());
+    if (plan.mode == DirtyTextureUploadMode::Bounds)
+    {
+        if (!add_rect(plan.bounds, true))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        for (const ClientDirtyRect& rect : rects)
+        {
+            if (!add_rect(rect, false))
+            {
+                return false;
+            }
+        }
+    }
+    staging.resize(static_cast<size_t>(total_pixels));
+
+    const uint64_t snapshot_started_ns = wd_now_ns();
     {
         std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
         const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
@@ -2460,74 +2653,52 @@ bool upload_dirty_texture_rects(ClientState& state, SDL_Texture* texture, const 
         {
             return false;
         }
-
-        const auto upload_rect = [&](const ClientDirtyRect& rect, bool use_texture_lock) {
-            if (rect.w == 0 || rect.h == 0 || rect.x >= frame_width || rect.y >= frame_height)
-            {
-                return true;
-            }
-
-            const uint32_t visible_width  = std::min<uint32_t>(rect.w, frame_width - rect.x);
-            const uint32_t visible_height = std::min<uint32_t>(rect.h, frame_height - rect.y);
-            if (visible_width == 0 || visible_height == 0)
-            {
-                return true;
-            }
-
-            const SDL_Rect sdl_rect{static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(visible_width),
-                                    static_cast<int>(visible_height)};
-            const uint32_t* pixels = state.framebuffer.data() + static_cast<size_t>(rect.y) * frame_width + rect.x;
-            const int source_pitch = static_cast<int>(frame_width * WD_BYTES_PER_PIXEL);
-            const bool uploaded = use_texture_lock
-                                      ? upload_argb_texture_locked(texture, &sdl_rect, pixels, source_pitch,
-                                                                   visible_width, visible_height)
-                                      : update_argb_texture(texture, sdl_rect, pixels, source_pitch,
-                                                            visible_width, visible_height);
-            if (!uploaded)
-            {
-                return false;
-            }
-
-            uploaded_pixels += static_cast<uint64_t>(visible_width) * static_cast<uint64_t>(visible_height);
-            ++uploaded_rects;
-            if (use_texture_lock)
-            {
-                ++texture_lock_calls;
-            }
-            else
-            {
-                ++texture_update_calls;
-            }
-            return true;
-        };
-
-        if (plan.mode == DirtyTextureUploadMode::Bounds)
+        for (const StagedTextureRect& staged : staged_rects)
         {
-            ok = upload_rect(plan.bounds, true);
+            uint32_t* destination = staging.data() + staged.pixel_offset;
+            for (uint32_t row = 0; row < staged.height; ++row)
+            {
+                const uint32_t* source = state.framebuffer.data() +
+                    static_cast<size_t>(staged.rect.y + static_cast<int>(row)) * frame_width +
+                    static_cast<size_t>(staged.rect.x);
+                std::memcpy(destination + static_cast<size_t>(row) * staged.width, source,
+                            static_cast<size_t>(staged.width) * sizeof(uint32_t));
+            }
+        }
+    }
+    record_framebuffer_snapshot_stats(state, snapshot_started_ns, total_pixels);
+
+    uint64_t texture_lock_calls = 0;
+    uint64_t texture_update_calls = 0;
+    for (const StagedTextureRect& staged : staged_rects)
+    {
+        const uint32_t* source = staging.data() + staged.pixel_offset;
+        const int source_pitch = static_cast<int>(staged.width * WD_BYTES_PER_PIXEL);
+        const bool uploaded = staged.use_texture_lock
+                                  ? upload_argb_texture_locked(texture, &staged.rect, source, source_pitch,
+                                                               staged.width, staged.height)
+                                  : update_argb_texture(texture, staged.rect, source, source_pitch,
+                                                        staged.width, staged.height);
+        if (!uploaded)
+        {
+            return false;
+        }
+        if (staged.use_texture_lock)
+        {
+            ++texture_lock_calls;
         }
         else
         {
-            for (const ClientDirtyRect& rect : rects)
-            {
-                if (!upload_rect(rect, false))
-                {
-                    ok = false;
-                    break;
-                }
-            }
+            ++texture_update_calls;
         }
     }
 
-    if (ok)
-    {
-        state.stats.sdl_texture_partial_uploads.fetch_add(1, std::memory_order_relaxed);
-        state.stats.sdl_texture_dirty_rects.fetch_add(uploaded_rects, std::memory_order_relaxed);
-        state.stats.sdl_texture_lock_calls.fetch_add(texture_lock_calls, std::memory_order_relaxed);
-        state.stats.sdl_texture_update_calls.fetch_add(texture_update_calls, std::memory_order_relaxed);
-        record_texture_upload_stats(state, started_ns, uploaded_pixels);
-    }
-
-    return ok;
+    state.stats.sdl_texture_partial_uploads.fetch_add(1, std::memory_order_relaxed);
+    state.stats.sdl_texture_dirty_rects.fetch_add(staged_rects.size(), std::memory_order_relaxed);
+    state.stats.sdl_texture_lock_calls.fetch_add(texture_lock_calls, std::memory_order_relaxed);
+    state.stats.sdl_texture_update_calls.fetch_add(texture_update_calls, std::memory_order_relaxed);
+    record_texture_upload_stats(state, started_ns, total_pixels);
+    return true;
 }
 
 bool client_send_keyboard_key_checked(ClientState& state, uint16_t evdev_key_code, bool pressed) {
@@ -2930,6 +3101,8 @@ int run_sdl_viewer(ClientState& state) {
     std::vector<uint16_t> dirty_tile_ids;
     std::vector<ClientTileGenerationUpdate> tile_generation_updates;
     std::vector<uint32_t> video_upload_pixels;
+    std::vector<uint32_t> tile_upload_pixels;
+    std::vector<StagedTextureRect> staged_texture_rects;
 
     while (state.running.load(std::memory_order_relaxed))
     {
@@ -3149,12 +3322,13 @@ int run_sdl_viewer(ClientState& state) {
                             state.pending_dirty_tiles.clear();
                             state.pending_dirty_rect_count.store(0, std::memory_order_release);
                         }
-                        tile_texture_updated = upload_full_texture(state, texture, frame_width, frame_height);
+                        tile_texture_updated = upload_full_texture(state, texture, frame_width, frame_height, tile_upload_pixels);
                     }
                     else if (allow_tile_upload && source_dirty_rect_count != 0)
                     {
                         tile_texture_updated = upload_dirty_texture_rects(state, texture, dirty_rects, upload_plan,
-                                                                          frame_width, frame_height);
+                                                                          frame_width, frame_height,
+                                                                          tile_upload_pixels, staged_texture_rects);
                     }
 
                     if ((upload_full || source_dirty_rect_count != 0) && !tile_texture_updated)

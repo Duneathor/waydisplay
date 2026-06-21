@@ -36,6 +36,7 @@ class TileReassembler {
     CompletedTile process_udp_packet(ClientState& state, const uint8_t* packet, size_t packet_size);
 
     void expire_stale_entries(ClientState& state);
+    uint64_t next_expiry_deadline_ns(const ClientState& state) const;
 
     void recycle_completed_tile_buffer(std::vector<uint8_t>&& buffer);
 
@@ -54,6 +55,7 @@ class TileReassembler {
         uint64_t             generation        = 0;
         uint64_t             content_epoch     = 0;
         uint64_t             input_sequence    = 0;
+        bool                 first_fragment_metadata_seen = false;
         uint16_t             packet_count      = 0;
         uint32_t             compressed_size   = 0;
         bool                 compressed_payload = true;

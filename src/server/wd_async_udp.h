@@ -28,6 +28,8 @@ uint64_t wd_async_udp_sender_completed(const struct wd_async_udp_sender* sender)
 uint64_t wd_async_udp_sender_failed(const struct wd_async_udp_sender* sender);
 uint64_t wd_async_udp_sender_fallbacks(const struct wd_async_udp_sender* sender);
 uint64_t wd_async_udp_sender_inflight_max(const struct wd_async_udp_sender* sender);
+uint64_t wd_async_udp_sender_submit_calls(const struct wd_async_udp_sender* sender);
+uint64_t wd_async_udp_sender_partial_submits(const struct wd_async_udp_sender* sender);
 
 #ifdef __cplusplus
 }
