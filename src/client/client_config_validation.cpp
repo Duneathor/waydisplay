@@ -90,6 +90,26 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
     {
         return fail(ClientConfigValidationError::InvalidCapabilities, out_error);
     }
+    const bool audio = (config.capabilities & WD_SERVER_CAP_AUDIO_STREAM) != 0;
+    const bool audio_fields_valid =
+        config.audio_codec == WD_AUDIO_CODEC_OPUS &&
+        config.audio_transport == WD_AUDIO_TRANSPORT_TCP &&
+        config.audio_sample_rate == WD_AUDIO_SAMPLE_RATE_DEFAULT &&
+        config.audio_channels != 0 && config.audio_channels <= WD_AUDIO_CHANNELS_MAX &&
+        config.audio_reserved == 0 &&
+        wd_audio_frame_samples_is_valid(config.audio_frame_samples) &&
+        config.audio_target_latency_ms >= WD_AUDIO_TARGET_LATENCY_MS_MIN &&
+        config.audio_target_latency_ms <= WD_AUDIO_TARGET_LATENCY_MS_MAX &&
+        config.audio_bitrate != 0 && config.media_clock_id != 0;
+    const bool audio_fields_zero =
+        config.audio_codec == 0 && config.audio_transport == 0 &&
+        config.audio_sample_rate == 0 && config.audio_channels == 0 &&
+        config.audio_reserved == 0 && config.audio_frame_samples == 0 &&
+        config.audio_target_latency_ms == 0 && config.audio_bitrate == 0;
+    if ((audio && !audio_fields_valid) || (!audio && !audio_fields_zero))
+    {
+        return fail(ClientConfigValidationError::InvalidCapabilities, out_error);
+    }
 
     if (config.udp_payload_target == 0)
     {
@@ -172,6 +192,17 @@ uint32_t client_classify_server_config_change(const wd_server_config_payload& cu
         current.video_transport != next.video_transport)
     {
         flags |= ClientConfigChangeVideo;
+    }
+    if (current.media_clock_id != next.media_clock_id ||
+        current.audio_codec != next.audio_codec ||
+        current.audio_transport != next.audio_transport ||
+        current.audio_sample_rate != next.audio_sample_rate ||
+        current.audio_channels != next.audio_channels ||
+        current.audio_frame_samples != next.audio_frame_samples ||
+        current.audio_target_latency_ms != next.audio_target_latency_ms ||
+        current.audio_bitrate != next.audio_bitrate)
+    {
+        flags |= ClientConfigChangeAudio;
     }
     if (current.link_rtt_ms != next.link_rtt_ms ||
         current.summary_retransmit_grace_ms != next.summary_retransmit_grace_ms ||

@@ -26,6 +26,7 @@ option(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER "Enable H.265 client decoder backen
 option(WAYDISPLAY_ENABLE_H264_SERVER_ENCODER "Enable H.264 server encoder backends when available" ON)
 option(WAYDISPLAY_ENABLE_H264_CLIENT_DECODER "Enable H.264 client decoder backends when available" ON)
 option(WAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER "Enable optional VAAPI client hardware decode when available" ON)
+option(WAYDISPLAY_ENABLE_AUDIO "Enable audio capture and playback when dependencies are available" ON)
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -40,6 +41,8 @@ set(WAYDISPLAY_HAVE_H265_CLIENT_DECODER FALSE)
 set(WAYDISPLAY_HAVE_H264_SERVER_ENCODER FALSE)
 set(WAYDISPLAY_HAVE_H264_CLIENT_DECODER FALSE)
 set(WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER FALSE)
+set(WAYDISPLAY_HAVE_PIPEWIRE_AUDIO_CAPTURE FALSE)
+set(WAYDISPLAY_HAVE_OPUS_AUDIO FALSE)
 
 if(WAYDISPLAY_ENABLE_H265_SERVER_ENCODER OR WAYDISPLAY_ENABLE_H264_SERVER_ENCODER)
     pkg_check_modules(FFMPEG_H265_ENCODER QUIET IMPORTED_TARGET
@@ -79,6 +82,21 @@ if(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER OR WAYDISPLAY_ENABLE_H264_CLIENT_DECODE
         endif()
     else()
         message(STATUS "Video client decoder backends disabled: libavcodec/libavutil/libswscale not found")
+    endif()
+endif()
+
+if(WAYDISPLAY_ENABLE_AUDIO)
+    pkg_check_modules(OPUS_AUDIO QUIET IMPORTED_TARGET opus)
+    if(OPUS_AUDIO_FOUND)
+        set(WAYDISPLAY_HAVE_OPUS_AUDIO TRUE)
+    else()
+        message(STATUS "Opus audio codec disabled: opus not found")
+    endif()
+    pkg_check_modules(PIPEWIRE_AUDIO QUIET IMPORTED_TARGET libpipewire-0.3)
+    if(PIPEWIRE_AUDIO_FOUND)
+        set(WAYDISPLAY_HAVE_PIPEWIRE_AUDIO_CAPTURE TRUE)
+    else()
+        message(STATUS "PipeWire audio capture disabled: libpipewire-0.3 not found")
     endif()
 endif()
 
@@ -151,6 +169,8 @@ add_library(waydisplay_server_tile_policy STATIC
     src/server/wd_input_correlation.c
     src/server/wd_scene_policy.c
     src/server/wd_connection_identity.c
+    src/server/wd_audio_ring.c
+    src/server/wd_audio_packetizer.c
 )
 
 waydisplay_apply_common_warnings(waydisplay_server_tile_policy)
@@ -177,6 +197,7 @@ target_link_libraries(waydisplay_client_config PUBLIC
 
 add_library(waydisplay_client_render_planning STATIC
     src/client/render_planning.cpp
+    src/client/audio_video_sync.cpp
     src/client/content_order.cpp
     src/client/present_telemetry.cpp
     src/client/render_wakeup.cpp
@@ -221,6 +242,7 @@ if(WAYDISPLAY_BUILD_CLIENT_SDL)
         src/client/client_async_tcp.cpp
         src/client/client_async_udp.cpp
         src/client/video_decoder.cpp
+        src/client/audio_playback.cpp
         src/client/sdl_input.cpp
         src/client/sdl_viewer.cpp
     )
@@ -235,6 +257,7 @@ if(WAYDISPLAY_BUILD_CLIENT_SDL)
         WAYDISPLAY_HAVE_H265_CLIENT_DECODER=$<BOOL:${WAYDISPLAY_HAVE_H265_CLIENT_DECODER}>
         WAYDISPLAY_HAVE_H264_CLIENT_DECODER=$<BOOL:${WAYDISPLAY_HAVE_H264_CLIENT_DECODER}>
         WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER=$<BOOL:${WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER}>
+        WAYDISPLAY_HAVE_OPUS_AUDIO=$<BOOL:${WAYDISPLAY_HAVE_OPUS_AUDIO}>
     )
 
     target_link_libraries(waydisplay_client_sdl PRIVATE
@@ -251,6 +274,9 @@ if(WAYDISPLAY_BUILD_CLIENT_SDL)
         target_link_libraries(waydisplay_client_sdl PRIVATE
             PkgConfig::FFMPEG_H265_DECODER
         )
+    endif()
+    if(WAYDISPLAY_HAVE_OPUS_AUDIO)
+        target_link_libraries(waydisplay_client_sdl PRIVATE PkgConfig::OPUS_AUDIO)
     endif()
 endif()
 
@@ -387,6 +413,9 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/wd_async_udp.c
             src/server/wd_stream.c
             src/server/wd_video_encoder.c
+            src/server/wd_audio_capture.c
+            src/server/wd_audio_encoder.c
+            src/server/wd_audio_stream.c
             src/server/wd_keyboard.c
             src/server/wd_keyboard_shortcuts_inhibit.c
             src/server/wd_clipboard.c
@@ -415,6 +444,8 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             WAYDISPLAY_ENABLE_H265_SERVER_ENCODER=$<BOOL:${WAYDISPLAY_ENABLE_H265_SERVER_ENCODER}>
             WAYDISPLAY_HAVE_H265_SERVER_ENCODER=$<BOOL:${WAYDISPLAY_HAVE_H265_SERVER_ENCODER}>
             WAYDISPLAY_HAVE_H264_SERVER_ENCODER=$<BOOL:${WAYDISPLAY_HAVE_H264_SERVER_ENCODER}>
+            WAYDISPLAY_HAVE_PIPEWIRE_AUDIO_CAPTURE=$<BOOL:${WAYDISPLAY_HAVE_PIPEWIRE_AUDIO_CAPTURE}>
+            WAYDISPLAY_HAVE_OPUS_AUDIO=$<BOOL:${WAYDISPLAY_HAVE_OPUS_AUDIO}>
         )
 
         target_include_directories(waydisplay_server_wlroots PRIVATE
@@ -438,6 +469,12 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             target_link_libraries(waydisplay_server_wlroots PRIVATE
                 PkgConfig::FFMPEG_H265_ENCODER
             )
+        endif()
+        if(WAYDISPLAY_HAVE_PIPEWIRE_AUDIO_CAPTURE)
+            target_link_libraries(waydisplay_server_wlroots PRIVATE PkgConfig::PIPEWIRE_AUDIO)
+        endif()
+        if(WAYDISPLAY_HAVE_OPUS_AUDIO)
+            target_link_libraries(waydisplay_server_wlroots PRIVATE PkgConfig::OPUS_AUDIO)
         endif()
     else()
         message(WARNING
@@ -530,6 +567,33 @@ if(WAYDISPLAY_BUILD_TESTS)
     add_test(NAME waydisplay.async_udp_accounting COMMAND waydisplay_test_async_udp_accounting)
 
 
+    add_executable(waydisplay_test_audio_ring
+        tests/test_audio_ring.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_audio_ring)
+    target_include_directories(waydisplay_test_audio_ring PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/server)
+    target_link_libraries(waydisplay_test_audio_ring PRIVATE waydisplay_server_tile_policy)
+    add_test(NAME waydisplay.audio_ring COMMAND waydisplay_test_audio_ring)
+
+
+
+    add_executable(waydisplay_test_audio_transport tests/test_audio_transport.cpp)
+    target_link_libraries(waydisplay_test_audio_transport PRIVATE waydisplay_common)
+    waydisplay_apply_common_warnings(waydisplay_test_audio_transport)
+    add_test(NAME waydisplay.audio_transport COMMAND waydisplay_test_audio_transport)
+    add_executable(waydisplay_test_audio_transition_stress tests/test_audio_transition_stress.cpp)
+    target_link_libraries(waydisplay_test_audio_transition_stress PRIVATE
+        waydisplay_server_tile_policy waydisplay_client_render_planning waydisplay_common)
+    target_include_directories(waydisplay_test_audio_transition_stress PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/server ${CMAKE_CURRENT_SOURCE_DIR}/src/client)
+    waydisplay_apply_common_warnings(waydisplay_test_audio_transition_stress)
+    add_test(NAME waydisplay.audio_transition_stress COMMAND waydisplay_test_audio_transition_stress)
+
+    add_executable(waydisplay_test_audio_video_sync tests/test_audio_video_sync.cpp)
+    target_link_libraries(waydisplay_test_audio_video_sync PRIVATE waydisplay_client_render_planning)
+    target_include_directories(waydisplay_test_audio_video_sync PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/client)
+    waydisplay_apply_common_warnings(waydisplay_test_audio_video_sync)
+    add_test(NAME waydisplay.audio_video_sync COMMAND waydisplay_test_audio_video_sync)
     add_executable(waydisplay_test_scene_policy
         tests/test_scene_policy.cpp
     )

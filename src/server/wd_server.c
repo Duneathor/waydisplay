@@ -2,6 +2,7 @@
 #include "wd_dirty_region_scheduler.h"
 #include "wd_async_tcp.h"
 #include "wd_async_udp.h"
+#include "wd_audio_stream.h"
 
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
@@ -117,6 +118,27 @@ static bool launch_startup_command(struct wd_server* server) {
         setenv("CLUTTER_BACKEND", "wayland", 1);
         setenv("MOZ_ENABLE_WAYLAND", "1", 1);
 
+        /* Route only the launched application tree to WayDisplay's private
+         * PipeWire sink. This prevents local playback on the server and, when
+         * server and client share a host, prevents the client output from
+         * being captured back into the transport as a feedback loop. */
+        const char* audio_sink = wd_audio_stream_sink_name(server->net.audio_stream);
+        const char* audio_target =
+            wd_audio_stream_sink_target(server->net.audio_stream);
+        if (audio_sink && audio_sink[0] != '\0' &&
+            audio_target && audio_target[0] != '\0')
+        {
+            /* PulseAudio-compatible clients select sinks by node name. Native
+             * PipeWire and PipeWire-ALSA clients accept object.serial through
+             * PIPEWIRE_NODE; using the bound serial avoids session-manager
+             * name-resolution failures. Do not duplicate target.object in
+             * PIPEWIRE_PROPS because some clients merge it differently. */
+            setenv("PULSE_SINK", audio_sink, 1);
+            setenv("PIPEWIRE_NODE", audio_target, 1);
+            unsetenv("PIPEWIRE_PROPS");
+            unsetenv("PIPEWIRE_ALSA");
+        }
+
 #if WAYDISPLAY_ENABLE_XWAYLAND
         /*
          * Java AWT/Swing uses the window-manager identity to decide whether it
@@ -138,7 +160,10 @@ static bool launch_startup_command(struct wd_server* server) {
         _exit(127);
     }
 
-    WD_LOG_INFO("launched app pid=%d command=%s", pid, server->startup_command);
+    const char* audio_sink = wd_audio_stream_sink_name(server->net.audio_stream);
+    WD_LOG_INFO("launched app pid=%d command=%s audio_sink=%s",
+                pid, server->startup_command,
+                audio_sink && audio_sink[0] != '\0' ? audio_sink : "system-default");
 
     return true;
 }

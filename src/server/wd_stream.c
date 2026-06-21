@@ -1,6 +1,7 @@
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
+#include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_zstd.h"
 #include "wd_server.h"
 #include "wd_tile_policy.h"
@@ -8,6 +9,7 @@
 #include "wd_async_tcp.h"
 #include "wd_async_udp.h"
 #include "wd_async_udp_accounting.h"
+#include "wd_audio_stream.h"
 #include "wd_video_encoder.h"
 #include "wd_video_transition.h"
 #include "wd_input_correlation.h"
@@ -1072,7 +1074,7 @@ static bool wd_stream_queue_video_control_frame_locked(struct wd_server* server,
     header.content_epoch = net->content_epoch;
     header.codec      = net->video_codecs != 0 ? net->video_codecs : WD_VIDEO_CODEC_H265;
     header.flags      = flags;
-    header.pts_usec   = wd_now_ns() / 1000ull;
+    header.pts_usec   = wd_media_ns_to_usec(wd_now_ns(), net->media_clock_start_ns);
     header.width        = (uint16_t)server->display_width;
     header.height       = (uint16_t)server->display_height;
     header.coded_width  = (uint16_t)server->display_width;
@@ -1240,7 +1242,7 @@ static bool wd_stream_try_publish_video_frame_locked(struct wd_server* server, u
     worker->pending_job.epoch = net->video_worker_epoch;
     worker->pending_job.source_content_epoch = net->content_epoch;
     worker->pending_job.published_ns = now_ns;
-    worker->pending_job.pts_usec = now_ns / 1000ull;
+    worker->pending_job.pts_usec = wd_media_ns_to_usec(now_ns, net->media_clock_start_ns);
     worker->pending_job.video_tcp_fd = net->video_tcp_fd;
     worker->pending_job.request_keyframe = request_keyframe;
     worker->pending = true;
@@ -5131,6 +5133,13 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->video_end_of_stream_tx += src->video_end_of_stream_tx;
     dst->video_resize_resets += src->video_resize_resets;
     dst->video_resets += src->video_resets;
+    dst->audio_captured_frames += src->audio_captured_frames;
+    dst->audio_capture_overruns += src->audio_capture_overruns;
+    dst->audio_encoded_packets += src->audio_encoded_packets;
+    dst->audio_encoded_bytes += src->audio_encoded_bytes;
+    dst->audio_queue_drops += src->audio_queue_drops;
+    dst->audio_discontinuities += src->audio_discontinuities;
+    dst->audio_encode_failures += src->audio_encode_failures;
     dst->server_frame_timer_samples += src->server_frame_timer_samples;
     dst->server_frame_timer_sum_ns += src->server_frame_timer_sum_ns;
     if (src->server_frame_timer_max_ns > dst->server_frame_timer_max_ns)
@@ -5198,6 +5207,15 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     }
     dst->client_video_present_latency_samples += src->client_video_present_latency_samples;
     dst->client_video_present_latency_sum_ns += src->client_video_present_latency_sum_ns;
+    dst->client_audio_messages_rx += src->client_audio_messages_rx;
+    dst->client_audio_packets_rx += src->client_audio_packets_rx;
+    dst->client_audio_bytes_rx += src->client_audio_bytes_rx;
+    dst->client_audio_decode_failed += src->client_audio_decode_failed;
+    dst->client_audio_discontinuities += src->client_audio_discontinuities;
+    dst->client_audio_late_drops += src->client_audio_late_drops;
+    dst->client_audio_underflows += src->client_audio_underflows;
+    dst->client_video_audio_sync_holds += src->client_video_audio_sync_holds;
+    dst->client_video_audio_sync_drops += src->client_video_audio_sync_drops;
     dst->retx_req_rx += src->retx_req_rx;
     dst->retx_tiles_req += src->retx_tiles_req;
     dst->retx_req_ignored_live += src->retx_req_ignored_live;
@@ -5311,6 +5329,16 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->retx_req_upgraded_generation += src->retx_req_upgraded_generation;
 }
 
+static uint64_t wd_counter_delta(uint64_t current, uint64_t* seen) {
+    if (!seen)
+    {
+        return current;
+    }
+    const uint64_t delta = current >= *seen ? current - *seen : current;
+    *seen = current;
+    return delta;
+}
+
 static double wd_avg_ms(uint64_t sum_ns, uint64_t samples) {
     if (samples == 0)
     {
@@ -5327,6 +5355,23 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
 
     struct wd_stats s = net->stats;
     memset(&net->stats, 0, sizeof(net->stats));
+
+    struct wd_audio_stream_stats audio_stats;
+    wd_audio_stream_get_stats(net->audio_stream, &audio_stats);
+    s.audio_captured_frames += wd_counter_delta(audio_stats.captured_frames,
+                                                 &net->audio_captured_frames_seen);
+    s.audio_capture_overruns += wd_counter_delta(audio_stats.capture_overruns,
+                                                  &net->audio_capture_overruns_seen);
+    s.audio_encoded_packets += wd_counter_delta(audio_stats.encoded_packets,
+                                                 &net->audio_encoded_packets_seen);
+    s.audio_encoded_bytes += wd_counter_delta(audio_stats.encoded_bytes,
+                                               &net->audio_encoded_bytes_seen);
+    s.audio_queue_drops += wd_counter_delta(audio_stats.queue_drops,
+                                             &net->audio_queue_drops_seen);
+    s.audio_discontinuities += wd_counter_delta(audio_stats.discontinuities,
+                                                 &net->audio_discontinuities_seen);
+    s.audio_encode_failures += wd_counter_delta(audio_stats.encode_failures,
+                                                 &net->audio_encode_failures_seen);
     const bool video_owned_before = wd_stream_mode_video_owns_display(net->stream_policy.stream_mode);
     wd_stream_policy_update_health_locked(&net->stream_policy, &s);
     wd_stream_policy_update_mode_locked(&net->stream_policy, &s, server->total_tiles,
@@ -5682,6 +5727,37 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      (unsigned long long)s.client_video_decoder_resets,
                      (unsigned long long)s.client_video_last_frame_id_rx,
                      (unsigned long long)s.client_video_last_frame_id_presented);
+    }
+
+    if (s.audio_captured_frames != 0 || s.audio_capture_overruns != 0 ||
+        s.audio_encoded_packets != 0 || s.audio_queue_drops != 0 ||
+        s.audio_discontinuities != 0 || s.audio_encode_failures != 0)
+    {
+        WD_LOG_DEBUG("audio-stream/min: captured_frames=%llu encoded_packets=%llu encoded_kib=%.1f capture_overruns=%llu queue_drops=%llu discontinuities=%llu encode_failed=%llu",
+                     (unsigned long long)s.audio_captured_frames,
+                     (unsigned long long)s.audio_encoded_packets,
+                     (double)s.audio_encoded_bytes / 1024.0,
+                     (unsigned long long)s.audio_capture_overruns,
+                     (unsigned long long)s.audio_queue_drops,
+                     (unsigned long long)s.audio_discontinuities,
+                     (unsigned long long)s.audio_encode_failures);
+    }
+
+    if (s.client_audio_messages_rx != 0 || s.client_audio_packets_rx != 0 ||
+        s.client_audio_decode_failed != 0 || s.client_audio_discontinuities != 0 ||
+        s.client_audio_late_drops != 0 || s.client_audio_underflows != 0 ||
+        s.client_video_audio_sync_holds != 0 || s.client_video_audio_sync_drops != 0)
+    {
+        WD_LOG_DEBUG("client-audio/min: messages=%llu packets=%llu kib=%.1f decode_failed=%llu discontinuities=%llu late_drops=%llu underflows=%llu av_holds=%llu av_drops=%llu",
+                     (unsigned long long)s.client_audio_messages_rx,
+                     (unsigned long long)s.client_audio_packets_rx,
+                     (double)s.client_audio_bytes_rx / 1024.0,
+                     (unsigned long long)s.client_audio_decode_failed,
+                     (unsigned long long)s.client_audio_discontinuities,
+                     (unsigned long long)s.client_audio_late_drops,
+                     (unsigned long long)s.client_audio_underflows,
+                     (unsigned long long)s.client_video_audio_sync_holds,
+                     (unsigned long long)s.client_video_audio_sync_drops);
     }
 
     bool control_activity = s.tcp_hello_rx != 0 || s.tcp_config_tx != 0 || s.tcp_config_applied_ack_rx != 0 || s.tcp_input_channel_rx != 0 ||

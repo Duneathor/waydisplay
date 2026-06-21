@@ -7,6 +7,7 @@
 #include "render_wakeup.hpp"
 #include "stream_ownership.hpp"
 #include "video_decoder.hpp"
+#include "audio_playback.hpp"
 #include "video_transition.hpp"
 
 #include <atomic>
@@ -55,6 +56,7 @@ struct ClientStreamConfig {
     uint8_t  video_hwdecode_mode           = WD_CLIENT_VIDEO_HWDECODE_AUTO;
     uint32_t video_codec_mask              = WD_VIDEO_CODEC_H265;
     bool     disable_vsync                 = false;
+    bool     disable_audio                 = false;
 };
 
 struct ClientStats {
@@ -149,6 +151,15 @@ struct ClientStats {
     std::atomic<uint64_t> video_last_frame_id_presented{0};
     std::atomic<uint64_t> video_present_latency_samples{0};
     std::atomic<uint64_t> video_present_latency_sum_ns{0};
+    std::atomic<uint64_t> video_audio_sync_holds{0};
+    std::atomic<uint64_t> video_audio_sync_drops{0};
+    std::atomic<uint64_t> audio_messages_rx{0};
+    std::atomic<uint64_t> audio_packets_rx{0};
+    std::atomic<uint64_t> audio_bytes_rx{0};
+    std::atomic<uint64_t> audio_decode_failed{0};
+    std::atomic<uint64_t> audio_discontinuities{0};
+    std::atomic<uint64_t> audio_late_drops{0};
+    std::atomic<uint64_t> audio_underflows{0};
 
     std::atomic<uint64_t> tile_assembly_samples{0};
     std::atomic<uint64_t> tile_assembly_sum_ns{0};
@@ -272,6 +283,15 @@ struct ClientStatsSnapshot {
     uint64_t video_last_frame_id_presented = 0;
     uint64_t video_present_latency_samples = 0;
     uint64_t video_present_latency_sum_ns = 0;
+    uint64_t video_audio_sync_holds = 0;
+    uint64_t video_audio_sync_drops = 0;
+    uint64_t audio_messages_rx = 0;
+    uint64_t audio_packets_rx = 0;
+    uint64_t audio_bytes_rx = 0;
+    uint64_t audio_decode_failed = 0;
+    uint64_t audio_discontinuities = 0;
+    uint64_t audio_late_drops = 0;
+    uint64_t audio_underflows = 0;
     uint64_t udp_async_posted = 0;
     uint64_t udp_async_retired = 0;
     uint64_t udp_async_completed = 0;
@@ -356,6 +376,7 @@ struct ClientState {
     int input_tcp_fd     = -1;
     int selection_tcp_fd = -1;
     int video_tcp_fd     = -1;
+    int audio_tcp_fd     = -1;
     int udp_fd           = -1;
 
     ClientAsyncTcpSender* control_tcp_sender   = nullptr;
@@ -363,12 +384,15 @@ struct ClientState {
     ClientAsyncTcpSender* selection_tcp_sender = nullptr;
     ClientAsyncUdpReceiver* udp_receiver       = nullptr;
     ClientVideoDecoder*     video_decoder      = nullptr;
+    ClientAudioPlayback*    audio_playback     = nullptr;
     std::mutex              video_decoder_mutex;
     bool                    video_decoder_needs_keyframe = true;
     ClientVideoPhase        video_phase = ClientVideoPhase::Tiles;
     std::atomic<bool>       video_tcp_connected{false};
     std::atomic<bool>       video_unavailable{false};
     std::mutex              video_tcp_mutex;
+    std::atomic<bool>       audio_tcp_connected{false};
+    std::mutex              audio_tcp_mutex;
     std::mutex            async_tcp_stats_mutex;
     ClientAsyncTcpStatsSeen control_tcp_seen{};
     ClientAsyncTcpStatsSeen input_tcp_seen{};
@@ -387,7 +411,15 @@ struct ClientState {
     uint32_t video_codecs            = 0;
     uint16_t video_transport         = 0;
 
+    bool     audio_stream_negotiated = false;
+    uint32_t audio_codec             = 0;
+    uint16_t audio_transport         = 0;
+    uint8_t  audio_channels          = 0;
+    uint16_t audio_target_latency_ms = 0;
+
     wd_server_config_payload config{};
+    uint64_t media_clock_id = 0;
+    uint64_t media_clock_local_origin_ns = 0;
 
     std::vector<uint32_t> framebuffer;
     std::vector<uint64_t> received_generation;
@@ -490,6 +522,7 @@ struct ClientState {
     ClientStatsLogState stats_log;
     std::thread         tcp_thread;
     std::thread         video_thread;
+    std::thread         audio_thread;
 };
 
 } // namespace waydisplay

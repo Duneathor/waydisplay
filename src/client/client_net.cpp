@@ -11,6 +11,7 @@
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_time.h"
+#include "waydisplay/wd_media_clock.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -780,6 +781,39 @@ bool open_video_tcp_socket(ClientState& state) {
     return true;
 }
 
+bool open_audio_tcp_socket(ClientState& state) {
+    if (!state.audio_stream_negotiated || !state.audio_playback)
+    {
+        return false;
+    }
+
+    int fd = connect_tcp_fd(state, "connect audio TCP");
+    if (fd < 0)
+    {
+        return false;
+    }
+
+    wd_audio_channel_hello_payload hello{};
+    hello.session_id = state.config.session_id;
+    hello.connection_token = state.config.connection_token;
+    hello.audio_codecs = state.audio_codec;
+    hello.audio_transport = state.audio_transport;
+
+    if (!wd_send_tcp_message(fd, WD_MSG_AUDIO_CHANNEL_HELLO, &hello, sizeof(hello)))
+    {
+        ::close(fd);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state.audio_tcp_mutex);
+        state.audio_tcp_fd = fd;
+        state.audio_tcp_connected.store(true, std::memory_order_release);
+    }
+    log_tcp_channel_endpoint("audio", fd);
+    return true;
+}
+
 bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
     if (payload_size != sizeof(wd_mtu_probe_start_payload))
     {
@@ -1018,7 +1052,17 @@ bool receive_server_config(ClientState& state) {
                                            (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265);
     const uint32_t advertised_video_codecs = video_allowed ? (supported_video_codecs & requested_video_codecs) : 0;
     const bool video_decoder_available = advertised_video_codecs != 0;
+    const bool audio_available = !state.stream_config.disable_audio &&
+                                 state.audio_playback && client_audio_playback_available();
     hello.capabilities                = video_decoder_available ? WD_CLIENT_CAP_VIDEO_STREAM : 0;
+    if (audio_available)
+    {
+        hello.capabilities |= WD_CLIENT_CAP_AUDIO_STREAM;
+        hello.audio_codecs = WD_AUDIO_CODEC_OPUS;
+        hello.audio_transport = WD_AUDIO_TRANSPORT_TCP;
+        hello.audio_max_channels = WD_AUDIO_CHANNELS_MAX;
+        hello.audio_target_latency_ms = WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
+    }
     hello.video_codecs                = advertised_video_codecs;
     hello.video_transport             = video_decoder_available ? WD_VIDEO_TRANSPORT_TCP : 0;
     hello.video_mode                  = state.stream_config.video_mode;
@@ -1038,6 +1082,10 @@ bool receive_server_config(ClientState& state) {
                 static_cast<unsigned>(state.stream_config.video_exit_seconds),
                 video_hwdecode_mode_name(state.stream_config.video_hwdecode_mode),
                 video_decoder_available ? "yes" : "no");
+    WD_LOG_INFO("audio mode: requested=%s backend=%s codec=%s transport=%s target_latency_ms=%u",
+                state.stream_config.disable_audio ? "disabled" : "enabled",
+                client_audio_playback_backend_name(), audio_available ? "opus" : "none",
+                audio_available ? "tcp" : "none", WD_AUDIO_TARGET_LATENCY_MS_DEFAULT);
 
     if (!wd_send_tcp_message(state.tcp_fd, WD_MSG_CLIENT_HELLO, &hello, sizeof(hello)))
     {
@@ -1122,18 +1170,37 @@ bool receive_server_config(ClientState& state) {
     }
 
     apply_link_timers_from_config(state, state.config);
+    state.media_clock_id = state.config.media_clock_id;
+    state.media_clock_local_origin_ns = wd_now_ns();
 
     state.video_stream_negotiated = (state.config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0 &&
                                     (state.config.video_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) != 0 &&
                                     state.config.video_transport == WD_VIDEO_TRANSPORT_TCP;
     state.video_codecs = state.video_stream_negotiated ? state.config.video_codecs : 0;
     state.video_transport = state.video_stream_negotiated ? state.config.video_transport : 0;
+    state.audio_stream_negotiated = !state.stream_config.disable_audio &&
+                                    (state.config.capabilities & WD_SERVER_CAP_AUDIO_STREAM) != 0 &&
+                                    state.config.audio_codec == WD_AUDIO_CODEC_OPUS &&
+                                    state.config.audio_transport == WD_AUDIO_TRANSPORT_TCP &&
+                                    state.audio_playback != nullptr;
+    state.audio_codec = state.audio_stream_negotiated ? state.config.audio_codec : 0;
+    state.audio_transport = state.audio_stream_negotiated ? state.config.audio_transport : 0;
+    state.audio_channels = state.audio_stream_negotiated ? state.config.audio_channels : 0;
+    state.audio_target_latency_ms = state.audio_stream_negotiated
+                                        ? state.config.audio_target_latency_ms : 0;
 
     WD_LOG_INFO("UDP payload target: %u", state.config.udp_payload_target);
     WD_LOG_INFO("video stream negotiation: %s codec=%s transport=%s",
                 state.video_stream_negotiated ? "enabled" : "unavailable",
                 state.video_stream_negotiated ? video_codec_name(state.video_codecs) : "none",
                 state.video_stream_negotiated ? "tcp" : "none");
+    WD_LOG_INFO("audio stream negotiation: %s codec=%s transport=%s rate=%u channels=%u target_latency_ms=%u",
+                state.audio_stream_negotiated ? "enabled" :
+                    (state.stream_config.disable_audio ? "disabled by client" : "unavailable"),
+                state.audio_stream_negotiated ? "opus" : "none",
+                state.audio_stream_negotiated ? "tcp" : "none",
+                state.audio_stream_negotiated ? state.config.audio_sample_rate : 0,
+                state.audio_channels, state.audio_target_latency_ms);
     WD_LOG_INFO("link timers: rtt=%ums summary_grace=%ums rerequest=%ums inflight=%ums reassembly=%ums summary_delta=%u/%ums",
                 state.config.link_rtt_ms, state.config.summary_retransmit_grace_ms,
                 state.config.retransmit_rerequest_ms, state.config.retransmit_inflight_grace_ms,
@@ -2103,6 +2170,109 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
      * available for upload. */
 }
 
+void audio_tcp_reader_main(ClientState* state) {
+    int fd = -1;
+    if (state)
+    {
+        std::lock_guard<std::mutex> lock(state->audio_tcp_mutex);
+        fd = state->audio_tcp_fd;
+        state->audio_tcp_connected.store(fd >= 0, std::memory_order_release);
+    }
+
+    while (state && state->running.load(std::memory_order_relaxed))
+    {
+        uint16_t message_type = 0;
+        uint8_t* payload = nullptr;
+        uint32_t payload_size = 0;
+        const uint32_t limit = static_cast<uint32_t>(sizeof(wd_audio_packet_payload_header)) +
+                               WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES;
+        if (!wd_recv_tcp_message_limited(fd, limit, &message_type, &payload, &payload_size))
+        {
+            break;
+        }
+
+        state->stats.audio_messages_rx.fetch_add(1, std::memory_order_relaxed);
+        state->stats.audio_bytes_rx.fetch_add(payload_size, std::memory_order_relaxed);
+        bool ok = true;
+        if (message_type == WD_MSG_AUDIO_CONFIG &&
+            payload_size == sizeof(wd_audio_config_payload))
+        {
+            wd_audio_config_payload config{};
+            std::memcpy(&config, payload, sizeof(config));
+            ok = config.session_id == state->config.session_id &&
+                 config.connection_token == state->config.connection_token &&
+                 config.media_clock_id == state->media_clock_id &&
+                 client_audio_playback_configure(state->audio_playback, config,
+                                                 state->audio_target_latency_ms);
+        }
+        else if (message_type == WD_MSG_AUDIO_PACKET)
+        {
+            state->stats.audio_packets_rx.fetch_add(1, std::memory_order_relaxed);
+            const uint64_t before_discontinuities =
+                client_audio_playback_discontinuities(state->audio_playback);
+            const uint64_t before_late_drops =
+                client_audio_playback_late_drops(state->audio_playback);
+            const uint64_t before_underflows =
+                client_audio_playback_underflows(state->audio_playback);
+            ok = client_audio_playback_handle_packet(state->audio_playback, payload, payload_size);
+            const uint64_t after_discontinuities =
+                client_audio_playback_discontinuities(state->audio_playback);
+            const uint64_t after_late_drops =
+                client_audio_playback_late_drops(state->audio_playback);
+            const uint64_t after_underflows =
+                client_audio_playback_underflows(state->audio_playback);
+            if (after_discontinuities > before_discontinuities)
+            {
+                state->stats.audio_discontinuities.fetch_add(
+                    after_discontinuities - before_discontinuities,
+                    std::memory_order_relaxed);
+            }
+            if (after_late_drops > before_late_drops)
+            {
+                state->stats.audio_late_drops.fetch_add(
+                    after_late_drops - before_late_drops,
+                    std::memory_order_relaxed);
+            }
+            if (after_underflows > before_underflows)
+            {
+                state->stats.audio_underflows.fetch_add(
+                    after_underflows - before_underflows,
+                    std::memory_order_relaxed);
+            }
+        }
+        else if (message_type == WD_MSG_ERROR)
+        {
+            WD_LOG_ERROR("server sent MSG_ERROR on audio TCP channel");
+        }
+        else
+        {
+            ok = false;
+        }
+        std::free(payload);
+        if (!ok)
+        {
+            state->stats.audio_decode_failed.fetch_add(1, std::memory_order_relaxed);
+            WD_LOG_WARN("invalid audio channel message type=%u size=%u", message_type, payload_size);
+        }
+    }
+
+    client_audio_playback_reset(state ? state->audio_playback : nullptr);
+    if (state)
+    {
+        std::lock_guard<std::mutex> lock(state->audio_tcp_mutex);
+        state->audio_tcp_connected.store(false, std::memory_order_release);
+        if (state->audio_tcp_fd == fd)
+        {
+            state->audio_tcp_fd = -1;
+        }
+    }
+    if (fd >= 0)
+    {
+        ::close(fd);
+    }
+    WD_LOG_INFO("audio TCP channel closed");
+}
+
 void video_tcp_reader_main(ClientState* state) {
     int fd = -1;
     if (state)
@@ -2229,6 +2399,18 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
                 client_video_decoder_supported_codecs(state.video_decoder),
                 client_video_decoder_available(state.video_decoder) ? "yes" : "no");
 
+    if (!state.stream_config.disable_audio && client_audio_playback_available())
+    {
+        if (!client_audio_playback_create(&state.audio_playback))
+        {
+            WD_LOG_WARN("failed to create audio playback state");
+        }
+    }
+    WD_LOG_INFO("audio playback: requested=%s backend=%s available=%s",
+                state.stream_config.disable_audio ? "no" : "yes",
+                client_audio_playback_backend_name(),
+                state.audio_playback ? "yes" : "no");
+
     if (!open_udp_socket(state))
     {
         client_disconnect(state);
@@ -2279,6 +2461,15 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
     else if (state.video_stream_negotiated)
     {
             WD_LOG_INFO("video TCP channel: unavailable");
+    }
+
+    if (open_audio_tcp_socket(state))
+    {
+        WD_LOG_INFO("audio TCP channel: enabled");
+    }
+    else if (state.audio_stream_negotiated)
+    {
+        WD_LOG_INFO("audio TCP channel: unavailable");
     }
 
     state.framebuffer.assign(state.framebuffer_pixels(), 0xff202020u);
@@ -2346,6 +2537,14 @@ void client_disconnect(ClientState& state) {
         }
         state.video_tcp_connected.store(false, std::memory_order_release);
     }
+    {
+        std::lock_guard<std::mutex> lock(state.audio_tcp_mutex);
+        if (state.audio_tcp_fd >= 0)
+        {
+            ::shutdown(state.audio_tcp_fd, SHUT_RDWR);
+        }
+        state.audio_tcp_connected.store(false, std::memory_order_release);
+    }
 
     if (state.tcp_thread.joinable())
     {
@@ -2354,6 +2553,10 @@ void client_disconnect(ClientState& state) {
     if (state.video_thread.joinable())
     {
         state.video_thread.join();
+    }
+    if (state.audio_thread.joinable())
+    {
+        state.audio_thread.join();
     }
 
     client_reap_async_sends(state);
@@ -2368,6 +2571,8 @@ void client_disconnect(ClientState& state) {
         state.video_decoder = nullptr;
         state.video_decoder_needs_keyframe = true;
     }
+    client_audio_playback_destroy(state.audio_playback);
+    state.audio_playback = nullptr;
 
     if (state.udp_fd >= 0)
     {
@@ -2396,6 +2601,14 @@ void client_disconnect(ClientState& state) {
         {
             ::close(state.video_tcp_fd);
             state.video_tcp_fd = -1;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(state.audio_tcp_mutex);
+        if (state.audio_tcp_fd >= 0)
+        {
+            ::close(state.audio_tcp_fd);
+            state.audio_tcp_fd = -1;
         }
     }
 }
@@ -2481,6 +2694,10 @@ bool client_start_tcp_reader(ClientState& state) {
     if (state.video_tcp_fd >= 0)
     {
         state.video_thread = std::thread(video_tcp_reader_main, &state);
+    }
+    if (state.audio_tcp_fd >= 0)
+    {
+        state.audio_thread = std::thread(audio_tcp_reader_main, &state);
     }
     return true;
 }

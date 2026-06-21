@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 37u
+#define WD_PROTOCOL_VERSION 39u
 
 /*
  * WayDisplay peers are little-endian Linux systems and transmit packed
@@ -47,6 +47,9 @@ enum wd_message_type {
     WD_MSG_VIDEO_CHANNEL_HELLO     = 22,
     WD_MSG_VIDEO_FRAME             = 23,
     WD_MSG_CONFIG_APPLIED          = 24,
+    WD_MSG_AUDIO_CHANNEL_HELLO     = 25,
+    WD_MSG_AUDIO_CONFIG            = 26,
+    WD_MSG_AUDIO_PACKET            = 27,
     WD_MSG_ERROR                   = 255,
 };
 
@@ -76,8 +79,9 @@ enum wd_compression_mode {
 
 enum wd_client_capability {
     WD_CLIENT_CAP_VIDEO_STREAM = 1u << 0,
+    WD_CLIENT_CAP_AUDIO_STREAM = 1u << 1,
 };
-#define WD_CLIENT_CAP_MASK WD_CLIENT_CAP_VIDEO_STREAM
+#define WD_CLIENT_CAP_MASK (WD_CLIENT_CAP_VIDEO_STREAM | WD_CLIENT_CAP_AUDIO_STREAM)
 
 enum wd_video_codec {
     WD_VIDEO_CODEC_H265 = 1u << 0,
@@ -88,6 +92,30 @@ enum wd_video_codec {
 enum wd_video_transport {
     WD_VIDEO_TRANSPORT_TCP = 1,
 };
+
+enum wd_audio_codec {
+    WD_AUDIO_CODEC_OPUS = 1u << 0,
+};
+#define WD_AUDIO_CODEC_MASK WD_AUDIO_CODEC_OPUS
+
+enum wd_audio_transport {
+    WD_AUDIO_TRANSPORT_TCP = 1,
+};
+
+#define WD_AUDIO_SAMPLE_RATE_DEFAULT       48000u
+#define WD_AUDIO_CHANNELS_MAX              2u
+#define WD_AUDIO_FRAME_SAMPLES_DEFAULT     960u
+#define WD_AUDIO_TARGET_LATENCY_MS_DEFAULT 60u
+#define WD_AUDIO_TARGET_LATENCY_MS_MIN     20u
+#define WD_AUDIO_TARGET_LATENCY_MS_MAX     500u
+#define WD_AUDIO_BITRATE_DEFAULT           128000u
+#define WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES  16384u
+
+enum wd_audio_packet_flags {
+    WD_AUDIO_PACKET_DISCONTINUITY = 1u << 0,
+    WD_AUDIO_PACKET_END_OF_STREAM = 1u << 1,
+};
+#define WD_AUDIO_PACKET_FLAG_MASK (WD_AUDIO_PACKET_DISCONTINUITY | WD_AUDIO_PACKET_END_OF_STREAM)
 
 enum wd_video_mode {
     WD_VIDEO_MODE_AUTO  = 0,
@@ -200,15 +228,24 @@ struct wd_client_hello_payload {
 
     /* Seconds dirty coverage must stay below exit threshold. 0 means default. */
     uint16_t video_exit_seconds;
+
+    /* Audio capability negotiation. All fields must be zero when disabled. */
+    uint32_t audio_codecs;
+    uint16_t audio_transport;
+    uint8_t  audio_max_channels;
+    uint8_t  audio_reserved;
+    uint16_t audio_target_latency_ms;
 };
 
 enum wd_server_capability {
     WD_SERVER_CAP_INPUT_CHANNEL     = 1u << 0,
     WD_SERVER_CAP_SELECTION_CHANNEL = 1u << 1,
     WD_SERVER_CAP_VIDEO_STREAM      = 1u << 2,
+    WD_SERVER_CAP_AUDIO_STREAM      = 1u << 3,
 };
 #define WD_SERVER_CAP_MASK \
-    (WD_SERVER_CAP_INPUT_CHANNEL | WD_SERVER_CAP_SELECTION_CHANNEL | WD_SERVER_CAP_VIDEO_STREAM)
+    (WD_SERVER_CAP_INPUT_CHANNEL | WD_SERVER_CAP_SELECTION_CHANNEL | WD_SERVER_CAP_VIDEO_STREAM | \
+     WD_SERVER_CAP_AUDIO_STREAM)
 
 struct wd_server_config_payload {
     /* Stable for the lifetime of one control/UDP transport connection. */
@@ -240,6 +277,17 @@ struct wd_server_config_payload {
     /* Negotiated video-stream parameters. Valid only with WD_SERVER_CAP_VIDEO_STREAM. */
     uint32_t video_codecs;
     uint16_t video_transport;
+
+    /* Shared zero-based media clock and negotiated audio parameters. */
+    uint64_t media_clock_id;
+    uint32_t audio_codec;
+    uint16_t audio_transport;
+    uint32_t audio_sample_rate;
+    uint8_t  audio_channels;
+    uint8_t  audio_reserved;
+    uint16_t audio_frame_samples;
+    uint16_t audio_target_latency_ms;
+    uint32_t audio_bitrate;
 
     /* Conservative link-profile timers derived by the server's connect-time
      * probe. Values are milliseconds; 0 means use the compiled default. */
@@ -351,6 +399,17 @@ struct wd_client_stats_payload {
     uint64_t video_last_frame_id_presented;
     uint64_t video_present_latency_samples;
     uint64_t video_present_latency_sum_ns;
+
+    /* Client-side audio receive/playback and A/V scheduling telemetry. */
+    uint64_t audio_messages_rx;
+    uint64_t audio_packets_rx;
+    uint64_t audio_bytes_rx;
+    uint64_t audio_decode_failed;
+    uint64_t audio_discontinuities;
+    uint64_t audio_late_drops;
+    uint64_t audio_underflows;
+    uint64_t video_audio_sync_holds;
+    uint64_t video_audio_sync_drops;
 };
 
 struct wd_input_channel_hello_payload {
@@ -368,6 +427,39 @@ struct wd_video_channel_hello_payload {
     uint64_t connection_token;
     uint32_t video_codecs;
     uint16_t video_transport;
+};
+
+struct wd_audio_channel_hello_payload {
+    uint8_t session_id;
+    uint64_t connection_token;
+    uint32_t audio_codecs;
+    uint16_t audio_transport;
+};
+
+struct wd_audio_config_payload {
+    uint8_t  session_id;
+    uint64_t connection_token;
+    uint64_t audio_epoch;
+    uint64_t media_clock_id;
+    uint32_t codec;
+    uint32_t sample_rate;
+    uint8_t  channels;
+    uint8_t  reserved;
+    uint16_t frame_samples;
+    uint16_t codec_delay_samples;
+    uint32_t target_bitrate;
+};
+
+struct wd_audio_packet_payload_header {
+    uint8_t  session_id;
+    uint64_t connection_token;
+    uint64_t audio_epoch;
+    uint64_t media_clock_id;
+    uint64_t sequence;
+    uint64_t pts_samples;
+    uint16_t duration_samples;
+    uint16_t flags;
+    uint32_t data_size;
 };
 
 struct wd_video_frame_payload_header {
@@ -799,8 +891,8 @@ WD_PACKED_END
 static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 static_assert(sizeof(struct wd_udp_tile_packet_header) == 36, "unexpected wd_udp_tile_packet_header size");
 static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 44, "unexpected maximum wd_udp_tile_packet_header size");
-static_assert(sizeof(struct wd_client_hello_payload) == 34, "unexpected wd_client_hello_payload size");
-static_assert(sizeof(struct wd_server_config_payload) == 73, "unexpected wd_server_config_payload size");
+static_assert(sizeof(struct wd_client_hello_payload) == 44, "unexpected wd_client_hello_payload size");
+static_assert(sizeof(struct wd_server_config_payload) == 101, "unexpected wd_server_config_payload size");
 static_assert(sizeof(struct wd_tile_generation_entry) == 10, "unexpected wd_tile_generation_entry size");
 static_assert(sizeof(struct wd_tile_summary_payload_header) == 28, "unexpected wd_tile_summary_payload_header size");
 static_assert(sizeof(struct wd_tile_repair_request_payload_header) == 19, "unexpected wd_tile_repair_request_payload_header size");
@@ -811,10 +903,13 @@ static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_m
 static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
 static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
-static_assert(sizeof(struct wd_client_stats_payload) == 309, "unexpected wd_client_stats_payload size");
+static_assert(sizeof(struct wd_client_stats_payload) == 381, "unexpected wd_client_stats_payload size");
 static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
 static_assert(sizeof(struct wd_selection_channel_hello_payload) == 9, "unexpected wd_selection_channel_hello_payload size");
 static_assert(sizeof(struct wd_video_channel_hello_payload) == 15, "unexpected wd_video_channel_hello_payload size");
+static_assert(sizeof(struct wd_audio_channel_hello_payload) == 15, "unexpected wd_audio_channel_hello_payload size");
+static_assert(sizeof(struct wd_audio_config_payload) == 43, "unexpected wd_audio_config_payload size");
+static_assert(sizeof(struct wd_audio_packet_payload_header) == 49, "unexpected wd_audio_packet_payload_header size");
 static_assert(sizeof(struct wd_video_frame_payload_header) == 51, "unexpected wd_video_frame_payload_header size");
 static_assert(sizeof(struct wd_selection_payload_header) == 15, "unexpected wd_selection_payload_header size");
 static_assert(sizeof(struct wd_cursor_shape_payload) == 11, "unexpected wd_cursor_shape_payload size");
@@ -824,8 +919,8 @@ static_assert(sizeof(struct wd_config_applied_payload) == 17, "unexpected wd_con
 _Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(sizeof(struct wd_udp_tile_packet_header) == 36, "unexpected wd_udp_tile_packet_header size");
 _Static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 44, "unexpected maximum wd_udp_tile_packet_header size");
-_Static_assert(sizeof(struct wd_client_hello_payload) == 34, "unexpected wd_client_hello_payload size");
-_Static_assert(sizeof(struct wd_server_config_payload) == 73, "unexpected wd_server_config_payload size");
+_Static_assert(sizeof(struct wd_client_hello_payload) == 44, "unexpected wd_client_hello_payload size");
+_Static_assert(sizeof(struct wd_server_config_payload) == 101, "unexpected wd_server_config_payload size");
 _Static_assert(sizeof(struct wd_tile_generation_entry) == 10, "unexpected wd_tile_generation_entry size");
 _Static_assert(sizeof(struct wd_tile_summary_payload_header) == 28, "unexpected wd_tile_summary_payload_header size");
 _Static_assert(sizeof(struct wd_tile_repair_request_payload_header) == 19, "unexpected wd_tile_repair_request_payload_header size");
@@ -836,10 +931,13 @@ _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_
 _Static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 _Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
 _Static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
-_Static_assert(sizeof(struct wd_client_stats_payload) == 309, "unexpected wd_client_stats_payload size");
+_Static_assert(sizeof(struct wd_client_stats_payload) == 381, "unexpected wd_client_stats_payload size");
 _Static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_selection_channel_hello_payload) == 9, "unexpected wd_selection_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_video_channel_hello_payload) == 15, "unexpected wd_video_channel_hello_payload size");
+_Static_assert(sizeof(struct wd_audio_channel_hello_payload) == 15, "unexpected wd_audio_channel_hello_payload size");
+_Static_assert(sizeof(struct wd_audio_config_payload) == 43, "unexpected wd_audio_config_payload size");
+_Static_assert(sizeof(struct wd_audio_packet_payload_header) == 49, "unexpected wd_audio_packet_payload_header size");
 _Static_assert(sizeof(struct wd_video_frame_payload_header) == 51, "unexpected wd_video_frame_payload_header size");
 _Static_assert(sizeof(struct wd_selection_payload_header) == 15, "unexpected wd_selection_payload_header size");
 _Static_assert(sizeof(struct wd_cursor_shape_payload) == 11, "unexpected wd_cursor_shape_payload size");
@@ -922,6 +1020,7 @@ static inline bool wd_client_hello_payload_is_valid(const struct wd_client_hello
     if (!hello || !wd_fixed_payload_size_is_valid(payload_size, sizeof(*hello)) ||
         (hello->capabilities & ~WD_CLIENT_CAP_MASK) != 0 ||
         (hello->video_codecs & ~WD_VIDEO_CODEC_MASK) != 0 || hello->video_reserved != 0 ||
+        (hello->audio_codecs & ~WD_AUDIO_CODEC_MASK) != 0 || hello->audio_reserved != 0 ||
         hello->video_mode > WD_VIDEO_MODE_FORCE ||
         hello->video_min_dirty_percent > WD_VIDEO_MIN_DIRTY_PERCENT_MAX ||
         hello->video_exit_dirty_percent > WD_VIDEO_EXIT_DIRTY_PERCENT_MAX ||
@@ -934,11 +1033,69 @@ static inline bool wd_client_hello_payload_is_valid(const struct wd_client_hello
     }
 
     const bool video = (hello->capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0;
+    const bool audio = (hello->capabilities & WD_CLIENT_CAP_AUDIO_STREAM) != 0;
     if (video)
     {
-        return hello->video_codecs != 0 && hello->video_transport == WD_VIDEO_TRANSPORT_TCP;
+        if (hello->video_codecs == 0 || hello->video_transport != WD_VIDEO_TRANSPORT_TCP)
+        {
+            return false;
+        }
     }
-    return hello->video_codecs == 0 && hello->video_transport == 0;
+    else if (hello->video_codecs != 0 || hello->video_transport != 0)
+    {
+        return false;
+    }
+
+    if (audio)
+    {
+        return hello->audio_codecs != 0 && hello->audio_transport == WD_AUDIO_TRANSPORT_TCP &&
+               hello->audio_max_channels != 0 && hello->audio_max_channels <= WD_AUDIO_CHANNELS_MAX &&
+               (hello->audio_target_latency_ms == 0 ||
+                (hello->audio_target_latency_ms >= WD_AUDIO_TARGET_LATENCY_MS_MIN &&
+                 hello->audio_target_latency_ms <= WD_AUDIO_TARGET_LATENCY_MS_MAX));
+    }
+    return hello->audio_codecs == 0 && hello->audio_transport == 0 &&
+           hello->audio_max_channels == 0 && hello->audio_target_latency_ms == 0;
+}
+
+static inline bool wd_audio_frame_samples_is_valid(uint16_t frame_samples) {
+    return frame_samples == 120 || frame_samples == 240 || frame_samples == 480 ||
+           frame_samples == 960 || frame_samples == 1920 || frame_samples == 2880;
+}
+
+static inline bool wd_audio_config_payload_is_valid(const struct wd_audio_config_payload* config,
+                                                     uint32_t payload_size) {
+    return config && wd_fixed_payload_size_is_valid(payload_size, sizeof(*config)) &&
+           config->session_id != 0 && config->connection_token != 0 && config->audio_epoch != 0 &&
+           config->media_clock_id != 0 && config->codec == WD_AUDIO_CODEC_OPUS &&
+           config->sample_rate == WD_AUDIO_SAMPLE_RATE_DEFAULT && config->channels != 0 &&
+           config->channels <= WD_AUDIO_CHANNELS_MAX && config->reserved == 0 &&
+           wd_audio_frame_samples_is_valid(config->frame_samples) &&
+           config->codec_delay_samples <= config->frame_samples && config->target_bitrate != 0;
+}
+
+static inline bool wd_audio_packet_payload_size_is_valid(const struct wd_audio_packet_payload_header* header,
+                                                          uint32_t tcp_payload_size) {
+    if (!header || tcp_payload_size < sizeof(*header) || header->session_id == 0 ||
+        header->connection_token == 0 || header->audio_epoch == 0 || header->media_clock_id == 0 ||
+        header->sequence == 0 || (header->flags & ~WD_AUDIO_PACKET_FLAG_MASK) != 0)
+    {
+        return false;
+    }
+
+    const uint32_t expected_data_size = tcp_payload_size - (uint32_t)sizeof(*header);
+    if (header->data_size != expected_data_size || header->data_size > WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES)
+    {
+        return false;
+    }
+
+    if ((header->flags & WD_AUDIO_PACKET_END_OF_STREAM) != 0)
+    {
+        return header->flags == WD_AUDIO_PACKET_END_OF_STREAM &&
+               header->data_size == 0 && header->duration_samples == 0;
+    }
+
+    return header->data_size != 0 && wd_audio_frame_samples_is_valid(header->duration_samples);
 }
 
 static inline bool wd_video_frame_payload_size_is_valid(const struct wd_video_frame_payload_header* header,
@@ -970,7 +1127,7 @@ static inline bool wd_video_frame_payload_size_is_valid(const struct wd_video_fr
                (header->flags & (WD_VIDEO_FRAME_CONFIG | WD_VIDEO_FRAME_KEYFRAME)) == 0;
     }
 
-    return header->data_size != 0 && header->frame_id != 0 && header->pts_usec != 0 &&
+    return header->data_size != 0 && header->frame_id != 0 &&
            header->width != 0 && header->height != 0 &&
            header->coded_width >= header->width && header->coded_height >= header->height &&
            ((header->flags & WD_VIDEO_FRAME_CONFIG) == 0 ||

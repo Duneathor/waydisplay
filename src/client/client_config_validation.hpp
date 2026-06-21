@@ -34,6 +34,7 @@ enum ClientConfigChangeFlag : uint32_t {
     ClientConfigChangeVideo     = 1u << 4,
     ClientConfigChangeTimers    = 1u << 5,
     ClientConfigChangeEpoch     = 1u << 6,
+    ClientConfigChangeAudio     = 1u << 7,
 };
 
 uint32_t client_classify_server_config_change(const wd_server_config_payload& current,

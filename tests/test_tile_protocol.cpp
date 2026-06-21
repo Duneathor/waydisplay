@@ -2,6 +2,7 @@
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_net.h"
+#include "waydisplay/wd_media_clock.h"
 
 #include <array>
 #include <cstdint>
@@ -24,9 +25,20 @@ void require(bool condition, const char* message) {
 }
 
 void test_protocol_version_and_header_sizes() {
-    require(WD_PROTOCOL_VERSION == 37, "config-epoch protocol should bump the wire version");
+    require(WD_PROTOCOL_VERSION == 39, "audio telemetry protocol should bump the wire version");
     require(WD_UDP_TILE_HEADER_MIN_SIZE == 36, "canonical tile header size");
     require(WD_UDP_TILE_HEADER_MAX_SIZE == 44, "correlated tile header size");
+}
+
+void test_media_clock_helpers() {
+    require(wd_media_ns_to_usec(2000000000ull, 1000000000ull) == 1000000ull,
+            "media microseconds should be relative to the connection origin");
+    require(wd_media_ns_to_samples(1020000000ull, 1000000000ull, 48000) == 960,
+            "20 ms should map to 960 Opus samples");
+    require(wd_media_usec_to_samples(20000, 48000) == 960,
+            "video PTS should map to the Opus sample clock exactly");
+    require(wd_media_local_deadline_ns(5000, 20) == 25000,
+            "remote media time should map onto a client-local origin");
 }
 
 void test_tile_size_round_trip() {
@@ -215,8 +227,8 @@ void test_fragment_layout_is_canonical() {
 }
 
 
-void test_protocol_v37_strict_payload_helpers() {
-    require(sizeof(wd_server_config_payload) == 73, "v37 server config should include config epoch");
+void test_protocol_v38_strict_payload_helpers() {
+    require(sizeof(wd_server_config_payload) == 101, "v38 server config should include media and audio negotiation");
     require(sizeof(wd_config_applied_payload) == 17, "v37 config ACK should include config epoch");
     require(wd_fixed_payload_size_is_valid(17, sizeof(wd_config_applied_payload)),
             "fixed payload helper should accept exact size");
@@ -260,6 +272,23 @@ void test_client_hello_strict_validation() {
     require(wd_client_hello_payload_is_valid(&hello, sizeof(hello)),
             "canonical video client hello should validate");
 
+    hello.capabilities |= WD_CLIENT_CAP_AUDIO_STREAM;
+    hello.audio_codecs = WD_AUDIO_CODEC_OPUS;
+    hello.audio_transport = WD_AUDIO_TRANSPORT_TCP;
+    hello.audio_max_channels = 2;
+    hello.audio_target_latency_ms = 60;
+    require(wd_client_hello_payload_is_valid(&hello, sizeof(hello)),
+            "canonical audio and video client hello should validate");
+
+    hello.audio_max_channels = 0;
+    require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello)),
+            "audio capability requires a channel count");
+    hello.audio_max_channels = 2;
+    hello.audio_target_latency_ms = 10;
+    require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello)),
+            "audio latency below the protocol minimum should be rejected");
+    hello.audio_target_latency_ms = 60;
+
     hello.video_reserved = 1;
     require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello)),
             "reserved client hello bits should be rejected");
@@ -273,7 +302,7 @@ void test_client_hello_strict_validation() {
     hello.capabilities |= 0x80000000u;
     require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello)),
             "unknown client capabilities should be rejected");
-    hello.capabilities = WD_CLIENT_CAP_VIDEO_STREAM;
+    hello.capabilities = WD_CLIENT_CAP_VIDEO_STREAM | WD_CLIENT_CAP_AUDIO_STREAM;
     require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello) + 1),
             "client hello trailing bytes should be rejected");
 }
@@ -286,7 +315,7 @@ void test_video_frame_strict_validation() {
     frame.codec = WD_VIDEO_CODEC_H265;
     frame.flags = WD_VIDEO_FRAME_KEYFRAME | WD_VIDEO_FRAME_CONFIG;
     frame.frame_id = 1;
-    frame.pts_usec = 1;
+    frame.pts_usec = 0;
     frame.width = 1280;
     frame.height = 720;
     frame.coded_width = 1280;
@@ -322,6 +351,53 @@ void test_video_frame_strict_validation() {
             "control frames must not carry a data sequence id");
 }
 
+
+
+void test_audio_payload_strict_validation() {
+    wd_audio_config_payload config{};
+    config.session_id = 1;
+    config.connection_token = 2;
+    config.audio_epoch = 3;
+    config.media_clock_id = 4;
+    config.codec = WD_AUDIO_CODEC_OPUS;
+    config.sample_rate = WD_AUDIO_SAMPLE_RATE_DEFAULT;
+    config.channels = 2;
+    config.frame_samples = WD_AUDIO_FRAME_SAMPLES_DEFAULT;
+    config.codec_delay_samples = 312;
+    config.target_bitrate = WD_AUDIO_BITRATE_DEFAULT;
+    require(wd_audio_config_payload_is_valid(&config, sizeof(config)),
+            "canonical audio config should validate");
+    config.channels = 3;
+    require(!wd_audio_config_payload_is_valid(&config, sizeof(config)),
+            "audio config should reject unsupported channel counts");
+    config.channels = 2;
+    config.sample_rate = 44100;
+    require(!wd_audio_config_payload_is_valid(&config, sizeof(config)),
+            "audio config should reject a non-48k Opus clock");
+
+    wd_audio_packet_payload_header packet{};
+    packet.session_id = 1;
+    packet.connection_token = 2;
+    packet.audio_epoch = 3;
+    packet.media_clock_id = 4;
+    packet.sequence = 1;
+    packet.pts_samples = 0;
+    packet.duration_samples = WD_AUDIO_FRAME_SAMPLES_DEFAULT;
+    packet.flags = WD_AUDIO_PACKET_DISCONTINUITY;
+    packet.data_size = 24;
+    require(wd_audio_packet_payload_size_is_valid(&packet, sizeof(packet) + packet.data_size),
+            "first Opus packet at media time zero should validate");
+    packet.data_size = 0;
+    require(!wd_audio_packet_payload_size_is_valid(&packet, sizeof(packet)),
+            "normal audio packet must contain codec data");
+    packet.flags = WD_AUDIO_PACKET_END_OF_STREAM;
+    packet.duration_samples = 0;
+    require(wd_audio_packet_payload_size_is_valid(&packet, sizeof(packet)),
+            "canonical audio EOS should validate");
+    packet.flags |= 0x8000u;
+    require(!wd_audio_packet_payload_size_is_valid(&packet, sizeof(packet)),
+            "unknown audio flags should be rejected");
+}
 
 void test_input_payload_strict_validation() {
     wd_keyboard_event_payload key{};
@@ -410,15 +486,17 @@ void test_tile_count_helpers_reject_overflow() {
 
 int main() {
     test_protocol_version_and_header_sizes();
+    test_media_clock_helpers();
     test_tile_size_round_trip();
     test_base_header_round_trip();
     test_input_extension_round_trip();
     test_rejects_invalid_extensions_and_flags();
     test_decode_rejects_trailing_bytes_and_reserved_data();
     test_fragment_layout_is_canonical();
-    test_protocol_v37_strict_payload_helpers();
+    test_protocol_v38_strict_payload_helpers();
     test_client_hello_strict_validation();
     test_video_frame_strict_validation();
+    test_audio_payload_strict_validation();
     test_input_payload_strict_validation();
     test_channel_specific_tcp_payload_limits();
     test_tile_count_helpers_reject_overflow();

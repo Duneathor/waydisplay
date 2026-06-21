@@ -32,6 +32,7 @@
 struct wd_async_tcp_sender;
 struct wd_async_udp_sender;
 struct wd_dirty_region_scheduler;
+struct wd_audio_stream;
 
 #include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_data_device.h>
@@ -299,6 +300,13 @@ struct wd_stats {
     uint64_t video_end_of_stream_tx;
     uint64_t video_resize_resets;
     uint64_t video_resets;
+    uint64_t audio_captured_frames;
+    uint64_t audio_capture_overruns;
+    uint64_t audio_encoded_packets;
+    uint64_t audio_encoded_bytes;
+    uint64_t audio_queue_drops;
+    uint64_t audio_discontinuities;
+    uint64_t audio_encode_failures;
 
     uint64_t server_frame_timer_samples;
     uint64_t server_frame_timer_sum_ns;
@@ -350,6 +358,15 @@ struct wd_stats {
     uint64_t client_video_last_frame_id_presented;
     uint64_t client_video_present_latency_samples;
     uint64_t client_video_present_latency_sum_ns;
+    uint64_t client_audio_messages_rx;
+    uint64_t client_audio_packets_rx;
+    uint64_t client_audio_bytes_rx;
+    uint64_t client_audio_decode_failed;
+    uint64_t client_audio_discontinuities;
+    uint64_t client_audio_late_drops;
+    uint64_t client_audio_underflows;
+    uint64_t client_video_audio_sync_holds;
+    uint64_t client_video_audio_sync_drops;
 
     uint64_t retx_req_rx;
     uint64_t retx_tiles_req;
@@ -612,6 +629,14 @@ struct wd_net_state {
     struct wd_async_tcp_sender* control_tx;
     struct wd_async_tcp_sender* video_tx;
     struct wd_async_udp_sender* udp_tx;
+    struct wd_audio_stream*     audio_stream;
+    uint64_t                    audio_captured_frames_seen;
+    uint64_t                    audio_capture_overruns_seen;
+    uint64_t                    audio_encoded_packets_seen;
+    uint64_t                    audio_encoded_bytes_seen;
+    uint64_t                    audio_queue_drops_seen;
+    uint64_t                    audio_discontinuities_seen;
+    uint64_t                    audio_encode_failures_seen;
     uint64_t                    control_tx_failed_seen;
     uint64_t                    control_tx_queued_seen;
     uint64_t                    control_tx_completed_seen;
@@ -630,6 +655,7 @@ struct wd_net_state {
     int input_tcp_fd;
     int selection_tcp_fd;
     int video_tcp_fd;
+    int audio_tcp_fd;
     int udp_fd;
 
     uint16_t tcp_port;
@@ -639,12 +665,22 @@ struct wd_net_state {
     uint64_t connection_epoch;
     uint64_t config_epoch;
     uint64_t content_epoch;
+    uint64_t media_clock_id;
+    uint64_t media_clock_start_ns;
     bool     config_update_pending;
     uint64_t config_update_sent_ns;
 
     bool     video_stream_negotiated;
     uint32_t video_codecs;
     uint16_t video_transport;
+
+    bool     audio_stream_negotiated;
+    uint32_t audio_codec;
+    uint16_t audio_transport;
+    uint8_t  audio_channels;
+    uint16_t audio_target_latency_ms;
+    uint32_t audio_bitrate;
+    uint64_t audio_epoch;
 
     struct sockaddr_in      client_udp_addr;
     struct wd_stream_policy stream_policy;

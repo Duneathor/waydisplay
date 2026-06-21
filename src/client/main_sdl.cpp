@@ -3,6 +3,7 @@
 #include "wd_client.hpp"
 #include "waydisplay/wd_log.h"
 
+#include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
 #include <cstdint>
@@ -21,6 +22,7 @@ void usage(const char* argv0) {
                  "  --size <WxH>                 Request remote display size\n"
                  "  --rate-kib <N>               Cap adaptive UDP tile budget in KiB/s\n"
                  "  --no-vsync                   Create the SDL Vulkan renderer without present-vsync\n"
+                 "  --no-audio                   Do not negotiate or configure the audio channel\n"
                  "  --video <auto|off|force>      Select video-mode policy, default auto\n"
                  "  --video-bitrate-kib <N>       Target video encoder bitrate in KiB/s, default link budget\n"
                  "  --video-min-dirty-percent <N> Dirty coverage needed for auto video mode, default 60\n"
@@ -239,6 +241,10 @@ int main(int argc, char** argv) {
         {
             stream_config.disable_vsync = true;
         }
+        else if (std::strcmp(argv[i], "--no-audio") == 0)
+        {
+            stream_config.disable_audio = true;
+        }
         else if (std::strcmp(argv[i], "--video") == 0)
         {
             if (i + 1 >= argc || !parse_video_mode(argv[i + 1], stream_config.video_mode))
@@ -339,23 +345,37 @@ int main(int argc, char** argv) {
         }
     }
 
+    SDL_InitFlags sdl_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
+    if (!stream_config.disable_audio)
+    {
+        sdl_flags |= SDL_INIT_AUDIO;
+    }
+    if (!SDL_Init(sdl_flags))
+    {
+        WD_LOG_ERROR("SDL_Init failed: %s", SDL_GetError());
+        return 1;
+    }
+
     waydisplay::ClientState state;
 
     if (!waydisplay::client_connect(state, server_host, tcp_port, client_udp_port, stream_config, desired_width, desired_height))
     {
         waydisplay::client_disconnect(state);
+        SDL_Quit();
         return 1;
     }
 
     if (!waydisplay::client_start_tcp_reader(state))
     {
         waydisplay::client_disconnect(state);
+        SDL_Quit();
         return 1;
     }
 
     const int rc = waydisplay::run_sdl_viewer(state);
 
     waydisplay::client_disconnect(state);
+    SDL_Quit();
 
     return rc;
 }
