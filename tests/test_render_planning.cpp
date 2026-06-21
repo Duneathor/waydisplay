@@ -323,6 +323,64 @@ void test_tile_generation_claim_commit_and_requeue() {
             "successful presentation should advance presented generations");
 }
 
+void test_summary_pending_index_tracks_only_active_tiles() {
+    std::vector<uint16_t> active;
+    std::vector<uint32_t> positions(16, UINT32_MAX);
+    require(summary_pending_index_add(active, positions, 3), "add first pending tile");
+    require(summary_pending_index_add(active, positions, 7), "add second pending tile");
+    require(summary_pending_index_add(active, positions, 3), "duplicate add should be idempotent");
+    require(active.size() == 2, "pending index should deduplicate tiles");
+    require(summary_pending_index_remove(active, positions, 3), "remove pending tile");
+    require(active.size() == 1 && active[0] == 7, "swap removal should preserve remaining tile");
+    require(positions[3] == UINT32_MAX && positions[7] == 0, "positions should remain consistent");
+    require(summary_pending_index_remove(active, positions, 7), "remove final pending tile");
+    require(active.empty(), "pending index should become empty");
+}
+
+void test_texture_upload_cost_calibration_changes_plan() {
+    std::vector<ClientDirtyRect> rects;
+    for (uint16_t i = 0; i < 6; ++i)
+    {
+        rects.push_back({static_cast<uint16_t>(i * 18), 0, 16, 16});
+    }
+
+    ClientTextureUploadCostModel low_call_cost{};
+    low_call_cost.update_call_cost_ns = 1;
+    low_call_cost.lock_call_cost_ns = 1000000;
+    DirtyTextureUploadPlan sparse = plan_dirty_texture_upload(rects, 1024, 1024, low_call_cost);
+    require(sparse.mode == DirtyTextureUploadMode::Rects,
+            "low update-call overhead should preserve sparse rectangles");
+
+    ClientTextureUploadCostModel high_call_cost = low_call_cost;
+    high_call_cost.update_call_cost_ns = 1000000;
+    high_call_cost.lock_call_cost_ns = 1;
+    DirtyTextureUploadPlan bounded = plan_dirty_texture_upload(rects, 1024, 1024, high_call_cost);
+    require(bounded.mode == DirtyTextureUploadMode::Bounds,
+            "high update-call overhead should prefer one bounding upload");
+
+    ClientTextureUploadCostModel observed{};
+    observe_texture_upload_call(observed, false, 500000, 1024);
+    require(observed.update_samples == 1, "update observation should be counted");
+    require(observed.update_call_cost_ns > 100000, "slow update call should raise calibrated fixed cost");
+    observe_texture_upload_call(observed, true, 700000, 1024);
+    require(observed.lock_samples == 1, "lock observation should be counted");
+}
+
+void test_adaptive_framebuffer_upload_path() {
+    DirtyTextureUploadPlan plan{};
+    plan.mode = DirtyTextureUploadMode::Rects;
+    plan.source_pixels = 4096;
+    require(choose_framebuffer_upload_path(plan, 2, 0) == FramebufferUploadPath::Direct,
+            "small uncontended sparse upload should remain direct");
+    require(choose_framebuffer_upload_path(plan, 2, 300000) == FramebufferUploadPath::Staged,
+            "contended sparse upload should stage");
+    require(choose_framebuffer_upload_path(plan, 8, 0) == FramebufferUploadPath::Staged,
+            "many sparse rectangles should stage");
+    plan.mode = DirtyTextureUploadMode::Bounds;
+    require(choose_framebuffer_upload_path(plan, 1, 0) == FramebufferUploadPath::Staged,
+            "bounding upload should stage");
+}
+
 } // namespace
 
 int main() {
@@ -340,5 +398,8 @@ int main() {
     test_present_telemetry_input_sequence_set_is_bounded();
     test_present_telemetry_counts_large_tile_completion_once();
     test_tile_generation_claim_commit_and_requeue();
+    test_adaptive_framebuffer_upload_path();
+    test_texture_upload_cost_calibration_changes_plan();
+    test_summary_pending_index_tracks_only_active_tiles();
     return 0;
 }

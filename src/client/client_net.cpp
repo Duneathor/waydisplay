@@ -367,6 +367,7 @@ ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state, const wd_
     }
     else
     {
+        state.stats.udp_async_receiver_generations.fetch_add(1, std::memory_order_relaxed);
         WD_LOG_INFO("UDP io_uring receive enabled entries=%u buffer=%zu", CLIENT_ASYNC_UDP_RING_ENTRIES, packet_bytes);
     }
     return receiver;
@@ -378,9 +379,48 @@ ClientAsyncUdpDetachResult destroy_client_udp_receiver(ClientState& state) {
         return ClientAsyncUdpDetachResult::Detached;
     }
 
-    const ClientAsyncUdpDetachResult result = client_async_udp_receiver_destroy(state.udp_receiver);
+    ClientAsyncUdpReceiverStats final_stats{};
+    const ClientAsyncUdpStatsSeen before = state.udp_seen;
+    const ClientAsyncUdpDetachResult result =
+        client_async_udp_receiver_destroy(state.udp_receiver, &final_stats);
     if (result == ClientAsyncUdpDetachResult::Detached)
     {
+        if (final_stats.posted >= before.posted)
+        {
+            state.stats.udp_async_posted.fetch_add(final_stats.posted - before.posted, std::memory_order_relaxed);
+        }
+        if (final_stats.retired >= before.retired)
+        {
+            const uint64_t drained = final_stats.retired - before.retired;
+            state.stats.udp_async_retired.fetch_add(drained, std::memory_order_relaxed);
+            state.stats.udp_async_drained_on_reconfigure.fetch_add(drained, std::memory_order_relaxed);
+        }
+        if (final_stats.completed >= before.completed)
+        {
+            state.stats.udp_async_completed.fetch_add(final_stats.completed - before.completed, std::memory_order_relaxed);
+        }
+        if (final_stats.failed >= before.failed)
+        {
+            state.stats.udp_async_failed.fetch_add(final_stats.failed - before.failed, std::memory_order_relaxed);
+        }
+        if (final_stats.submit_failed >= before.submit_failed)
+        {
+            state.stats.udp_async_submit_failed.fetch_add(final_stats.submit_failed - before.submit_failed,
+                                                           std::memory_order_relaxed);
+        }
+        if (final_stats.cancels >= before.cancels)
+        {
+            const uint64_t cancelled = final_stats.cancels - before.cancels;
+            state.stats.udp_async_cancels.fetch_add(cancelled, std::memory_order_relaxed);
+            state.stats.udp_async_cancelled_on_reconfigure.fetch_add(cancelled, std::memory_order_relaxed);
+        }
+        if (final_stats.accounting_errors >= before.accounting_errors)
+        {
+            state.stats.udp_async_accounting_errors.fetch_add(final_stats.accounting_errors - before.accounting_errors,
+                                                               std::memory_order_relaxed);
+        }
+        state.stats.udp_async_inflight_current.store(0, std::memory_order_relaxed);
+        state.stats.udp_async_prepared_current.store(0, std::memory_order_relaxed);
         state.udp_receiver = nullptr;
     }
     return result;
@@ -473,6 +513,8 @@ void update_async_seen(ClientState& state, ClientAsyncTcpSender* sender, ClientA
 void update_async_udp_seen(ClientState& state) {
     if (!state.udp_receiver)
     {
+        state.stats.udp_async_inflight_current.store(0, std::memory_order_relaxed);
+        state.stats.udp_async_prepared_current.store(0, std::memory_order_relaxed);
         return;
     }
 
@@ -481,6 +523,10 @@ void update_async_udp_seen(ClientState& state) {
     if (stats.posted >= seen.posted)
     {
         state.stats.udp_async_posted.fetch_add(stats.posted - seen.posted, std::memory_order_relaxed);
+    }
+    if (stats.retired >= seen.retired)
+    {
+        state.stats.udp_async_retired.fetch_add(stats.retired - seen.retired, std::memory_order_relaxed);
     }
     if (stats.completed >= seen.completed)
     {
@@ -498,6 +544,14 @@ void update_async_udp_seen(ClientState& state) {
     {
         state.stats.udp_async_cancels.fetch_add(stats.cancels - seen.cancels, std::memory_order_relaxed);
     }
+    if (stats.accounting_errors >= seen.accounting_errors)
+    {
+        state.stats.udp_async_accounting_errors.fetch_add(stats.accounting_errors - seen.accounting_errors,
+                                                           std::memory_order_relaxed);
+    }
+
+    state.stats.udp_async_inflight_current.store(stats.inflight, std::memory_order_relaxed);
+    state.stats.udp_async_prepared_current.store(stats.prepared, std::memory_order_relaxed);
 
     uint64_t current_max = state.stats.udp_async_inflight_max.load(std::memory_order_relaxed);
     while (stats.inflight_max > current_max &&
@@ -507,12 +561,14 @@ void update_async_udp_seen(ClientState& state) {
     {
     }
 
-    seen.posted        = stats.posted;
-    seen.completed     = stats.completed;
-    seen.failed        = stats.failed;
-    seen.submit_failed = stats.submit_failed;
-    seen.cancels       = stats.cancels;
-    seen.inflight_max  = stats.inflight_max;
+    seen.posted            = stats.posted;
+    seen.retired           = stats.retired;
+    seen.completed         = stats.completed;
+    seen.failed            = stats.failed;
+    seen.submit_failed     = stats.submit_failed;
+    seen.cancels           = stats.cancels;
+    seen.inflight_max      = stats.inflight_max;
+    seen.accounting_errors = stats.accounting_errors;
 }
 
 bool set_socket_rcvbuf(int fd, int requested_bytes) {
@@ -1127,43 +1183,50 @@ void ensure_retransmit_tracking_locked(ClientState& state, uint16_t total_tiles)
         state.retx_summary_pending_since_ns.assign(total_tiles, 0);
         reset_summary_pending = true;
     }
+    if (state.retx_summary_pending_position.size() != total_tiles)
+    {
+        state.retx_summary_pending_position.assign(total_tiles, UINT32_MAX);
+        reset_summary_pending = true;
+    }
     if (reset_summary_pending)
     {
+        state.retx_summary_pending_tiles.clear();
         state.retx_summary_pending_count = 0;
     }
 }
 
 void clear_summary_pending_locked(ClientState& state, uint16_t tile_id) {
-    if (tile_id >= state.retx_summary_pending_generation.size() || tile_id >= state.retx_summary_pending_since_ns.size())
+    if (tile_id >= state.retx_summary_pending_generation.size() ||
+        tile_id >= state.retx_summary_pending_since_ns.size() ||
+        tile_id >= state.retx_summary_pending_position.size())
     {
         return;
     }
 
-    if (state.retx_summary_pending_generation[tile_id] != 0 || state.retx_summary_pending_since_ns[tile_id] != 0)
-    {
-        if (state.retx_summary_pending_count > 0)
-        {
-            state.retx_summary_pending_count--;
-        }
-    }
+    (void)summary_pending_index_remove(state.retx_summary_pending_tiles,
+                                       state.retx_summary_pending_position, tile_id);
 
     state.retx_summary_pending_generation[tile_id] = 0;
     state.retx_summary_pending_since_ns[tile_id] = 0;
+    state.retx_summary_pending_count = static_cast<uint32_t>(state.retx_summary_pending_tiles.size());
 }
 
 void set_summary_pending_locked(ClientState& state, uint16_t tile_id, uint64_t generation, uint64_t now_ns) {
     if (generation == 0 || tile_id >= state.retx_summary_pending_generation.size() ||
-        tile_id >= state.retx_summary_pending_since_ns.size())
+        tile_id >= state.retx_summary_pending_since_ns.size() ||
+        tile_id >= state.retx_summary_pending_position.size())
     {
         return;
     }
 
-    if (state.retx_summary_pending_generation[tile_id] == 0 && state.retx_summary_pending_since_ns[tile_id] == 0)
+    if (!summary_pending_index_add(state.retx_summary_pending_tiles,
+                                   state.retx_summary_pending_position, tile_id))
     {
-        state.retx_summary_pending_count++;
+        return;
     }
     state.retx_summary_pending_generation[tile_id] = generation;
     state.retx_summary_pending_since_ns[tile_id] = now_ns;
+    state.retx_summary_pending_count = static_cast<uint32_t>(state.retx_summary_pending_tiles.size());
 }
 
 bool client_repair_pressure_high_locked(const ClientState& state, uint16_t total_tiles) {
@@ -1415,15 +1478,20 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
     }
 
     state.stats.summary_promote_passes.fetch_add(1, std::memory_order_relaxed);
-    state.stats.summary_promote_scanned.fetch_add(total_tiles, std::memory_order_relaxed);
+    const std::vector<uint16_t> pending_tiles = state.retx_summary_pending_tiles;
+    state.stats.summary_promote_scanned.fetch_add(pending_tiles.size(), std::memory_order_relaxed);
 
     const uint64_t now_ns = wd_now_ns();
     std::vector<SummaryRepairCandidate> candidates;
-    candidates.reserve(state.retx_summary_pending_count);
+    candidates.reserve(pending_tiles.size());
     uint64_t min_candidate_age_ns = UINT64_MAX;
 
-    for (uint16_t tile_id = 0; tile_id < total_tiles; ++tile_id)
+    for (uint16_t tile_id : pending_tiles)
     {
+        if (tile_id >= total_tiles)
+        {
+            continue;
+        }
         const uint64_t generation = state.retx_summary_pending_generation[tile_id];
         const uint64_t since_ns   = state.retx_summary_pending_since_ns[tile_id];
 
@@ -2169,6 +2237,8 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         state.retx_inflight_since_ns.assign(state.tile_count(), 0);
         state.retx_summary_pending_generation.assign(state.tile_count(), 0);
         state.retx_summary_pending_since_ns.assign(state.tile_count(), 0);
+        state.retx_summary_pending_tiles.clear();
+        state.retx_summary_pending_position.assign(state.tile_count(), UINT32_MAX);
         state.retx_summary_pending_count = 0;
         state.next_summary_promote_ns = 0;
         state.summary_large_repair_not_before_ns = 0;

@@ -17,6 +17,7 @@ option(WAYDISPLAY_BUILD_CLIENT_SDL "Build the SDL WayDisplay client" ON)
 option(WAYDISPLAY_BUILD_WLROOTS_SERVER "Build the wlroots headless compositor server" ON)
 option(WAYDISPLAY_BUILD_LEGACY_PROTO "Build the old monolithic prototype" OFF)
 option(WAYDISPLAY_BUILD_TESTS "Build WayDisplay unit tests" ON)
+option(WAYDISPLAY_BUILD_FUZZERS "Build libFuzzer protocol/reassembly targets" OFF)
 option(WAYDISPLAY_ENABLE_LOGGING "Enable WayDisplay runtime logging" ON)
 option(WAYDISPLAY_ENABLE_DEBUG_LOGGING "Enable WayDisplay debug-level logging" OFF)
 option(WAYDISPLAY_ENABLE_XWAYLAND "Enable Xwayland support in the wlroots server" ON)
@@ -541,6 +542,36 @@ if(WAYDISPLAY_BUILD_TESTS)
     waydisplay_apply_common_warnings(waydisplay_test_render_planning)
     target_link_libraries(waydisplay_test_render_planning PRIVATE waydisplay_client_render_planning Threads::Threads)
     add_test(NAME waydisplay.render_planning COMMAND waydisplay_test_render_planning)
+
+    add_executable(waydisplay_test_loopback_runtime
+        tests/test_loopback_runtime.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_loopback_runtime)
+    target_link_libraries(waydisplay_test_loopback_runtime PRIVATE waydisplay_client_tile_reassembly)
+    add_test(NAME waydisplay.loopback_runtime COMMAND waydisplay_test_loopback_runtime)
+
+    add_executable(waydisplay_test_protocol_fuzz
+        tests/test_protocol_fuzz.cpp
+    )
+    waydisplay_apply_common_warnings(waydisplay_test_protocol_fuzz)
+    target_link_libraries(waydisplay_test_protocol_fuzz PRIVATE waydisplay_client_tile_reassembly)
+    add_test(NAME waydisplay.protocol_fuzz COMMAND waydisplay_test_protocol_fuzz)
+endif()
+
+if(WAYDISPLAY_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "WAYDISPLAY_BUILD_FUZZERS requires Clang/libFuzzer")
+    endif()
+
+    add_executable(waydisplay_fuzz_tile_protocol tests/fuzz_tile_protocol.cpp)
+    target_link_libraries(waydisplay_fuzz_tile_protocol PRIVATE waydisplay_common)
+    target_compile_options(waydisplay_fuzz_tile_protocol PRIVATE -fsanitize=fuzzer,address,undefined)
+    target_link_options(waydisplay_fuzz_tile_protocol PRIVATE -fsanitize=fuzzer,address,undefined)
+
+    add_executable(waydisplay_fuzz_tile_reassembly tests/fuzz_tile_reassembly.cpp)
+    target_link_libraries(waydisplay_fuzz_tile_reassembly PRIVATE waydisplay_client_tile_reassembly)
+    target_compile_options(waydisplay_fuzz_tile_reassembly PRIVATE -fsanitize=fuzzer,address,undefined)
+    target_link_options(waydisplay_fuzz_tile_reassembly PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
 # -----------------------------------------------------------------------------
@@ -552,6 +583,7 @@ message(STATUS "  WAYDISPLAY_BUILD_CLIENT_SDL=${WAYDISPLAY_BUILD_CLIENT_SDL}")
 message(STATUS "  WAYDISPLAY_BUILD_WLROOTS_SERVER=${WAYDISPLAY_BUILD_WLROOTS_SERVER}")
 message(STATUS "  WAYDISPLAY_BUILD_LEGACY_PROTO=${WAYDISPLAY_BUILD_LEGACY_PROTO}")
 message(STATUS "  WAYDISPLAY_BUILD_TESTS=${WAYDISPLAY_BUILD_TESTS}")
+message(STATUS "  WAYDISPLAY_BUILD_FUZZERS=${WAYDISPLAY_BUILD_FUZZERS}")
 message(STATUS "  WAYDISPLAY_ENABLE_LOGGING=${WAYDISPLAY_ENABLE_LOGGING}")
 message(STATUS "  WAYDISPLAY_ENABLE_DEBUG_LOGGING=${WAYDISPLAY_ENABLE_DEBUG_LOGGING}")
 message(STATUS "  WAYDISPLAY_ENABLE_XWAYLAND=${WAYDISPLAY_ENABLE_XWAYLAND}")

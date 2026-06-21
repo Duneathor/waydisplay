@@ -258,18 +258,19 @@ void clear_entry_retx_inflight(ClientState& state, uint16_t tile_id, uint8_t til
     });
 }
 
-bool packet_header_valid(const wd_udp_tile_packet_decoded& header, size_t packet_size, uint16_t udp_payload_target,
-                         const wd_server_config_payload& config) {
+TilePacketValidationResult packet_header_validation_result(const wd_udp_tile_packet_decoded& header,
+                                                              size_t packet_size, uint16_t udp_payload_target,
+                                                              const wd_server_config_payload& config) {
     if (header.session_id != config.session_id || header.connection_token != config.connection_token)
     {
-        return false;
+        return TilePacketValidationResult::Identity;
     }
 
     uint16_t tile_width = 0;
     uint16_t tile_height = 0;
     if (!tile_dimensions_from_header(header, tile_width, tile_height))
     {
-        return false;
+        return TilePacketValidationResult::Geometry;
     }
 
     const uint16_t packet_tiles_x = wd_tiles_for_width_with_tile(config.width, tile_width);
@@ -277,27 +278,13 @@ bool packet_header_valid(const wd_udp_tile_packet_decoded& header, size_t packet
     const uint32_t packet_total_tiles = static_cast<uint32_t>(packet_tiles_x) * static_cast<uint32_t>(packet_tiles_y);
     if (packet_tiles_x == 0 || packet_tiles_y == 0 || header.tile_id >= packet_total_tiles || packet_total_tiles > UINT16_MAX)
     {
-        return false;
+        return TilePacketValidationResult::Geometry;
     }
 
-    if (header.tile_pkt_count == 0)
+    if (header.tile_pkt_count == 0 || header.tile_pkt_id >= header.tile_pkt_count || header.payload_size == 0 ||
+        header.tile_payload_size == 0)
     {
-        return false;
-    }
-
-    if (header.tile_pkt_id >= header.tile_pkt_count)
-    {
-        return false;
-    }
-
-    if (header.payload_size == 0)
-    {
-        return false;
-    }
-
-    if (header.tile_payload_size == 0)
-    {
-        return false;
+        return TilePacketValidationResult::Fragment;
     }
 
     const size_t uncompressed_tile_bytes =
@@ -305,23 +292,30 @@ bool packet_header_valid(const wd_udp_tile_packet_decoded& header, size_t packet
 
     if (wd_udp_tile_packet_is_compressed(&header))
     {
-        const size_t max_compressed_size = wd_zstd_compress_bound(uncompressed_tile_bytes);
-
-        if (header.tile_payload_size > max_compressed_size)
+        if (header.tile_payload_size > wd_zstd_compress_bound(uncompressed_tile_bytes))
         {
-            return false;
+            return TilePacketValidationResult::Fragment;
         }
     }
     else if (header.tile_payload_size != uncompressed_tile_bytes)
     {
-        return false;
+        return TilePacketValidationResult::Fragment;
     }
 
-    return wd_udp_tile_fragment_layout_valid(&header, packet_size, udp_payload_target,
-                                             header.tile_payload_size);
+    if (!wd_udp_tile_fragment_layout_valid(&header, packet_size, udp_payload_target, header.tile_payload_size))
+    {
+        return TilePacketValidationResult::Fragment;
+    }
+    return TilePacketValidationResult::Valid;
 }
 
 } // namespace
+
+TilePacketValidationResult validate_tile_packet_header(const wd_udp_tile_packet_decoded& header,
+                                                       size_t packet_size, uint16_t udp_payload_target,
+                                                       const wd_server_config_payload& config) {
+    return packet_header_validation_result(header, packet_size, udp_payload_target, config);
+}
 
 TileReassembler::TileReassembler(size_t max_active_entries, size_t max_active_payload_bytes)
     : max_active_entries_(std::max<size_t>(1, max_active_entries)),
@@ -660,6 +654,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
     if (!packet || packet_size < WD_UDP_TILE_HEADER_MIN_SIZE)
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+        state.stats.udp_invalid_short.fetch_add(1, std::memory_order_relaxed);
         return completed;
     }
 
@@ -667,6 +662,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
     if (!wd_udp_tile_packet_decode(packet, packet_size, &header))
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+        state.stats.udp_invalid_header.fetch_add(1, std::memory_order_relaxed);
         return completed;
     }
 
@@ -681,15 +677,33 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
     if (!tile_dimensions_from_header(header, packet_tile_width, packet_tile_height))
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+        state.stats.udp_invalid_geometry.fetch_add(1, std::memory_order_relaxed);
         return completed;
     }
 
     const size_t uncompressed_tile_bytes =
         static_cast<size_t>(packet_tile_width) * static_cast<size_t>(packet_tile_height) * WD_BYTES_PER_PIXEL;
 
-    if (!packet_header_valid(header, packet_size, udp_payload_target, state.config))
+    const TilePacketValidationResult validation =
+        validate_tile_packet_header(header, packet_size, udp_payload_target, state.config);
+    if (validation != TilePacketValidationResult::Valid)
     {
-        state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+        if (validation == TilePacketValidationResult::Identity)
+        {
+            state.stats.udp_ignored_stale_session.fetch_add(1, std::memory_order_relaxed);
+        }
+        else
+        {
+            state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+            if (validation == TilePacketValidationResult::Geometry)
+            {
+                state.stats.udp_invalid_geometry.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                state.stats.udp_invalid_fragment.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
         return completed;
     }
 

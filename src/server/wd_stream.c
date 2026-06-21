@@ -612,7 +612,8 @@ static uint16_t wd_stream_policy_effective_fps_locked(const struct wd_stream_pol
 }
 
 
-static uint16_t wd_stream_policy_capture_pacing_fps_locked(const struct wd_stream_policy* policy) {
+static uint16_t wd_stream_policy_capture_pacing_fps_locked(const struct wd_stream_policy* policy,
+                                                            uint16_t output_refresh_hz) {
     uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
 
     if (policy && !policy->client_render_visible && fps > WD_STREAM_HIDDEN_CLIENT_FPS)
@@ -625,7 +626,7 @@ static uint16_t wd_stream_policy_capture_pacing_fps_locked(const struct wd_strea
         fps = WD_STREAM_FPS_MIN;
     }
 
-    return fps;
+    return wd_cap_periodic_capture_fps(fps, output_refresh_hz);
 }
 
 
@@ -1628,7 +1629,9 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
 
     bool should = false;
 
-    uint16_t fps = wd_stream_policy_capture_pacing_fps_locked(policy);
+    const uint16_t output_refresh_hz =
+        (uint16_t)((server->output_refresh_mhz + 500u) / 1000u);
+    uint16_t fps = wd_stream_policy_capture_pacing_fps_locked(policy, output_refresh_hz);
     uint64_t interval_ns = WD_NSEC_PER_SEC / fps;
 
     if (policy->last_frame_send_ns == 0 || now_ns - policy->last_frame_send_ns >= interval_ns)
@@ -2825,6 +2828,7 @@ struct wd_parallel_encode_job {
     uint64_t remaining_byte_budget;
     uint64_t framebuffer_generation;
     uint16_t udp_payload_target;
+    uint8_t compression_benchmark_mode;
     bool network_happy;
     const bool* dirty_snapshot;
     const uint64_t* dirty_epoch_snapshot;
@@ -2832,6 +2836,8 @@ struct wd_parallel_encode_job {
     uint64_t compression_wins;
     uint64_t compression_entropy_skips;
     uint64_t compression_adaptive_skips;
+    uint64_t compression_nonwins;
+    uint64_t compression_forced_choices;
     uint64_t compression_ns;
     uint64_t compression_saved_wire_bytes;
     struct wd_parallel_encode_result* result;
@@ -3516,40 +3522,59 @@ static bool wd_stream_try_encode_candidate_for_snapshot(struct wd_parallel_encod
     bool compressed_payload = false;
     if (allow_compression)
     {
-        if (!wd_tile_xrgb_payload_may_compress(tile_bytes, uncompressed_size))
+        const uint8_t benchmark_mode = job->compression_benchmark_mode;
+        const bool entropy_ok = wd_tile_xrgb_payload_may_compress(tile_bytes, uncompressed_size);
+        struct wd_tile_compression_advisor* advisor =
+            &worker->compression_advisors[wd_stream_compression_advisor_index(tile_width, tile_height)];
+        bool advisor_ok = true;
+        if (benchmark_mode == WD_TILE_COMPRESSION_BENCH_AUTO && entropy_ok)
+        {
+            advisor_ok = wd_tile_compression_advisor_should_attempt(advisor);
+        }
+
+        if (benchmark_mode == WD_TILE_COMPRESSION_BENCH_AUTO && !entropy_ok)
         {
             job->compression_entropy_skips++;
         }
-        else
+        else if (benchmark_mode == WD_TILE_COMPRESSION_BENCH_AUTO && !advisor_ok)
         {
-            struct wd_tile_compression_advisor* advisor =
-                &worker->compression_advisors[wd_stream_compression_advisor_index(tile_width, tile_height)];
-            if (!wd_tile_compression_advisor_should_attempt(advisor))
+            job->compression_adaptive_skips++;
+        }
+        else if (wd_tile_compression_benchmark_should_attempt(benchmark_mode, entropy_ok, advisor_ok))
+        {
+            job->compression_attempts++;
+            const uint64_t compression_start_ns = wd_now_ns();
+            const bool compressed = wd_zstd_compress_with_context(
+                worker->compressor, tile_bytes, uncompressed_size, compressed_tile,
+                compressed_capacity, WD_ZSTD_LEVEL, &compressed_size);
+            job->compression_ns += wd_now_ns() - compression_start_ns;
+            const bool worthwhile = compressed && wd_stream_use_compressed_tile_payload(
+                compressed_size, uncompressed_size, job->udp_payload_target, job->input_sequence);
+            compressed_payload = wd_tile_compression_benchmark_choose_compressed(
+                benchmark_mode, compressed, worthwhile);
+
+            if (benchmark_mode == WD_TILE_COMPRESSION_BENCH_AUTO)
             {
-                job->compression_adaptive_skips++;
+                wd_tile_compression_advisor_record(advisor, worthwhile);
+            }
+            if (worthwhile)
+            {
+                job->compression_wins++;
+                const uint32_t compressed_wire = wd_stream_tile_wire_bytes_for_payload(
+                    compressed_size, job->udp_payload_target, job->input_sequence, true);
+                const uint32_t uncompressed_wire = wd_stream_tile_wire_bytes_for_payload(
+                    uncompressed_size, job->udp_payload_target, job->input_sequence, false);
+                if (uncompressed_wire > compressed_wire)
+                {
+                    job->compression_saved_wire_bytes += uncompressed_wire - compressed_wire;
+                }
             }
             else
             {
-                job->compression_attempts++;
-                const uint64_t compression_start_ns = wd_now_ns();
-                const bool compressed = wd_zstd_compress_with_context(
-                    worker->compressor, tile_bytes, uncompressed_size, compressed_tile,
-                    compressed_capacity, WD_ZSTD_LEVEL, &compressed_size);
-                job->compression_ns += wd_now_ns() - compression_start_ns;
-                compressed_payload = compressed && wd_stream_use_compressed_tile_payload(
-                    compressed_size, uncompressed_size, job->udp_payload_target, job->input_sequence);
-                wd_tile_compression_advisor_record(advisor, compressed_payload);
+                job->compression_nonwins++;
                 if (compressed_payload)
                 {
-                    job->compression_wins++;
-                    const uint32_t compressed_wire = wd_stream_tile_wire_bytes_for_payload(
-                        compressed_size, job->udp_payload_target, job->input_sequence, true);
-                    const uint32_t uncompressed_wire = wd_stream_tile_wire_bytes_for_payload(
-                        uncompressed_size, job->udp_payload_target, job->input_sequence, false);
-                    if (uncompressed_wire > compressed_wire)
-                    {
-                        job->compression_saved_wire_bytes += uncompressed_wire - compressed_wire;
-                    }
+                    job->compression_forced_choices++;
                 }
             }
         }
@@ -3892,6 +3917,7 @@ static void wd_stream_init_encode_job_locked(struct wd_parallel_encode_job* job,
     job->remaining_byte_budget = remaining_byte_budget;
     job->framebuffer_generation = server->framebuffer_generation;
     job->udp_payload_target = server->net.udp_payload_target;
+    job->compression_benchmark_mode = server->tile_compression_benchmark_mode;
     job->network_happy = network_happy;
     job->dirty_snapshot = dirty_snapshot;
     job->dirty_epoch_snapshot = epoch_snapshot;
@@ -4007,6 +4033,8 @@ static bool wd_stream_run_encode_batch_locked(struct wd_server* server, struct w
         net->stats.compression_wins += batch->jobs[i].compression_wins;
         net->stats.compression_entropy_skips += batch->jobs[i].compression_entropy_skips;
         net->stats.compression_adaptive_skips += batch->jobs[i].compression_adaptive_skips;
+        net->stats.compression_nonwins += batch->jobs[i].compression_nonwins;
+        net->stats.compression_forced_choices += batch->jobs[i].compression_forced_choices;
         net->stats.compression_ns += batch->jobs[i].compression_ns;
         net->stats.compression_saved_wire_bytes += batch->jobs[i].compression_saved_wire_bytes;
     }
@@ -4977,6 +5005,8 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->compression_wins += src->compression_wins;
     dst->compression_entropy_skips += src->compression_entropy_skips;
     dst->compression_adaptive_skips += src->compression_adaptive_skips;
+    dst->compression_nonwins += src->compression_nonwins;
+    dst->compression_forced_choices += src->compression_forced_choices;
     dst->compression_ns += src->compression_ns;
     dst->compression_saved_wire_bytes += src->compression_saved_wire_bytes;
     dst->stream_mode_frame_samples += src->stream_mode_frame_samples;
@@ -5247,8 +5277,9 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     uint64_t limited_udp_kib_per_second = net->stream_policy.limited_udp_bytes_per_second / 1024ull;
     uint16_t requested_capture_fps = net->stream_policy.requested_capture_fps;
     uint16_t adaptive_capture_fps = wd_stream_policy_effective_fps_locked(&net->stream_policy);
-    uint16_t capture_pacing_fps = wd_stream_policy_capture_pacing_fps_locked(&net->stream_policy);
     uint16_t compositor_refresh_hz = (uint16_t)((server->output_refresh_mhz + 500u) / 1000u);
+    uint16_t capture_pacing_fps =
+        wd_stream_policy_capture_pacing_fps_locked(&net->stream_policy, compositor_refresh_hz);
     uint16_t client_present_cap_fps = requested_capture_fps != 0 ? requested_capture_fps : WD_DEFAULT_PARTIAL_FPS;
     bool client_render_visible = net->stream_policy.client_render_visible;
     enum wd_stream_mode stream_mode = net->stream_policy.stream_mode;
@@ -5265,6 +5296,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     uint8_t video_exit_dirty_percent = net->stream_policy.video_exit_dirty_percent;
     uint16_t video_exit_seconds = net->stream_policy.video_exit_seconds;
     uint32_t video_bitrate_kib = wd_stream_video_bitrate_kib_locked(&net->stream_policy);
+    uint8_t compression_benchmark_mode = server->tile_compression_benchmark_mode;
 
     pthread_mutex_unlock(&net->lock);
 
@@ -5301,7 +5333,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
 
     if (state_changed)
     {
-        WD_LOG_DEBUG("state: requested_capture_fps=%u adaptive_capture_fps=%u capture_pacing_fps=%u compositor_refresh_hz=%u client_present_cap_fps=%u client_visible=%s stream_mode=%s owner=%s fresh_udp_tiles=%s tile_repair=%s video_mode=%s video_bitrate_kib=%u video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 input_channel=%s selection_channel=%s video_negotiated=%s video_channel=%s video_encoder=%s",
+        WD_LOG_DEBUG("state: requested_capture_fps=%u adaptive_capture_fps=%u capture_pacing_fps=%u compositor_refresh_hz=%u client_present_cap_fps=%u client_visible=%s stream_mode=%s owner=%s fresh_udp_tiles=%s tile_repair=%s video_mode=%s video_bitrate_kib=%u video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u udp_budget_kib_per_sec=%llu base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 tile_compression=%s input_channel=%s selection_channel=%s video_negotiated=%s video_channel=%s video_encoder=%s",
                      (unsigned)requested_capture_fps, (unsigned)adaptive_capture_fps, (unsigned)capture_pacing_fps,
                      (unsigned)compositor_refresh_hz, (unsigned)client_present_cap_fps,
                      client_render_visible ? "yes" : "no", wd_stream_mode_name(stream_mode),
@@ -5312,6 +5344,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      (unsigned)video_min_dirty_percent, (unsigned)video_enter_seconds,
                      (unsigned)video_exit_dirty_percent, (unsigned)video_exit_seconds,
                      (unsigned long long)limited_udp_kib_per_second, (unsigned)tile_width, (unsigned)tile_height,
+                     wd_tile_compression_benchmark_mode_name(compression_benchmark_mode),
                      input_channel_connected ? "yes" : "no", selection_channel_connected ? "yes" : "no",
                      video_negotiated ? "yes" : "no", video_channel_connected ? "yes" : "no",
                      video_encoder_available ? "yes" : "no");
@@ -5378,7 +5411,8 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                           s.udp_async_completion_failed != 0 || s.udp_async_fallback_sync != 0 ||
                           s.tile_choice_compressed != 0 || s.tile_choice_uncompressed != 0 ||
                           s.compression_attempts != 0 || s.compression_entropy_skips != 0 ||
-                          s.compression_adaptive_skips != 0 ||
+                          s.compression_adaptive_skips != 0 || s.compression_nonwins != 0 ||
+                          s.compression_forced_choices != 0 ||
                           s.dirty_queue_age_samples != 0 || s.retx_queue_age_samples != 0 ||
                           s.dirty_region_probes != 0 || s.dirty_region_hits != 0 ||
                           s.dirty_budget_blocked != 0 || s.partial_tile_sends != 0 || s.dirty_detect_ns != 0 ||
@@ -5388,7 +5422,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     if (video_activity)
     {
         uint64_t choices = s.tile_choice_compressed + s.tile_choice_uncompressed;
-        WD_LOG_DEBUG("tile-stream/min: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu async_queued=%llu async_completed=%llu async_failed=%llu async_completion_failed=%llu async_fallback=%llu async_inflight_max=%llu submit_calls=%llu partial_submits=%llu pkts_per_submit=%.2f zstd_attempts=%llu zstd_wins=%llu zstd_entropy_skip=%llu zstd_adaptive_skip=%llu zstd_ms=%.2f zstd_saved_kib=%.1f dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu dirty_budget_blocked_full_refresh=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f diff_candidates=%llu diff_changed=%llu diff_unchanged=%llu diff_full=%llu diff_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f tile_sizes=128x64:%llu,64x64:%llu,32x32:%llu,16x16:%llu encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_batches=%llu encode_batch_peak=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
+        WD_LOG_DEBUG("tile-stream/min: dirty=%llu stale_skip=%llu udp_tiles=%llu fresh=%llu retx=%llu pkts=%llu kib=%.1f wire_avg_B=%.1f comp_sent=%llu uncomp_sent=%llu comp_payload_avg_B=%.1f uncomp_payload_avg_B=%.1f choice_comp=%llu choice_uncomp=%llu choice_comp_payload_avg_B=%.1f choice_raw_payload_avg_B=%.1f choice_comp_wire_avg_B=%.1f choice_uncomp_wire_avg_B=%.1f choice_chosen_wire_avg_B=%.1f choice_saved_kib=%.1f pressure_drops=%llu async_queued=%llu async_completed=%llu async_failed=%llu async_completion_failed=%llu async_fallback=%llu async_inflight_max=%llu submit_calls=%llu partial_submits=%llu pkts_per_submit=%.2f zstd_mode=%s zstd_attempts=%llu zstd_wins=%llu zstd_nonwins=%llu zstd_forced=%llu zstd_entropy_skip=%llu zstd_adaptive_skip=%llu zstd_ms=%.2f zstd_saved_kib=%.1f dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu dirty_budget_blocked_full_refresh=%llu partial_tiles=%llu partial_pkts=%llu detect_ms=%.2f diff_candidates=%llu diff_changed=%llu diff_unchanged=%llu diff_full=%llu diff_ms=%.2f region_pick_ms=%.2f encode_ms=%.2f udp_send_ms=%.2f summary_ms=%.2f tile_sizes=128x64:%llu,64x64:%llu,32x32:%llu,16x16:%llu encode_jobs=%llu/%llu stale=%llu encode_wait_ms=%.2f encode_worker_ms=%.2f encode_batches=%llu encode_batch_peak=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
                      (unsigned long long)s.dirty_tiles, (unsigned long long)s.dirty_tiles_stale_skipped,
                      (unsigned long long)s.udp_tiles_sent, (unsigned long long)s.udp_fresh_tiles_sent,
                      (unsigned long long)s.udp_retx_tiles_sent, (unsigned long long)s.udp_packets_sent,
@@ -5418,8 +5452,11 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      (unsigned long long)s.udp_async_submit_calls,
                      (unsigned long long)s.udp_async_partial_submits,
                      s.udp_async_submit_calls ? (double)s.udp_async_queued / (double)s.udp_async_submit_calls : 0.0,
+                     wd_tile_compression_benchmark_mode_name(compression_benchmark_mode),
                      (unsigned long long)s.compression_attempts,
                      (unsigned long long)s.compression_wins,
+                     (unsigned long long)s.compression_nonwins,
+                     (unsigned long long)s.compression_forced_choices,
                      (unsigned long long)s.compression_entropy_skips,
                      (unsigned long long)s.compression_adaptive_skips,
                      (double)s.compression_ns / 1000000.0,

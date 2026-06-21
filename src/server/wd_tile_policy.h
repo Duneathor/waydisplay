@@ -11,6 +11,7 @@ extern "C" {
 uint16_t wd_tile_normalize_udp_payload_target(uint16_t udp_payload_target, uint16_t default_target,
                                               uint16_t maximum_target);
 uint16_t wd_tile_packet_count_for_payload(uint32_t payload_size, uint16_t udp_payload_target);
+uint16_t wd_cap_periodic_capture_fps(uint16_t capture_fps, uint16_t output_refresh_hz);
 uint32_t wd_tile_wire_bytes_for_payload(uint32_t payload_size, uint16_t udp_payload_target,
                                         uint16_t packet_header_size, uint16_t first_packet_header_size);
 
@@ -20,7 +21,17 @@ bool wd_tile_compression_is_worthwhile(uint32_t compressed_size, uint32_t uncomp
                                        uint8_t minimum_savings_percent);
 bool wd_tile_xrgb_payload_may_compress(const uint8_t* payload, uint32_t payload_size);
 
+enum wd_tile_compression_benchmark_mode {
+    WD_TILE_COMPRESSION_BENCH_AUTO = 0,
+    WD_TILE_COMPRESSION_BENCH_OFF = 1,
+    WD_TILE_COMPRESSION_BENCH_ATTEMPT = 2,
+    WD_TILE_COMPRESSION_BENCH_FORCE = 3,
+};
 
+bool wd_tile_compression_benchmark_mode_parse(const char* value, uint8_t* out_mode);
+const char* wd_tile_compression_benchmark_mode_name(uint8_t mode);
+bool wd_tile_compression_benchmark_should_attempt(uint8_t mode, bool entropy_ok, bool advisor_ok);
+bool wd_tile_compression_benchmark_choose_compressed(uint8_t mode, bool compression_ok, bool worthwhile);
 
 struct wd_tile_compression_advisor {
     uint16_t poor_streak;

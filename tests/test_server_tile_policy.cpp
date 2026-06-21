@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <string>
 #include <vector>
 
 namespace {
@@ -75,6 +76,44 @@ void test_xrgb_compression_prefilter() {
 }
 
 
+void test_compression_benchmark_modes() {
+    uint8_t mode = 255;
+    require(wd_tile_compression_benchmark_mode_parse("auto", &mode) &&
+                mode == WD_TILE_COMPRESSION_BENCH_AUTO,
+            "auto benchmark mode should parse");
+    require(wd_tile_compression_benchmark_mode_parse("off", &mode) &&
+                mode == WD_TILE_COMPRESSION_BENCH_OFF,
+            "off benchmark mode should parse");
+    require(wd_tile_compression_benchmark_mode_parse("attempt", &mode) &&
+                mode == WD_TILE_COMPRESSION_BENCH_ATTEMPT,
+            "attempt benchmark mode should parse");
+    require(wd_tile_compression_benchmark_mode_parse("force", &mode) &&
+                mode == WD_TILE_COMPRESSION_BENCH_FORCE,
+            "force benchmark mode should parse");
+    require(!wd_tile_compression_benchmark_mode_parse("invalid", &mode),
+            "unknown benchmark modes should be rejected");
+
+    require(!wd_tile_compression_benchmark_should_attempt(WD_TILE_COMPRESSION_BENCH_AUTO, false, true),
+            "auto should respect the entropy prefilter");
+    require(!wd_tile_compression_benchmark_should_attempt(WD_TILE_COMPRESSION_BENCH_AUTO, true, false),
+            "auto should respect adaptive backoff");
+    require(!wd_tile_compression_benchmark_should_attempt(WD_TILE_COMPRESSION_BENCH_OFF, true, true),
+            "off should skip every compression attempt");
+    require(wd_tile_compression_benchmark_should_attempt(WD_TILE_COMPRESSION_BENCH_ATTEMPT, false, false),
+            "attempt should bypass prefilters for measurement");
+    require(wd_tile_compression_benchmark_should_attempt(WD_TILE_COMPRESSION_BENCH_FORCE, false, false),
+            "force should bypass prefilters for measurement");
+
+    require(!wd_tile_compression_benchmark_choose_compressed(WD_TILE_COMPRESSION_BENCH_ATTEMPT, true, false),
+            "attempt should still choose the smaller wire representation");
+    require(wd_tile_compression_benchmark_choose_compressed(WD_TILE_COMPRESSION_BENCH_FORCE, true, false),
+            "force should select any successful compressed result");
+    require(!wd_tile_compression_benchmark_choose_compressed(WD_TILE_COMPRESSION_BENCH_FORCE, false, true),
+            "force cannot select a failed compression result");
+    require(std::string(wd_tile_compression_benchmark_mode_name(WD_TILE_COMPRESSION_BENCH_ATTEMPT)) == "attempt",
+            "benchmark mode names should be stable for logs");
+}
+
 void test_compression_advisor_backs_off_and_resamples() {
     wd_tile_compression_advisor advisor{};
     for (int i = 0; i < 8; ++i)
@@ -111,6 +150,15 @@ void test_delivery_status_waits_for_seal_and_reports_failure() {
     require(failed, "any failed packet should fail the tile delivery");
 }
 
+void test_periodic_capture_is_capped_to_output_refresh() {
+    require(wd_cap_periodic_capture_fps(120, 60) == 60,
+            "periodic capture should not outrun the compositor refresh");
+    require(wd_cap_periodic_capture_fps(30, 60) == 30,
+            "lower requested capture rates should remain unchanged");
+    require(wd_cap_periodic_capture_fps(120, 0) == 120,
+            "unknown refresh rate should not impose a cap");
+}
+
 } // namespace
 
 int main() {
@@ -118,7 +166,9 @@ int main() {
     test_compression_requires_material_savings();
     test_locality_with_starvation_bound();
     test_xrgb_compression_prefilter();
+    test_compression_benchmark_modes();
     test_compression_advisor_backs_off_and_resamples();
     test_delivery_status_waits_for_seal_and_reports_failure();
+    test_periodic_capture_is_capped_to_output_refresh();
     return 0;
 }

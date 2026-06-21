@@ -20,6 +20,18 @@ uint16_t wd_tile_normalize_udp_payload_target(uint16_t udp_payload_target, uint1
     return udp_payload_target > maximum_target ? maximum_target : udp_payload_target;
 }
 
+uint16_t wd_cap_periodic_capture_fps(uint16_t capture_fps, uint16_t output_refresh_hz) {
+    if (capture_fps == 0)
+    {
+        capture_fps = 1;
+    }
+    if (output_refresh_hz != 0 && capture_fps > output_refresh_hz)
+    {
+        capture_fps = output_refresh_hz;
+    }
+    return capture_fps;
+}
+
 uint16_t wd_tile_packet_count_for_payload(uint32_t payload_size, uint16_t udp_payload_target) {
     if (payload_size == 0 || udp_payload_target == 0)
     {
@@ -138,6 +150,74 @@ bool wd_tile_xrgb_payload_may_compress(const uint8_t* payload, uint32_t payload_
     return unique_count <= samples * 7u / 8u || adjacent_repeats >= 2u || repeated_deltas >= samples / 8u;
 }
 
+
+bool wd_tile_compression_benchmark_mode_parse(const char* value, uint8_t* out_mode) {
+    if (!value || !out_mode)
+    {
+        return false;
+    }
+
+    uint8_t mode = WD_TILE_COMPRESSION_BENCH_AUTO;
+    if (strcmp(value, "auto") == 0)
+    {
+        mode = WD_TILE_COMPRESSION_BENCH_AUTO;
+    }
+    else if (strcmp(value, "off") == 0)
+    {
+        mode = WD_TILE_COMPRESSION_BENCH_OFF;
+    }
+    else if (strcmp(value, "attempt") == 0)
+    {
+        mode = WD_TILE_COMPRESSION_BENCH_ATTEMPT;
+    }
+    else if (strcmp(value, "force") == 0)
+    {
+        mode = WD_TILE_COMPRESSION_BENCH_FORCE;
+    }
+    else
+    {
+        return false;
+    }
+    *out_mode = mode;
+    return true;
+}
+
+const char* wd_tile_compression_benchmark_mode_name(uint8_t mode) {
+    switch (mode)
+    {
+        case WD_TILE_COMPRESSION_BENCH_OFF:
+            return "off";
+        case WD_TILE_COMPRESSION_BENCH_ATTEMPT:
+            return "attempt";
+        case WD_TILE_COMPRESSION_BENCH_FORCE:
+            return "force";
+        case WD_TILE_COMPRESSION_BENCH_AUTO:
+        default:
+            return "auto";
+    }
+}
+
+bool wd_tile_compression_benchmark_should_attempt(uint8_t mode, bool entropy_ok, bool advisor_ok) {
+    switch (mode)
+    {
+        case WD_TILE_COMPRESSION_BENCH_OFF:
+            return false;
+        case WD_TILE_COMPRESSION_BENCH_ATTEMPT:
+        case WD_TILE_COMPRESSION_BENCH_FORCE:
+            return true;
+        case WD_TILE_COMPRESSION_BENCH_AUTO:
+        default:
+            return entropy_ok && advisor_ok;
+    }
+}
+
+bool wd_tile_compression_benchmark_choose_compressed(uint8_t mode, bool compression_ok, bool worthwhile) {
+    if (!compression_ok)
+    {
+        return false;
+    }
+    return mode == WD_TILE_COMPRESSION_BENCH_FORCE ? true : worthwhile;
+}
 
 bool wd_tile_compression_advisor_should_attempt(struct wd_tile_compression_advisor* advisor) {
     if (!advisor || advisor->bypass_remaining == 0)

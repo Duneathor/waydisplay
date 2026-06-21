@@ -11,6 +11,17 @@
 
 namespace waydisplay {
 
+enum class TilePacketValidationResult : uint8_t {
+    Valid,
+    Identity,
+    Geometry,
+    Fragment,
+};
+
+TilePacketValidationResult validate_tile_packet_header(const wd_udp_tile_packet_decoded& header,
+                                                       size_t packet_size, uint16_t udp_payload_target,
+                                                       const wd_server_config_payload& config);
+
 struct CompletedTile {
     bool                 valid             = false;
     uint16_t             tile_id           = 0;

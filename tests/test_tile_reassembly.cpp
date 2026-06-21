@@ -460,6 +460,37 @@ void test_conflicting_duplicate_fragment_zero_metadata_is_rejected() {
     require(!state.retx_queue.empty(), "metadata conflict should queue immediate repair");
 }
 
+void test_packet_validation_reports_rejection_reason() {
+    ClientState state;
+    initialize_state(state, 64, 64, 400);
+    const auto packets = make_packets(state, WD_TILE_16x16, 0, 70,
+                                      make_tile_bytes(WD_TILE_16x16, 140), false, false);
+    wd_udp_tile_packet_decoded header{};
+    require(wd_udp_tile_packet_decode(packets[0].data(), packets[0].size(), &header),
+            "validation reason header decode");
+    require(validate_tile_packet_header(header, packets[0].size(), state.config.udp_payload_target, state.config) ==
+                TilePacketValidationResult::Valid,
+            "canonical packet should validate");
+
+    wd_udp_tile_packet_decoded changed = header;
+    changed.connection_token++;
+    require(validate_tile_packet_header(changed, packets[0].size(), state.config.udp_payload_target, state.config) ==
+                TilePacketValidationResult::Identity,
+            "wrong connection token should be identity rejection");
+
+    changed = header;
+    changed.tile_id = UINT16_MAX;
+    require(validate_tile_packet_header(changed, packets[0].size(), state.config.udp_payload_target, state.config) ==
+                TilePacketValidationResult::Geometry,
+            "out-of-grid tile should be geometry rejection");
+
+    changed = header;
+    changed.tile_pkt_count = 0;
+    require(validate_tile_packet_header(changed, packets[0].size(), state.config.udp_payload_target, state.config) ==
+                TilePacketValidationResult::Fragment,
+            "zero fragment count should be fragment rejection");
+}
+
 } // namespace
 
 int main() {
@@ -478,5 +509,6 @@ int main() {
     test_decompression_failure_immediately_queues_repair();
     test_conflicting_duplicate_fragment_poisoning_is_rejected();
     test_conflicting_duplicate_fragment_zero_metadata_is_rejected();
+    test_packet_validation_reports_rejection_reason();
     return 0;
 }

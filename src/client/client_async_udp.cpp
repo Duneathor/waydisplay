@@ -66,10 +66,12 @@ struct ClientAsyncUdpReceiver {
     uint64_t inflight      = 0;
     uint64_t inflight_max  = 0;
     uint64_t submitted     = 0;
+    uint64_t retired       = 0;
     uint64_t completed     = 0;
     uint64_t failed        = 0;
     uint64_t submit_failed = 0;
     uint64_t cancels       = 0;
+    uint64_t accounting_errors = 0;
     bool     fatal         = false;
 };
 
@@ -235,14 +237,30 @@ bool has_submitted_locked(const ClientAsyncUdpReceiver* receiver) {
     return false;
 }
 
+void check_accounting_locked(ClientAsyncUdpReceiver* receiver) {
+    if (receiver && receiver->submitted != receiver->retired + receiver->inflight)
+    {
+        receiver->accounting_errors++;
+    }
+}
+
 void mark_buffer_complete_locked(ClientAsyncUdpReceiver* receiver, Buffer* buffer) {
     if (buffer && buffer->submitted)
     {
         buffer->submitted = false;
         buffer->cancel_requested = false;
-        if (receiver && receiver->inflight > 0)
+        if (receiver)
         {
-            receiver->inflight--;
+            receiver->retired++;
+            if (receiver->inflight > 0)
+            {
+                receiver->inflight--;
+            }
+            else
+            {
+                receiver->accounting_errors++;
+            }
+            check_accounting_locked(receiver);
         }
     }
 }
@@ -403,7 +421,8 @@ ClientAsyncUdpReceiver* client_async_udp_receiver_create(int fd, uint32_t entrie
     return receiver;
 }
 
-ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpReceiver* receiver) {
+ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpReceiver* receiver,
+                                                               ClientAsyncUdpReceiverStats* final_stats) {
     if (!receiver)
     {
         return ClientAsyncUdpDetachResult::Detached;
@@ -413,8 +432,34 @@ ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpRecei
         std::lock_guard<std::mutex> lock(receiver->mutex);
         if (!drain_destroy_locked(receiver))
         {
+            if (final_stats)
+            {
+                final_stats->posted            = receiver->submitted;
+                final_stats->retired           = receiver->retired;
+                final_stats->completed         = receiver->completed;
+                final_stats->failed            = receiver->failed;
+                final_stats->submit_failed     = receiver->submit_failed;
+                final_stats->cancels           = receiver->cancels;
+                final_stats->inflight          = receiver->inflight;
+                final_stats->prepared          = receiver->prepared.size();
+                final_stats->inflight_max      = receiver->inflight_max;
+                final_stats->accounting_errors = receiver->accounting_errors;
+            }
             WD_LOG_ERROR("client UDP io_uring detach timed out; outstanding receives still own the socket");
             return ClientAsyncUdpDetachResult::SocketStillOwned;
+        }
+        if (final_stats)
+        {
+            final_stats->posted            = receiver->submitted;
+            final_stats->retired           = receiver->retired;
+            final_stats->completed         = receiver->completed;
+            final_stats->failed            = receiver->failed;
+            final_stats->submit_failed     = receiver->submit_failed;
+            final_stats->cancels           = receiver->cancels;
+            final_stats->inflight          = receiver->inflight;
+            final_stats->prepared          = receiver->prepared.size();
+            final_stats->inflight_max      = receiver->inflight_max;
+            final_stats->accounting_errors = receiver->accounting_errors;
         }
         if (receiver->ring_ready)
         {
@@ -563,12 +608,16 @@ ClientAsyncUdpReceiverStats client_async_udp_receiver_stats(ClientAsyncUdpReceiv
     }
 
     std::lock_guard<std::mutex> lock(receiver->mutex);
-    stats.posted        = receiver->submitted;
-    stats.completed     = receiver->completed;
-    stats.failed        = receiver->failed;
-    stats.submit_failed = receiver->submit_failed;
-    stats.cancels       = receiver->cancels;
-    stats.inflight_max  = receiver->inflight_max;
+    stats.posted            = receiver->submitted;
+    stats.retired           = receiver->retired;
+    stats.completed         = receiver->completed;
+    stats.failed            = receiver->failed;
+    stats.submit_failed     = receiver->submit_failed;
+    stats.cancels           = receiver->cancels;
+    stats.inflight          = receiver->inflight;
+    stats.prepared          = receiver->prepared.size();
+    stats.inflight_max      = receiver->inflight_max;
+    stats.accounting_errors = receiver->accounting_errors;
     return stats;
 }
 

@@ -235,6 +235,8 @@ struct wd_stats {
     uint64_t compression_wins;
     uint64_t compression_entropy_skips;
     uint64_t compression_adaptive_skips;
+    uint64_t compression_nonwins;
+    uint64_t compression_forced_choices;
     uint64_t compression_ns;
     uint64_t compression_saved_wire_bytes;
 
@@ -707,6 +709,7 @@ struct wd_server {
 #endif
     double   output_scale;
     uint32_t output_refresh_mhz;
+    uint8_t  tile_compression_benchmark_mode;
 
     uint32_t display_width;
     uint32_t display_height;
