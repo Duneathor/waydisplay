@@ -1,5 +1,6 @@
 #include "wd_video_encoder.h"
 
+#include "vaapi_test_device.hpp"
 #include "waydisplay/wd_protocol.h"
 
 #include <algorithm>
@@ -124,25 +125,23 @@ bool encode_hardware_codec(wd_video_encoder* encoder, uint32_t codec) {
 } // namespace
 
 int main() {
-    if (!test_unavailable_device_paths())
+    const std::optional<std::string> device = waydisplay::test::find_vaapi_test_device();
+    if (!device)
     {
-        return 1;
+        std::fprintf(stderr, "SKIP: no usable VAAPI render node\n");
+        return 77;
     }
-
-    const char* configured_device = std::getenv("WAYDISPLAY_VAAPI_DEVICE");
-    const char* device = configured_device && *configured_device
-                             ? configured_device
-                             : "/dev/dri/renderD128";
+    std::fprintf(stderr, "VAAPI encoder test device: %s\n", device->c_str());
 
     wd_video_encoder* encoder = nullptr;
-    if (!wd_video_encoder_create(&encoder, "vaapi", device))
+    if (!wd_video_encoder_create(&encoder, "vaapi", device->c_str()))
     {
         return 1;
     }
     const uint32_t supported = wd_video_encoder_supported_codecs(encoder);
     if (supported == 0)
     {
-        std::fprintf(stderr, "SKIP: no usable VAAPI video encoder on %s\n", device);
+        std::fprintf(stderr, "SKIP: no usable VAAPI video encoder on %s\n", device->c_str());
         wd_video_encoder_destroy(encoder);
         return 77;
     }
@@ -162,5 +161,5 @@ int main() {
     }
 
     wd_video_encoder_destroy(encoder);
-    return 0;
+    return test_unavailable_device_paths() ? 0 : 1;
 }

@@ -786,7 +786,8 @@ static bool wd_stream_video_job_current_locked(const struct wd_server* server,
     }
 
     const struct wd_net_state* net = &server->net;
-    return net->running && net->video_worker_epoch == job->epoch &&
+    return wd_net_run_state_is_running(&net->run_state) &&
+           net->video_worker_epoch == job->epoch &&
            net->session_id == job->config.session_id && net->connection_token == job->config.connection_token && net->content_epoch == job->source_content_epoch && net->video_tcp_fd == job->video_tcp_fd &&
            net->video_stream_negotiated && net->video_tx &&
            (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY ||

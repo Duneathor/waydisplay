@@ -21,22 +21,9 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
-#include <sys/random.h>
 #include <poll.h>
 #include <unistd.h>
 
-
-static uint64_t wd_generate_connection_token(void) {
-    uint64_t token = 0;
-#if defined(__linux__)
-    if (getrandom(&token, sizeof(token), 0) == (ssize_t)sizeof(token) && token != 0)
-    {
-        return token;
-    }
-#endif
-    token = wd_now_ns() ^ ((uint64_t)(uintptr_t)&token << 17) ^ ((uint64_t)getpid() << 32);
-    return token != 0 ? token : 1;
-}
 
 static const char* wd_video_mode_name(uint8_t mode) {
     switch (mode)
@@ -301,7 +288,48 @@ static void wd_clear_tcp_receive_timeout(int tcp_fd) {
     wd_set_socket_timeout_ms(tcp_fd, SO_RCVTIMEO, 0);
 }
 
-bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
+static void wd_net_publish_startup_result(struct wd_net_state* net,
+                                          enum wd_net_startup_state state,
+                                          enum wd_net_listener_stage failed_stage,
+                                          int error_code) {
+    pthread_mutex_lock(&net->lock);
+    net->startup_state        = state;
+    net->startup_failed_stage = failed_stage;
+    net->startup_error        = error_code;
+    if (state == WD_NET_STARTUP_FAILED)
+    {
+        wd_net_run_state_set(&net->run_state, false);
+        pthread_cond_broadcast(&net->display_resize_cond);
+    }
+    pthread_cond_broadcast(&net->startup_cond);
+    pthread_mutex_unlock(&net->lock);
+}
+
+bool wd_net_wait_until_ready(struct wd_server* server) {
+    if (!server)
+    {
+        return false;
+    }
+
+    struct wd_net_state* net = &server->net;
+    pthread_mutex_lock(&net->lock);
+    while (net->startup_state == WD_NET_STARTUP_PENDING)
+    {
+        pthread_cond_wait(&net->startup_cond, &net->lock);
+    }
+    const bool ready = net->startup_state == WD_NET_STARTUP_READY;
+    if (!ready)
+    {
+        WD_LOG_ERROR("network startup failed during %s: %s",
+                     wd_net_listener_stage_name(net->startup_failed_stage),
+                     strerror(net->startup_error));
+    }
+    pthread_mutex_unlock(&net->lock);
+    return ready;
+}
+
+bool wd_net_init(struct wd_server* server, uint16_t tcp_port,
+                 struct in_addr listen_address) {
     struct wd_net_state* net = &server->net;
 
     memset(net, 0, sizeof(*net));
@@ -317,8 +345,16 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         return false;
     }
 
+    if (pthread_cond_init(&net->startup_cond, NULL) != 0)
+    {
+        pthread_cond_destroy(&net->display_resize_cond);
+        pthread_mutex_destroy(&net->lock);
+        return false;
+    }
+
     if (pthread_cond_init(&net->encoder_idle_cond, NULL) != 0)
     {
+        pthread_cond_destroy(&net->startup_cond);
         pthread_cond_destroy(&net->display_resize_cond);
         pthread_mutex_destroy(&net->lock);
         return false;
@@ -327,12 +363,17 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
     if (pthread_mutex_init(&net->video_encoder_lock, NULL) != 0)
     {
         pthread_cond_destroy(&net->encoder_idle_cond);
+        pthread_cond_destroy(&net->startup_cond);
         pthread_cond_destroy(&net->display_resize_cond);
         pthread_mutex_destroy(&net->lock);
         return false;
     }
 
-    net->running              = true;
+    wd_net_run_state_init(&net->run_state, true);
+    net->startup_state        = WD_NET_STARTUP_PENDING;
+    net->startup_failed_stage = WD_NET_LISTENER_STAGE_NONE;
+    net->startup_error        = 0;
+    net->listen_address       = listen_address;
     net->tcp_port             = tcp_port;
     net->tcp_fd               = -1;
     net->input_tcp_fd         = -1;
@@ -437,6 +478,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
         net->summary_dirty_tiles         = NULL;
         net->summary_dirty_queue         = NULL;
         pthread_cond_destroy(&net->encoder_idle_cond);
+        pthread_cond_destroy(&net->startup_cond);
         pthread_cond_destroy(&net->display_resize_cond);
         pthread_mutex_destroy(&net->lock);
         return false;
@@ -458,7 +500,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port) {
 void wd_net_destroy(struct wd_server* server) {
     struct wd_net_state* net = &server->net;
 
-    net->running = false;
+    wd_net_run_state_set(&net->run_state, false);
 
     /* Stop encoder and tile workers before destroying their senders, codec,
      * mutexes, or frame storage. */
@@ -567,6 +609,7 @@ void wd_net_destroy(struct wd_server* server) {
     net->primary_text_pending = false;
 
     pthread_cond_destroy(&net->encoder_idle_cond);
+    pthread_cond_destroy(&net->startup_cond);
     pthread_cond_destroy(&net->display_resize_cond);
     pthread_mutex_destroy(&net->lock);
 }
@@ -1333,69 +1376,21 @@ void* wd_net_thread_main(void* arg) {
     struct wd_server*    server = arg;
     struct wd_net_state* net    = &server->net;
 
-    net->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (net->listen_fd < 0)
+    struct wd_net_listener listener;
+    enum wd_net_listener_stage failed_stage = WD_NET_LISTENER_STAGE_NONE;
+    int startup_error = 0;
+
+    if (!wd_net_listener_open(&listener, net->tcp_port, &net->listen_address,
+                              &failed_stage, &startup_error))
     {
-        WD_LOG_ERROR("TCP socket failed: %s", strerror(errno));
+        wd_net_publish_startup_result(net, WD_NET_STARTUP_FAILED, failed_stage, startup_error);
         return NULL;
     }
 
-    int yes = 1;
-    setsockopt(net->listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-
-    struct sockaddr_in bind_addr;
-    memset(&bind_addr, 0, sizeof(bind_addr));
-
-    bind_addr.sin_family      = AF_INET;
-    bind_addr.sin_addr.s_addr = INADDR_ANY;
-    bind_addr.sin_port        = htons(net->tcp_port);
-
-    if (bind(net->listen_fd, (struct sockaddr*)&bind_addr, sizeof(bind_addr)) < 0)
-    {
-        WD_LOG_ERROR("bind TCP failed: %s", strerror(errno));
-        wd_close_fd(&net->listen_fd);
-        return NULL;
-    }
-
-    if (listen(net->listen_fd, 3) < 0)
-    {
-        WD_LOG_ERROR("listen failed: %s", strerror(errno));
-        wd_close_fd(&net->listen_fd);
-        return NULL;
-    }
-
-    net->udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (net->udp_fd < 0)
-    {
-        WD_LOG_ERROR("UDP socket failed: %s", strerror(errno));
-        wd_close_fd(&net->listen_fd);
-        return NULL;
-    }
-
-    struct sockaddr_in udp_bind_addr;
-    memset(&udp_bind_addr, 0, sizeof(udp_bind_addr));
-    udp_bind_addr.sin_family      = AF_INET;
-    udp_bind_addr.sin_addr.s_addr = INADDR_ANY;
-    udp_bind_addr.sin_port        = htons(0);
-    if (bind(net->udp_fd, (struct sockaddr*)&udp_bind_addr, sizeof(udp_bind_addr)) < 0)
-    {
-        WD_LOG_ERROR("bind UDP sender failed: %s", strerror(errno));
-    }
-    else
-    {
-        struct sockaddr_in udp_local_addr;
-        socklen_t udp_local_len = sizeof(udp_local_addr);
-        memset(&udp_local_addr, 0, sizeof(udp_local_addr));
-        if (getsockname(net->udp_fd, (struct sockaddr*)&udp_local_addr, &udp_local_len) == 0)
-        {
-            net->udp_port = ntohs(udp_local_addr.sin_port);
-        }
-    }
-
-    if (wd_set_nonblocking(net->udp_fd) < 0)
-    {
-        WD_LOG_ERROR("failed to make UDP socket nonblocking: %s", strerror(errno));
-    }
+    net->listen_fd = listener.listen_fd;
+    net->udp_fd    = listener.udp_fd;
+    net->tcp_port  = listener.tcp_port;
+    net->udp_port  = listener.udp_port;
 
     wd_udp_socket_disable_df_best_effort(net->udp_fd);
 
@@ -1425,7 +1420,10 @@ void* wd_net_thread_main(void* arg) {
         }
     }
 
-    while (net->running)
+    wd_net_publish_startup_result(net, WD_NET_STARTUP_READY,
+                                  WD_NET_LISTENER_STAGE_NONE, 0);
+
+    while (wd_net_run_state_is_running(&net->run_state))
     {
         struct sockaddr_in peer_addr;
         socklen_t          peer_len = sizeof(peer_addr);
@@ -1434,7 +1432,7 @@ void* wd_net_thread_main(void* arg) {
 
         if (tcp_fd < 0)
         {
-            if (!net->running)
+            if (!wd_net_run_state_is_running(&net->run_state))
             {
                 break;
             }
@@ -1508,10 +1506,19 @@ void* wd_net_thread_main(void* arg) {
         struct wd_server_config_payload cfg;
         uint8_t                         session_id = 0;
 
+        uint64_t connection_token = 0;
+        uint64_t media_clock_id = 0;
+        if (!wd_connection_identity_generate(&connection_token, &media_clock_id))
+        {
+            WD_LOG_ERROR("failed to obtain secure randomness for connection identity");
+            close(tcp_fd);
+            continue;
+        }
+
         pthread_mutex_lock(&net->lock);
 
-        net->connection_token = wd_generate_connection_token();
-        net->media_clock_id = wd_generate_connection_token();
+        net->connection_token = connection_token;
+        net->media_clock_id = media_clock_id;
         net->media_clock_start_ns = wd_now_ns();
         net->connection_epoch++;
         if (net->connection_epoch == 0)
@@ -1785,7 +1792,7 @@ void* wd_net_thread_main(void* arg) {
         }
 
 
-        while (net->running)
+        while (wd_net_run_state_is_running(&net->run_state))
         {
             struct pollfd pfds[6];
             nfds_t        nfds            = 0;

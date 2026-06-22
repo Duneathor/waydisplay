@@ -1,11 +1,10 @@
 #include "video_decoder.hpp"
 
+#include "vaapi_test_device.hpp"
 #include "waydisplay/wd_protocol.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
-#include <libavutil/buffer.h>
-#include <libavutil/hwcontext.h>
 }
 
 #include <cstdint>
@@ -166,7 +165,7 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
      * keyframes, as the real client does, instead of treating normal pipeline
      * latency as a decode failure. */
     constexpr uint32_t kMaxAccessUnits = 8;
-    bool produced_output = false;
+    uint64_t produced_output_count = 0;
     for (uint32_t attempt = 0; attempt < kMaxAccessUnits; ++attempt)
     {
         ClientVideoPacket packet{};
@@ -202,31 +201,54 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
             return VaapiDecodeResult::Failed;
         }
 
-        ClientVideoFrameBuffer output{};
-        if (!waydisplay::client_video_decoder_swap_output_frame(decoder, output))
+        for (;;)
         {
-            continue;
-        }
+            if (decoded.format == ClientVideoPixelFormat::None)
+            {
+                break;
+            }
 
-        if (!output.valid() || decoded.format != ClientVideoPixelFormat::IYUV ||
-            decoded.width != kVaapiFixtureWidth || decoded.height != kVaapiFixtureHeight ||
-            std::strstr(waydisplay::client_video_decoder_backend_name(decoder), "vaapi") == nullptr ||
-            waydisplay::client_video_decoder_hwdecode_failed_auto(decoder))
-        {
-            std::fprintf(stderr,
-                         "VAAPI decoder produced invalid output for codec 0x%x: "
-                         "backend=%s output=%s decoded=%ux%u\n",
-                         codec, waydisplay::client_video_decoder_backend_name(decoder),
-                         output.valid() ? "valid" : "invalid", decoded.width, decoded.height);
-            waydisplay::client_video_decoder_destroy(decoder);
-            return VaapiDecodeResult::Failed;
-        }
+            ClientVideoFrameBuffer output{};
+            if (!waydisplay::client_video_decoder_swap_output_frame(decoder, output))
+            {
+                std::fprintf(stderr,
+                             "VAAPI decoder exposed metadata without a frame for codec 0x%x\n",
+                             codec);
+                waydisplay::client_video_decoder_destroy(decoder);
+                return VaapiDecodeResult::Failed;
+            }
 
-        produced_output = true;
-        break;
+            const uint64_t expected_frame_id = produced_output_count + 1u;
+            const uint64_t expected_pts = UINT64_C(2000000) +
+                                          produced_output_count * UINT64_C(33333);
+            if (!output.valid() || decoded.format != ClientVideoPixelFormat::IYUV ||
+                decoded.width != kVaapiFixtureWidth || decoded.height != kVaapiFixtureHeight ||
+                decoded.frame_id != expected_frame_id || decoded.content_epoch != 21 ||
+                decoded.pts_usec != expected_pts ||
+                std::strstr(waydisplay::client_video_decoder_backend_name(decoder), "vaapi") == nullptr ||
+                waydisplay::client_video_decoder_hwdecode_failed_auto(decoder))
+            {
+                std::fprintf(stderr,
+                             "VAAPI decoder produced invalid output for codec 0x%x: "
+                             "backend=%s output=%s decoded=%ux%u frame=%llu pts=%llu\n",
+                             codec, waydisplay::client_video_decoder_backend_name(decoder),
+                             output.valid() ? "valid" : "invalid", decoded.width, decoded.height,
+                             static_cast<unsigned long long>(decoded.frame_id),
+                             static_cast<unsigned long long>(decoded.pts_usec));
+                waydisplay::client_video_decoder_destroy(decoder);
+                return VaapiDecodeResult::Failed;
+            }
+
+            produced_output_count++;
+            decoded = ClientDecodedVideoFrame{};
+            if (!waydisplay::client_video_decoder_take_frame(decoder, &decoded))
+            {
+                break;
+            }
+        }
     }
 
-    if (!produced_output)
+    if (produced_output_count == 0)
     {
         std::fprintf(stderr,
                      "VAAPI decoder accepted %u access units but produced no frame for codec 0x%x "
@@ -236,7 +258,7 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
     }
 
     waydisplay::client_video_decoder_destroy(decoder);
-    return produced_output ? VaapiDecodeResult::Passed : VaapiDecodeResult::Failed;
+    return produced_output_count != 0 ? VaapiDecodeResult::Passed : VaapiDecodeResult::Failed;
 }
 
 } // namespace
@@ -255,27 +277,20 @@ int main() {
         return 77;
     }
 
-    const uint32_t failure_codec = (supported & WD_VIDEO_CODEC_H264) != 0
-                                       ? WD_VIDEO_CODEC_H264
-                                       : WD_VIDEO_CODEC_H265;
-    if (!test_missing_device(failure_codec))
+    const std::optional<std::string> device = waydisplay::test::find_vaapi_test_device();
+    if (!device)
     {
-        return 1;
+        std::fprintf(stderr, "SKIP: no usable VAAPI render node\n");
+        return 77;
     }
 
     EnvironmentGuard guard("WAYDISPLAY_VAAPI_DEVICE");
-    const char* configured_device = std::getenv("WAYDISPLAY_VAAPI_DEVICE");
-    AVBufferRef* device = nullptr;
-    const int device_rc = av_hwdevice_ctx_create(
-        &device, AV_HWDEVICE_TYPE_VAAPI,
-        configured_device && *configured_device ? configured_device : nullptr, nullptr, 0);
-    if (device_rc < 0)
+    if (setenv("WAYDISPLAY_VAAPI_DEVICE", device->c_str(), 1) != 0)
     {
-        std::fprintf(stderr, "SKIP: no usable VAAPI decode device\n");
-        av_buffer_unref(&device);
-        return 77;
+        std::perror("setenv WAYDISPLAY_VAAPI_DEVICE");
+        return 1;
     }
-    av_buffer_unref(&device);
+    std::fprintf(stderr, "VAAPI decoder test device: %s\n", device->c_str());
 
     bool attempted = false;
     bool decoded = false;
@@ -307,5 +322,9 @@ int main() {
         std::fprintf(stderr, "SKIP: VAAPI device does not decode an enabled test codec\n");
         return 77;
     }
-    return 0;
+
+    const uint32_t failure_codec = (supported & WD_VIDEO_CODEC_H264) != 0
+                                       ? WD_VIDEO_CODEC_H264
+                                       : WD_VIDEO_CODEC_H265;
+    return test_missing_device(failure_codec) ? 0 : 1;
 }

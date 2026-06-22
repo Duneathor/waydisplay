@@ -13,6 +13,24 @@ cmake --build build-common
 A full build needs SDL3 with Vulkan support for the client and wlroots/Wayland
 development packages for the compositor server.
 
+## Network exposure
+
+The server binds TCP and UDP to `127.0.0.1` by default. This keeps screen,
+clipboard, and input access local unless remote exposure is requested explicitly.
+To listen on a specific IPv4 interface, pass `--listen`:
+
+```sh
+# Local machine only (the default):
+waydisplay_server_wlroots --listen 127.0.0.1 --port 5000 --app foot
+
+# All IPv4 interfaces; use only on a trusted or otherwise protected network:
+waydisplay_server_wlroots --listen 0.0.0.0 --port 5000 --app foot
+```
+
+`--listen` accepts an IPv4 address, not a hostname or an address-and-port pair.
+The connection token associates WayDisplay transport channels; it is not remote
+user authentication or transport encryption.
+
 ## Optional video mode
 
 The video-mode path can use FFmpeg/libavcodec for H.264 and H.265 when the codec

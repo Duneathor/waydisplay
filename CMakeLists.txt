@@ -28,6 +28,8 @@ option(WAYDISPLAY_ENABLE_H264_SERVER_ENCODER "Enable H.264 server encoder backen
 option(WAYDISPLAY_ENABLE_H264_CLIENT_DECODER "Enable H.264 client decoder backends when available" ON)
 option(WAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER "Enable optional VAAPI client hardware decode when available" ON)
 option(WAYDISPLAY_ENABLE_AUDIO "Enable audio capture and playback when dependencies are available" ON)
+option(WAYDISPLAY_REQUIRE_CODEC_TESTS "Fail configuration unless requested codec tests can be built" OFF)
+option(WAYDISPLAY_REQUIRE_WLROOTS_TESTS "Fail configuration unless wlroots tests can be built" OFF)
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -83,6 +85,43 @@ if(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER OR WAYDISPLAY_ENABLE_H264_CLIENT_DECODE
         endif()
     else()
         message(STATUS "Video client decoder backends disabled: libavcodec/libavutil/libswscale not found")
+    endif()
+endif()
+
+if(WAYDISPLAY_REQUIRE_CODEC_TESTS)
+    if(NOT WAYDISPLAY_BUILD_TESTS)
+        message(FATAL_ERROR
+            "WAYDISPLAY_REQUIRE_CODEC_TESTS requires WAYDISPLAY_BUILD_TESTS=ON")
+    endif()
+
+    set(_waydisplay_missing_codec_backends)
+    if(WAYDISPLAY_ENABLE_H265_SERVER_ENCODER AND
+       NOT WAYDISPLAY_HAVE_H265_SERVER_ENCODER)
+        list(APPEND _waydisplay_missing_codec_backends "H.265 server encoder")
+    endif()
+    if(WAYDISPLAY_ENABLE_H264_SERVER_ENCODER AND
+       NOT WAYDISPLAY_HAVE_H264_SERVER_ENCODER)
+        list(APPEND _waydisplay_missing_codec_backends "H.264 server encoder")
+    endif()
+    if(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER AND
+       NOT WAYDISPLAY_HAVE_H265_CLIENT_DECODER)
+        list(APPEND _waydisplay_missing_codec_backends "H.265 client decoder")
+    endif()
+    if(WAYDISPLAY_ENABLE_H264_CLIENT_DECODER AND
+       NOT WAYDISPLAY_HAVE_H264_CLIENT_DECODER)
+        list(APPEND _waydisplay_missing_codec_backends "H.264 client decoder")
+    endif()
+    if(WAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER AND
+       NOT WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER)
+        list(APPEND _waydisplay_missing_codec_backends "VAAPI client decoder")
+    endif()
+
+    if(_waydisplay_missing_codec_backends)
+        list(JOIN _waydisplay_missing_codec_backends ", "
+            _waydisplay_missing_codec_backends_text)
+        message(FATAL_ERROR
+            "Requested codec test backends are unavailable: "
+            "${_waydisplay_missing_codec_backends_text}")
     endif()
 endif()
 
@@ -161,6 +200,23 @@ target_link_libraries(waydisplay_common PUBLIC
     PkgConfig::ZSTD
 )
 
+
+add_library(waydisplay_server_lifecycle STATIC
+    src/server/wd_net_listener.c
+    src/server/wd_process.c
+    src/server/wd_server_cli.c
+)
+
+waydisplay_apply_common_warnings(waydisplay_server_lifecycle)
+
+target_include_directories(waydisplay_server_lifecycle PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(waydisplay_server_lifecycle PUBLIC
+    waydisplay_common
+)
 
 add_library(waydisplay_server_tile_policy STATIC
     src/server/wd_tile_policy.c
@@ -529,6 +585,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
         target_link_libraries(waydisplay_server_wlroots PRIVATE
             waydisplay_wlroots_build_contract
             waydisplay_server_tile_policy
+            waydisplay_server_lifecycle
         )
 
         if(TARGET waydisplay_video_encoder)
@@ -563,6 +620,18 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
     endif()
 endif()
 
+if(WAYDISPLAY_REQUIRE_WLROOTS_TESTS)
+    if(NOT WAYDISPLAY_BUILD_TESTS)
+        message(FATAL_ERROR
+            "WAYDISPLAY_REQUIRE_WLROOTS_TESTS requires WAYDISPLAY_BUILD_TESTS=ON")
+    endif()
+    if(NOT TARGET waydisplay_server_wlroots)
+        message(FATAL_ERROR
+            "WAYDISPLAY_REQUIRE_WLROOTS_TESTS is enabled, but the wlroots "
+            "server and scene tests cannot be built")
+    endif()
+endif()
+
 # -----------------------------------------------------------------------------
 # Legacy monolithic prototype
 # -----------------------------------------------------------------------------
@@ -594,7 +663,7 @@ if(WAYDISPLAY_BUILD_TESTS)
     function(waydisplay_add_test)
         cmake_parse_arguments(WAYDISPLAY_TEST
             ""
-            "NAME;TARGET;SKIP_RETURN_CODE"
+            "NAME;TARGET;SKIP_RETURN_CODE;TIMEOUT;RESOURCE_LOCK"
             "SOURCES;LIBRARIES;INCLUDE_DIRECTORIES;COMPILE_DEFINITIONS;LABELS"
             ${ARGN}
         )
@@ -636,6 +705,19 @@ if(WAYDISPLAY_BUILD_TESTS)
         endif()
 
         add_test(NAME ${WAYDISPLAY_TEST_NAME} COMMAND ${WAYDISPLAY_TEST_TARGET})
+        if(DEFINED WAYDISPLAY_TEST_TIMEOUT AND
+           NOT WAYDISPLAY_TEST_TIMEOUT STREQUAL "")
+            set_tests_properties(${WAYDISPLAY_TEST_NAME} PROPERTIES
+                TIMEOUT ${WAYDISPLAY_TEST_TIMEOUT})
+        else()
+            set_tests_properties(${WAYDISPLAY_TEST_NAME} PROPERTIES
+                TIMEOUT 10)
+        endif()
+        if(DEFINED WAYDISPLAY_TEST_RESOURCE_LOCK AND
+           NOT WAYDISPLAY_TEST_RESOURCE_LOCK STREQUAL "")
+            set_tests_properties(${WAYDISPLAY_TEST_NAME} PROPERTIES
+                RESOURCE_LOCK ${WAYDISPLAY_TEST_RESOURCE_LOCK})
+        endif()
         if(DEFINED WAYDISPLAY_TEST_SKIP_RETURN_CODE AND
            NOT WAYDISPLAY_TEST_SKIP_RETURN_CODE STREQUAL "")
             set_tests_properties(${WAYDISPLAY_TEST_NAME} PROPERTIES
@@ -699,6 +781,35 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.net_run_state
+        TARGET waydisplay_test_net_run_state
+        SOURCES tests/test_net_run_state.c
+        LIBRARIES Threads::Threads
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.net_listener
+        TARGET waydisplay_test_net_listener
+        SOURCES tests/test_net_listener.c
+        LIBRARIES waydisplay_server_lifecycle
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.process_spawn
+        TARGET waydisplay_test_process_spawn
+        SOURCES tests/test_process_spawn.c
+        LIBRARIES waydisplay_server_lifecycle
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.server_cli
+        TARGET waydisplay_test_server_cli
+        SOURCES tests/test_server_cli.c
+        LIBRARIES waydisplay_server_lifecycle
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.dirty_region_scheduler
         TARGET waydisplay_test_dirty_region_scheduler
         SOURCES tests/test_dirty_region_scheduler.cpp
@@ -719,6 +830,32 @@ if(WAYDISPLAY_BUILD_TESTS)
         LIBRARIES waydisplay_server_tile_policy
     )
 
+    if(NOT TARGET PkgConfig::LIBURING)
+        pkg_check_modules(LIBURING QUIET IMPORTED_TARGET liburing)
+    endif()
+    if(TARGET PkgConfig::LIBURING)
+        waydisplay_add_test(
+            NAME waydisplay.async_sender_shutdown
+            TARGET waydisplay_test_async_sender_shutdown
+            SOURCES
+                tests/test_async_sender_shutdown.c
+                src/server/wd_async_tcp.c
+                src/server/wd_async_udp.c
+                src/server/wd_async_udp_accounting.c
+            LIBRARIES
+                waydisplay_common
+                PkgConfig::LIBURING
+            INCLUDE_DIRECTORIES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+            COMPILE_DEFINITIONS
+                WD_ASYNC_TCP_DRAIN_LIMIT=0
+                WD_ASYNC_UDP_DRAIN_LIMIT=0
+            SKIP_RETURN_CODE 77
+            LABELS "network;lifecycle;io_uring"
+        )
+    endif()
+
     waydisplay_add_test(
         NAME waydisplay.audio_ring
         TARGET waydisplay_test_audio_ring
@@ -738,6 +875,7 @@ if(WAYDISPLAY_BUILD_TESTS)
         NAME waydisplay.audio_transition_stress
         TARGET waydisplay_test_audio_transition_stress
         SOURCES tests/test_audio_transition_stress.cpp
+        TIMEOUT 60
         LIBRARIES
             waydisplay_server_tile_policy
             waydisplay_client_render_planning
@@ -780,6 +918,7 @@ if(WAYDISPLAY_BUILD_TESTS)
                 src/server/wd_scene_graph.c
             LIBRARIES waydisplay_wlroots_build_contract
             LABELS "wayland;wlroots;scene"
+            TIMEOUT 30
         )
 
         waydisplay_add_test(
@@ -788,6 +927,7 @@ if(WAYDISPLAY_BUILD_TESTS)
             SOURCES tests/test_wlroots_scene_lifecycle.c
             LIBRARIES waydisplay_wlroots_build_contract
             LABELS "wayland;wlroots;scene;lifecycle"
+            TIMEOUT 30
         )
     endif()
 
@@ -804,6 +944,7 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
     set_tests_properties(waydisplay.wlroots_scene_test_gating PROPERTIES
         LABELS "wayland;wlroots;cmake"
+        TIMEOUT 10
     )
 
     waydisplay_add_test(
@@ -828,6 +969,7 @@ if(WAYDISPLAY_BUILD_TESTS)
         NAME waydisplay.loopback_runtime
         TARGET waydisplay_test_loopback_runtime
         SOURCES tests/test_loopback_runtime.cpp
+        TIMEOUT 60
         LIBRARIES waydisplay_client_tile_reassembly
     )
 
@@ -835,6 +977,7 @@ if(WAYDISPLAY_BUILD_TESTS)
         NAME waydisplay.protocol_fuzz
         TARGET waydisplay_test_protocol_fuzz
         SOURCES tests/test_protocol_fuzz.cpp
+        TIMEOUT 60
         LIBRARIES waydisplay_client_tile_reassembly
     )
 
@@ -842,6 +985,7 @@ if(WAYDISPLAY_BUILD_TESTS)
         NAME waydisplay.reconnect_render_lifecycle
         TARGET waydisplay_test_reconnect_render_lifecycle
         SOURCES tests/test_reconnect_render_lifecycle.cpp
+        TIMEOUT 60
         LIBRARIES
             waydisplay_client_render_planning
             waydisplay_server_tile_policy
@@ -869,6 +1013,7 @@ if(WAYDISPLAY_BUILD_TESTS)
         NAME waydisplay.transition_stress
         TARGET waydisplay_test_transition_stress
         SOURCES tests/test_transition_stress.cpp
+        TIMEOUT 60
         LIBRARIES
             waydisplay_client_config
             waydisplay_client_render_planning
@@ -886,6 +1031,7 @@ if(WAYDISPLAY_BUILD_TESTS)
                 WAYDISPLAY_TEST_HAVE_H264_ENCODER=$<BOOL:${WAYDISPLAY_HAVE_H264_SERVER_ENCODER}>
             SKIP_RETURN_CODE 77
             LABELS "video;codec;encoder"
+            TIMEOUT 30
         )
     endif()
 
@@ -901,6 +1047,7 @@ if(WAYDISPLAY_BUILD_TESTS)
                 WAYDISPLAY_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
             SKIP_RETURN_CODE 77
             LABELS "video;codec;decoder"
+            TIMEOUT 30
         )
     endif()
 
@@ -912,6 +1059,8 @@ if(WAYDISPLAY_BUILD_TESTS)
             LIBRARIES waydisplay_video_encoder
             SKIP_RETURN_CODE 77
             LABELS "video;codec;encoder;hardware;vaapi"
+            TIMEOUT 30
+            RESOURCE_LOCK waydisplay_gpu
         )
     endif()
 
@@ -926,6 +1075,8 @@ if(WAYDISPLAY_BUILD_TESTS)
                 WAYDISPLAY_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
             SKIP_RETURN_CODE 77
             LABELS "video;codec;decoder;hardware;vaapi"
+            TIMEOUT 30
+            RESOURCE_LOCK waydisplay_gpu
         )
     endif()
 
@@ -940,8 +1091,37 @@ if(WAYDISPLAY_BUILD_TESTS)
                 waydisplay_video_decoder
             SKIP_RETURN_CODE 77
             LABELS "video;codec;roundtrip"
+            TIMEOUT 30
         )
     endif()
+
+    foreach(_waydisplay_codec_test IN ITEMS
+            video_encoder
+            video_decoder
+            video_encoder_vaapi
+            video_decoder_vaapi
+            video_codec_roundtrip)
+        if(TARGET waydisplay_test_${_waydisplay_codec_test})
+            set(_waydisplay_expect_${_waydisplay_codec_test} TRUE)
+        else()
+            set(_waydisplay_expect_${_waydisplay_codec_test} FALSE)
+        endif()
+    endforeach()
+    add_test(
+        NAME waydisplay.codec_test_gating
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_TEST_FILE=${CMAKE_BINARY_DIR}/CTestTestfile.cmake
+            -DWAYDISPLAY_EXPECT_VIDEO_ENCODER=${_waydisplay_expect_video_encoder}
+            -DWAYDISPLAY_EXPECT_VIDEO_DECODER=${_waydisplay_expect_video_decoder}
+            -DWAYDISPLAY_EXPECT_VIDEO_ENCODER_VAAPI=${_waydisplay_expect_video_encoder_vaapi}
+            -DWAYDISPLAY_EXPECT_VIDEO_DECODER_VAAPI=${_waydisplay_expect_video_decoder_vaapi}
+            -DWAYDISPLAY_EXPECT_VIDEO_CODEC_ROUNDTRIP=${_waydisplay_expect_video_codec_roundtrip}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_codec_test_gating.cmake
+    )
+    set_tests_properties(waydisplay.codec_test_gating PROPERTIES
+        LABELS "video;codec;cmake"
+        TIMEOUT 10
+    )
 
     get_property(WAYDISPLAY_TEST_EXECUTABLES GLOBAL PROPERTY
         WAYDISPLAY_TEST_TARGETS)

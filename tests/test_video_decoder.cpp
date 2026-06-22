@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -80,6 +81,40 @@ std::vector<uint8_t> read_fixture(const char* name) {
                                 std::istreambuf_iterator<char>());
 }
 
+struct FixtureAccessUnit {
+    size_t size = 0;
+    uint64_t pts_usec = 0;
+};
+
+std::vector<FixtureAccessUnit> read_manifest(const char* name) {
+    const std::string path = std::string(WAYDISPLAY_TEST_FIXTURE_DIR) + "/" + name;
+    std::ifstream input(path);
+    if (!input)
+    {
+        std::fprintf(stderr, "failed to open video fixture manifest: %s\n", path.c_str());
+        return {};
+    }
+
+    std::vector<FixtureAccessUnit> access_units;
+    std::string line;
+    while (std::getline(input, line))
+    {
+        if (line.empty() || line.front() == '#')
+        {
+            continue;
+        }
+        std::istringstream fields(line);
+        FixtureAccessUnit access_unit{};
+        if (!(fields >> access_unit.size >> access_unit.pts_usec) || access_unit.size == 0)
+        {
+            std::fprintf(stderr, "invalid video fixture manifest line: %s\n", line.c_str());
+            return {};
+        }
+        access_units.push_back(access_unit);
+    }
+    return access_units;
+}
+
 bool plane_has_variation(const uint8_t* data, size_t size) {
     if (!data || size < 2)
     {
@@ -121,6 +156,8 @@ bool test_invalid_api() {
 
     ClientVideoFrameBuffer output{};
     CHECK(!waydisplay::client_video_decoder_swap_output_frame(decoder, output));
+    CHECK(!waydisplay::client_video_decoder_take_frame(decoder, &frame));
+    CHECK(frame.format == ClientVideoPixelFormat::None);
     waydisplay::client_video_decoder_reset(decoder);
     waydisplay::client_video_decoder_reset(nullptr);
     waydisplay::client_video_decoder_destroy(decoder);
@@ -196,9 +233,114 @@ bool test_codec(uint32_t codec, const char* fixture_name) {
     CHECK(plane_has_variation(output.bytes.data() + output.u_offset, uv_size) ||
           plane_has_variation(output.bytes.data() + output.v_offset, uv_size));
     CHECK(!waydisplay::client_video_decoder_swap_output_frame(decoder, output));
+    CHECK(!waydisplay::client_video_decoder_take_frame(decoder, &frame));
 
     waydisplay::client_video_decoder_reset(decoder);
     CHECK(!waydisplay::client_video_decoder_decode(decoder, packet, nullptr));
+    waydisplay::client_video_decoder_destroy(decoder);
+    return true;
+}
+
+bool collect_decoded_frames(ClientVideoDecoder* decoder,
+                            ClientDecodedVideoFrame frame,
+                            std::vector<ClientDecodedVideoFrame>& frames) {
+    for (;;)
+    {
+        if (frame.format == ClientVideoPixelFormat::None)
+        {
+            return true;
+        }
+
+        ClientVideoFrameBuffer output{};
+        CHECK(waydisplay::client_video_decoder_swap_output_frame(decoder, output));
+        CHECK(output.valid());
+        CHECK(output.width == frame.width);
+        CHECK(output.height == frame.height);
+        frames.push_back(frame);
+
+        frame = ClientDecodedVideoFrame{};
+        if (!waydisplay::client_video_decoder_take_frame(decoder, &frame))
+        {
+            return true;
+        }
+    }
+}
+
+bool test_delayed_codec(uint32_t codec, const char* fixture_name,
+                        const char* manifest_name) {
+    const std::vector<uint8_t> fixture = read_fixture(fixture_name);
+    const std::vector<FixtureAccessUnit> access_units = read_manifest(manifest_name);
+    CHECK(!fixture.empty());
+    CHECK(access_units.size() >= 8);
+
+    size_t fixture_size = 0;
+    for (const FixtureAccessUnit& access_unit : access_units)
+    {
+        CHECK(access_unit.size <= fixture.size() - fixture_size);
+        fixture_size += access_unit.size;
+    }
+    CHECK(fixture_size == fixture.size());
+
+    ClientVideoDecoder* decoder = nullptr;
+    CHECK(waydisplay::client_video_decoder_create(&decoder));
+
+    ClientVideoDecoderConfig config{};
+    config.session_id = 17;
+    config.connection_token = UINT64_C(0x1718191a1b1c1d1e);
+    config.content_epoch = 23;
+    config.width = 64;
+    config.height = 48;
+    config.coded_width = 64;
+    config.coded_height = 48;
+    config.target_fps = 4;
+    config.codec = codec;
+    config.hwdecode_mode = WD_CLIENT_VIDEO_HWDECODE_OFF;
+    CHECK(waydisplay::client_video_decoder_configure(decoder, config));
+
+    constexpr uint64_t kPtsBase = UINT64_C(4000000);
+    constexpr uint64_t kFrameDurationUsec = UINT64_C(250000);
+    std::vector<ClientDecodedVideoFrame> decoded_frames;
+    size_t offset = 0;
+    for (size_t index = 0; index < access_units.size(); ++index)
+    {
+        const FixtureAccessUnit& access_unit = access_units[index];
+        ClientVideoPacket packet{};
+        packet.header.session_id = config.session_id;
+        packet.header.connection_token = config.connection_token;
+        packet.header.content_epoch = config.content_epoch;
+        packet.header.codec = codec;
+        packet.header.flags = index == 0
+                                  ? WD_VIDEO_FRAME_CONFIG | WD_VIDEO_FRAME_KEYFRAME
+                                  : 0;
+        packet.header.frame_id = access_unit.pts_usec / kFrameDurationUsec + 1u;
+        packet.header.pts_usec = kPtsBase + access_unit.pts_usec;
+        packet.header.width = config.width;
+        packet.header.height = config.height;
+        packet.header.coded_width = config.coded_width;
+        packet.header.coded_height = config.coded_height;
+        packet.header.data_size = static_cast<uint32_t>(access_unit.size);
+        packet.data = fixture.data() + offset;
+        offset += access_unit.size;
+
+        ClientDecodedVideoFrame frame{};
+        CHECK(waydisplay::client_video_decoder_decode(decoder, packet, &frame));
+        CHECK(collect_decoded_frames(decoder, frame, decoded_frames));
+    }
+
+    CHECK(decoded_frames.size() >= 8);
+    for (size_t index = 0; index < decoded_frames.size(); ++index)
+    {
+        const ClientDecodedVideoFrame& frame = decoded_frames[index];
+        CHECK(frame.format == ClientVideoPixelFormat::IYUV);
+        CHECK(frame.width == config.width);
+        CHECK(frame.height == config.height);
+        CHECK(frame.content_epoch == config.content_epoch);
+        CHECK(frame.frame_id == index + 1u);
+        CHECK(frame.pts_usec == kPtsBase + index * kFrameDurationUsec);
+    }
+    ClientDecodedVideoFrame frame{};
+    CHECK(!waydisplay::client_video_decoder_take_frame(decoder, &frame));
+
     waydisplay::client_video_decoder_destroy(decoder);
     return true;
 }
@@ -242,8 +384,20 @@ int main() {
     {
         return 1;
     }
+    if ((supported & WD_VIDEO_CODEC_H264) != 0 &&
+        !test_delayed_codec(WD_VIDEO_CODEC_H264, "video_delayed_64x48.h264",
+                            "video_delayed_64x48.h264.manifest"))
+    {
+        return 1;
+    }
     if ((supported & WD_VIDEO_CODEC_H265) != 0 &&
         !test_codec(WD_VIDEO_CODEC_H265, "video_keyframe_64x48.h265"))
+    {
+        return 1;
+    }
+    if ((supported & WD_VIDEO_CODEC_H265) != 0 &&
+        !test_delayed_codec(WD_VIDEO_CODEC_H265, "video_delayed_64x48.h265",
+                            "video_delayed_64x48.h265.manifest"))
     {
         return 1;
     }

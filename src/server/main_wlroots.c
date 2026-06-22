@@ -1,5 +1,8 @@
 #include "wd_server.h"
 #include "wd_tile_policy.h"
+#include "wd_server_cli.h"
+
+#include <arpa/inet.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -9,7 +12,7 @@
 static void usage(const char* argv0) {
     fprintf(stderr,
             "Usage:\n"
-            "  %s [--port 5000] [--scale 1.0] [--size 1664x1024] [--app <command>] "
+            "  %s [--listen 127.0.0.1] [--port 5000] [--scale 1.0] [--size 1664x1024] [--app <command>] "
             "[--tile-size 128x64|64x64|32x32|16x16] [--tile-compression auto|off|attempt|force] [--refresh-hz 60] "
             "[--renderer auto|gles2|vulkan|pixman] [--video-encoder auto|software|vaapi] [--vaapi-device /dev/dri/renderD128] "
             "[--xwayland|--no-xwayland] [--xdg-dialog|--no-xdg-dialog]\n\n"
@@ -24,6 +27,7 @@ static void usage(const char* argv0) {
 int main(int argc, char** argv) {
     const char* app_cmd         = "foot";
     uint16_t    tcp_port        = WD_DEFAULT_TCP_PORT;
+    struct in_addr listen_address = {.s_addr = htonl(INADDR_LOOPBACK)};
     double      output_scale    = 1.0;
     uint32_t    display_width   = WD_DISPLAY_WIDTH;
     uint32_t    display_height  = WD_DISPLAY_HEIGHT;
@@ -49,6 +53,22 @@ int main(int argc, char** argv) {
 
             app_cmd = argv[++i];
         }
+        else if (strcmp(argv[i], "--listen") == 0)
+        {
+            if (i + 1 >= argc)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+
+            if (!wd_server_cli_parse_ipv4(argv[++i], &listen_address))
+            {
+                fprintf(stderr, "Invalid --listen value: %s; expected an IPv4 address\n",
+                        argv[i]);
+                usage(argv[0]);
+                return 1;
+            }
+        }
         else if (strcmp(argv[i], "--port") == 0)
         {
             if (i + 1 >= argc)
@@ -57,7 +77,13 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            tcp_port = (uint16_t)atoi(argv[++i]);
+            if (!wd_server_cli_parse_u16(argv[++i], 0, UINT16_MAX, &tcp_port))
+            {
+                fprintf(stderr, "Invalid --port value: %s; expected 0 through %u\n",
+                        argv[i], UINT16_MAX);
+                usage(argv[0]);
+                return 1;
+            }
         }
         else if (strcmp(argv[i], "--size") == 0)
         {
@@ -67,10 +93,10 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            unsigned int width  = 0;
-            unsigned int height = 0;
-            if (sscanf(argv[++i], "%ux%u", &width, &height) != 2 || width == 0 || height == 0 ||
-                width > WD_MAX_RENDER_WIDTH || height > WD_MAX_RENDER_HEIGHT)
+            uint32_t width  = 0;
+            uint32_t height = 0;
+            if (!wd_server_cli_parse_size(argv[++i], WD_MAX_RENDER_WIDTH,
+                                          WD_MAX_RENDER_HEIGHT, &width, &height))
             {
                 fprintf(stderr, "Invalid --size value: %s; maximum render size is %ux%u\n",
                         argv[i], WD_MAX_RENDER_WIDTH, WD_MAX_RENDER_HEIGHT);
@@ -78,10 +104,8 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            const uint32_t tiles_x = (width + tile_width - 1u) / tile_width;
-            const uint32_t tiles_y = (height + tile_height - 1u) / tile_height;
-
-            if (tiles_x == 0 || tiles_y == 0 || tiles_x * tiles_y > UINT16_MAX)
+            if (!wd_server_cli_tile_grid_fits(width, height, tile_width, tile_height,
+                                               UINT16_MAX))
             {
                 fprintf(stderr, "Invalid --size value: %s creates too many tiles; max is %u tiles\n", argv[i], UINT16_MAX);
                 usage(argv[0]);
@@ -99,10 +123,10 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            unsigned int width  = 0;
-            unsigned int height = 0;
-            if (sscanf(argv[++i], "%ux%u", &width, &height) != 2 || width == 0 || height == 0 || width > UINT16_MAX ||
-                height > UINT16_MAX)
+            uint32_t width  = 0;
+            uint32_t height = 0;
+            if (!wd_server_cli_parse_size(argv[++i], UINT16_MAX, UINT16_MAX,
+                                          &width, &height))
             {
                 fprintf(stderr, "Invalid --tile-size value: %s\n", argv[i]);
                 usage(argv[0]);
@@ -126,9 +150,9 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            const uint32_t tiles_x = (display_width + width - 1u) / width;
-            const uint32_t tiles_y = (display_height + height - 1u) / height;
-            if (tiles_x == 0 || tiles_y == 0 || tiles_x * tiles_y > UINT16_MAX)
+            if (!wd_server_cli_tile_grid_fits(display_width, display_height,
+                                               (uint16_t)width, (uint16_t)height,
+                                               UINT16_MAX))
             {
                 fprintf(stderr, "Invalid --tile-size value: %s creates too many tiles for current --size; max is %u tiles\n", argv[i],
                         UINT16_MAX);
@@ -169,10 +193,10 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            output_scale = atof(argv[++i]);
-            if (output_scale < 0.25 || output_scale > 8.0)
+            if (!wd_server_cli_parse_scale(argv[++i], 0.25, 8.0, &output_scale))
             {
-                fprintf(stderr, "Invalid --scale value: %.3f\n", output_scale);
+                fprintf(stderr, "Invalid --scale value: %s; expected 0.25 through 8.0\n",
+                        argv[i]);
                 usage(argv[0]);
                 return 1;
             }
@@ -185,14 +209,12 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            unsigned long refresh_hz = strtoul(argv[++i], NULL, 10);
-            if (refresh_hz == 0 || refresh_hz > 1000)
+            if (!wd_server_cli_parse_u16(argv[++i], 1, 1000, &output_refresh_hz))
             {
                 fprintf(stderr, "Invalid --refresh-hz value: %s; expected 1 through 1000\n", argv[i]);
                 usage(argv[0]);
                 return 1;
             }
-            output_refresh_hz = (uint16_t)refresh_hz;
         }
         else if (strcmp(argv[i], "--renderer") == 0)
         {
@@ -273,9 +295,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    const uint32_t final_tiles_x = (display_width + tile_width - 1u) / tile_width;
-    const uint32_t final_tiles_y = (display_height + tile_height - 1u) / tile_height;
-    if (final_tiles_x == 0 || final_tiles_y == 0 || final_tiles_x * final_tiles_y > UINT16_MAX)
+    if (!wd_server_cli_tile_grid_fits(display_width, display_height, tile_width,
+                                      tile_height, UINT16_MAX))
     {
         fprintf(stderr, "Invalid size/tile-size combination creates too many tiles; max is %u tiles\n", UINT16_MAX);
         usage(argv[0]);
@@ -297,7 +318,8 @@ int main(int argc, char** argv) {
 
     struct wd_server server;
 
-    if (!wd_server_init(&server, tcp_port, app_cmd, output_scale, output_refresh_hz,
+    if (!wd_server_init(&server, tcp_port, listen_address, app_cmd, output_scale,
+                        output_refresh_hz,
                         display_width, display_height, tile_width, tile_height, enable_xwayland,
                         enable_xdg_dialog, video_encoder_backend, vaapi_device))
     {

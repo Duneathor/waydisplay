@@ -28,6 +28,9 @@
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_protocol.h"
+#include "wd_net_run_state.h"
+#include "wd_net_listener.h"
+#include "wd_process.h"
 
 struct wd_async_tcp_sender;
 struct wd_async_udp_sender;
@@ -574,10 +577,21 @@ struct wd_queued_pointer_event {
     uint64_t                        server_rx_timestamp_ns;
 };
 
+enum wd_net_startup_state {
+    WD_NET_STARTUP_PENDING = 0,
+    WD_NET_STARTUP_READY,
+    WD_NET_STARTUP_FAILED,
+};
+
 struct wd_net_state {
     pthread_mutex_t lock;
     pthread_cond_t  display_resize_cond;
+    pthread_cond_t  startup_cond;
     pthread_cond_t  encoder_idle_cond;
+
+    enum wd_net_startup_state startup_state;
+    enum wd_net_listener_stage startup_failed_stage;
+    int startup_error;
 
     bool     display_resize_pending;
     uint64_t display_resize_request_serial;
@@ -586,8 +600,8 @@ struct wd_net_state {
     uint32_t display_resize_height;
     bool     display_resize_result;
 
-    bool running;
-    bool client_connected;
+    struct wd_net_run_state run_state;
+    bool                    client_connected;
     uint16_t udp_payload_target;
 
     uint64_t link_rtt_ns;
@@ -671,8 +685,9 @@ struct wd_net_state {
     int audio_tcp_fd;
     int udp_fd;
 
-    uint16_t tcp_port;
-    uint16_t udp_port;
+    struct in_addr listen_address;
+    uint16_t       tcp_port;
+    uint16_t       udp_port;
     uint8_t  session_id;
     uint64_t connection_token;
     uint64_t connection_epoch;
@@ -859,16 +874,18 @@ struct wd_server {
     bool      framebuffer_content_valid;
     uint64_t  framebuffer_generation;
 
-    const char* socket_name;
-    const char* startup_command;
-    const char* video_encoder_backend;
+    const char*               socket_name;
+    const char*               startup_command;
+    struct wd_spawned_process startup_process;
+    const char*               video_encoder_backend;
     const char* vaapi_device;
 
     struct wd_net_state net;
 };
 
 /* wd_server.c */
-bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale,
+bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr listen_address,
+                    const char* app_cmd, double output_scale,
                     uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height,
                     uint16_t tile_width, uint16_t tile_height, bool enable_xwayland,
                     bool enable_xdg_dialog, const char* video_encoder_backend, const char* vaapi_device);
@@ -993,7 +1010,9 @@ void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expe
 void wd_clipboard_drain_and_apply(struct wd_server* server);
 
 /* wd_server_net.c */
-bool  wd_net_init(struct wd_server* server, uint16_t tcp_port);
+bool  wd_net_init(struct wd_server* server, uint16_t tcp_port,
+                  struct in_addr listen_address);
+bool  wd_net_wait_until_ready(struct wd_server* server);
 void  wd_net_destroy(struct wd_server* server);
 void* wd_net_thread_main(void* arg);
 

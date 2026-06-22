@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static struct wd_server*     g_server_for_signal   = NULL;
@@ -82,6 +83,68 @@ static void handle_signal(int signo) {
     g_terminate_requested = 1;
 }
 
+static void server_log_startup_process_status(const char* prefix, int status) {
+    if (WIFEXITED(status))
+    {
+        WD_LOG_INFO("%s: exit_status=%d", prefix, WEXITSTATUS(status));
+    }
+    else if (WIFSIGNALED(status))
+    {
+        WD_LOG_INFO("%s: signal=%d", prefix, WTERMSIG(status));
+    }
+    else
+    {
+        WD_LOG_INFO("%s: status=0x%x", prefix, status);
+    }
+}
+
+static void server_reap_startup_process(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    int status = 0;
+    int error_code = 0;
+    enum wd_process_reap_result result = wd_spawned_process_reap_nonblocking(
+        &server->startup_process, &status, &error_code);
+    if (result == WD_PROCESS_REAP_EXITED)
+    {
+        server_log_startup_process_status("startup command exited", status);
+    }
+    else if (result == WD_PROCESS_REAP_ERROR)
+    {
+        WD_LOG_ERROR("failed to reap startup command: %s", strerror(error_code));
+    }
+
+    if (server->startup_process.pid <= 0 &&
+        !wd_spawned_process_group_alive(&server->startup_process))
+    {
+        server->startup_process.process_group = -1;
+    }
+}
+
+static void server_terminate_startup_process(struct wd_server* server) {
+    if (!server || server->startup_process.process_group <= 0)
+    {
+        return;
+    }
+
+    int status = 0;
+    int error_code = 0;
+    if (!wd_spawned_process_terminate_group(&server->startup_process, 1000u, 1000u,
+                                            &status, &error_code))
+    {
+        WD_LOG_ERROR("failed to terminate startup process group: %s", strerror(error_code));
+        return;
+    }
+
+    if (status != 0)
+    {
+        server_log_startup_process_status("startup command stopped", status);
+    }
+}
+
 static bool launch_startup_command(struct wd_server* server) {
     if (!server->startup_command || server->startup_command[0] == '\0')
     {
@@ -98,82 +161,68 @@ static bool launch_startup_command(struct wd_server* server) {
         return false;
     }
 
-    pid_t pid = fork();
-    if (pid < 0)
+    struct wd_process_env_change environment[20];
+    size_t environment_count = 0;
+#define WD_ADD_ENV(name_value, value_value, action_value)                                           \
+    do                                                                                              \
+    {                                                                                               \
+        environment[environment_count++] = (struct wd_process_env_change){                          \
+            .name = (name_value), .value = (value_value), .action = (action_value)};                \
+    } while (0)
+
+    WD_ADD_ENV("WAYLAND_DISPLAY", server->socket_name, WD_PROCESS_ENV_SET);
+    WD_ADD_ENV("XDG_SESSION_TYPE", "wayland", WD_PROCESS_ENV_SET);
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    if (server->xwayland && server->xwayland->display_name)
     {
+        WD_ADD_ENV("DISPLAY", server->xwayland->display_name, WD_PROCESS_ENV_SET);
+    }
+    else
+    {
+        WD_ADD_ENV("DISPLAY", NULL, WD_PROCESS_ENV_UNSET);
+    }
+#else
+    WD_ADD_ENV("DISPLAY", NULL, WD_PROCESS_ENV_UNSET);
+#endif
+    WD_ADD_ENV("WAYLAND_SOCKET", NULL, WD_PROCESS_ENV_UNSET);
+    WD_ADD_ENV("GDK_BACKEND", "wayland", WD_PROCESS_ENV_SET);
+    WD_ADD_ENV("QT_QPA_PLATFORM", "wayland", WD_PROCESS_ENV_SET);
+    WD_ADD_ENV("SDL_VIDEODRIVER", "wayland", WD_PROCESS_ENV_SET);
+    WD_ADD_ENV("CLUTTER_BACKEND", "wayland", WD_PROCESS_ENV_SET);
+    WD_ADD_ENV("MOZ_ENABLE_WAYLAND", "1", WD_PROCESS_ENV_SET);
+
+    if (audio_routing.enabled)
+    {
+        WD_ADD_ENV("PULSE_SINK", audio_routing.pulse_sink, WD_PROCESS_ENV_SET);
+        WD_ADD_ENV("PULSE_PROP", audio_routing.pulse_props, WD_PROCESS_ENV_SET);
+        WD_ADD_ENV("PIPEWIRE_NODE", audio_routing.pipewire_target, WD_PROCESS_ENV_SET);
+        WD_ADD_ENV("PIPEWIRE_PROPS", audio_routing.pipewire_props, WD_PROCESS_ENV_SET);
+    }
+    else
+    {
+        WD_ADD_ENV("PULSE_SINK", NULL, WD_PROCESS_ENV_UNSET);
+        WD_ADD_ENV("PULSE_PROP", NULL, WD_PROCESS_ENV_UNSET);
+        WD_ADD_ENV("PIPEWIRE_NODE", NULL, WD_PROCESS_ENV_UNSET);
+        WD_ADD_ENV("PIPEWIRE_PROPS", NULL, WD_PROCESS_ENV_UNSET);
+    }
+    WD_ADD_ENV("PIPEWIRE_ALSA", NULL, WD_PROCESS_ENV_UNSET);
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    WD_ADD_ENV("_JAVA_AWT_WM_NONREPARENTING", "1", WD_PROCESS_ENV_SET_IF_ABSENT);
+#endif
+#undef WD_ADD_ENV
+
+    int spawn_error = 0;
+    if (!wd_spawn_shell_command(&server->startup_process, server->startup_command,
+                                environment, environment_count, &spawn_error))
+    {
+        WD_LOG_ERROR("failed to launch app command: %s", strerror(spawn_error));
         return false;
     }
 
-    if (pid == 0)
-    {
-        setenv("WAYLAND_DISPLAY", server->socket_name, 1);
-        setenv("XDG_SESSION_TYPE", "wayland", 1);
-
-#if WAYDISPLAY_ENABLE_XWAYLAND
-        if (server->xwayland && server->xwayland->display_name)
-        {
-            setenv("DISPLAY", server->xwayland->display_name, 1);
-        }
-        else
-        {
-            unsetenv("DISPLAY");
-        }
-#else
-        unsetenv("DISPLAY");
-#endif
-        unsetenv("WAYLAND_SOCKET");
-
-        setenv("GDK_BACKEND", "wayland", 1);
-        setenv("QT_QPA_PLATFORM", "wayland", 1);
-        setenv("SDL_VIDEODRIVER", "wayland", 1);
-        setenv("CLUTTER_BACKEND", "wayland", 1);
-        setenv("MOZ_ENABLE_WAYLAND", "1", 1);
-
-        /* Route only the launched application tree to WayDisplay's private
-         * PipeWire sink. This prevents local playback on the server and, when
-         * server and client share a host, prevents the client output from
-         * being captured back into the transport as a feedback loop. */
-        /* Never leak routing inherited by the compositor into the child.
-         * The generated values select the private node and make target failure
-         * terminal instead of falling back to the machine's physical sink. */
-        unsetenv("PULSE_SINK");
-        unsetenv("PULSE_PROP");
-        unsetenv("PIPEWIRE_NODE");
-        unsetenv("PIPEWIRE_PROPS");
-        unsetenv("PIPEWIRE_ALSA");
-
-        if (audio_routing.enabled)
-        {
-            setenv("PULSE_SINK", audio_routing.pulse_sink, 1);
-            setenv("PULSE_PROP", audio_routing.pulse_props, 1);
-            setenv("PIPEWIRE_NODE", audio_routing.pipewire_target, 1);
-            setenv("PIPEWIRE_PROPS", audio_routing.pipewire_props, 1);
-        }
-
-#if WAYDISPLAY_ENABLE_XWAYLAND
-        /*
-         * Java AWT/Swing uses the window-manager identity to decide whether it
-         * should use reparenting-window assumptions. wlroots compositors,
-         * including Sway, commonly require this override for JetBrains, Vivado,
-         * Logisim/Geogebra and similar Xwayland Java applications; otherwise
-         * the top-level X11 window can map successfully while the client keeps
-         * painting only a blank/white surface.
-         *
-         * Set it for WayDisplay-launched processes so shells launched via
-         * --app inherit the safer Xwayland behavior. Existing user-provided
-         * values are preserved.
-         */
-        setenv("_JAVA_AWT_WM_NONREPARENTING", "1", 0);
-#endif
-
-        execl("/bin/sh", "/bin/sh", "-c", server->startup_command, (char*)NULL);
-
-        _exit(127);
-    }
-
-    WD_LOG_INFO("launched app pid=%d command=%s audio_sink=%s "
+    WD_LOG_INFO("launched app pid=%d process_group=%d command=%s audio_sink=%s "
                 "pipewire_target=%s audio_scope=%s fallback=%s",
-                pid, server->startup_command,
+                server->startup_process.pid, server->startup_process.process_group,
+                server->startup_command,
                 audio_routing.enabled ? audio_routing.pulse_sink : "system-default",
                 audio_routing.enabled ? audio_routing.pipewire_target : "system-default",
                 audio_routing.enabled ? audio_routing.scope : "none",
@@ -181,7 +230,6 @@ static bool launch_startup_command(struct wd_server* server) {
 
     return true;
 }
-
 
 static void server_process_pending_display_resize(struct wd_server* server) {
     if (!server)
@@ -457,6 +505,8 @@ static int server_frame_timer(void* data) {
     {
         return 0;
     }
+
+    server_reap_startup_process(server);
 
     if (g_terminate_requested)
     {
@@ -1007,12 +1057,14 @@ bool wd_server_request_display_size(struct wd_server* server, uint32_t width, ui
     net->display_resize_height = height;
     net->display_resize_pending = true;
 
-    while (net->running && net->display_resize_completed_serial < serial)
+    while (wd_net_run_state_is_running(&net->run_state) &&
+           net->display_resize_completed_serial < serial)
     {
         pthread_cond_wait(&net->display_resize_cond, &net->lock);
     }
 
-    bool ok = net->running && net->display_resize_completed_serial >= serial && net->display_resize_result;
+    bool ok = wd_net_run_state_is_running(&net->run_state) &&
+              net->display_resize_completed_serial >= serial && net->display_resize_result;
 
     pthread_mutex_unlock(&net->lock);
 
@@ -1355,11 +1407,13 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     return true;
 }
 
-bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app_cmd, double output_scale,
-                    uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height,
+bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr listen_address,
+                    const char* app_cmd, double output_scale, uint16_t output_refresh_hz,
+                    uint32_t display_width, uint32_t display_height,
                     uint16_t tile_width, uint16_t tile_height, bool enable_xwayland,
                     bool enable_xdg_dialog, const char* video_encoder_backend, const char* vaapi_device) {
     memset(server, 0, sizeof(*server));
+    wd_spawned_process_init(&server->startup_process);
     server->input_wakeup_fd = -1;
 
     wl_list_init(&server->views);
@@ -1411,7 +1465,7 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, const char* app
         return false;
     }
 
-    if (!wd_net_init(server, tcp_port))
+    if (!wd_net_init(server, tcp_port, listen_address))
     {
         return false;
     }
@@ -1485,6 +1539,8 @@ void wd_server_destroy(struct wd_server* server) {
     {
         return;
     }
+
+    server_terminate_startup_process(server);
 
     if (server->frame_timer)
     {
@@ -1585,6 +1641,28 @@ void wd_server_destroy(struct wd_server* server) {
     server->framebuffer_content_valid = false;
 }
 
+static void server_request_network_stop(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    pthread_mutex_lock(&server->net.lock);
+    wd_net_run_state_set(&server->net.run_state, false);
+    pthread_cond_broadcast(&server->net.display_resize_cond);
+    pthread_cond_broadcast(&server->net.startup_cond);
+    pthread_mutex_unlock(&server->net.lock);
+
+    if (server->net.listen_fd >= 0)
+    {
+        shutdown(server->net.listen_fd, SHUT_RDWR);
+    }
+    if (server->net.tcp_fd >= 0)
+    {
+        shutdown(server->net.tcp_fd, SHUT_RDWR);
+    }
+}
+
 int wd_server_run(struct wd_server* server) {
 #if WAYDISPLAY_ENABLE_LOGGING && WAYDISPLAY_ENABLE_DEBUG_LOGGING
     wlr_log_init(WLR_DEBUG, NULL);
@@ -1606,34 +1684,24 @@ int wd_server_run(struct wd_server* server) {
         return 1;
     }
 
+    if (!wd_net_wait_until_ready(server))
+    {
+        pthread_join(net_thread, NULL);
+        return 1;
+    }
+
     if (!launch_startup_command(server))
     {
-        pthread_mutex_lock(&server->net.lock);
-        server->net.running = false;
-        pthread_cond_broadcast(&server->net.display_resize_cond);
-        pthread_mutex_unlock(&server->net.lock);
+        server_request_network_stop(server);
         pthread_join(net_thread, NULL);
         return 1;
     }
 
     wl_display_run(server->display);
 
-    pthread_mutex_lock(&server->net.lock);
-    server->net.running = false;
-    pthread_cond_broadcast(&server->net.display_resize_cond);
-    pthread_mutex_unlock(&server->net.lock);
-
-    if (server->net.listen_fd >= 0)
-    {
-        shutdown(server->net.listen_fd, SHUT_RDWR);
-    }
-
-    if (server->net.tcp_fd >= 0)
-    {
-        shutdown(server->net.tcp_fd, SHUT_RDWR);
-    }
-
+    server_request_network_stop(server);
     pthread_join(net_thread, NULL);
+    server_terminate_startup_process(server);
 
     return 0;
 }

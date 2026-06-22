@@ -13,8 +13,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#ifndef WD_ASYNC_UDP_DRAIN_LIMIT
 #define WD_ASYNC_UDP_DRAIN_LIMIT 250u
+#endif
+#ifndef WD_ASYNC_UDP_DRAIN_SLEEP_US
 #define WD_ASYNC_UDP_DRAIN_SLEEP_US 1000u
+#endif
 #define WD_ASYNC_UDP_PENDING_MULTIPLIER 4u
 #define WD_ASYNC_UDP_PENDING_MIN_PACKETS 256u
 #define WD_ASYNC_UDP_PENDING_MAX_PACKETS 4096u
@@ -426,7 +430,8 @@ bool wd_async_udp_sender_drain(struct wd_async_udp_sender* sender) {
         return true;
     }
 
-    for (uint32_t i = 0; sender->pending_head && i < WD_ASYNC_UDP_DRAIN_LIMIT; ++i)
+    const uint32_t drain_limit = WD_ASYNC_UDP_DRAIN_LIMIT;
+    for (uint32_t i = 0; sender->pending_head && i < drain_limit; ++i)
     {
         (void)wd_async_udp_sender_flush(sender);
         wd_async_udp_sender_reap(sender);
@@ -448,6 +453,33 @@ bool wd_async_udp_sender_drain(struct wd_async_udp_sender* sender) {
     return sender->pending_head == NULL;
 }
 
+static void wd_async_udp_sender_fail_all_after_ring_exit(struct wd_async_udp_sender* sender) {
+    if (!sender || sender->ring_ready)
+    {
+        return;
+    }
+
+    (void)wd_async_udp_accounting_cancel_prepared(&sender->accounting);
+    struct wd_async_udp_packet* packet = sender->pending_head;
+    while (packet)
+    {
+        struct wd_async_udp_packet* next = packet->next;
+        if (packet->submitted)
+        {
+            (void)wd_async_udp_accounting_complete(&sender->accounting, false);
+        }
+        if (packet->completion)
+        {
+            packet->completion(packet->completion_data, false);
+        }
+        wd_async_udp_pending_remove(sender, packet);
+        wd_async_udp_packet_release(sender, packet);
+        packet = next;
+    }
+
+    sender->accounting.submitted = 0;
+}
+
 void wd_async_udp_sender_destroy(struct wd_async_udp_sender* sender) {
     if (!sender)
     {
@@ -456,10 +488,17 @@ void wd_async_udp_sender_destroy(struct wd_async_udp_sender* sender) {
 
     if (!wd_async_udp_sender_drain(sender))
     {
-        WD_LOG_WARN("async UDP sender destroy timed out; leaking pending ring buffers safely");
-        return;
+        WD_LOG_WARN("async UDP sender destroy timed out; forcing io_uring teardown");
     }
-    wd_async_udp_sender_cancel_unsubmitted_after_ring_exit(sender);
+
+    if (sender->ring_ready)
+    {
+        /* queue_exit cancels submitted sends before packet storage is released. */
+        io_uring_queue_exit(&sender->ring);
+        sender->ring_ready = false;
+    }
+
+    wd_async_udp_sender_fail_all_after_ring_exit(sender);
 
     struct wd_async_udp_packet* packet = sender->free_packets;
     while (packet)
@@ -469,11 +508,6 @@ void wd_async_udp_sender_destroy(struct wd_async_udp_sender* sender) {
         packet = next;
     }
 
-    if (sender->ring_ready)
-    {
-        io_uring_queue_exit(&sender->ring);
-        sender->ring_ready = false;
-    }
     free(sender);
 }
 

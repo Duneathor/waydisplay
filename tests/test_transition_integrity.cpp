@@ -4,7 +4,12 @@
 #include "wd_input_correlation.h"
 #include "video_transition.hpp"
 
+#include <algorithm>
+#include <cerrno>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <vector>
 #include <iostream>
 
 namespace {
@@ -15,6 +20,91 @@ void require(bool condition, const char* message) {
         std::cerr << "FAIL: " << message << '\n';
         std::exit(1);
     }
+}
+
+
+struct RandomScript {
+    std::vector<std::uint8_t> bytes;
+    std::size_t offset = 0;
+    std::size_t max_chunk = SIZE_MAX;
+    unsigned calls = 0;
+    unsigned interrupt_call = 0;
+    unsigned fail_call = 0;
+};
+
+ssize_t scripted_random_read(void* buffer, std::size_t size, void* user_data) {
+    auto& script = *static_cast<RandomScript*>(user_data);
+    script.calls++;
+    if (script.calls == script.interrupt_call)
+    {
+        errno = EINTR;
+        return -1;
+    }
+    if (script.calls == script.fail_call)
+    {
+        errno = EIO;
+        return -1;
+    }
+    if (script.offset >= script.bytes.size())
+    {
+        return 0;
+    }
+    const std::size_t available = script.bytes.size() - script.offset;
+    const std::size_t amount = std::min({size, available, script.max_chunk});
+    std::memcpy(buffer, script.bytes.data() + script.offset, amount);
+    script.offset += amount;
+    return static_cast<ssize_t>(amount);
+}
+
+void append_u64(RandomScript& script, std::uint64_t value) {
+    const auto* begin = reinterpret_cast<const std::uint8_t*>(&value);
+    script.bytes.insert(script.bytes.end(), begin, begin + sizeof(value));
+}
+
+void test_connection_identity_requires_secure_randomness() {
+    RandomScript partial;
+    partial.max_chunk = 3;
+    partial.interrupt_call = 2;
+    append_u64(partial, UINT64_C(0x1122334455667788));
+    append_u64(partial, UINT64_C(0x8877665544332211));
+    std::uint64_t token = 0;
+    std::uint64_t clock_id = 0;
+    require(wd_connection_identity_generate_with(scripted_random_read, &partial,
+                                                 &token, &clock_id),
+            "short secure-random reads and EINTR should be retried");
+    require(token == UINT64_C(0x1122334455667788) &&
+                clock_id == UINT64_C(0x8877665544332211),
+            "secure random identities should be preserved exactly");
+
+    RandomScript zero_then_valid;
+    append_u64(zero_then_valid, 0);
+    append_u64(zero_then_valid, 17);
+    append_u64(zero_then_valid, 17);
+    append_u64(zero_then_valid, 18);
+    require(wd_connection_identity_generate_with(scripted_random_read, &zero_then_valid,
+                                                 &token, &clock_id),
+            "zero and duplicate values should be retried");
+    require(token == 17 && clock_id == 18,
+            "connection and media identities must be non-zero and distinct");
+
+    RandomScript failed;
+    failed.fail_call = 1;
+    token = 41;
+    clock_id = 42;
+    require(!wd_connection_identity_generate_with(scripted_random_read, &failed,
+                                                  &token, &clock_id),
+            "random-source failure must reject the session identity");
+    require(token == 41 && clock_id == 42,
+            "failed identity generation must not publish partial state");
+
+    RandomScript zeros;
+    for (unsigned i = 0; i < 8; ++i)
+    {
+        append_u64(zeros, 0);
+    }
+    require(!wd_connection_identity_generate_with(scripted_random_read, &zeros,
+                                                  &token, &clock_id),
+            "a random source stuck at zero must fail closed");
 }
 
 void test_first_keyframe_reserves_next_epoch_without_early_commit() {
@@ -127,6 +217,7 @@ static void test_connection_session_rotation() {
 }
 int main() {
     test_connection_session_rotation();
+    test_connection_identity_requires_secure_randomness();
     test_first_keyframe_reserves_next_epoch_without_early_commit();
     test_nonentry_frames_keep_current_epoch();
     test_udp_fallback_never_reuses_a_socket_still_owned_by_io_uring();

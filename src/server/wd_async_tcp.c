@@ -19,8 +19,12 @@
 #endif
 
 #define WD_ASYNC_TCP_DEFAULT_MAX_PENDING_BYTES (4ull * 1024ull * 1024ull)
+#ifndef WD_ASYNC_TCP_DRAIN_LIMIT
 #define WD_ASYNC_TCP_DRAIN_LIMIT 250u
+#endif
+#ifndef WD_ASYNC_TCP_DRAIN_SLEEP_US
 #define WD_ASYNC_TCP_DRAIN_SLEEP_US 1000u
+#endif
 
 static char wd_async_tcp_cancel_cqe_tag;
 #define WD_ASYNC_TCP_CANCEL_CQE ((void*)&wd_async_tcp_cancel_cqe_tag)
@@ -509,7 +513,8 @@ static bool wd_async_tcp_sender_drain(struct wd_async_tcp_sender* sender) {
     wd_async_tcp_sender_shutdown_pending_fds(sender);
     wd_async_tcp_sender_request_cancels(sender);
 
-    for (uint32_t i = 0; sender->pending_head && i < WD_ASYNC_TCP_DRAIN_LIMIT; ++i)
+    const uint32_t drain_limit = WD_ASYNC_TCP_DRAIN_LIMIT;
+    for (uint32_t i = 0; sender->pending_head && i < drain_limit; ++i)
     {
         wd_async_tcp_sender_reap(sender);
         wd_async_tcp_sender_fail_unsubmitted(sender);
@@ -524,6 +529,25 @@ static bool wd_async_tcp_sender_drain(struct wd_async_tcp_sender* sender) {
     return sender->pending_head == NULL;
 }
 
+static void wd_async_tcp_sender_fail_all_after_ring_exit(struct wd_async_tcp_sender* sender) {
+    if (!sender || sender->ring_ready)
+    {
+        return;
+    }
+
+    struct wd_async_tcp_message* msg = sender->pending_head;
+    while (msg)
+    {
+        struct wd_async_tcp_message* next = msg->next;
+        sender->failed++;
+        wd_async_tcp_pending_remove(sender, msg);
+        wd_async_tcp_complete_message(msg, false);
+        free(msg);
+        msg = next;
+    }
+    sender->inflight = 0;
+}
+
 void wd_async_tcp_sender_destroy(struct wd_async_tcp_sender* sender) {
     if (!sender)
     {
@@ -532,15 +556,18 @@ void wd_async_tcp_sender_destroy(struct wd_async_tcp_sender* sender) {
 
     if (!wd_async_tcp_sender_drain(sender))
     {
-        WD_LOG_WARN("async TCP sender destroy timed out; leaking pending ring buffers safely");
-        return;
+        WD_LOG_WARN("async TCP sender destroy timed out; forcing io_uring teardown");
     }
-    wd_async_tcp_sender_fail_unsubmitted(sender);
 
     if (sender->ring_ready)
     {
+        /* Closing the ring cancels its requests and synchronizes kernel teardown.
+         * Only after queue_exit returns is it safe to release buffers referenced
+         * by submitted send operations. */
         io_uring_queue_exit(&sender->ring);
         sender->ring_ready = false;
     }
+
+    wd_async_tcp_sender_fail_all_after_ring_exit(sender);
     free(sender);
 }

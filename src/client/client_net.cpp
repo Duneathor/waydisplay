@@ -2099,6 +2099,15 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
 
     {
         std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
+        const auto reset_decoder_locked = [&state](const char* reason) {
+            client_video_decoder_reset(state.video_decoder);
+            state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
+            state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
+            state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
+            state.video_decoder_needs_keyframe = true;
+            state.video_phase = ClientVideoPhase::AwaitingKeyframe;
+            WD_LOG_INFO("video decoder reset: reason=%s", reason);
+        };
         if (state.video_decoder_needs_keyframe && (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
         {
             state.stats.video_need_keyframe_drops.fetch_add(1, std::memory_order_relaxed);
@@ -2154,21 +2163,33 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         if (!decoded)
         {
             state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
-            state.video_decoder_needs_keyframe = true;
-            state.video_phase = ClientVideoPhase::AwaitingKeyframe;
+            reset_decoder_locked("video decode failed");
             return;
         }
-        if (frame.format == ClientVideoPixelFormat::None)
+        bool published_frame = false;
+        for (;;)
         {
-            return;
+            if (frame.format != ClientVideoPixelFormat::None)
+            {
+                state.stats.video_frames_decoded.fetch_add(1, std::memory_order_relaxed);
+                if (!publish_decoded_video_frame(state, state.video_decoder, frame))
+                {
+                    state.stats.video_publish_failed.fetch_add(1, std::memory_order_relaxed);
+                    reset_decoder_locked("decoded frame publish failed");
+                    return;
+                }
+                published_frame = true;
+            }
+
+            frame = ClientDecodedVideoFrame{};
+            if (!client_video_decoder_take_frame(state.video_decoder, &frame))
+            {
+                break;
+            }
         }
 
-        state.stats.video_frames_decoded.fetch_add(1, std::memory_order_relaxed);
-        if (!publish_decoded_video_frame(state, state.video_decoder, frame))
+        if (!published_frame)
         {
-            state.stats.video_publish_failed.fetch_add(1, std::memory_order_relaxed);
-            state.video_decoder_needs_keyframe = true;
-            state.video_phase = ClientVideoPhase::AwaitingKeyframe;
             return;
         }
 

@@ -89,6 +89,10 @@ bool        client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* 
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config);
 bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoPacket& packet,
                                  ClientDecodedVideoFrame* out_frame);
+/* Retrieve another frame produced while processing the most recent packets.
+ * The caller must swap each returned frame out before taking the next one. */
+bool client_video_decoder_take_frame(ClientVideoDecoder* decoder,
+                                     ClientDecodedVideoFrame* out_frame);
 /* Swap the decoder-owned visible IYUV frame into an application buffer.
  * Call this while excluding concurrent decoder use and immediately after a
  * successful decode. */

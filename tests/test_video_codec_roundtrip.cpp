@@ -95,6 +95,7 @@ bool run_codec(uint32_t codec) {
 
     std::vector<uint32_t> pixels(static_cast<size_t>(kStride) * kHeight);
     std::vector<uint64_t> checksums;
+    std::vector<wd_video_frame_payload_header> submitted_headers;
     uint64_t previous_frame_id = 0;
     bool saw_keyframe = false;
 
@@ -129,22 +130,41 @@ bool run_codec(uint32_t codec) {
         ClientVideoPacket packet{};
         packet.header = encoded.header;
         packet.data = encoded.data;
+        submitted_headers.push_back(encoded.header);
         ClientDecodedVideoFrame decoded{};
         CHECK(waydisplay::client_video_decoder_decode(decoder, packet, &decoded));
 
-        ClientVideoFrameBuffer output{};
-        if (!waydisplay::client_video_decoder_swap_output_frame(decoder, output))
+        for (;;)
         {
-            continue;
+            if (decoded.format == ClientVideoPixelFormat::None)
+            {
+                break;
+            }
+
+            const auto submitted = std::find_if(
+                submitted_headers.begin(), submitted_headers.end(),
+                [&decoded](const wd_video_frame_payload_header& header) {
+                    return header.frame_id == decoded.frame_id;
+                });
+            CHECK(submitted != submitted_headers.end());
+
+            ClientVideoFrameBuffer output{};
+            CHECK(waydisplay::client_video_decoder_swap_output_frame(decoder, output));
+            CHECK(output.valid());
+            CHECK(decoded.format == ClientVideoPixelFormat::IYUV);
+            CHECK(decoded.width == kWidth);
+            CHECK(decoded.height == kHeight);
+            CHECK(decoded.content_epoch == submitted->content_epoch);
+            CHECK(decoded.pts_usec == submitted->pts_usec);
+            submitted_headers.erase(submitted);
+            checksums.push_back(luma_checksum(output));
+
+            decoded = ClientDecodedVideoFrame{};
+            if (!waydisplay::client_video_decoder_take_frame(decoder, &decoded))
+            {
+                break;
+            }
         }
-        CHECK(output.valid());
-        CHECK(decoded.format == ClientVideoPixelFormat::IYUV);
-        CHECK(decoded.width == kWidth);
-        CHECK(decoded.height == kHeight);
-        CHECK(decoded.frame_id == encoded.header.frame_id);
-        CHECK(decoded.content_epoch == encoded.header.content_epoch);
-        CHECK(decoded.pts_usec == encoded.header.pts_usec);
-        checksums.push_back(luma_checksum(output));
     }
 
     CHECK(saw_keyframe);
@@ -158,6 +178,8 @@ bool run_codec(uint32_t codec) {
     CHECK(wd_video_encoder_request_keyframe(encoder));
 
     bool decoded_new_epoch = false;
+    bool saw_new_epoch_keyframe = false;
+    submitted_headers.clear();
     for (uint32_t frame_number = 30; frame_number < 42 && !decoded_new_epoch; ++frame_number)
     {
         fill_frame(pixels, frame_number);
@@ -174,20 +196,45 @@ bool run_codec(uint32_t codec) {
             continue;
         }
         CHECK(encoded.header.content_epoch == 2);
-        CHECK(encoded.header.frame_id == 1);
-        CHECK((encoded.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0);
+        if (!saw_new_epoch_keyframe)
+        {
+            CHECK(encoded.header.frame_id == 1);
+            CHECK((encoded.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0);
+            saw_new_epoch_keyframe = true;
+        }
+        submitted_headers.push_back(encoded.header);
 
         ClientVideoPacket packet{encoded.header, encoded.data};
         ClientDecodedVideoFrame decoded{};
         CHECK(waydisplay::client_video_decoder_decode(decoder, packet, &decoded));
-        ClientVideoFrameBuffer output{};
-        if (waydisplay::client_video_decoder_swap_output_frame(decoder, output))
+        for (;;)
         {
+            if (decoded.format == ClientVideoPixelFormat::None)
+            {
+                break;
+            }
+            const auto submitted = std::find_if(
+                submitted_headers.begin(), submitted_headers.end(),
+                [&decoded](const wd_video_frame_payload_header& header) {
+                    return header.frame_id == decoded.frame_id;
+                });
+            CHECK(submitted != submitted_headers.end());
+            ClientVideoFrameBuffer output{};
+            CHECK(waydisplay::client_video_decoder_swap_output_frame(decoder, output));
             CHECK(output.valid());
             CHECK(decoded.content_epoch == 2);
+            CHECK(decoded.pts_usec == submitted->pts_usec);
+            submitted_headers.erase(submitted);
             decoded_new_epoch = true;
+
+            decoded = ClientDecodedVideoFrame{};
+            if (!waydisplay::client_video_decoder_take_frame(decoder, &decoded))
+            {
+                break;
+            }
         }
     }
+    CHECK(saw_new_epoch_keyframe);
     CHECK(decoded_new_epoch);
 
     waydisplay::client_video_decoder_destroy(decoder);

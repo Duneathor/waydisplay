@@ -2,8 +2,11 @@
 
 #include "waydisplay/wd_log.h"
 
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
+#include <deque>
+#include <limits>
 #include <new>
 #include <vector>
 
@@ -33,10 +36,31 @@ extern "C" {
 
 namespace waydisplay {
 
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
+namespace {
+
+constexpr size_t kMaxSubmittedFrameMetadata = 64;
+constexpr size_t kMaxDecodedFrameQueue = 8;
+
+struct SubmittedFrameMetadata {
+    wd_video_frame_payload_header header{};
+    int64_t codec_pts = AV_NOPTS_VALUE;
+};
+
+struct QueuedDecodedFrame {
+    ClientDecodedVideoFrame metadata{};
+    ClientVideoFrameBuffer buffer{};
+};
+
+} // namespace
+#endif
+
 struct ClientVideoDecoder {
     ClientVideoDecoderConfig config{};
     bool                     configured = false;
     ClientVideoFrameBuffer   output{};
+    ClientDecodedVideoFrame  output_metadata{};
+    bool                     output_ready = false;
 
 #if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
     const AVCodec*    codec     = nullptr;
@@ -52,6 +76,8 @@ struct ClientVideoDecoder {
     bool              using_vaapi = false;
     bool              vaapi_auto_disabled = false;
     bool              vaapi_disable_logged = false;
+    std::vector<SubmittedFrameMetadata> submitted_frames{};
+    std::deque<QueuedDecodedFrame> decoded_frames{};
 #endif
 };
 
@@ -74,6 +100,10 @@ void release_decoder_backend(ClientVideoDecoder* decoder) {
     decoder->vaapi_requested = false;
     decoder->vaapi_required = false;
     decoder->using_vaapi = false;
+    decoder->submitted_frames.clear();
+    decoder->decoded_frames.clear();
+    decoder->output_metadata = ClientDecodedVideoFrame{};
+    decoder->output_ready = false;
 }
 
 const AVCodec* find_decoder_for_codec(uint32_t codec) {
@@ -195,9 +225,11 @@ bool transfer_hw_frame_if_needed(ClientVideoDecoder* decoder, AVFrame** frame) {
     return true;
 }
 
-bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket& packet,
+bool convert_decoder_frame(ClientVideoDecoder* decoder,
+                           const wd_video_frame_payload_header& header,
+                           ClientVideoFrameBuffer* output,
                            ClientDecodedVideoFrame* out_frame) {
-    if (!decoder || !decoder->frame)
+    if (!decoder || !decoder->frame || !output || !out_frame)
     {
         return false;
     }
@@ -209,18 +241,18 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket&
     }
 
     if (src_frame->width <= 0 || src_frame->height <= 0 ||
-        packet.header.width == 0 || packet.header.height == 0)
+        header.width == 0 || header.height == 0)
     {
         return false;
     }
 
-    const uint16_t coded_width = packet.header.coded_width != 0
-                                     ? packet.header.coded_width
+    const uint16_t coded_width = header.coded_width != 0
+                                      ? header.coded_width
                                      : static_cast<uint16_t>(src_frame->width);
-    const uint16_t coded_height = packet.header.coded_height != 0
-                                      ? packet.header.coded_height
+    const uint16_t coded_height = header.coded_height != 0
+                                      ? header.coded_height
                                       : static_cast<uint16_t>(src_frame->height);
-    if (coded_width < packet.header.width || coded_height < packet.header.height ||
+    if (coded_width < header.width || coded_height < header.height ||
         src_frame->width < coded_width || src_frame->height < coded_height)
     {
         return false;
@@ -229,8 +261,8 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket&
     /* Keep decoded video in planar 4:2:0. SDL can upload this directly to an
      * IYUV texture, avoiding BGRA conversion and cutting CPU-to-GPU upload
      * traffic from four bytes to roughly one and a half bytes per pixel. */
-    const int visible_width = static_cast<int>(packet.header.width);
-    const int visible_height = static_cast<int>(packet.header.height);
+    const int visible_width = static_cast<int>(header.width);
+    const int visible_height = static_cast<int>(header.height);
     const auto src_format = static_cast<AVPixelFormat>(src_frame->format);
     decoder->sws_ctx = sws_getCachedContext(decoder->sws_ctx, visible_width, visible_height,
                                             src_format, visible_width, visible_height,
@@ -241,37 +273,37 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket&
     }
     decoder->sws_src_format = src_format;
 
-    const uint32_t y_pitch = packet.header.width;
-    const uint32_t uv_width = (packet.header.width + 1u) / 2u;
-    const uint32_t uv_height = (packet.header.height + 1u) / 2u;
-    const size_t y_size = static_cast<size_t>(y_pitch) * packet.header.height;
+    const uint32_t y_pitch = header.width;
+    const uint32_t uv_width = (header.width + 1u) / 2u;
+    const uint32_t uv_height = (header.height + 1u) / 2u;
+    const size_t y_size = static_cast<size_t>(y_pitch) * header.height;
     const size_t uv_size = static_cast<size_t>(uv_width) * uv_height;
     const size_t expected_bytes = y_size + uv_size * 2u;
     try
     {
-        if (decoder->output.bytes.size() != expected_bytes)
+        if (output->bytes.size() != expected_bytes)
         {
-            decoder->output.bytes.resize(expected_bytes);
+            output->bytes.resize(expected_bytes);
         }
     }
     catch (...)
     {
-        decoder->output.clear();
+        output->clear();
         return false;
     }
 
-    decoder->output.format = ClientVideoPixelFormat::IYUV;
-    decoder->output.width = packet.header.width;
-    decoder->output.height = packet.header.height;
-    decoder->output.y_pitch = y_pitch;
-    decoder->output.uv_pitch = uv_width;
-    decoder->output.u_offset = y_size;
-    decoder->output.v_offset = y_size + uv_size;
+    output->format = ClientVideoPixelFormat::IYUV;
+    output->width = header.width;
+    output->height = header.height;
+    output->y_pitch = y_pitch;
+    output->uv_pitch = uv_width;
+    output->u_offset = y_size;
+    output->v_offset = y_size + uv_size;
 
     uint8_t* const dst_slices[4] = {
-        decoder->output.bytes.data(),
-        decoder->output.bytes.data() + decoder->output.u_offset,
-        decoder->output.bytes.data() + decoder->output.v_offset,
+        output->bytes.data(),
+        output->bytes.data() + output->u_offset,
+        output->bytes.data() + output->v_offset,
         nullptr,
     };
     const int dst_stride[4] = {static_cast<int>(y_pitch), static_cast<int>(uv_width),
@@ -282,16 +314,134 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const ClientVideoPacket&
         return false;
     }
 
-    if (out_frame)
+    out_frame->format        = ClientVideoPixelFormat::IYUV;
+    out_frame->width         = header.width;
+    out_frame->height        = header.height;
+    out_frame->frame_id      = header.frame_id;
+    out_frame->content_epoch = header.content_epoch;
+    out_frame->pts_usec      = header.pts_usec;
+
+    return true;
+}
+
+bool take_submitted_metadata(ClientVideoDecoder* decoder,
+                             wd_video_frame_payload_header* header) {
+    if (!decoder || !decoder->frame || !header || decoder->submitted_frames.empty())
     {
-        out_frame->format        = ClientVideoPixelFormat::IYUV;
-        out_frame->width         = packet.header.width;
-        out_frame->height        = packet.header.height;
-        out_frame->frame_id      = packet.header.frame_id;
-        out_frame->content_epoch = packet.header.content_epoch;
-        out_frame->pts_usec      = packet.header.pts_usec;
+        return false;
     }
 
+    auto metadata = decoder->submitted_frames.end();
+    const int64_t timestamps[] = {
+        decoder->frame->pts,
+        decoder->frame->best_effort_timestamp,
+    };
+    for (const int64_t codec_pts : timestamps)
+    {
+        if (codec_pts == AV_NOPTS_VALUE)
+        {
+            continue;
+        }
+        metadata = std::find_if(decoder->submitted_frames.begin(),
+                                decoder->submitted_frames.end(),
+                                [codec_pts](const SubmittedFrameMetadata& candidate) {
+                                    return candidate.codec_pts == codec_pts;
+                                });
+        if (metadata != decoder->submitted_frames.end())
+        {
+            break;
+        }
+    }
+    if (metadata == decoder->submitted_frames.end())
+    {
+        if (decoder->submitted_frames.size() != 1)
+        {
+            return false;
+        }
+        metadata = decoder->submitted_frames.begin();
+    }
+
+    *header = metadata->header;
+    decoder->submitted_frames.erase(metadata);
+    return true;
+}
+
+bool queue_decoder_frame(ClientVideoDecoder* decoder) {
+    if (!decoder || decoder->decoded_frames.size() >= kMaxDecodedFrameQueue)
+    {
+        return false;
+    }
+
+    wd_video_frame_payload_header header{};
+    if (!take_submitted_metadata(decoder, &header))
+    {
+        return false;
+    }
+
+    QueuedDecodedFrame queued{};
+    if (decoder->decoded_frames.empty() && !decoder->output_ready)
+    {
+        queued.buffer = std::move(decoder->output);
+    }
+    if (!convert_decoder_frame(decoder, header, &queued.buffer, &queued.metadata))
+    {
+        return false;
+    }
+
+    try
+    {
+        decoder->decoded_frames.push_back(std::move(queued));
+    }
+    catch (...)
+    {
+        return false;
+    }
+    return true;
+}
+
+bool receive_decoder_frames(ClientVideoDecoder* decoder) {
+    if (!decoder || !decoder->codec_ctx || !decoder->frame)
+    {
+        return false;
+    }
+
+    for (;;)
+    {
+        av_frame_unref(decoder->frame);
+        const int rc = avcodec_receive_frame(decoder->codec_ctx, decoder->frame);
+        if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
+        {
+            return true;
+        }
+        if (rc < 0)
+        {
+            mark_vaapi_auto_failed(decoder, "hardware frame receive failed");
+            return false;
+        }
+        if (!queue_decoder_frame(decoder))
+        {
+            av_frame_unref(decoder->frame);
+            return false;
+        }
+    }
+}
+
+bool activate_next_output(ClientVideoDecoder* decoder,
+                          ClientDecodedVideoFrame* out_frame) {
+    if (!decoder || decoder->output_ready || decoder->decoded_frames.empty())
+    {
+        return false;
+    }
+
+    QueuedDecodedFrame queued = std::move(decoder->decoded_frames.front());
+    decoder->decoded_frames.pop_front();
+    decoder->output = std::move(queued.buffer);
+    decoder->output_metadata = queued.metadata;
+    decoder->output_ready = true;
+    if (out_frame)
+    {
+        *out_frame = decoder->output_metadata;
+    }
     return true;
 }
 #endif
@@ -307,6 +457,15 @@ bool client_video_decoder_create(ClientVideoDecoder** out_decoder) {
     if (*out_decoder)
     {
         (*out_decoder)->codec = nullptr;
+        try
+        {
+            (*out_decoder)->submitted_frames.reserve(kMaxSubmittedFrameMetadata);
+        }
+        catch (...)
+        {
+            delete *out_decoder;
+            *out_decoder = nullptr;
+        }
     }
 #endif
     return *out_decoder != nullptr;
@@ -333,16 +492,34 @@ void client_video_decoder_reset(ClientVideoDecoder* decoder) {
     decoder->config     = ClientVideoDecoderConfig{};
     decoder->configured = false;
     decoder->output.clear();
+    decoder->output_metadata = ClientDecodedVideoFrame{};
+    decoder->output_ready = false;
 }
 
 bool client_video_decoder_swap_output_frame(ClientVideoDecoder* decoder, ClientVideoFrameBuffer& frame) {
-    if (!decoder || !decoder->output.valid())
+    if (!decoder || !decoder->output_ready || !decoder->output.valid())
     {
         return false;
     }
 
     std::swap(frame, decoder->output);
+    decoder->output_metadata = ClientDecodedVideoFrame{};
+    decoder->output_ready = false;
     return true;
+}
+
+bool client_video_decoder_take_frame(ClientVideoDecoder* decoder,
+                                     ClientDecodedVideoFrame* out_frame) {
+    if (out_frame)
+    {
+        *out_frame = ClientDecodedVideoFrame{};
+    }
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
+    return activate_next_output(decoder, out_frame);
+#else
+    (void)decoder;
+    return false;
+#endif
 }
 
 bool client_video_decoder_available(const ClientVideoDecoder* decoder) {
@@ -485,6 +662,8 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
     }
 
     decoder->output.clear();
+    decoder->output_metadata = ClientDecodedVideoFrame{};
+    decoder->output_ready = false;
 
     decoder->config     = config;
     decoder->configured = true;
@@ -510,7 +689,9 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
     }
 
 #if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
-    if (!decoder->codec_ctx || !decoder->frame || !decoder->packet)
+    if (!decoder->codec_ctx || !decoder->frame || !decoder->packet ||
+        decoder->output_ready ||
+        packet.header.pts_usec > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
     {
         return false;
     }
@@ -521,17 +702,26 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
         return false;
     }
     std::memcpy(decoder->packet->data, packet.data, packet.header.data_size);
-    decoder->packet->pts = static_cast<int64_t>(packet.header.pts_usec);
+    const int64_t codec_pts = static_cast<int64_t>(packet.header.pts_usec);
+    decoder->packet->pts = codec_pts;
+
+    if (decoder->submitted_frames.size() >= kMaxSubmittedFrameMetadata)
+    {
+        av_packet_unref(decoder->packet);
+        return false;
+    }
 
     bool sent_packet = false;
-    bool got_frame = false;
-    bool converted_frame = false;
 
     for (int attempt = 0; attempt < 2 && !sent_packet; ++attempt)
     {
         int rc = avcodec_send_packet(decoder->codec_ctx, decoder->packet);
         if (rc == 0)
         {
+            SubmittedFrameMetadata metadata{};
+            metadata.header = packet.header;
+            metadata.codec_pts = codec_pts;
+            decoder->submitted_frames.push_back(metadata);
             sent_packet = true;
             break;
         }
@@ -542,28 +732,10 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
             return false;
         }
 
-        for (;;)
+        if (!receive_decoder_frames(decoder))
         {
-            av_frame_unref(decoder->frame);
-            rc = avcodec_receive_frame(decoder->codec_ctx, decoder->frame);
-            if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
-            {
-                break;
-            }
-            if (rc < 0)
-            {
-                mark_vaapi_auto_failed(decoder, "hardware frame receive failed");
-                av_packet_unref(decoder->packet);
-                return false;
-            }
-            got_frame = true;
-            converted_frame = convert_decoder_frame(decoder, packet, out_frame);
-            av_frame_unref(decoder->frame);
-            if (!converted_frame)
-            {
-                av_packet_unref(decoder->packet);
-                return false;
-            }
+            av_packet_unref(decoder->packet);
+            return false;
         }
     }
 
@@ -573,29 +745,13 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
         return false;
     }
 
-    for (;;)
+    if (!receive_decoder_frames(decoder))
     {
-        av_frame_unref(decoder->frame);
-        int rc = avcodec_receive_frame(decoder->codec_ctx, decoder->frame);
-        if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
-        {
-            break;
-        }
-        if (rc < 0)
-        {
-            mark_vaapi_auto_failed(decoder, "hardware frame receive failed");
-            return false;
-        }
-        got_frame = true;
-        converted_frame = convert_decoder_frame(decoder, packet, out_frame);
-        av_frame_unref(decoder->frame);
-        if (!converted_frame)
-        {
-            return false;
-        }
+        return false;
     }
 
-    return got_frame ? converted_frame : true;
+    (void)activate_next_output(decoder, out_frame);
+    return true;
 #else
     (void)packet;
     return client_video_decoder_available(decoder);
