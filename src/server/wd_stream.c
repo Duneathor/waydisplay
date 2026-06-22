@@ -183,6 +183,12 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->tile_recovery_seconds         = 0;
     policy->video_client_failure_seconds  = 0;
     policy->tile_refresh_pending          = false;
+    policy->tile_recovery_refresh_started = false;
+    policy->tile_recovery_refresh_sent    = false;
+    policy->tile_recovery_wait_seconds    = 0;
+    policy->video_retry_cooldown_seconds  = 0;
+    policy->video_auto_bootstrap_suppressed = false;
+    policy->video_auto_bootstrap_seconds = 0;
     policy->frame_rate_good_seconds       = 0;
     policy->limited_udp_bytes_per_second  = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
     policy->limited_udp_rate_floor        = WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND;
@@ -241,6 +247,12 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->tile_recovery_seconds = 0;
     policy->video_client_failure_seconds = 0;
     policy->tile_refresh_pending = false;
+    policy->tile_recovery_refresh_started = false;
+    policy->tile_recovery_refresh_sent = false;
+    policy->tile_recovery_wait_seconds = 0;
+    policy->video_retry_cooldown_seconds = 0;
+    policy->video_auto_bootstrap_suppressed = false;
+    policy->video_auto_bootstrap_seconds = 0;
     policy->frame_rate_good_seconds = 0;
     policy->link_good_seconds = 0;
     policy->link_loss_seconds = 0;
@@ -385,6 +397,21 @@ static void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, en
     enum wd_stream_mode old_mode = policy->stream_mode;
     policy->stream_mode = mode;
 
+    if (mode == WD_STREAM_MODE_TILE_RECOVERY && old_mode != WD_STREAM_MODE_TILE_RECOVERY)
+    {
+        policy->tile_refresh_pending = true;
+        policy->tile_recovery_refresh_started = false;
+        policy->tile_recovery_refresh_sent = false;
+        policy->tile_recovery_wait_seconds = 0;
+        policy->video_client_failure_seconds = 0;
+    }
+    else if (mode != WD_STREAM_MODE_TILE_RECOVERY)
+    {
+        policy->tile_recovery_refresh_started = false;
+        policy->tile_recovery_refresh_sent = false;
+        policy->tile_recovery_wait_seconds = 0;
+    }
+
     if (wd_stream_mode_video_owns_display(old_mode) && !wd_stream_mode_video_owns_display(mode))
     {
         policy->tile_refresh_pending = true;
@@ -411,6 +438,40 @@ static void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
 
     (void)total_tiles;
 
+    if (policy->stream_mode == WD_STREAM_MODE_TILE_RECOVERY)
+    {
+        policy->video_candidate_seconds = 0;
+        return;
+    }
+
+    if (policy->video_mode == WD_VIDEO_MODE_AUTO &&
+        policy->video_auto_bootstrap_suppressed)
+    {
+        policy->video_candidate_seconds = 0;
+        const bool bootstrap_presented = stats->client_tile_frames_presented != 0;
+        const bool bootstrap_timed_out =
+            policy->video_auto_bootstrap_seconds >=
+            WD_STREAM_BOOTSTRAP_SUPPRESSION_TIMEOUT_SECONDS;
+        if (bootstrap_presented || bootstrap_timed_out)
+        {
+            WD_LOG_DEBUG("video auto selection resumed after bootstrap: reason=%s",
+                         bootstrap_presented ? "client tile presentation" : "timeout");
+            policy->video_auto_bootstrap_suppressed = false;
+            policy->video_auto_bootstrap_seconds = 0;
+        }
+        else if (policy->video_auto_bootstrap_seconds < UINT32_MAX)
+        {
+            policy->video_auto_bootstrap_seconds++;
+        }
+        return;
+    }
+
+    const bool video_retry_cooldown_active = policy->video_retry_cooldown_seconds != 0;
+    if (video_retry_cooldown_active)
+    {
+        policy->video_retry_cooldown_seconds--;
+    }
+
     const uint64_t sample_count = stats->stream_mode_frame_samples != 0 ? stats->stream_mode_frame_samples : 1ull;
     const double dirty_avg_pct = wd_stream_coverage_pct(stats->stream_mode_dirty_coverage_per_mille_sum / sample_count);
     const double dirty_peak_pct = wd_stream_coverage_pct(stats->stream_mode_dirty_coverage_per_mille_peak);
@@ -430,6 +491,7 @@ static void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
         .requested_capture_fps = policy->requested_capture_fps,
         .adaptive_capture_fps = policy->adaptive_capture_fps,
         .minimum_dirty_percent = min_dirty_pct,
+        .selection_suppressed = stats->stream_mode_full_refresh_samples != 0,
     };
     const struct wd_video_auto_entry_result auto_entry =
         wd_video_auto_entry_evaluate(&entry_metrics);
@@ -446,6 +508,7 @@ static void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
     const bool video_forced = policy->video_mode == WD_VIDEO_MODE_FORCE;
     const bool video_disabled = policy->video_mode == WD_VIDEO_MODE_OFF;
     const bool video_entry_candidate = !video_disabled &&
+                                       wd_video_entry_allowed(false, video_retry_cooldown_active ? 1u : 0u) &&
                                        (video_forced || auto_entry.candidate);
 
     if (auto_entry.candidate && policy->stream_mode != WD_STREAM_MODE_VIDEO_ACTIVE)
@@ -1494,6 +1557,32 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
         policy->client_render_visible = true;
     }
 
+    if (policy->stream_mode == WD_STREAM_MODE_TILE_RECOVERY)
+    {
+        const enum wd_tile_recovery_action recovery_action =
+            wd_tile_recovery_decide(policy->tile_recovery_refresh_sent,
+                                    stats->client_tile_frames_presented,
+                                    policy->tile_recovery_wait_seconds,
+                                    WD_STREAM_TILE_RECOVERY_TIMEOUT_SECONDS);
+        if (recovery_action != WD_TILE_RECOVERY_WAIT)
+        {
+            policy->video_retry_cooldown_seconds = WD_STREAM_VIDEO_RETRY_COOLDOWN_SECONDS;
+            wd_stream_policy_set_mode_locked(
+                policy, WD_STREAM_MODE_TILES,
+                recovery_action == WD_TILE_RECOVERY_COMPLETE_PRESENTED
+                    ? "client presented recovery tiles"
+                    : "tile recovery presentation timeout",
+                0.0, 0.0, 0.0, true, true);
+        }
+        else if (policy->tile_recovery_refresh_sent &&
+                 policy->tile_recovery_wait_seconds < UINT32_MAX)
+        {
+            policy->tile_recovery_wait_seconds++;
+        }
+        policy->video_client_failure_seconds = 0;
+        return;
+    }
+
     const bool send_pressure = stats->udp_send_pressure_drops != 0;
     /*
      * dirty_budget_blocked means the sender had fresh dirty work ready, but
@@ -1528,16 +1617,25 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
 
     if (video_frame_mode)
     {
-        const bool client_saw_video = stats->client_video_data_frames_rx != 0 || stats->client_video_frames_rx != 0 ||
-                                      stats->client_video_control_frames_rx != 0;
-        const bool client_presented_video = stats->client_video_frames_presented != 0 ||
-                                            stats->client_video_last_frame_id_presented != 0;
-        const bool client_reported_video_failure = stats->client_video_decode_failed != 0 ||
-                                                   stats->client_video_publish_failed != 0 ||
-                                                   stats->client_video_need_keyframe_drops != 0;
+        const struct wd_client_video_health_metrics video_health_metrics = {
+            .server_frames_tx = stats->video_frames_tx,
+            .client_reports = stats->client_stats_rx,
+            .client_frames_seen = stats->client_video_data_frames_rx + stats->client_video_frames_rx,
+            .client_frames_decoded = stats->client_video_frames_decoded,
+            .client_frames_presented = stats->client_video_frames_presented,
+            .client_decode_failures = stats->client_video_decode_failed,
+            .client_publish_failures = stats->client_video_publish_failed,
+            .client_need_keyframe_drops = stats->client_video_need_keyframe_drops,
+            .client_audio_sync_holds = stats->client_video_audio_sync_holds,
+            .client_queue_depth = stats->client_video_queue_depth,
+        };
+        const enum wd_client_video_health_class video_health =
+            wd_client_video_health_classify(&video_health_metrics);
+        const bool client_video_failure =
+            video_health == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL ||
+            video_health == WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE;
 
-        if (stats->video_frames_tx != 0 && stats->client_stats_rx != 0 &&
-            ((client_saw_video && !client_presented_video) || client_reported_video_failure))
+        if (client_video_failure)
         {
             if (policy->video_client_failure_seconds < UINT32_MAX)
             {
@@ -1551,9 +1649,12 @@ static void wd_stream_policy_update_health_locked(struct wd_stream_policy* polic
 
         if (policy->video_client_failure_seconds >= 3)
         {
-            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILE_RECOVERY,
-                                             "client video decode/present failure", 0.0, 0.0, 0.0,
-                                             true, true);
+            wd_stream_policy_set_mode_locked(
+                policy, WD_STREAM_MODE_TILE_RECOVERY,
+                video_health == WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE
+                    ? "client video decode failure"
+                    : "client video presentation pipeline stalled",
+                0.0, 0.0, 0.0, true, true);
             policy->video_client_failure_seconds = 0;
             return;
         }
@@ -2630,6 +2731,17 @@ static bool wd_stream_has_queued_tile_work_locked(const struct wd_server* server
            net->retransmit_queue_count != 0 || net->summary_dirty_count != 0;
 }
 
+static bool wd_stream_has_queued_framebuffer_work_locked(const struct wd_server* server) {
+    if (!server)
+    {
+        return false;
+    }
+
+    const struct wd_net_state* net = &server->net;
+    return net->dirty_queue_count != 0 || net->dirty_region_count != 0 ||
+           net->retransmit_queue_count != 0;
+}
+
 static void wd_stream_collapse_tile_queues_for_video_locked(struct wd_server* server) {
     if (!server)
     {
@@ -2818,6 +2930,22 @@ static void wd_stream_note_mode_frame_locked(struct wd_net_state* net, uint16_t 
         return;
     }
 
+    if (net->stream_policy.video_auto_bootstrap_suppressed)
+    {
+        net->stats.stream_mode_bootstrap_suppressed_samples++;
+        return;
+    }
+
+    if (full_refresh)
+    {
+        net->stats.stream_mode_full_refresh_samples++;
+        if (budget_pressure)
+        {
+            net->stats.stream_mode_full_refresh_budget_pressure_frames++;
+        }
+        return;
+    }
+
     const uint64_t dirty_coverage = wd_stream_coverage_per_mille(dirty_tiles, total_tiles);
     const uint64_t pending_coverage = wd_stream_coverage_per_mille(pending_tiles, total_tiles);
 
@@ -2825,10 +2953,6 @@ static void wd_stream_note_mode_frame_locked(struct wd_net_state* net, uint16_t 
     if (dirty_tiles != 0)
     {
         net->stats.stream_mode_changed_frame_samples++;
-    }
-    if (full_refresh)
-    {
-        net->stats.stream_mode_full_refresh_samples++;
     }
     net->stats.stream_mode_dirty_coverage_per_mille_sum += dirty_coverage;
     if (dirty_coverage > net->stats.stream_mode_dirty_coverage_per_mille_peak)
@@ -2845,10 +2969,6 @@ static void wd_stream_note_mode_frame_locked(struct wd_net_state* net, uint16_t 
     if (budget_pressure)
     {
         net->stats.stream_mode_budget_pressure_frames++;
-        if (full_refresh)
-        {
-            net->stats.stream_mode_full_refresh_budget_pressure_frames++;
-        }
     }
 }
 
@@ -4386,10 +4506,11 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
         return true;
     }
 
-    if (net->stream_policy.tile_refresh_pending || net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY)
+    if (net->stream_policy.tile_refresh_pending ||
+        (net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY &&
+         !net->stream_policy.tile_recovery_refresh_started))
     {
-        const bool recovering_from_video = net->stream_policy.tile_refresh_pending ||
-                                           net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY;
+        const bool recovering_from_video = net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY;
         if (recovering_from_video && net->video_tcp_fd >= 0 && net->video_tx)
         {
             (void)wd_stream_queue_video_control_frame_locked(server, WD_VIDEO_FRAME_END_OF_STREAM);
@@ -4397,11 +4518,11 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
         wd_stream_collapse_tile_queues_for_video_locked(server);
         wd_stream_invalidate_all_tiles_locked(server);
         net->stream_policy.tile_refresh_pending = false;
+        net->stream_policy.tile_recovery_refresh_started = recovering_from_video;
+        net->stream_policy.tile_recovery_refresh_sent = false;
+        net->stream_policy.tile_recovery_wait_seconds = 0;
         WD_LOG_INFO("stream mode ownership: tile-recovery owner=tiles fresh_udp_tiles=full-refresh tile_repair=enabled video_eos=%s",
                     recovering_from_video ? "sent" : "no");
-        wd_stream_policy_set_mode_locked(&net->stream_policy, WD_STREAM_MODE_TILES,
-                                         "full tile refresh after video", 0.0, 0.0, 0.0,
-                                         net->video_tcp_fd >= 0, wd_video_encoder_available(net->video_encoder));
     }
 
     if (wd_stream_mode_video_owns_display(net->stream_policy.stream_mode))
@@ -4737,6 +4858,16 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
          * rendering. Do not force another render of an unchanged scene merely
          * because dirty or retransmit queues remain. */
         server->scene_dirty = false;
+    }
+
+    if (net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY &&
+        net->stream_policy.tile_recovery_refresh_started &&
+        !net->stream_policy.tile_recovery_refresh_sent &&
+        !wd_stream_has_queued_framebuffer_work_locked(server))
+    {
+        net->stream_policy.tile_recovery_refresh_sent = true;
+        net->stream_policy.tile_recovery_wait_seconds = 0;
+        WD_LOG_INFO("tile recovery refresh transmitted; waiting for client presentation");
     }
 
     pthread_mutex_unlock(&net->lock);
@@ -5089,6 +5220,7 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->stream_mode_budget_pressure_frames += src->stream_mode_budget_pressure_frames;
     dst->stream_mode_full_refresh_samples += src->stream_mode_full_refresh_samples;
     dst->stream_mode_full_refresh_budget_pressure_frames += src->stream_mode_full_refresh_budget_pressure_frames;
+    dst->stream_mode_bootstrap_suppressed_samples += src->stream_mode_bootstrap_suppressed_samples;
     dst->tile_size_128x64_sent += src->tile_size_128x64_sent;
     dst->tile_size_64x64_sent += src->tile_size_64x64_sent;
     dst->tile_size_32x32_sent += src->tile_size_32x32_sent;
@@ -5216,6 +5348,15 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->client_audio_underflows += src->client_audio_underflows;
     dst->client_video_audio_sync_holds += src->client_video_audio_sync_holds;
     dst->client_video_audio_sync_drops += src->client_video_audio_sync_drops;
+    dst->client_video_queue_overflow_drops += src->client_video_queue_overflow_drops;
+    dst->client_video_queue_depth = src->client_video_queue_depth;
+    if (src->client_video_queue_depth_max > dst->client_video_queue_depth_max)
+    {
+        dst->client_video_queue_depth_max = src->client_video_queue_depth_max;
+    }
+    dst->client_video_oldest_pts_usec = src->client_video_oldest_pts_usec;
+    dst->client_video_audio_delta_samples = src->client_video_audio_delta_samples;
+    dst->client_tile_frames_presented += src->client_tile_frames_presented;
     dst->retx_req_rx += src->retx_req_rx;
     dst->retx_tiles_req += src->retx_tiles_req;
     dst->retx_req_ignored_live += src->retx_req_ignored_live;
@@ -5481,10 +5622,13 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
         stats_log->prev_stream_mode = stream_mode;
     }
 
-    bool stream_mode_activity = s.stream_mode_frame_samples != 0 &&
-                                (s.stream_mode_dirty_coverage_per_mille_sum != 0 ||
-                                 s.stream_mode_pending_coverage_per_mille_sum != 0 ||
-                                 s.stream_mode_budget_pressure_frames != 0 || adaptive_capture_fps < requested_capture_fps);
+    bool stream_mode_activity = s.stream_mode_full_refresh_samples != 0 ||
+                                s.stream_mode_bootstrap_suppressed_samples != 0 ||
+                                (s.stream_mode_frame_samples != 0 &&
+                                 (s.stream_mode_dirty_coverage_per_mille_sum != 0 ||
+                                  s.stream_mode_pending_coverage_per_mille_sum != 0 ||
+                                  s.stream_mode_budget_pressure_frames != 0 ||
+                                  adaptive_capture_fps < requested_capture_fps));
     if (stream_mode_activity)
     {
         const double total_tiles = server->total_tiles != 0 ? (double)server->total_tiles : 1.0;
@@ -5500,10 +5644,12 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                                                 ? ((double)limited_udp_kib_per_second * 1024.0) / (wire_avg_bytes * total_tiles)
                                                 : 0.0;
 
-        WD_LOG_DEBUG("stream-mode/min: capture_samples=%llu changed_samples=%llu full_refresh_samples=%llu dirty_avg_pct=%.1f dirty_peak_pct=%.1f pending_avg_pct=%.1f pending_peak_pct=%.1f budget_pressure_frames=%llu full_refresh_budget_pressure_frames=%llu budget_pressure_pct=%.1f video_mode=%s video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u est_tile_full_refresh_mib=%.2f est_full_refreshes_per_sec=%.1f",
+        WD_LOG_DEBUG("stream-mode/min: capture_samples=%llu changed_samples=%llu full_refresh_samples=%llu bootstrap_suppressed=%llu dirty_avg_pct=%.1f dirty_peak_pct=%.1f pending_avg_pct=%.1f pending_peak_pct=%.1f budget_pressure_frames=%llu full_refresh_budget_pressure_frames=%llu budget_pressure_pct=%.1f video_mode=%s video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u est_tile_full_refresh_mib=%.2f est_full_refreshes_per_sec=%.1f",
                      (unsigned long long)s.stream_mode_frame_samples,
                      (unsigned long long)s.stream_mode_changed_frame_samples,
-                     (unsigned long long)s.stream_mode_full_refresh_samples, dirty_avg_pct, dirty_peak_pct,
+                     (unsigned long long)s.stream_mode_full_refresh_samples,
+                     (unsigned long long)s.stream_mode_bootstrap_suppressed_samples,
+                     dirty_avg_pct, dirty_peak_pct,
                      pending_avg_pct, pending_peak_pct,
                      (unsigned long long)s.stream_mode_budget_pressure_frames,
                      (unsigned long long)s.stream_mode_full_refresh_budget_pressure_frames, budget_pressure_pct,
@@ -5683,10 +5829,11 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                            s.client_old_generation_tiles != 0 || s.client_retx_requests_tx != 0 ||
                            s.client_udp_interarrival_samples != 0 || s.client_render_frames != 0 ||
                            s.client_present_samples != 0 || s.client_input_present_samples != 0 ||
-                           s.client_render_visible_reports != 0 || s.client_render_hidden_reports != 0;
+                           s.client_render_visible_reports != 0 || s.client_render_hidden_reports != 0 ||
+                           s.client_tile_frames_presented != 0;
     if (client_activity)
     {
-        WD_LOG_DEBUG("client/min: reports=%llu visible=%llu hidden=%llu completed=%llu udp_kib=%.1f partial_timeouts=%llu old_gen=%llu retx_req_tx=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f remote_render_frames=%llu present_avg_ms=%.2f present_max_ms=%.2f input_present_avg_ms=%.2f",
+        WD_LOG_DEBUG("client/min: reports=%llu visible=%llu hidden=%llu completed=%llu udp_kib=%.1f partial_timeouts=%llu old_gen=%llu retx_req_tx=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f remote_render_frames=%llu tile_presented=%llu present_avg_ms=%.2f present_max_ms=%.2f input_present_avg_ms=%.2f",
                      (unsigned long long)s.client_stats_rx,
                      (unsigned long long)s.client_render_visible_reports,
                      (unsigned long long)s.client_render_hidden_reports,
@@ -5697,6 +5844,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      wd_avg_ms(s.client_udp_interarrival_jitter_sum_ns, s.client_udp_interarrival_jitter_samples),
                      (double)s.client_udp_interarrival_max_ns / 1000000.0,
                      (unsigned long long)s.client_render_frames,
+                     (unsigned long long)s.client_tile_frames_presented,
                      wd_avg_ms(s.client_present_sum_ns, s.client_present_samples),
                      (double)s.client_present_max_ns / 1000000.0,
                      wd_avg_ms(s.client_input_present_sum_ns, s.client_input_present_samples));
@@ -5707,9 +5855,10 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
         s.client_video_frames_presented != 0 || s.client_video_decode_failed != 0 ||
         s.client_video_publish_failed != 0 || s.client_video_control_frames_rx != 0 ||
         s.client_video_invalid_frames_rx != 0 || s.client_video_stale_frames_dropped != 0 ||
-        s.client_video_need_keyframe_drops != 0 || s.client_video_decoder_resets != 0)
+        s.client_video_need_keyframe_drops != 0 || s.client_video_decoder_resets != 0 ||
+        s.client_video_queue_depth != 0 || s.client_video_queue_overflow_drops != 0)
     {
-        WD_LOG_DEBUG("client-video/min: messages=%llu data=%llu legacy_rx=%llu decoded=%llu presented=%llu control=%llu invalid=%llu stale_drop=%llu kib=%.1f decode_avg_ms=%.2f present_age_avg_ms=%.2f decode_failed=%llu publish_failed=%llu need_keyframe_drops=%llu resets=%llu last_rx=%llu last_presented=%llu",
+        WD_LOG_DEBUG("client-video/min: messages=%llu data=%llu legacy_rx=%llu decoded=%llu presented=%llu control=%llu invalid=%llu stale_drop=%llu kib=%.1f decode_avg_ms=%.2f present_age_avg_ms=%.2f decode_failed=%llu publish_failed=%llu need_keyframe_drops=%llu resets=%llu last_rx=%llu last_presented=%llu queue=%u/%u queue_overflow=%llu oldest_pts_us=%llu av_delta_samples=%lld",
                      (unsigned long long)s.client_video_messages_rx,
                      (unsigned long long)s.client_video_data_frames_rx,
                      (unsigned long long)s.client_video_frames_rx,
@@ -5726,14 +5875,22 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      (unsigned long long)s.client_video_need_keyframe_drops,
                      (unsigned long long)s.client_video_decoder_resets,
                      (unsigned long long)s.client_video_last_frame_id_rx,
-                     (unsigned long long)s.client_video_last_frame_id_presented);
+                     (unsigned long long)s.client_video_last_frame_id_presented,
+                     (unsigned)s.client_video_queue_depth,
+                     (unsigned)s.client_video_queue_depth_max,
+                     (unsigned long long)s.client_video_queue_overflow_drops,
+                     (unsigned long long)s.client_video_oldest_pts_usec,
+                     (long long)s.client_video_audio_delta_samples);
     }
 
-    if (s.audio_captured_frames != 0 || s.audio_capture_overruns != 0 ||
-        s.audio_encoded_packets != 0 || s.audio_queue_drops != 0 ||
-        s.audio_discontinuities != 0 || s.audio_encode_failures != 0)
+    const bool audio_stream_running = wd_audio_stream_running(net->audio_stream);
+    if (audio_stream_running || s.audio_captured_frames != 0 ||
+        s.audio_capture_overruns != 0 || s.audio_encoded_packets != 0 ||
+        s.audio_queue_drops != 0 || s.audio_discontinuities != 0 ||
+        s.audio_encode_failures != 0)
     {
-        WD_LOG_DEBUG("audio-stream/min: captured_frames=%llu encoded_packets=%llu encoded_kib=%.1f capture_overruns=%llu queue_drops=%llu discontinuities=%llu encode_failed=%llu",
+        WD_LOG_DEBUG("audio-stream/min: running=%s captured_frames=%llu encoded_packets=%llu encoded_kib=%.1f capture_overruns=%llu queue_drops=%llu discontinuities=%llu encode_failed=%llu",
+                     audio_stream_running ? "yes" : "no",
                      (unsigned long long)s.audio_captured_frames,
                      (unsigned long long)s.audio_encoded_packets,
                      (double)s.audio_encoded_bytes / 1024.0,

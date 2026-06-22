@@ -40,6 +40,9 @@ class ClientDirtyTileGrid {
     std::vector<RowRun>  current_runs_;
 };
 
+bool configure_client_dirty_tile_grid(ClientDirtyTileGrid& grid, uint32_t frame_width, uint32_t frame_height,
+                                      uint16_t tile_width, uint16_t tile_height);
+
 enum class DirtyTextureUploadMode : uint8_t {
     Rects,
     Bounds,

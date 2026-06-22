@@ -88,6 +88,19 @@ void test_upload_planner_prices_sparse_updates_separately_from_locks() {
             "multiple sparse SDL_UpdateTexture calls should not be priced as texture locks");
 }
 
+
+void test_initial_connection_configures_dirty_grid_without_resize() {
+    ClientDirtyTileGrid grid;
+    require(configure_client_dirty_tile_grid(grid, 1422, 773, 16, 16),
+            "stable-geometry connection should configure the dirty grid");
+    require(grid.mark_rect({0, 0, 16, 16}),
+            "cached reconnect tile should be accepted before any resize event");
+    require(grid.mark_rect({1408, 768, 14, 5}),
+            "cached reconnect edge tile should be accepted at final geometry");
+    require(grid.dirty_tile_count() == 2,
+            "reconnect dirty grid should retain cached framebuffer work");
+}
+
 void test_dirty_tile_grid_randomized_exact_coverage() {
     constexpr uint32_t frame_width = 50;
     constexpr uint32_t frame_height = 34;
@@ -197,6 +210,49 @@ void test_render_wakeup_sequence_and_wait() {
     const uint64_t observed = wake.sequence();
     wake.signal();
     require(wake.wait_for_change(observed, 500), "a signal before waiting should not be lost");
+}
+
+
+ClientVideoFrameBuffer make_test_video_frame(uint8_t fill) {
+    ClientVideoFrameBuffer frame{};
+    frame.format = ClientVideoPixelFormat::IYUV;
+    frame.width = 4;
+    frame.height = 4;
+    frame.y_pitch = 4;
+    frame.uv_pitch = 2;
+    frame.u_offset = 16;
+    frame.v_offset = 20;
+    frame.bytes.assign(24, fill);
+    return frame;
+}
+
+void test_video_present_queue_preserves_held_head() {
+    ClientVideoPresentQueue queue(3);
+    require(queue.push_decoded(make_test_video_frame(1), 4, 4, 1, 1000, 9),
+            "first decoded frame should queue");
+    require(queue.push_decoded(make_test_video_frame(2), 4, 4, 2, 2000, 9),
+            "second decoded frame should queue");
+    require(queue.push_decoded(make_test_video_frame(3), 4, 4, 3, 3000, 9),
+            "third decoded frame should queue");
+
+    bool dropped_newest = false;
+    ClientVideoFrameBuffer decode_buffer = queue.take_decode_buffer(dropped_newest);
+    require(dropped_newest, "a full queue should recycle the newest waiting frame");
+    require(queue.front() && queue.front()->frame_id == 1,
+            "overflow must preserve the oldest frame waiting for audio");
+
+    decode_buffer.bytes.assign(decode_buffer.bytes.size(), 4);
+    require(queue.push_decoded(std::move(decode_buffer), 4, 4, 4, 4000, 9),
+            "latest decoded frame should replace the discarded queue tail");
+
+    ClientQueuedVideoFrame frame = queue.pop_front();
+    require(frame.frame_id == 1, "held presentation head should remain first");
+    queue.recycle(std::move(frame.buffer));
+    frame = queue.pop_front();
+    require(frame.frame_id == 2, "older queued frame should retain ordering");
+    frame = queue.pop_front();
+    require(frame.frame_id == 4, "newest decoded frame should remain available");
+    require(queue.empty(), "queue should drain in presentation order");
 }
 
 void test_iyuv_frame_buffer_layout_validation() {
@@ -413,9 +469,11 @@ int main() {
     test_upload_planner_modes();
     test_upload_planner_prices_sparse_updates_separately_from_locks();
     test_dirty_tile_grid_deduplicates_and_coalesces();
+    test_initial_connection_configures_dirty_grid_without_resize();
     test_dirty_tile_grid_randomized_exact_coverage();
     test_video_upload_preserves_pending_tile_work();
     test_render_wakeup_sequence_and_wait();
+    test_video_present_queue_preserves_held_head();
     test_iyuv_frame_buffer_layout_validation();
     test_stream_ownership_epochs();
     test_remote_content_epochs_reject_late_cross_transport_packets();

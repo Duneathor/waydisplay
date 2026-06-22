@@ -443,6 +443,10 @@ static bool wd_video_encoder_configure_software(struct wd_video_encoder* encoder
     {
         (void)av_opt_set(encoder->codec_ctx->priv_data, "preset", "ultrafast", 0);
         (void)av_opt_set(encoder->codec_ctx->priv_data, "tune", "zerolatency", 0);
+        /* AVFrame.pict_type requests an intra picture.  libx264/libx265 may
+         * otherwise choose a non-IDR intra picture, which is not sufficient
+         * for a client that has discarded its decoder reference state. */
+        (void)av_opt_set(encoder->codec_ctx->priv_data, "forced-idr", "1", 0);
         if (config->codec == WD_VIDEO_CODEC_H264)
         {
             (void)av_opt_set(encoder->codec_ctx->priv_data, "x264-params",

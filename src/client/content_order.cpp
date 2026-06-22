@@ -13,12 +13,7 @@ void reset_pending_content_locked(ClientState& state, ClientContentOwner owner) 
     state.pending_dirty_rect_count.store(0, std::memory_order_release);
     std::fill(state.pending_present_generation.begin(), state.pending_present_generation.end(), 0);
 
-    state.video_framebuffer.clear();
-    state.video_frame_width = 0;
-    state.video_frame_height = 0;
-    state.video_frame_id = 0;
-    state.video_frame_pts_usec = 0;
-    state.video_frame_epoch = 0;
+    state.video_present_queue.clear();
     state.pending_video_frame_dirty.store(false, std::memory_order_release);
 
     /* A remote content-epoch advance invalidates any upload already in

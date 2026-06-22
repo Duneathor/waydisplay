@@ -7,6 +7,7 @@
 #include "render_wakeup.hpp"
 #include "stream_ownership.hpp"
 #include "video_decoder.hpp"
+#include "video_present_queue.hpp"
 #include "audio_playback.hpp"
 #include "video_transition.hpp"
 
@@ -153,6 +154,10 @@ struct ClientStats {
     std::atomic<uint64_t> video_present_latency_sum_ns{0};
     std::atomic<uint64_t> video_audio_sync_holds{0};
     std::atomic<uint64_t> video_audio_sync_drops{0};
+    std::atomic<uint64_t> video_queue_overflow_drops{0};
+    std::atomic<uint64_t> video_queue_depth_max{0};
+    std::atomic<int64_t>  video_audio_delta_samples{0};
+    std::atomic<uint64_t> tile_frames_presented{0};
     std::atomic<uint64_t> audio_messages_rx{0};
     std::atomic<uint64_t> audio_packets_rx{0};
     std::atomic<uint64_t> audio_bytes_rx{0};
@@ -285,6 +290,12 @@ struct ClientStatsSnapshot {
     uint64_t video_present_latency_sum_ns = 0;
     uint64_t video_audio_sync_holds = 0;
     uint64_t video_audio_sync_drops = 0;
+    uint64_t video_queue_overflow_drops = 0;
+    uint32_t video_queue_depth = 0;
+    uint32_t video_queue_depth_max = 0;
+    uint64_t video_oldest_pts_usec = 0;
+    int64_t video_audio_delta_samples = 0;
+    uint64_t tile_frames_presented = 0;
     uint64_t audio_messages_rx = 0;
     uint64_t audio_packets_rx = 0;
     uint64_t audio_bytes_rx = 0;
@@ -427,12 +438,7 @@ struct ClientState {
     std::vector<uint64_t> pending_present_generation;
 
     std::mutex              video_frame_mutex;
-    ClientVideoFrameBuffer  video_framebuffer;
-    uint32_t                video_frame_width  = 0;
-    uint32_t                video_frame_height = 0;
-    uint64_t                video_frame_id     = 0;
-    uint64_t                video_frame_pts_usec = 0;
-    uint64_t                video_frame_epoch = 0;
+    ClientVideoPresentQueue video_present_queue{};
     std::atomic<bool>       pending_video_frame_dirty{false};
 
     std::mutex udp_processing_mutex;

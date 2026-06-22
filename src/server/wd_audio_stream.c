@@ -20,7 +20,8 @@
 #define WD_AUDIO_TX_QUEUE_MS 100u
 #define WD_AUDIO_TX_MIN_PENDING_BYTES 4096u
 #define WD_AUDIO_WORKER_SLEEP_US 2000u
-#define WD_AUDIO_CAPTURE_REANCHOR_MS 100u
+#define WD_AUDIO_CAPTURE_NSEC_TOLERANCE_CYCLES 2u
+#define WD_AUDIO_CAPTURE_IDLE_DIAGNOSTIC_NS (10ull * 1000ull * 1000ull * 1000ull)
 
 
 static uint64_t wd_audio_tx_max_pending_bytes(uint32_t bitrate) {
@@ -64,6 +65,9 @@ struct wd_audio_stream {
     bool force_discontinuity;
     bool capture_delivery_enabled;
     uint32_t capture_callbacks_active;
+    bool capture_active_logged;
+    bool capture_idle_logged;
+    uint64_t capture_started_ns;
 
     int tcp_fd;
     uint8_t channels;
@@ -72,7 +76,13 @@ struct wd_audio_stream {
     uint64_t tx_max_pending_bytes;
     uint64_t media_clock_start_ns;
     uint64_t capture_next_pts;
+    uint64_t capture_clock_origin_position;
+    uint64_t capture_clock_origin_pts;
+    uint32_t capture_clock_id;
+    uint32_t capture_clock_rate_num;
+    uint32_t capture_clock_rate_denom;
     bool capture_pts_valid;
+    bool capture_clock_valid;
 
     struct wd_audio_capture* capture;
     struct wd_audio_encoder* encoder;
@@ -85,11 +95,27 @@ struct wd_audio_stream {
     struct wd_audio_stream_stats stats;
 };
 
-static void wd_audio_stream_capture(void* userdata, const float* const* planes,
-                                    uint32_t frames, uint8_t channels,
-                                    uint64_t capture_timestamp_ns) {
+static uint64_t wd_audio_graph_ticks_to_samples(uint64_t ticks, uint32_t rate_num,
+                                                 uint32_t rate_denom) {
+    if (rate_num == 0 || rate_denom == 0)
+    {
+        return 0;
+    }
+    const __uint128_t scaled = (__uint128_t)ticks * WD_AUDIO_SAMPLE_RATE_DEFAULT *
+                               rate_num;
+    const __uint128_t samples = scaled / rate_denom;
+    return samples > UINT64_MAX ? UINT64_MAX : (uint64_t)samples;
+}
+
+static uint64_t wd_audio_abs_difference(uint64_t a, uint64_t b) {
+    return a >= b ? a - b : b - a;
+}
+
+static void wd_audio_stream_capture(
+    void* userdata, const float* samples, uint32_t frames, uint8_t channels,
+    const struct wd_audio_capture_timing* timing) {
     struct wd_audio_stream* stream = userdata;
-    if (!stream || !planes || frames == 0 || channels < stream->channels ||
+    if (!stream || !samples || !timing || frames == 0 || channels < stream->channels ||
         !__atomic_load_n(&stream->capture_delivery_enabled, __ATOMIC_ACQUIRE))
     {
         return;
@@ -102,32 +128,89 @@ static void wd_audio_stream_capture(void* userdata, const float* const* planes,
         return;
     }
 
-    const uint64_t end_pts = wd_media_ns_to_samples(capture_timestamp_ns,
-                                                     stream->media_clock_start_ns,
-                                                     WD_AUDIO_SAMPLE_RATE_DEFAULT);
-    const uint64_t observed_first_pts = end_pts >= frames ? end_pts - frames : 0;
+    const uint64_t observed_first_pts = wd_media_ns_to_samples(
+        timing->cycle_start_ns, stream->media_clock_start_ns,
+        WD_AUDIO_SAMPLE_RATE_DEFAULT);
+    const uint64_t tolerance = (uint64_t)frames *
+                               WD_AUDIO_CAPTURE_NSEC_TOLERANCE_CYCLES;
     uint64_t first_pts = observed_first_pts;
-    if (stream->capture_pts_valid)
+
+    if (timing->position_reliable)
     {
-        const uint64_t expected = stream->capture_next_pts;
-        const uint64_t difference = observed_first_pts >= expected
-                                        ? observed_first_pts - expected
-                                        : expected - observed_first_pts;
-        const uint64_t reanchor_samples =
-            ((uint64_t)WD_AUDIO_SAMPLE_RATE_DEFAULT * WD_AUDIO_CAPTURE_REANCHOR_MS) / 1000u;
-        if (difference <= reanchor_samples)
+        bool clock_continuous = stream->capture_clock_valid &&
+                                !timing->discontinuity &&
+                                timing->clock_id == stream->capture_clock_id &&
+                                timing->rate_num == stream->capture_clock_rate_num &&
+                                timing->rate_denom == stream->capture_clock_rate_denom &&
+                                timing->position >= stream->capture_clock_origin_position;
+        if (clock_continuous)
         {
-            first_pts = expected;
+            const uint64_t delta_ticks = timing->position -
+                                         stream->capture_clock_origin_position;
+            const uint64_t delta_samples = wd_audio_graph_ticks_to_samples(
+                delta_ticks, timing->rate_num, timing->rate_denom);
+            if (UINT64_MAX - stream->capture_clock_origin_pts < delta_samples)
+            {
+                clock_continuous = false;
+            }
+            else
+            {
+                first_pts = stream->capture_clock_origin_pts + delta_samples;
+            }
         }
-        else
+
+        if (!clock_continuous)
         {
+            if (stream->capture_pts_valid)
+            {
+                __atomic_store_n(&stream->force_discontinuity, true,
+                                 __ATOMIC_RELEASE);
+            }
+            stream->capture_clock_valid = true;
+            stream->capture_clock_origin_position = timing->position;
+            stream->capture_clock_origin_pts = observed_first_pts;
+            stream->capture_clock_id = timing->clock_id;
+            stream->capture_clock_rate_num = timing->rate_num;
+            stream->capture_clock_rate_denom = timing->rate_denom;
+            first_pts = observed_first_pts;
+        }
+        else if (stream->capture_pts_valid &&
+                 wd_audio_abs_difference(first_pts, stream->capture_next_pts) >
+                     tolerance)
+        {
+            /* Defensive fallback for a driver that changes position without
+             * setting DISCONT. Re-anchor to the monotonic graph timestamp. */
             __atomic_store_n(&stream->force_discontinuity, true, __ATOMIC_RELEASE);
+            stream->capture_clock_origin_position = timing->position;
+            stream->capture_clock_origin_pts = observed_first_pts;
+            first_pts = observed_first_pts;
         }
     }
-    stream->capture_pts_valid = true;
-    stream->capture_next_pts = first_pts + frames;
+    else
+    {
+        stream->capture_clock_valid = false;
+        if (stream->capture_pts_valid)
+        {
+            const uint64_t difference = wd_audio_abs_difference(
+                observed_first_pts, stream->capture_next_pts);
+            if (!timing->discontinuity && difference <= tolerance)
+            {
+                first_pts = stream->capture_next_pts;
+            }
+            else
+            {
+                __atomic_store_n(&stream->force_discontinuity, true,
+                                 __ATOMIC_RELEASE);
+            }
+        }
+    }
 
-    if (!wd_audio_pcm_ring_write_planar(&stream->ring, planes, frames, first_pts))
+    stream->capture_pts_valid = true;
+    stream->capture_next_pts = UINT64_MAX - first_pts < frames
+        ? UINT64_MAX
+        : first_pts + frames;
+
+    if (!wd_audio_pcm_ring_write(&stream->ring, samples, frames, first_pts))
     {
         __atomic_store_n(&stream->force_discontinuity, true, __ATOMIC_RELEASE);
         __atomic_add_fetch(&stream->stats.capture_overruns, 1, __ATOMIC_RELAXED);
@@ -176,6 +259,39 @@ static void* wd_audio_stream_worker(void* userdata) {
 
     while (!__atomic_load_n(&stream->stop_requested, __ATOMIC_ACQUIRE))
     {
+        if (!wd_audio_capture_healthy(stream->capture))
+        {
+            WD_LOG_ERROR("audio capture backend failed; closing audio channel");
+            __atomic_store_n(&stream->running, false, __ATOMIC_RELEASE);
+            __atomic_store_n(&stream->stop_requested, true, __ATOMIC_RELEASE);
+            if (stream->tcp_fd >= 0)
+            {
+                (void)shutdown(stream->tcp_fd, SHUT_RDWR);
+            }
+            break;
+        }
+
+        const uint64_t captured_frames = __atomic_load_n(
+            &stream->stats.captured_frames, __ATOMIC_RELAXED);
+        if (captured_frames != 0 && !stream->capture_active_logged)
+        {
+            stream->capture_active_logged = true;
+            WD_LOG_INFO("private audio route active: sink=%s captured_frames=%llu",
+                        wd_audio_capture_sink_name(stream->capture),
+                        (unsigned long long)captured_frames);
+        }
+        else if (captured_frames == 0 && !stream->capture_idle_logged &&
+                 wd_now_ns() - stream->capture_started_ns >=
+                     WD_AUDIO_CAPTURE_IDLE_DIAGNOSTIC_NS)
+        {
+            stream->capture_idle_logged = true;
+            WD_LOG_WARN("private audio sink has received no PCM for 10 seconds: "
+                        "sink=%s target=%s; the launched application may be idle "
+                        "or its playback stream may not be routed to WayDisplay",
+                        wd_audio_capture_sink_name(stream->capture),
+                        wd_audio_capture_sink_target(stream->capture));
+        }
+
         wd_async_tcp_sender_reap(stream->tx);
 
         if (wd_async_tcp_sender_pending_bytes(stream->tx) >=
@@ -257,6 +373,35 @@ static void* wd_audio_stream_worker(void* userdata) {
     return NULL;
 }
 
+static bool wd_audio_stream_ensure_capture_locked(struct wd_audio_stream* stream) {
+    if (!stream)
+    {
+        return false;
+    }
+    if (wd_audio_capture_healthy(stream->capture))
+    {
+        return true;
+    }
+    if (stream->worker_started || stream->capture_started)
+    {
+        return false;
+    }
+
+    if (stream->capture)
+    {
+        WD_LOG_WARN("recreating unavailable PipeWire private audio sink");
+        wd_audio_capture_destroy(stream->capture);
+        stream->capture = NULL;
+    }
+    if (!wd_audio_capture_create(&stream->capture, WD_AUDIO_CHANNELS_MAX,
+                                 wd_audio_stream_capture, stream))
+    {
+        WD_LOG_ERROR("failed to recreate PipeWire private audio sink");
+        return false;
+    }
+    return true;
+}
+
 bool wd_audio_stream_create(struct wd_audio_stream** out_stream) {
     if (!out_stream || !wd_audio_capture_available() || !wd_audio_encoder_available())
     {
@@ -270,8 +415,7 @@ bool wd_audio_stream_create(struct wd_audio_stream** out_stream) {
         return false;
     }
     stream->tcp_fd = -1;
-    if (!wd_audio_capture_create(&stream->capture, WD_AUDIO_CHANNELS_MAX,
-                                 wd_audio_stream_capture, stream))
+    if (!wd_audio_stream_ensure_capture_locked(stream))
     {
         pthread_mutex_destroy(&stream->lock);
         free(stream);
@@ -297,8 +441,17 @@ bool wd_audio_stream_available(void) {
     return wd_audio_capture_available() && wd_audio_encoder_available();
 }
 
-bool wd_audio_stream_ready(const struct wd_audio_stream* stream) {
-    return stream && stream->capture != NULL && wd_audio_stream_available();
+bool wd_audio_stream_ready(struct wd_audio_stream* stream) {
+    if (!stream || !wd_audio_stream_available())
+    {
+        return false;
+    }
+    pthread_mutex_lock(&stream->lock);
+    const bool ready = (stream->worker_started || stream->capture_started)
+        ? wd_audio_capture_healthy(stream->capture)
+        : wd_audio_stream_ensure_capture_locked(stream);
+    pthread_mutex_unlock(&stream->lock);
+    return ready;
 }
 
 const char* wd_audio_stream_sink_name(const struct wd_audio_stream* stream) {
@@ -332,6 +485,11 @@ bool wd_audio_stream_start(struct wd_audio_stream* stream, int tcp_fd,
 
     wd_audio_stream_stop(stream);
     pthread_mutex_lock(&stream->lock);
+    if (!wd_audio_stream_ensure_capture_locked(stream))
+    {
+        pthread_mutex_unlock(&stream->lock);
+        return false;
+    }
 
     memset(&stream->stats, 0, sizeof(stream->stats));
     stream->tcp_fd = tcp_fd;
@@ -341,7 +499,16 @@ bool wd_audio_stream_start(struct wd_audio_stream* stream, int tcp_fd,
     stream->tx_max_pending_bytes = wd_audio_tx_max_pending_bytes(stream->bitrate);
     stream->media_clock_start_ns = media_clock_start_ns;
     stream->capture_next_pts = 0;
+    stream->capture_clock_origin_position = 0;
+    stream->capture_clock_origin_pts = 0;
+    stream->capture_clock_id = 0;
+    stream->capture_clock_rate_num = 0;
+    stream->capture_clock_rate_denom = 0;
     stream->capture_pts_valid = false;
+    stream->capture_clock_valid = false;
+    stream->capture_active_logged = false;
+    stream->capture_idle_logged = false;
+    stream->capture_started_ns = wd_now_ns();
     wd_audio_limit_socket_send_buffer(tcp_fd, stream->tx_max_pending_bytes);
     stream->stop_requested = false;
     stream->force_discontinuity = true;

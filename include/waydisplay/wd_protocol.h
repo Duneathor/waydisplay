@@ -410,6 +410,12 @@ struct wd_client_stats_payload {
     uint64_t audio_underflows;
     uint64_t video_audio_sync_holds;
     uint64_t video_audio_sync_drops;
+    uint64_t video_queue_overflow_drops;
+    uint32_t video_queue_depth;
+    uint32_t video_queue_depth_max;
+    uint64_t video_oldest_pts_usec;
+    int64_t  video_audio_delta_samples;
+    uint64_t tile_frames_presented;
 };
 
 struct wd_input_channel_hello_payload {
@@ -903,7 +909,7 @@ static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_m
 static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
 static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
-static_assert(sizeof(struct wd_client_stats_payload) == 381, "unexpected wd_client_stats_payload size");
+static_assert(sizeof(struct wd_client_stats_payload) == 421, "unexpected wd_client_stats_payload size");
 static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
 static_assert(sizeof(struct wd_selection_channel_hello_payload) == 9, "unexpected wd_selection_channel_hello_payload size");
 static_assert(sizeof(struct wd_video_channel_hello_payload) == 15, "unexpected wd_video_channel_hello_payload size");
@@ -931,7 +937,7 @@ _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_
 _Static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 _Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
 _Static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
-_Static_assert(sizeof(struct wd_client_stats_payload) == 381, "unexpected wd_client_stats_payload size");
+_Static_assert(sizeof(struct wd_client_stats_payload) == 421, "unexpected wd_client_stats_payload size");
 _Static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_selection_channel_hello_payload) == 9, "unexpected wd_selection_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_video_channel_hello_payload) == 15, "unexpected wd_video_channel_hello_payload size");

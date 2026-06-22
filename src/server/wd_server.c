@@ -3,6 +3,7 @@
 #include "wd_async_tcp.h"
 #include "wd_async_udp.h"
 #include "wd_audio_stream.h"
+#include "wd_audio_routing.h"
 
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
@@ -87,6 +88,16 @@ static bool launch_startup_command(struct wd_server* server) {
         return true;
     }
 
+    const char* audio_sink = wd_audio_stream_sink_name(server->net.audio_stream);
+    const char* audio_target = wd_audio_stream_sink_target(server->net.audio_stream);
+    struct wd_audio_routing_env audio_routing;
+    if (!wd_audio_routing_env_build(&audio_routing, audio_sink, audio_target,
+                                    getpid()))
+    {
+        WD_LOG_ERROR("failed to construct private audio routing environment");
+        return false;
+    }
+
     pid_t pid = fork();
     if (pid < 0)
     {
@@ -122,21 +133,21 @@ static bool launch_startup_command(struct wd_server* server) {
          * PipeWire sink. This prevents local playback on the server and, when
          * server and client share a host, prevents the client output from
          * being captured back into the transport as a feedback loop. */
-        const char* audio_sink = wd_audio_stream_sink_name(server->net.audio_stream);
-        const char* audio_target =
-            wd_audio_stream_sink_target(server->net.audio_stream);
-        if (audio_sink && audio_sink[0] != '\0' &&
-            audio_target && audio_target[0] != '\0')
+        /* Never leak routing inherited by the compositor into the child.
+         * The generated values select the private node and make target failure
+         * terminal instead of falling back to the machine's physical sink. */
+        unsetenv("PULSE_SINK");
+        unsetenv("PULSE_PROP");
+        unsetenv("PIPEWIRE_NODE");
+        unsetenv("PIPEWIRE_PROPS");
+        unsetenv("PIPEWIRE_ALSA");
+
+        if (audio_routing.enabled)
         {
-            /* PulseAudio-compatible clients select sinks by node name. Native
-             * PipeWire and PipeWire-ALSA clients accept object.serial through
-             * PIPEWIRE_NODE; using the bound serial avoids session-manager
-             * name-resolution failures. Do not duplicate target.object in
-             * PIPEWIRE_PROPS because some clients merge it differently. */
-            setenv("PULSE_SINK", audio_sink, 1);
-            setenv("PIPEWIRE_NODE", audio_target, 1);
-            unsetenv("PIPEWIRE_PROPS");
-            unsetenv("PIPEWIRE_ALSA");
+            setenv("PULSE_SINK", audio_routing.pulse_sink, 1);
+            setenv("PULSE_PROP", audio_routing.pulse_props, 1);
+            setenv("PIPEWIRE_NODE", audio_routing.pipewire_target, 1);
+            setenv("PIPEWIRE_PROPS", audio_routing.pipewire_props, 1);
         }
 
 #if WAYDISPLAY_ENABLE_XWAYLAND
@@ -160,10 +171,13 @@ static bool launch_startup_command(struct wd_server* server) {
         _exit(127);
     }
 
-    const char* audio_sink = wd_audio_stream_sink_name(server->net.audio_stream);
-    WD_LOG_INFO("launched app pid=%d command=%s audio_sink=%s",
+    WD_LOG_INFO("launched app pid=%d command=%s audio_sink=%s "
+                "pipewire_target=%s audio_scope=%s fallback=%s",
                 pid, server->startup_command,
-                audio_sink && audio_sink[0] != '\0' ? audio_sink : "system-default");
+                audio_routing.enabled ? audio_routing.pulse_sink : "system-default",
+                audio_routing.enabled ? audio_routing.pipewire_target : "system-default",
+                audio_routing.enabled ? audio_routing.scope : "none",
+                audio_routing.enabled ? "disabled" : "system-policy");
 
     return true;
 }

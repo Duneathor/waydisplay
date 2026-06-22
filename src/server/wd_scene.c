@@ -1,5 +1,6 @@
 #include "wd_server.h"
 #include "wd_scene_policy.h"
+#include "wd_scene_graph.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -98,33 +99,7 @@ void wd_scene_init_listeners(struct wd_server* server) {
 }
 
 struct wd_view* wd_scene_view_from_node(struct wd_server* server, struct wlr_scene_node* node) {
-    if (!server)
-    {
-        return NULL;
-    }
-
-    while (node)
-    {
-        if (node->data)
-        {
-            struct wd_view* view;
-            wl_list_for_each(view, &server->views, link) {
-                if (node->data == view)
-                {
-                    return view;
-                }
-            }
-        }
-
-        if (!node->parent)
-        {
-            break;
-        }
-
-        node = &node->parent->node;
-    }
-
-    return NULL;
+    return wd_scene_graph_view_from_node(server, node);
 }
 
 static void remove_listener_if_linked(struct wl_listener* listener) {
@@ -154,7 +129,7 @@ void wd_scene_set_view_position(struct wd_view* view) {
     }
 #endif
 
-    wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+    (void)wd_scene_graph_set_view_position(view);
 }
 
 static struct wlr_surface* view_root_surface(struct wd_view* view) {
@@ -967,19 +942,10 @@ void wd_scene_raise_view(struct wd_view* view) {
         return;
     }
 
-    /*
-     * Raise in wlroots scene graph.
-     */
-    wlr_scene_node_raise_to_top(&view->scene_tree->node);
-
-    /*
-     * Also move to the tail of our view list. Reverse traversal uses the
-     * tail as the topmost compositor-managed view.
-     */
-    wl_list_remove(&view->link);
-    wl_list_insert(view->server->views.prev, &view->link);
-
-    wd_server_mark_view_dirty(view);
+    if (wd_scene_graph_raise_view(view))
+    {
+        wd_server_mark_view_dirty(view);
+    }
 }
 
 static void view_handle_commit(struct wl_listener* listener, void* data) {

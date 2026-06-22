@@ -1766,12 +1766,7 @@ void discard_pending_video_frame(ClientState& state) {
         std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
         std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
         const uint64_t tile_epoch = state.stream_ownership.end_video_stream();
-        state.video_framebuffer.clear();
-        state.video_frame_width = 0;
-        state.video_frame_height = 0;
-        state.video_frame_id = 0;
-        state.video_frame_pts_usec = 0;
-        state.video_frame_epoch = 0;
+        state.video_present_queue.clear();
         state.pending_video_frame_dirty.store(false, std::memory_order_release);
         if (state.pending_dirty_tiles.dirty_tile_count() != 0)
         {
@@ -1950,11 +1945,11 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
         return false;
     }
 
-    uint16_t config_width  = 0;
+    uint16_t config_width = 0;
     uint16_t config_height = 0;
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
-        config_width  = state.config.width;
+        config_width = state.config.width;
         config_height = state.config.height;
     }
 
@@ -1965,44 +1960,60 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
 
     {
         std::lock_guard<std::mutex> content_lock(state.remote_content_mutex);
-        if (frame.content_epoch != state.remote_content_epoch || state.remote_content_owner != ClientContentOwner::Video)
+        if (frame.content_epoch != state.remote_content_epoch ||
+            state.remote_content_owner != ClientContentOwner::Video)
         {
             return false;
         }
         std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
         std::lock_guard<std::mutex> generation_lock(state.generation_mutex);
         std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
-        /* Exchange ownership with the decoder instead of copying the decoded
-         * IYUV frame. The decoder receives a previously-used buffer and can
-         * reuse it on the next frame. */
-        if (!client_video_decoder_swap_output_frame(decoder, state.video_framebuffer))
-        {
-            return false;
-        }
-        if (!state.video_framebuffer.valid() || state.video_framebuffer.width != frame.width ||
-            state.video_framebuffer.height != frame.height)
-        {
-            /* Restore the decoder-owned buffer before reporting failure. */
-            (void)client_video_decoder_swap_output_frame(decoder, state.video_framebuffer);
-            return false;
-        }
 
         const ClientContentOwnershipSnapshot ownership = state.stream_ownership.snapshot();
         if (ownership.owner != ClientContentOwner::Video)
         {
-            (void)client_video_decoder_swap_output_frame(decoder, state.video_framebuffer);
             return false;
         }
-        const uint64_t video_epoch = ownership.epoch;
+
+        bool dropped_newest = false;
+        ClientVideoFrameBuffer decode_buffer =
+            state.video_present_queue.take_decode_buffer(dropped_newest);
+        if (!client_video_decoder_swap_output_frame(decoder, decode_buffer))
+        {
+            state.video_present_queue.recycle(std::move(decode_buffer));
+            return false;
+        }
+        if (!decode_buffer.valid() || decode_buffer.width != frame.width ||
+            decode_buffer.height != frame.height)
+        {
+            (void)client_video_decoder_swap_output_frame(decoder, decode_buffer);
+            state.video_present_queue.recycle(std::move(decode_buffer));
+            return false;
+        }
+
+        if (!state.video_present_queue.push_decoded(std::move(decode_buffer), frame.width,
+                                                    frame.height, frame.frame_id,
+                                                    frame.pts_usec, ownership.epoch))
+        {
+            return false;
+        }
+        if (dropped_newest)
+        {
+            state.stats.video_queue_overflow_drops.fetch_add(1, std::memory_order_relaxed);
+        }
+        const uint64_t depth = state.video_present_queue.size();
+        uint64_t observed = state.stats.video_queue_depth_max.load(std::memory_order_relaxed);
+        while (depth > observed &&
+               !state.stats.video_queue_depth_max.compare_exchange_weak(
+                   observed, depth, std::memory_order_relaxed, std::memory_order_relaxed))
+        {
+        }
+
         state.pending_dirty_tiles.clear();
         state.pending_dirty_rect_count.store(0, std::memory_order_release);
-        std::fill(state.pending_present_generation.begin(), state.pending_present_generation.end(), 0);
-        state.pending_dirty_epoch = video_epoch;
-        state.video_frame_width  = frame.width;
-        state.video_frame_height = frame.height;
-        state.video_frame_id     = frame.frame_id;
-        state.video_frame_pts_usec = frame.pts_usec;
-        state.video_frame_epoch = video_epoch;
+        std::fill(state.pending_present_generation.begin(),
+                  state.pending_present_generation.end(), 0);
+        state.pending_dirty_epoch = ownership.epoch;
         state.pending_video_frame_dirty.store(true, std::memory_order_release);
     }
 
@@ -2477,6 +2488,13 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
     state.presented_generation.assign(state.tile_count(), 0);
     state.pending_present_generation.assign(state.tile_count(), 0);
     state.pending_tile_telemetry.assign(state.tile_count(), ClientPendingTileTelemetry{});
+    if (!configure_client_dirty_tile_grid(state.pending_dirty_tiles, state.config.width, state.config.height,
+                                          state.config.tile_width, state.config.tile_height))
+    {
+        WD_LOG_ERROR("failed to configure client dirty tile grid during connection");
+        client_disconnect(state);
+        return false;
+    }
     client_reset_content_epoch(state, state.config.content_epoch, ClientContentOwner::Tiles);
 
     {

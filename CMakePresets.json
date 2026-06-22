@@ -7,28 +7,155 @@
   },
   "configurePresets": [
     {
-      "name": "tests",
-      "displayName": "WayDisplay unit tests",
+      "name": "tests-base",
+      "hidden": true,
       "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/build-tests",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "WAYDISPLAY_BUILD_TESTS": "ON",
+        "WAYDISPLAY_RUN_TESTS_ON_BUILD": "ON"
+      }
+    },
+    {
+      "name": "tests",
+      "displayName": "WayDisplay dependency-light unit tests",
+      "inherits": "tests-base",
+      "binaryDir": "${sourceDir}/build-tests",
+      "cacheVariables": {
+        "WAYDISPLAY_BUILD_CLIENT_SDL": "OFF",
+        "WAYDISPLAY_BUILD_WLROOTS_SERVER": "OFF"
+      }
+    },
+    {
+      "name": "tests-core",
+      "displayName": "WayDisplay core tests without optional backends",
+      "inherits": "tests-base",
+      "binaryDir": "${sourceDir}/build-tests-core",
+      "cacheVariables": {
         "WAYDISPLAY_BUILD_CLIENT_SDL": "OFF",
         "WAYDISPLAY_BUILD_WLROOTS_SERVER": "OFF",
-        "WAYDISPLAY_BUILD_TESTS": "ON"
+        "WAYDISPLAY_ENABLE_AUDIO": "OFF",
+        "WAYDISPLAY_ENABLE_H264_SERVER_ENCODER": "OFF",
+        "WAYDISPLAY_ENABLE_H265_SERVER_ENCODER": "OFF",
+        "WAYDISPLAY_ENABLE_H264_CLIENT_DECODER": "OFF",
+        "WAYDISPLAY_ENABLE_H265_CLIENT_DECODER": "OFF",
+        "WAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER": "OFF"
       }
+    },
+    {
+      "name": "tests-codecs",
+      "displayName": "WayDisplay FFmpeg and VAAPI codec tests",
+      "inherits": "tests-base",
+      "binaryDir": "${sourceDir}/build-tests-codecs",
+      "cacheVariables": {
+        "WAYDISPLAY_BUILD_CLIENT_SDL": "OFF",
+        "WAYDISPLAY_BUILD_WLROOTS_SERVER": "OFF",
+        "WAYDISPLAY_ENABLE_AUDIO": "OFF",
+        "WAYDISPLAY_ENABLE_H264_SERVER_ENCODER": "ON",
+        "WAYDISPLAY_ENABLE_H265_SERVER_ENCODER": "ON",
+        "WAYDISPLAY_ENABLE_H264_CLIENT_DECODER": "ON",
+        "WAYDISPLAY_ENABLE_H265_CLIENT_DECODER": "ON",
+        "WAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER": "ON"
+      }
+    },
+    {
+      "name": "tests-wlroots",
+      "displayName": "WayDisplay wlroots tests with Xwayland",
+      "inherits": "tests-base",
+      "binaryDir": "${sourceDir}/build-tests-wlroots",
+      "cacheVariables": {
+        "WAYDISPLAY_BUILD_CLIENT_SDL": "OFF",
+        "WAYDISPLAY_BUILD_WLROOTS_SERVER": "ON",
+        "WAYDISPLAY_ENABLE_XWAYLAND": "ON",
+        "WAYDISPLAY_ENABLE_AUDIO": "OFF",
+        "WAYDISPLAY_ENABLE_H264_SERVER_ENCODER": "OFF",
+        "WAYDISPLAY_ENABLE_H265_SERVER_ENCODER": "OFF",
+        "WAYDISPLAY_ENABLE_H264_CLIENT_DECODER": "OFF",
+        "WAYDISPLAY_ENABLE_H265_CLIENT_DECODER": "OFF",
+        "WAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER": "OFF"
+      }
+    },
+    {
+      "name": "tests-wlroots-no-xwayland",
+      "displayName": "WayDisplay wlroots tests without Xwayland",
+      "inherits": "tests-wlroots",
+      "binaryDir": "${sourceDir}/build-tests-wlroots-no-xwayland",
+      "cacheVariables": {
+        "WAYDISPLAY_ENABLE_XWAYLAND": "OFF"
+      }
+    },
+    {
+      "name": "tests-full",
+      "displayName": "WayDisplay full optional-backend test build",
+      "inherits": "tests-base",
+      "binaryDir": "${sourceDir}/build-tests-full"
     }
   ],
   "buildPresets": [
     {
       "name": "tests",
       "configurePreset": "tests"
+    },
+    {
+      "name": "tests-core",
+      "configurePreset": "tests-core"
+    },
+    {
+      "name": "tests-codecs",
+      "configurePreset": "tests-codecs"
+    },
+    {
+      "name": "tests-wlroots",
+      "configurePreset": "tests-wlroots"
+    },
+    {
+      "name": "tests-wlroots-no-xwayland",
+      "configurePreset": "tests-wlroots-no-xwayland"
+    },
+    {
+      "name": "tests-full",
+      "configurePreset": "tests-full"
     }
   ],
   "testPresets": [
     {
       "name": "tests",
       "configurePreset": "tests",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tests-core",
+      "configurePreset": "tests-core",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tests-codecs",
+      "configurePreset": "tests-codecs",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tests-wlroots",
+      "configurePreset": "tests-wlroots",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tests-wlroots-no-xwayland",
+      "configurePreset": "tests-wlroots-no-xwayland",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tests-full",
+      "configurePreset": "tests-full",
       "output": {
         "outputOnFailure": true
       }

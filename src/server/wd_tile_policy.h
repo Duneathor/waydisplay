@@ -26,6 +26,7 @@ struct wd_video_auto_entry_metrics {
     uint16_t requested_capture_fps;
     uint16_t adaptive_capture_fps;
     uint8_t minimum_dirty_percent;
+    bool selection_suppressed;
 };
 
 struct wd_video_auto_entry_result {

@@ -181,6 +181,11 @@ uint64_t ClientDirtyTileGrid::dirty_tile_count() const {
     return dirty_tile_count_;
 }
 
+bool configure_client_dirty_tile_grid(ClientDirtyTileGrid& grid, uint32_t frame_width, uint32_t frame_height,
+                                      uint16_t tile_width, uint16_t tile_height) {
+    return grid.reset(frame_width, frame_height, tile_width, tile_height);
+}
+
 ClientDirtyRect bounding_dirty_rect(const std::vector<ClientDirtyRect>& rects) {
     uint32_t min_x = UINT32_MAX;
     uint32_t min_y = UINT32_MAX;

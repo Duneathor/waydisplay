@@ -1699,6 +1699,8 @@ void* wd_net_thread_main(void* arg) {
 
         if (cached_refresh_tiles != 0)
         {
+            net->stream_policy.video_auto_bootstrap_suppressed = true;
+            net->stream_policy.video_auto_bootstrap_seconds = 0;
             WD_LOG_INFO("queued cached framebuffer refresh for new client: session=%u tiles=%u content_epoch=%llu",
                         net->session_id, cached_refresh_tiles,
                         (unsigned long long)net->content_epoch);
@@ -2224,6 +2226,15 @@ void* wd_net_thread_main(void* arg) {
                         net->stats.client_audio_underflows += cs.audio_underflows;
                         net->stats.client_video_audio_sync_holds += cs.video_audio_sync_holds;
                         net->stats.client_video_audio_sync_drops += cs.video_audio_sync_drops;
+                        net->stats.client_video_queue_overflow_drops += cs.video_queue_overflow_drops;
+                        net->stats.client_video_queue_depth = cs.video_queue_depth;
+                        if (cs.video_queue_depth_max > net->stats.client_video_queue_depth_max)
+                        {
+                            net->stats.client_video_queue_depth_max = cs.video_queue_depth_max;
+                        }
+                        net->stats.client_video_oldest_pts_usec = cs.video_oldest_pts_usec;
+                        net->stats.client_video_audio_delta_samples = cs.video_audio_delta_samples;
+                        net->stats.client_tile_frames_presented += cs.tile_frames_presented;
                         pthread_mutex_unlock(&net->lock);
                     }
                 }

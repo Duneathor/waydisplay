@@ -106,7 +106,8 @@ struct wd_video_auto_entry_result wd_video_auto_entry_evaluate(
                                     (uint32_t)metrics->requested_capture_fps * 85u;
     const bool queue_pressure = metrics->send_pressure_events != 0;
 
-    result.candidate = sustained_motion && (broad_motion || concentrated_motion) &&
+    result.candidate = !metrics->selection_suppressed && sustained_motion &&
+                       (broad_motion || concentrated_motion) &&
                        (wire_pressure || fps_suppressed || queue_pressure);
     return result;
 }

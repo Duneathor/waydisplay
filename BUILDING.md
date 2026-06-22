@@ -118,9 +118,54 @@ location, regenerate the test build with the checked-in presets:
 ```sh
 cmake --preset tests
 cmake --build --preset tests
-ctest --preset tests
 ```
 
-The preset disables the optional SDL and wlroots executables so protocol,
-transition, repair, and planning tests do not depend on desktop development
-packages.
+The default build includes the `run_tests` target, so a test failure also fails
+the build. Run the same target explicitly at any time with:
+
+```sh
+cmake --build build-tests --target run_tests
+```
+
+For an iterative build that compiles tests without running them on every build,
+configure with `-DWAYDISPLAY_RUN_TESTS_ON_BUILD=OFF`; the explicit `run_tests`
+target remains available. `ctest --preset tests` can also be used to rerun the
+suite directly.
+
+New tests should be registered with the `waydisplay_add_test()` helper in
+`CMakeLists.txt`. The helper creates the executable, registers it with CTest,
+and adds it to the build-time test dependencies, so no separate executable list
+needs to be maintained.
+
+The `tests` preset disables the optional SDL and wlroots executables so
+protocol, transition, repair, and planning tests do not depend on desktop
+development packages.
+
+Additional presets isolate the optional build contracts that have historically
+been easy to miss when only the dependency-light suite is compiled:
+
+```sh
+# No SDL, wlroots, audio, FFmpeg, or VAAPI code paths.
+cmake --preset tests-core
+cmake --build --preset tests-core
+
+# Real software codec, round-trip, and VAAPI tests when FFmpeg is installed.
+cmake --preset tests-codecs
+cmake --build --preset tests-codecs
+
+# Real wlroots scene tests and generated protocol headers.
+cmake --preset tests-wlroots
+cmake --build --preset tests-wlroots
+
+# Recompile the same wlroots tests against the non-Xwayland struct layout.
+cmake --preset tests-wlroots-no-xwayland
+cmake --build --preset tests-wlroots-no-xwayland
+
+# Build every optional client/server backend available on the machine.
+cmake --preset tests-full
+cmake --build --preset tests-full
+```
+
+The wlroots presets deliberately disable audio and video codecs so a generated
+Wayland-header or scene-test failure is not hidden by an unrelated hardware
+codec test. The full preset restores all default optional backends.

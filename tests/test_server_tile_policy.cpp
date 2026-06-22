@@ -1,4 +1,5 @@
 #include "wd_tile_policy.h"
+#include "wd_video_transition.h"
 
 #include <array>
 #include <cstdint>
@@ -39,6 +40,11 @@ void test_auto_video_entry_uses_sustained_wire_cost() {
     const wd_video_auto_entry_result video = wd_video_auto_entry_evaluate(&metrics);
     require(video.candidate,
             "sustained partial-screen video near the tile budget should enter video mode");
+    metrics.selection_suppressed = true;
+    const wd_video_auto_entry_result bootstrap = wd_video_auto_entry_evaluate(&metrics);
+    require(!bootstrap.candidate,
+            "bootstrap and recovery refresh traffic must not select video mode");
+    metrics.selection_suppressed = false;
     require(video.changed_frame_percent >= 70 && video.changed_dirty_percent >= 20,
             "classifier should expose changed-frame and changed-only coverage signals");
 
@@ -189,6 +195,56 @@ void test_delivery_status_waits_for_seal_and_reports_failure() {
     require(failed, "any failed packet should fail the tile delivery");
 }
 
+
+
+void test_tile_recovery_waits_for_client_presentation() {
+    require(wd_tile_recovery_decide(false, 1, 20, 5) == WD_TILE_RECOVERY_WAIT,
+            "recovery cannot finish before the full refresh is sent");
+    require(wd_tile_recovery_decide(true, 1, 0, 5) ==
+                WD_TILE_RECOVERY_COMPLETE_PRESENTED,
+            "client tile presentation should complete recovery");
+    require(wd_tile_recovery_decide(true, 0, 4, 5) == WD_TILE_RECOVERY_WAIT,
+            "recovery should remain sticky before its timeout");
+    require(wd_tile_recovery_decide(true, 0, 5, 5) ==
+                WD_TILE_RECOVERY_COMPLETE_TIMEOUT,
+            "recovery should have a bounded acknowledgement timeout");
+    require(!wd_video_entry_allowed(true, 0),
+            "video entry must be blocked while tile recovery is active");
+    require(!wd_video_entry_allowed(false, 1),
+            "video entry must respect the post-recovery cooldown");
+    require(wd_video_entry_allowed(false, 0),
+            "video entry may resume after recovery and cooldown");
+}
+
+void test_video_health_distinguishes_audio_wait_from_failure() {
+    wd_client_video_health_metrics metrics{};
+    metrics.server_frames_tx = 60;
+    metrics.client_reports = 1;
+    metrics.client_frames_seen = 60;
+    metrics.client_frames_decoded = 60;
+    metrics.client_audio_sync_holds = 2;
+    metrics.client_queue_depth = 3;
+    require(wd_client_video_health_classify(&metrics) ==
+                WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
+            "decoded frames queued behind audio should not be a video failure");
+
+    metrics.client_audio_sync_holds = 0;
+    require(wd_client_video_health_classify(&metrics) ==
+                WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
+            "decoded frames with no presentation explanation should be a stall");
+
+    metrics.client_decode_failures = 1;
+    require(wd_client_video_health_classify(&metrics) ==
+                WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE,
+            "explicit decoder errors should dominate health classification");
+
+    metrics.client_decode_failures = 0;
+    metrics.client_frames_presented = 1;
+    require(wd_client_video_health_classify(&metrics) ==
+                WD_CLIENT_VIDEO_HEALTH_NORMAL,
+            "a presented frame should establish normal video health");
+}
+
 void test_periodic_capture_is_capped_to_output_refresh() {
     require(wd_cap_periodic_capture_fps(120, 60) == 60,
             "periodic capture should not outrun the compositor refresh");
@@ -210,5 +266,7 @@ int main() {
     test_compression_advisor_backs_off_and_resamples();
     test_delivery_status_waits_for_seal_and_reports_failure();
     test_periodic_capture_is_capped_to_output_refresh();
+    test_video_health_distinguishes_audio_wait_from_failure();
+    test_tile_recovery_waits_for_client_presentation();
     return 0;
 }

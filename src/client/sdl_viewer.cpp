@@ -218,6 +218,12 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.video_present_latency_sum_ns += src.video_present_latency_sum_ns;
     dst.video_audio_sync_holds += src.video_audio_sync_holds;
     dst.video_audio_sync_drops += src.video_audio_sync_drops;
+    dst.video_queue_overflow_drops += src.video_queue_overflow_drops;
+    dst.video_queue_depth = src.video_queue_depth;
+    dst.video_queue_depth_max = std::max(dst.video_queue_depth_max, src.video_queue_depth_max);
+    dst.video_oldest_pts_usec = src.video_oldest_pts_usec;
+    dst.video_audio_delta_samples = src.video_audio_delta_samples;
+    dst.tile_frames_presented += src.tile_frames_presented;
     dst.audio_messages_rx += src.audio_messages_rx;
     dst.audio_packets_rx += src.audio_packets_rx;
     dst.audio_bytes_rx += src.audio_bytes_rx;
@@ -1095,6 +1101,12 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t video_present_latency_sum_ns = logged.video_present_latency_sum_ns;
     const uint64_t video_audio_sync_holds = logged.video_audio_sync_holds;
     const uint64_t video_audio_sync_drops = logged.video_audio_sync_drops;
+    const uint64_t video_queue_overflow_drops = logged.video_queue_overflow_drops;
+    const uint32_t video_queue_depth = logged.video_queue_depth;
+    const uint32_t video_queue_depth_max = logged.video_queue_depth_max;
+    const uint64_t video_oldest_pts_usec = logged.video_oldest_pts_usec;
+    const int64_t video_audio_delta_samples = logged.video_audio_delta_samples;
+    const uint64_t tile_frames_presented = logged.tile_frames_presented;
     const uint64_t audio_messages_rx = logged.audio_messages_rx;
     const uint64_t audio_packets_rx = logged.audio_packets_rx;
     const uint64_t audio_bytes_rx = logged.audio_bytes_rx;
@@ -1164,7 +1176,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
 
     if (audio_messages_rx != 0 || state.audio_stream_negotiated)
     {
-        WD_LOG_DEBUG("[client audio/min] messages=%llu packets=%llu kib=%.1f decode_failed=%llu discontinuities=%llu late_drops=%llu underflows=%llu av_holds=%llu av_drops=%llu playing=%s",
+        WD_LOG_DEBUG("[client audio/min] messages=%llu packets=%llu kib=%.1f decode_failed=%llu discontinuities=%llu late_drops=%llu underflows=%llu av_holds=%llu av_drops=%llu video_q=%u/%u q_overflow=%llu oldest_pts_us=%llu av_delta_samples=%lld playing=%s",
                      static_cast<unsigned long long>(audio_messages_rx),
                      static_cast<unsigned long long>(audio_packets_rx),
                      static_cast<double>(audio_bytes_rx) / 1024.0,
@@ -1174,6 +1186,11 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                      static_cast<unsigned long long>(audio_underflows),
                      static_cast<unsigned long long>(video_audio_sync_holds),
                      static_cast<unsigned long long>(video_audio_sync_drops),
+                     static_cast<unsigned>(video_queue_depth),
+                     static_cast<unsigned>(video_queue_depth_max),
+                     static_cast<unsigned long long>(video_queue_overflow_drops),
+                     static_cast<unsigned long long>(video_oldest_pts_usec),
+                     static_cast<long long>(video_audio_delta_samples),
                      client_audio_playback_is_playing(state.audio_playback) ? "yes" : "no");
     }
 
@@ -1266,15 +1283,17 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                                        video_frames_presented != 0 || video_decode_failed != 0 ||
                                        video_publish_failed != 0 || video_control_frames_rx != 0 ||
                                        video_invalid_frames_rx != 0 || video_stale_frames_dropped != 0 ||
-                                       video_need_keyframe_drops != 0 || video_decoder_resets != 0;
+                                       video_need_keyframe_drops != 0 || video_decoder_resets != 0 ||
+                                       tile_frames_presented != 0;
     if (client_video_activity)
     {
-        WD_LOG_DEBUG("[client video/min] messages=%llu data=%llu legacy_rx=%llu decoded=%llu presented=%llu control=%llu invalid=%llu stale_drop=%llu kib=%.1f decode_avg_ms=%.2f present_age_avg_ms=%.2f decode_failed=%llu publish_failed=%llu need_keyframe_drops=%llu resets=%llu last_rx=%llu last_presented=%llu",
+        WD_LOG_DEBUG("[client video/min] messages=%llu data=%llu legacy_rx=%llu decoded=%llu presented=%llu tile_presented=%llu control=%llu invalid=%llu stale_drop=%llu kib=%.1f decode_avg_ms=%.2f present_age_avg_ms=%.2f decode_failed=%llu publish_failed=%llu need_keyframe_drops=%llu resets=%llu last_rx=%llu last_presented=%llu",
                      static_cast<unsigned long long>(video_messages_rx),
                      static_cast<unsigned long long>(video_data_frames_rx),
                      static_cast<unsigned long long>(video_frames_rx),
                      static_cast<unsigned long long>(video_frames_decoded),
                      static_cast<unsigned long long>(video_frames_presented),
+                     static_cast<unsigned long long>(tile_frames_presented),
                      static_cast<unsigned long long>(video_control_frames_rx),
                      static_cast<unsigned long long>(video_invalid_frames_rx),
                      static_cast<unsigned long long>(video_stale_frames_dropped),
@@ -1430,6 +1449,21 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t video_present_latency_sum_ns  = take_stat(state.stats.video_present_latency_sum_ns);
     const uint64_t video_audio_sync_holds = take_stat(state.stats.video_audio_sync_holds);
     const uint64_t video_audio_sync_drops = take_stat(state.stats.video_audio_sync_drops);
+    const uint64_t video_queue_overflow_drops = take_stat(state.stats.video_queue_overflow_drops);
+    const uint32_t video_queue_depth_max = static_cast<uint32_t>(
+        std::min<uint64_t>(take_stat(state.stats.video_queue_depth_max), UINT32_MAX));
+    uint32_t video_queue_depth = 0;
+    uint64_t video_oldest_pts_usec = 0;
+    {
+        std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
+        video_queue_depth = static_cast<uint32_t>(std::min<size_t>(
+            state.video_present_queue.size(), UINT32_MAX));
+        const ClientQueuedVideoFrame* oldest = state.video_present_queue.front();
+        video_oldest_pts_usec = oldest ? oldest->pts_usec : 0;
+    }
+    const int64_t video_audio_delta_samples =
+        state.stats.video_audio_delta_samples.load(std::memory_order_relaxed);
+    const uint64_t tile_frames_presented = take_stat(state.stats.tile_frames_presented);
     const uint64_t audio_messages_rx = take_stat(state.stats.audio_messages_rx);
     const uint64_t audio_packets_rx = take_stat(state.stats.audio_packets_rx);
     const uint64_t audio_bytes_rx = take_stat(state.stats.audio_bytes_rx);
@@ -1572,6 +1606,12 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.video_present_latency_sum_ns = video_present_latency_sum_ns;
     sample.video_audio_sync_holds = video_audio_sync_holds;
     sample.video_audio_sync_drops = video_audio_sync_drops;
+    sample.video_queue_overflow_drops = video_queue_overflow_drops;
+    sample.video_queue_depth = video_queue_depth;
+    sample.video_queue_depth_max = video_queue_depth_max;
+    sample.video_oldest_pts_usec = video_oldest_pts_usec;
+    sample.video_audio_delta_samples = video_audio_delta_samples;
+    sample.tile_frames_presented = tile_frames_presented;
     sample.audio_messages_rx = audio_messages_rx;
     sample.audio_packets_rx = audio_packets_rx;
     sample.audio_bytes_rx = audio_bytes_rx;
@@ -1652,7 +1692,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
                                    video_decoder_resets != 0 || audio_messages_rx != 0 ||
                                    audio_packets_rx != 0 || audio_decode_failed != 0 ||
                                    audio_discontinuities != 0 || audio_late_drops != 0 ||
-                                   video_audio_sync_holds != 0 || video_audio_sync_drops != 0;
+                                   video_audio_sync_holds != 0 || video_audio_sync_drops != 0 ||
+                                   video_queue_depth != 0 || video_queue_overflow_drops != 0 ||
+                                   tile_frames_presented != 0;
 
     if (feedback_activity)
     {
@@ -1715,6 +1757,12 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         feedback.audio_underflows = audio_underflows;
         feedback.video_audio_sync_holds = video_audio_sync_holds;
         feedback.video_audio_sync_drops = video_audio_sync_drops;
+        feedback.video_queue_overflow_drops = video_queue_overflow_drops;
+        feedback.video_queue_depth = video_queue_depth;
+        feedback.video_queue_depth_max = video_queue_depth_max;
+        feedback.video_oldest_pts_usec = video_oldest_pts_usec;
+        feedback.video_audio_delta_samples = video_audio_delta_samples;
+        feedback.tile_frames_presented = tile_frames_presented;
         if (feedback.session_id != 0)
         {
             client_send_stats(state, feedback);
@@ -2523,7 +2571,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     std::vector<uint32_t> new_retx_summary_pending_position(config.total_tiles, UINT32_MAX);
     std::vector<uint8_t>  new_udp_recv_buffer(WD_UDP_TILE_HEADER_MAX_SIZE + config.udp_payload_target + 512, 0);
     ClientDirtyTileGrid      new_dirty_tiles;
-    if (!new_dirty_tiles.reset(config.width, config.height, config.tile_width, config.tile_height))
+    if (!configure_client_dirty_tile_grid(new_dirty_tiles, config.width, config.height,
+                                          config.tile_width, config.tile_height))
     {
         WD_LOG_ERROR("failed to configure client dirty tile grid");
         state.running.store(false, std::memory_order_relaxed);
@@ -2567,12 +2616,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         state.framebuffer          = std::move(new_framebuffer);
         {
             std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
-            state.video_framebuffer.clear();
-            state.video_frame_width = 0;
-            state.video_frame_height = 0;
-            state.video_frame_id = 0;
-            state.video_frame_pts_usec = 0;
-            state.video_frame_epoch = 0;
+            state.video_present_queue.clear();
             state.pending_video_frame_dirty.store(false, std::memory_order_release);
         }
         const uint64_t tile_epoch = state.stream_ownership.reset_to_tiles();
@@ -2770,6 +2814,7 @@ struct VideoPresentInfo {
     uint64_t frame_id = 0;
     uint64_t pts_usec = 0;
     uint64_t epoch = 0;
+    uint32_t retry_after_ms = 0;
 };
 
 enum class VideoTextureUploadResult : uint8_t {
@@ -2788,6 +2833,7 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                                                       VideoPresentInfo& present_info) {
     const uint64_t started_ns = wd_now_ns();
     uint64_t frame_epoch = 0;
+    bool dropped_for_audio = false;
     {
         std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
         std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
@@ -2795,46 +2841,74 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
         {
             return VideoTextureUploadResult::NoFrame;
         }
-        if (state.video_frame_width != frame_width || state.video_frame_height != frame_height)
+
+        for (;;)
         {
-            return VideoTextureUploadResult::Failed;
-        }
-        uint64_t audio_playhead_samples = 0;
-        const bool audio_configured =
-            client_audio_playback_is_configured(state.audio_playback);
-        if (client_audio_playback_playhead_samples(state.audio_playback, &audio_playhead_samples))
-        {
-            const ClientVideoAudioSyncDecision sync =
-                client_video_audio_sync_decide(state.video_frame_pts_usec, audio_playhead_samples);
-            if (sync == ClientVideoAudioSyncDecision::Hold)
-            {
-                state.stats.video_audio_sync_holds.fetch_add(1, std::memory_order_relaxed);
-                return VideoTextureUploadResult::Held;
-            }
-            if (sync == ClientVideoAudioSyncDecision::Drop)
+            const ClientQueuedVideoFrame* queued = state.video_present_queue.front();
+            if (!queued)
             {
                 state.pending_video_frame_dirty.store(false, std::memory_order_release);
-                state.stats.video_audio_sync_drops.fetch_add(1, std::memory_order_relaxed);
-                return VideoTextureUploadResult::AudioDropped;
+                state.stats.video_audio_delta_samples.store(0, std::memory_order_relaxed);
+                return dropped_for_audio ? VideoTextureUploadResult::AudioDropped
+                                         : VideoTextureUploadResult::NoFrame;
             }
+            if (queued->width != frame_width || queued->height != frame_height)
+            {
+                return VideoTextureUploadResult::Failed;
+            }
+
+            uint64_t audio_playhead_samples = 0;
+            const bool audio_waiting =
+                client_audio_playback_should_hold_video(state.audio_playback);
+            if (client_audio_playback_playhead_samples(state.audio_playback,
+                                                       &audio_playhead_samples))
+            {
+                const ClientVideoAudioSyncPlan sync =
+                    client_video_audio_sync_plan(queued->pts_usec,
+                                                 audio_playhead_samples);
+                state.stats.video_audio_delta_samples.store(sync.delta_samples,
+                                                             std::memory_order_relaxed);
+                if (sync.decision == ClientVideoAudioSyncDecision::Hold)
+                {
+                    present_info.retry_after_ms = sync.retry_after_ms;
+                    state.stats.video_audio_sync_holds.fetch_add(1,
+                                                                 std::memory_order_relaxed);
+                    return VideoTextureUploadResult::Held;
+                }
+                if (sync.decision == ClientVideoAudioSyncDecision::Drop)
+                {
+                    ClientQueuedVideoFrame dropped = state.video_present_queue.pop_front();
+                    state.video_present_queue.recycle(std::move(dropped.buffer));
+                    state.stats.video_audio_sync_drops.fetch_add(1,
+                                                                 std::memory_order_relaxed);
+                    dropped_for_audio = true;
+                    state.pending_video_frame_dirty.store(
+                        !state.video_present_queue.empty(), std::memory_order_release);
+                    continue;
+                }
+            }
+            else if (audio_waiting)
+            {
+                /* Hold only while an audio epoch is establishing its initial
+                 * jitter buffer. After starvation, audio relinquishes the
+                 * master clock until playback has rebuffered. */
+                present_info.retry_after_ms = WD_CLIENT_FRAME_DELAY_MS;
+                state.stats.video_audio_sync_holds.fetch_add(1,
+                                                             std::memory_order_relaxed);
+                return VideoTextureUploadResult::Held;
+            }
+
+            ClientQueuedVideoFrame selected = state.video_present_queue.pop_front();
+            std::swap(frame, selected.buffer);
+            state.video_present_queue.recycle(std::move(selected.buffer));
+            present_info.frame_id = selected.frame_id;
+            present_info.pts_usec = selected.pts_usec;
+            frame_epoch = selected.epoch;
+            present_info.epoch = frame_epoch;
+            state.pending_video_frame_dirty.store(
+                !state.video_present_queue.empty(), std::memory_order_release);
+            break;
         }
-        else if (audio_configured)
-        {
-            /* Once the audio stream is configured it owns the media timeline.
-             * Keep the first video frame pending while the jitter buffer reaches
-             * its startup target instead of beginning video ahead of audio. */
-            state.stats.video_audio_sync_holds.fetch_add(1, std::memory_order_relaxed);
-            return VideoTextureUploadResult::Held;
-        }
-        /* Keep a render-thread upload buffer and exchange it with the newest
-         * decoded frame. This avoids copying the full frame while preserving a
-         * reusable buffer for the decoder thread. */
-        std::swap(frame, state.video_framebuffer);
-        present_info.frame_id = state.video_frame_id;
-        present_info.pts_usec = state.video_frame_pts_usec;
-        frame_epoch = state.video_frame_epoch;
-        present_info.epoch = frame_epoch;
-        state.pending_video_frame_dirty.store(false, std::memory_order_release);
     }
 
     if (!state.stream_ownership.is_current(frame_epoch, ClientContentOwner::Video))
@@ -2842,7 +2916,8 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
         return VideoTextureUploadResult::Stale;
     }
 
-    const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
+    const size_t expected_pixels =
+        static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
     if (frame_width == 0 || frame_height == 0 || !frame.valid() ||
         frame.width != frame_width || frame.height != frame_height ||
         frame.u_offset >= frame.bytes.size() || frame.v_offset >= frame.bytes.size())
@@ -2862,7 +2937,8 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
 
     state.stats.sdl_texture_full_uploads.fetch_add(1, std::memory_order_relaxed);
     state.stats.sdl_video_texture_uploads.fetch_add(1, std::memory_order_relaxed);
-    state.stats.sdl_video_texture_upload_pixels.fetch_add(expected_pixels, std::memory_order_relaxed);
+    state.stats.sdl_video_texture_upload_pixels.fetch_add(expected_pixels,
+                                                           std::memory_order_relaxed);
     record_texture_upload_stats(state, started_ns, expected_pixels);
 
     if (!state.stream_ownership.is_current(frame_epoch, ClientContentOwner::Video))
@@ -2873,6 +2949,7 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
     present_info.valid = true;
     return VideoTextureUploadResult::Uploaded;
 }
+
 struct StagedTextureRect {
     SDL_Rect rect{};
     size_t pixel_offset = 0;
@@ -3265,6 +3342,10 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
     if (remote_texture_updated)
     {
         state.stats.sdl_remote_frames.fetch_add(1, std::memory_order_relaxed);
+        if (!video_present.valid)
+        {
+            state.stats.tile_frames_presented.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     state.stats.sdl_present_samples.fetch_add(1, std::memory_order_relaxed);
     state.stats.sdl_present_sum_ns.fetch_add(present_elapsed_ns, std::memory_order_relaxed);
@@ -3490,6 +3571,7 @@ int run_sdl_viewer(ClientState& state) {
         const bool local_frame_dirty = frame_dirty || texture_needs_full_upload;
         bool       remote_frame_dirty = false;
         bool       remote_texture_updated = false;
+        uint32_t   video_hold_wait_ms = 0;
 
         const bool video_frame_pending = state.pending_video_frame_dirty.load(std::memory_order_acquire);
         const bool remote_dirty_pending = video_frame_pending || state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0;
@@ -3530,6 +3612,12 @@ int run_sdl_viewer(ClientState& state) {
                     video_result == VideoTextureUploadResult::AudioDropped)
                 {
                     remote_frame_dirty = false;
+                    if (video_result == VideoTextureUploadResult::Held)
+                    {
+                        video_hold_wait_ms = video_present.retry_after_ms != 0
+                                                 ? video_present.retry_after_ms
+                                                 : WD_CLIENT_FRAME_DELAY_MS;
+                    }
                 }
                 else if (video_result == VideoTextureUploadResult::Uploaded)
                 {
@@ -3745,7 +3833,9 @@ int run_sdl_viewer(ClientState& state) {
         }
         else if (!frame_dirty)
         {
-            wait_ms = client_present_delay_ms(state, last_present_ns, wd_now_ns());
+            wait_ms = video_hold_wait_ms != 0
+                          ? video_hold_wait_ms
+                          : client_present_delay_ms(state, last_present_ns, wd_now_ns());
         }
         if (wait_ms != 0)
         {

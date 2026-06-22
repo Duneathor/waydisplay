@@ -256,6 +256,7 @@ struct wd_stats {
     uint64_t stream_mode_budget_pressure_frames;
     uint64_t stream_mode_full_refresh_samples;
     uint64_t stream_mode_full_refresh_budget_pressure_frames;
+    uint64_t stream_mode_bootstrap_suppressed_samples;
 
     uint64_t tile_size_128x64_sent;
     uint64_t tile_size_64x64_sent;
@@ -367,6 +368,12 @@ struct wd_stats {
     uint64_t client_audio_underflows;
     uint64_t client_video_audio_sync_holds;
     uint64_t client_video_audio_sync_drops;
+    uint64_t client_video_queue_overflow_drops;
+    uint32_t client_video_queue_depth;
+    uint32_t client_video_queue_depth_max;
+    uint64_t client_video_oldest_pts_usec;
+    int64_t  client_video_audio_delta_samples;
+    uint64_t client_tile_frames_presented;
 
     uint64_t retx_req_rx;
     uint64_t retx_tiles_req;
@@ -530,6 +537,12 @@ struct wd_stream_policy {
     uint32_t tile_recovery_seconds;
     uint32_t video_client_failure_seconds;
     bool     tile_refresh_pending;
+    bool     tile_recovery_refresh_started;
+    bool     tile_recovery_refresh_sent;
+    uint32_t tile_recovery_wait_seconds;
+    uint32_t video_retry_cooldown_seconds;
+    bool     video_auto_bootstrap_suppressed;
+    uint32_t video_auto_bootstrap_seconds;
 
     uint32_t frame_rate_good_seconds;
 

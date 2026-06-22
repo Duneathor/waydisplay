@@ -22,6 +22,7 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback,
 void client_audio_playback_reset(ClientAudioPlayback* playback);
 bool client_audio_playback_is_configured(ClientAudioPlayback* playback);
 bool client_audio_playback_is_playing(ClientAudioPlayback* playback);
+bool client_audio_playback_should_hold_video(ClientAudioPlayback* playback);
 bool client_audio_playback_playhead_samples(ClientAudioPlayback* playback,
                                             uint64_t* playhead_samples);
 uint64_t client_audio_playback_underflows(ClientAudioPlayback* playback);
