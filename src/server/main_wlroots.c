@@ -12,33 +12,44 @@
 static void usage(const char* argv0) {
     fprintf(stderr,
             "Usage:\n"
-            "  %s [--listen 127.0.0.1] [--port 5000] [--scale 1.0] [--size 1664x1024] [--app <command>] "
-            "[--tile-size 128x64|64x64|32x32|16x16] [--tile-compression auto|off|attempt|force] [--refresh-hz 60] "
-            "[--renderer auto|gles2|vulkan|pixman] [--video-encoder auto|software|vaapi] [--vaapi-device /dev/dri/renderD128] "
-            "[--xwayland|--no-xwayland] [--xdg-dialog|--no-xdg-dialog]\n\n"
+            "  %s [--listen %s] [--port %u] [--scale %.2f] [--size %ux%u] [--app <command>] "
+            "[--tile-size 128x64|64x64|32x32|16x16] [--tile-compression auto|off|attempt|force] "
+            "[--refresh-hz %u] [--renderer auto|gles2|vulkan|pixman] "
+            "[--video-encoder auto|software|vaapi] [--xwayland|--no-xwayland] "
+            "[--xdg-dialog|--no-xdg-dialog]\n\n"
             "Examples:\n"
-            "  %s --port 5000 --app foot\n"
-            "  %s --port 5000 --scale 1.25 --size 1366x768 --app foot\n"
-            "  %s --port 5000 --app konsole\n"
-            "  %s --port 5000 --app 'mpv /path/to/video.mp4'\n",
-            argv0, argv0, argv0, argv0, argv0);
+            "  %s --port %u --app %s\n"
+            "  %s --port %u --scale 1.25 --size 1366x768 --app %s\n"
+            "  %s --port %u --app konsole\n"
+            "  %s --port %u --app 'mpv /path/to/video.mp4'\n",
+            argv0, WD_SERVER_DEFAULT_LISTEN_IPV4, WD_DEFAULT_TCP_PORT,
+            WD_SERVER_DEFAULT_OUTPUT_SCALE, WD_DISPLAY_WIDTH, WD_DISPLAY_HEIGHT,
+            WD_SERVER_DEFAULT_REFRESH_HZ,
+            argv0, WD_DEFAULT_TCP_PORT, WD_SERVER_DEFAULT_APP_COMMAND,
+            argv0, WD_DEFAULT_TCP_PORT, WD_SERVER_DEFAULT_APP_COMMAND,
+            argv0, WD_DEFAULT_TCP_PORT, argv0, WD_DEFAULT_TCP_PORT);
 }
 
 int main(int argc, char** argv) {
-    const char* app_cmd         = "foot";
+    const char* app_cmd         = WD_SERVER_DEFAULT_APP_COMMAND;
     uint16_t    tcp_port        = WD_DEFAULT_TCP_PORT;
-    struct in_addr listen_address = {.s_addr = htonl(INADDR_LOOPBACK)};
-    double      output_scale    = 1.0;
+    struct in_addr listen_address = {0};
+    if (!wd_server_cli_parse_ipv4(WD_SERVER_DEFAULT_LISTEN_IPV4, &listen_address))
+    {
+        fprintf(stderr, "Invalid compiled default listen address: %s\n",
+                WD_SERVER_DEFAULT_LISTEN_IPV4);
+        return 1;
+    }
+    double      output_scale    = WD_SERVER_DEFAULT_OUTPUT_SCALE;
     uint32_t    display_width   = WD_DISPLAY_WIDTH;
     uint32_t    display_height  = WD_DISPLAY_HEIGHT;
     uint16_t    tile_width      = WD_TILE_WIDTH;
     uint16_t    tile_height     = WD_TILE_HEIGHT;
-    uint16_t    output_refresh_hz = 60;
-    bool        enable_xwayland = true;
-    bool        enable_xdg_dialog = true;
-    const char* renderer_name   = NULL;
-    const char* video_encoder_backend = "auto";
-    const char* vaapi_device = "/dev/dri/renderD128";
+    uint16_t    output_refresh_hz = WD_SERVER_DEFAULT_REFRESH_HZ;
+    bool        enable_xwayland = WD_SERVER_DEFAULT_ENABLE_XWAYLAND != 0;
+    bool        enable_xdg_dialog = WD_SERVER_DEFAULT_ENABLE_XDG_DIALOG != 0;
+    const char* renderer_name   = WD_SERVER_DEFAULT_RENDERER;
+    const char* video_encoder_backend = WD_SERVER_DEFAULT_VIDEO_ENCODER_BACKEND;
     uint8_t     tile_compression_benchmark_mode = WD_TILE_COMPRESSION_BENCH_AUTO;
 
     for (int i = 1; i < argc; ++i)
@@ -133,8 +144,10 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            const bool supported_tile_size = (width == 128u && height == 64u) || (width == 64u && height == 64u) ||
-                                             (width == 32u && height == 32u) || (width == 16u && height == 16u);
+            const bool supported_tile_size = (width == WD_TILE_SIZE_LARGE_WIDTH && height == WD_TILE_SIZE_LARGE_HEIGHT) ||
+                                             (width == WD_TILE_SIZE_MEDIUM_WIDTH && height == WD_TILE_SIZE_MEDIUM_HEIGHT) ||
+                                             (width == WD_TILE_SIZE_SMALL_WIDTH && height == WD_TILE_SIZE_SMALL_HEIGHT) ||
+                                             (width == WD_TILE_SIZE_BASE_WIDTH && height == WD_TILE_SIZE_BASE_HEIGHT);
             if (!supported_tile_size)
             {
                 fprintf(stderr, "Invalid --tile-size value: %s; supported values are 128x64, 64x64, 32x32, and 16x16\n", argv[i]);
@@ -167,8 +180,8 @@ int main(int argc, char** argv) {
         {
             /* Smaller tiles reduce over-send for cursor/text/editor damage on
              * bandwidth-limited, high-latency links. */
-            tile_width  = 64;
-            tile_height = 64;
+            tile_width  = WD_SERVER_WAN_TILE_WIDTH;
+            tile_height = WD_SERVER_WAN_TILE_HEIGHT;
         }
         else if (strcmp(argv[i], "--tile-compression") == 0)
         {
@@ -193,10 +206,11 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            if (!wd_server_cli_parse_scale(argv[++i], 0.25, 8.0, &output_scale))
+            if (!wd_server_cli_parse_scale(argv[++i], WD_SERVER_MIN_OUTPUT_SCALE,
+                                           WD_SERVER_MAX_OUTPUT_SCALE, &output_scale))
             {
-                fprintf(stderr, "Invalid --scale value: %s; expected 0.25 through 8.0\n",
-                        argv[i]);
+                fprintf(stderr, "Invalid --scale value: %s; expected %.2f through %.2f\n",
+                        argv[i], WD_SERVER_MIN_OUTPUT_SCALE, WD_SERVER_MAX_OUTPUT_SCALE);
                 usage(argv[0]);
                 return 1;
             }
@@ -209,9 +223,11 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            if (!wd_server_cli_parse_u16(argv[++i], 1, 1000, &output_refresh_hz))
+            if (!wd_server_cli_parse_u16(argv[++i], WD_SERVER_MIN_REFRESH_HZ,
+                                         WD_SERVER_MAX_REFRESH_HZ, &output_refresh_hz))
             {
-                fprintf(stderr, "Invalid --refresh-hz value: %s; expected 1 through 1000\n", argv[i]);
+                fprintf(stderr, "Invalid --refresh-hz value: %s; expected %u through %u\n", argv[i],
+                        WD_SERVER_MIN_REFRESH_HZ, WD_SERVER_MAX_REFRESH_HZ);
                 usage(argv[0]);
                 return 1;
             }
@@ -249,20 +265,6 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "Invalid --video-encoder value: %s; expected auto, software, or vaapi\n",
                         video_encoder_backend);
                 usage(argv[0]);
-                return 1;
-            }
-        }
-        else if (strcmp(argv[i], "--vaapi-device") == 0)
-        {
-            if (i + 1 >= argc)
-            {
-                usage(argv[0]);
-                return 1;
-            }
-            vaapi_device = argv[++i];
-            if (vaapi_device[0] == '\0')
-            {
-                fprintf(stderr, "Invalid empty --vaapi-device value\n");
                 return 1;
             }
         }
@@ -321,7 +323,7 @@ int main(int argc, char** argv) {
     if (!wd_server_init(&server, tcp_port, listen_address, app_cmd, output_scale,
                         output_refresh_hz,
                         display_width, display_height, tile_width, tile_height, enable_xwayland,
-                        enable_xdg_dialog, video_encoder_backend, vaapi_device))
+                        enable_xdg_dialog, video_encoder_backend))
     {
         wd_server_destroy(&server);
         return 1;

@@ -10,6 +10,7 @@
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_selection.h"
 #include "waydisplay/wd_time.h"
 #include "waydisplay/wd_media_clock.h"
 
@@ -39,12 +40,8 @@ constexpr size_t MAX_RETRANSMIT_ENTRIES_PER_MESSAGE =
 constexpr uint64_t RETRANSMIT_GRACE_MIN_NS            = WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS;
 constexpr uint64_t RETRANSMIT_GRACE_DEFAULT_NS        = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
 constexpr uint64_t RETRANSMIT_GRACE_MAX_NS            = WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS;
-constexpr uint64_t MTU_PROBE_SERVER_STARTUP_DELAY_NS  = 10ull * 1000ull * 1000ull;
-
-constexpr uint32_t CLIENT_ASYNC_TCP_RING_ENTRIES = 64;
-constexpr uint64_t CLIENT_ASYNC_TCP_MAX_PENDING_BYTES = 1024ull * 1024ull;
-constexpr uint32_t CLIENT_ASYNC_UDP_RING_ENTRIES = 256;
-constexpr size_t CLIENT_ASYNC_UDP_PACKET_SLACK = 512u;
+constexpr uint64_t MTU_PROBE_SERVER_STARTUP_DELAY_NS =
+    WD_NET_PROBE_STARTUP_DELAY_MS * WD_NSEC_PER_MSEC;
 
 const char* video_mode_name(uint8_t mode) {
     switch (mode)
@@ -97,7 +94,7 @@ uint64_t ms_to_ns(uint16_t ms, uint64_t fallback_ns) {
     {
         return fallback_ns;
     }
-    return static_cast<uint64_t>(ms) * 1000ull * 1000ull;
+    return static_cast<uint64_t>(ms) * WD_NSEC_PER_MSEC;
 }
 
 uint64_t clamp_timer_ns(uint64_t ns, uint64_t min_ns, uint64_t max_ns) {
@@ -115,7 +112,7 @@ uint64_t summary_retransmit_grace_ns(const ClientState& state) {
     uint64_t gap_ns = udp_gap_pressure_ns(state);
     if (gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
     {
-        uint64_t gap_grace_ns = gap_ns + 50000000ull;
+        uint64_t gap_grace_ns = gap_ns + WD_NET_CLIENT_GAP_GRACE_NS;
         grace_ns = std::max(grace_ns, clamp_timer_ns(gap_grace_ns,
                                                      WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS));
     }
@@ -251,7 +248,7 @@ void remember_input_timestamp(ClientState& state, uint64_t sequence, uint64_t ti
 
     std::lock_guard<std::mutex> lock(state.input_timestamp_mutex);
     state.recent_input_timestamps.push_back({sequence, timestamp_ns});
-    while (state.recent_input_timestamps.size() > 256)
+    while (state.recent_input_timestamps.size() > WD_CLIENT_INPUT_TIMESTAMP_HISTORY_ENTRIES)
     {
         state.recent_input_timestamps.pop_front();
     }
@@ -324,8 +321,8 @@ void log_udp_endpoint(const ClientState& state) {
 }
 
 ClientAsyncTcpSender* create_client_tcp_sender(const char* label) {
-    ClientAsyncTcpSender* sender = client_async_tcp_sender_create(CLIENT_ASYNC_TCP_RING_ENTRIES,
-                                                                  CLIENT_ASYNC_TCP_MAX_PENDING_BYTES);
+    ClientAsyncTcpSender* sender = client_async_tcp_sender_create(WD_CLIENT_TCP_TX_RING_ENTRIES,
+                                                                  WD_CLIENT_TCP_TX_PENDING_BYTES);
     if (!sender)
     {
         WD_LOG_WARN("io_uring TCP sender unavailable for %s channel; using synchronous sends", label ? label : "unknown");
@@ -347,12 +344,12 @@ size_t client_async_udp_packet_bytes(const wd_server_config_payload& config) {
     {
         udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
-    return WD_UDP_TILE_HEADER_MAX_SIZE + static_cast<size_t>(udp_payload_target) + CLIENT_ASYNC_UDP_PACKET_SLACK;
+    return WD_UDP_TILE_HEADER_MAX_SIZE + static_cast<size_t>(udp_payload_target) + WD_CLIENT_UDP_RECV_SLACK_BYTES;
 }
 
 ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state, const wd_server_config_payload& config) {
     const size_t packet_bytes = client_async_udp_packet_bytes(config);
-    ClientAsyncUdpReceiver* receiver = client_async_udp_receiver_create(state.udp_fd, CLIENT_ASYNC_UDP_RING_ENTRIES,
+    ClientAsyncUdpReceiver* receiver = client_async_udp_receiver_create(state.udp_fd, WD_CLIENT_UDP_RX_RING_ENTRIES,
                                                                         packet_bytes);
     if (!receiver)
     {
@@ -369,7 +366,7 @@ ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state, const wd_
     else
     {
         state.stats.udp_async_receiver_generations.fetch_add(1, std::memory_order_relaxed);
-        WD_LOG_INFO("UDP io_uring receive enabled entries=%u buffer=%zu", CLIENT_ASYNC_UDP_RING_ENTRIES, packet_bytes);
+        WD_LOG_INFO("UDP io_uring receive enabled entries=%u buffer=%zu", WD_CLIENT_UDP_RX_RING_ENTRIES, packet_bytes);
     }
     return receiver;
 }
@@ -825,11 +822,11 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
 
     uint16_t              max_received = 0;
     const uint64_t        start_ns     = wd_now_ns();
-    const uint64_t        deadline_ns  = start_ns + 500000000ull;
+    const uint64_t        deadline_ns  = start_ns + WD_NET_MTU_PROBE_CLIENT_DEADLINE_NS;
     std::vector<uint64_t> probe_offsets_ns;
     probe_offsets_ns.reserve(start.probe_count);
 
-    std::vector<uint8_t> recvbuf(WD_UDP_TILE_HEADER_MAX_SIZE + 65535);
+    std::vector<uint8_t> recvbuf(WD_UDP_TILE_HEADER_MAX_SIZE + UINT16_MAX);
 
     while (wd_now_ns() < deadline_ns)
     {
@@ -839,7 +836,7 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
-                usleep(1000);
+                usleep(WD_NET_PROBE_RETRY_SLEEP_MS * WD_USEC_PER_MSEC);
                 continue;
             }
 
@@ -953,9 +950,10 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
     uint64_t bytes_received = 0;
     uint32_t packets_received = 0;
     const uint64_t start_ns = wd_now_ns();
-    const uint64_t deadline_ns = start_ns + (static_cast<uint64_t>(start.duration_ms) + 500ull) * 1000ull * 1000ull;
+    const uint64_t deadline_ns = start_ns + (static_cast<uint64_t>(start.duration_ms) +
+                                  WD_NET_THROUGHPUT_DEADLINE_PADDING_MS) * WD_NSEC_PER_MSEC;
 
-    std::vector<uint8_t> recvbuf(WD_UDP_TILE_HEADER_MAX_SIZE + 65535);
+    std::vector<uint8_t> recvbuf(WD_UDP_TILE_HEADER_MAX_SIZE + UINT16_MAX);
 
     while (wd_now_ns() < deadline_ns && (duration_limited || packets_received < start.probe_count))
     {
@@ -965,7 +963,7 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
-                usleep(1000);
+                usleep(WD_NET_PROBE_RETRY_SLEEP_MS * WD_USEC_PER_MSEC);
                 continue;
             }
 
@@ -1634,7 +1632,7 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
         for (size_t i = keep; i < candidates.size(); ++i)
         {
             schedule_summary_pending_due_locked(state, candidates[i].tile_id, candidates[i].generation,
-                                                now_ns + 10000000ull);
+                                                now_ns + WD_NET_CLIENT_REPAIR_RETRY_MIN_NS);
         }
         state.stats.summary_retx_pressure_dropped.fetch_add(candidates.size() - keep,
                                                             std::memory_order_relaxed);
@@ -1643,7 +1641,7 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
 
     if (large_summary_repair_batch_locked(state, total_tiles, candidates.size(), min_candidate_age_ns, now_ns, true))
     {
-        const uint64_t retry_ns = std::max<uint64_t>(now_ns + 10000000ull,
+        const uint64_t retry_ns = std::max<uint64_t>(now_ns + WD_NET_CLIENT_REPAIR_RETRY_MIN_NS,
                                                      state.summary_large_repair_not_before_ns);
         for (const SummaryRepairCandidate& candidate : candidates)
         {
@@ -1682,27 +1680,14 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
 }
 
 bool selection_payload_to_string(const uint8_t* payload, uint32_t payload_size, uint8_t expected_session_id, uint64_t expected_connection_token, std::string& out) {
-    if (!payload || payload_size < sizeof(wd_selection_payload_header))
+    wd_selection_text_view view{};
+    if (!wd_selection_payload_decode(payload, payload_size, expected_session_id,
+                                     expected_connection_token, &view))
     {
         return false;
     }
 
-    wd_selection_payload_header header{};
-    std::memcpy(&header, payload, sizeof(header));
-
-    if (header.session_id != expected_session_id || header.connection_token != expected_connection_token ||
-        (header.mime_type != WD_SELECTION_MIME_TEXT_UTF8 && header.mime_type != WD_SELECTION_MIME_TEXT_PLAIN) ||
-        header.data_size > WD_SELECTION_MAX_TEXT_BYTES)
-    {
-        return false;
-    }
-
-    if (!wd_selection_payload_size_is_valid(&header, payload_size))
-    {
-        return false;
-    }
-
-    out.assign(reinterpret_cast<const char*>(payload + sizeof(header)), header.data_size);
+    out.assign(reinterpret_cast<const char*>(view.data), view.size);
     return true;
 }
 
@@ -2412,6 +2397,8 @@ void client_promote_deferred_summary_retransmits(ClientState& state) {
 
 bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_port, uint16_t client_udp_port,
                     const ClientStreamConfig& stream_config, uint16_t desired_width, uint16_t desired_height) {
+    client_selection_sync_reset(state.selection_sync);
+
     state.server_host     = server_host ? server_host : "";
     state.tcp_port        = tcp_port;
     state.client_udp_port = client_udp_port;
@@ -2537,7 +2524,7 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         state.summary_repair_loss_signal_until_ns.store(0, std::memory_order_relaxed);
     }
 
-    state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + state.config.udp_payload_target + 512, 0);
+    state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + state.config.udp_payload_target + WD_CLIENT_UDP_RECV_SLACK_BYTES, 0);
     state.udp_receiver = create_client_udp_receiver(state, state.config);
     if (state.udp_receiver && !client_async_udp_receiver_ready(state.udp_receiver))
     {
@@ -2688,7 +2675,7 @@ bool client_reconfigure_udp_transport_locked(ClientState& state, const wd_server
         return false;
     }
 
-    state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + config.udp_payload_target + 512, 0);
+    state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + config.udp_payload_target + WD_CLIENT_UDP_RECV_SLACK_BYTES, 0);
     state.udp_receiver = create_client_udp_receiver(state, config);
     if (state.udp_receiver && !client_async_udp_receiver_ready(state.udp_receiver))
     {
@@ -2830,26 +2817,27 @@ bool client_send_selection_text(ClientState& state, uint16_t message_type, const
         return false;
     }
 
-    wd_selection_payload_header header{};
-    header.session_id = state.config.session_id;
-    header.connection_token = state.config.connection_token;
-    header.mime_type  = WD_SELECTION_MIME_TEXT_UTF8;
-    header.data_size  = static_cast<uint32_t>(text_len);
-
-    std::vector<uint8_t> payload(sizeof(header) + text_len);
-    std::memcpy(payload.data(), &header, sizeof(header));
-    if (text_len > 0)
+    std::vector<uint8_t> payload(sizeof(wd_selection_payload_header) + text_len);
+    uint32_t payload_size = 0;
+    if (!wd_selection_payload_encode(state.config.session_id,
+                                     state.config.connection_token,
+                                     WD_SELECTION_MIME_TEXT_UTF8,
+                                     reinterpret_cast<const uint8_t*>(text),
+                                     static_cast<uint32_t>(text_len),
+                                     payload.data(), payload.size(),
+                                     &payload_size))
     {
-        std::memcpy(payload.data() + sizeof(header), text, text_len);
+        WD_LOG_ERROR("selection text is not valid UTF-8");
+        return false;
     }
 
-    bool ok = client_send_tcp_message_queued(state, fd, message_type, payload.data(), static_cast<uint32_t>(payload.size()));
+    bool ok = client_send_tcp_message_queued(state, fd, message_type, payload.data(), payload_size);
     if (!ok && fd == state.selection_tcp_fd && state.tcp_fd >= 0)
     {
         destroy_client_tcp_sender(state.selection_tcp_sender);
         ::close(state.selection_tcp_fd);
         state.selection_tcp_fd = -1;
-        ok = client_send_tcp_message_queued(state, state.tcp_fd, message_type, payload.data(), static_cast<uint32_t>(payload.size()));
+        ok = client_send_tcp_message_queued(state, state.tcp_fd, message_type, payload.data(), payload_size);
     }
 
     if (ok)
@@ -2866,12 +2854,40 @@ bool client_send_selection_text(ClientState& state, uint16_t message_type, const
     return ok;
 }
 
+static bool client_send_selection_request(ClientState& state,
+                                          uint16_t message_type) {
+    int fd = state.selection_tcp_fd >= 0 ? state.selection_tcp_fd : state.tcp_fd;
+    if (fd < 0)
+    {
+        return false;
+    }
+
+    bool ok = client_send_tcp_message_queued(state, fd, message_type, nullptr, 0);
+    if (!ok && fd == state.selection_tcp_fd && state.tcp_fd >= 0)
+    {
+        destroy_client_tcp_sender(state.selection_tcp_sender);
+        ::close(state.selection_tcp_fd);
+        state.selection_tcp_fd = -1;
+        fd = state.tcp_fd;
+        ok = client_send_tcp_message_queued(state, fd, message_type, nullptr, 0);
+    }
+    return ok;
+}
+
 bool client_send_clipboard_text(ClientState& state, const char* text) {
     return client_send_selection_text(state, WD_MSG_CLIPBOARD_SET, text);
 }
 
 bool client_send_primary_text(ClientState& state, const char* text) {
     return client_send_selection_text(state, WD_MSG_PRIMARY_SET, text);
+}
+
+bool client_request_server_selections(ClientState& state) {
+    const bool clipboard_ok = client_send_selection_request(
+        state, WD_MSG_CLIPBOARD_REQUEST);
+    const bool primary_ok = client_send_selection_request(
+        state, WD_MSG_PRIMARY_REQUEST);
+    return clipboard_ok && primary_ok;
 }
 
 bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t height) {

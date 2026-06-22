@@ -8,6 +8,7 @@
 #include "stream_ownership.hpp"
 #include "video_decoder.hpp"
 #include "video_present_queue.hpp"
+#include "selection_sync.hpp"
 #include "audio_playback.hpp"
 #include "video_transition.hpp"
 
@@ -511,6 +512,7 @@ struct ClientState {
     std::vector<uint8_t> udp_recv_buffer;
 
     std::mutex  selection_mutex;
+    ClientSelectionSyncState selection_sync;
     std::string pending_clipboard_text;
     bool        pending_clipboard_text_valid = false;
     std::string pending_primary_text;

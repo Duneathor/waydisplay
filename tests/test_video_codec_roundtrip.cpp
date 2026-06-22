@@ -89,7 +89,7 @@ bool configure_pair(wd_video_encoder* encoder, ClientVideoDecoder* decoder, uint
 bool run_codec(uint32_t codec) {
     wd_video_encoder* encoder = nullptr;
     ClientVideoDecoder* decoder = nullptr;
-    CHECK(wd_video_encoder_create(&encoder, "software", nullptr));
+    CHECK(wd_video_encoder_create(&encoder, "software"));
     CHECK(waydisplay::client_video_decoder_create(&decoder));
     CHECK(configure_pair(encoder, decoder, codec, 1));
 
@@ -247,7 +247,7 @@ bool run_codec(uint32_t codec) {
 int main() {
     wd_video_encoder* encoder = nullptr;
     ClientVideoDecoder* decoder = nullptr;
-    if (!wd_video_encoder_create(&encoder, "software", nullptr) ||
+    if (!wd_video_encoder_create(&encoder, "software") ||
         !waydisplay::client_video_decoder_create(&decoder))
     {
         wd_video_encoder_destroy(encoder);

@@ -38,8 +38,7 @@ struct wd_video_encoder_packet {
 };
 
 bool wd_video_encoder_create(struct wd_video_encoder** out_encoder,
-                             const char* video_encoder_backend,
-                             const char* vaapi_device);
+                             const char* video_encoder_backend);
 void wd_video_encoder_destroy(struct wd_video_encoder* encoder);
 void wd_video_encoder_reset(struct wd_video_encoder* encoder);
 

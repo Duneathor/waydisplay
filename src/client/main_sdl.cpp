@@ -32,12 +32,12 @@ void usage(const char* argv0) {
                  "  --video-codec <auto|h264|h265> Select video codec, default h265\n"
                  "  --video-hwdecode <off|auto|vaapi> Optional video hardware decode, default auto\n"
                  "  --limited-rate-kib <N>       Deprecated alias for --rate-kib\n"
-                 "  --wan                        Shorthand for --rate-kib 4096\n\n"
+                 "  --wan                        Shorthand for --rate-kib %u\n\n"
                  "Examples:\n"
                  "  %s 127.0.0.1 5000 6000\n"
                  "  %s 127.0.0.1 5000 6000 --fps 60\n"
                  "  %s 127.0.0.1 5000 6000 --rate-kib 4096\n",
-                 argv0, argv0, argv0, argv0);
+                 argv0, WD_CLIENT_WAN_RATE_KIB_PER_SECOND, argv0, argv0, argv0);
 }
 
 bool parse_u16(const char* text, uint16_t& out) {
@@ -336,7 +336,7 @@ int main(int argc, char** argv) {
         }
         else if (std::strcmp(argv[i], "--wan") == 0)
         {
-            stream_config.limited_udp_kib_per_second = 4096;
+            stream_config.limited_udp_kib_per_second = WD_CLIENT_WAN_RATE_KIB_PER_SECOND;
         }
         else
         {
@@ -370,6 +370,11 @@ int main(int argc, char** argv) {
         waydisplay::client_disconnect(state);
         SDL_Quit();
         return 1;
+    }
+
+    if (!waydisplay::client_request_server_selections(state))
+    {
+        WD_LOG_WARN("failed to request initial server clipboard selections");
     }
 
     const int rc = waydisplay::run_sdl_viewer(state);

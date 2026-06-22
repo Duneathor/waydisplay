@@ -1,5 +1,6 @@
 #include "wd_async_tcp.h"
 
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_log.h"
 
@@ -18,12 +19,12 @@
 #define WD_ASYNC_SEND_FLAGS 0
 #endif
 
-#define WD_ASYNC_TCP_DEFAULT_MAX_PENDING_BYTES (4ull * 1024ull * 1024ull)
+#define WD_ASYNC_TCP_DEFAULT_MAX_PENDING_BYTES WD_SERVER_ASYNC_TCP_DEFAULT_PENDING_BYTES
 #ifndef WD_ASYNC_TCP_DRAIN_LIMIT
-#define WD_ASYNC_TCP_DRAIN_LIMIT 250u
+#define WD_ASYNC_TCP_DRAIN_LIMIT WD_ASYNC_SENDER_DRAIN_LIMIT
 #endif
 #ifndef WD_ASYNC_TCP_DRAIN_SLEEP_US
-#define WD_ASYNC_TCP_DRAIN_SLEEP_US 1000u
+#define WD_ASYNC_TCP_DRAIN_SLEEP_US WD_ASYNC_SENDER_DRAIN_SLEEP_US
 #endif
 
 static char wd_async_tcp_cancel_cqe_tag;
@@ -229,9 +230,9 @@ bool wd_async_tcp_sender_create(struct wd_async_tcp_sender** out_sender, uint32_
 
     *out_sender = NULL;
 
-    if (entries < 8)
+    if (entries < WD_ASYNC_MIN_RING_ENTRIES)
     {
-        entries = 8;
+        entries = WD_ASYNC_MIN_RING_ENTRIES;
     }
 
     struct wd_async_tcp_sender* sender = calloc(1, sizeof(*sender));
@@ -361,6 +362,18 @@ bool wd_async_tcp_send_message_ex(struct wd_async_tcp_sender* sender, int fd, ui
 bool wd_async_tcp_send_message(struct wd_async_tcp_sender* sender, int fd, uint16_t message_type, const void* payload,
                                uint32_t payload_size) {
     return wd_async_tcp_send_message_ex(sender, fd, message_type, payload, payload_size, NULL, NULL);
+}
+
+bool wd_async_tcp_sender_can_queue(const struct wd_async_tcp_sender* sender, uint32_t payload_size) {
+    if (!sender || !sender->ring_ready)
+    {
+        return false;
+    }
+
+    const uint64_t total_size = (uint64_t)sizeof(struct wd_tcp_header) +
+                                (uint64_t)payload_size;
+    return sender->max_pending_bytes == 0 ||
+           sender->pending_bytes + total_size <= sender->max_pending_bytes;
 }
 
 bool wd_async_tcp_sender_has_message_type(const struct wd_async_tcp_sender* sender, uint16_t message_type) {

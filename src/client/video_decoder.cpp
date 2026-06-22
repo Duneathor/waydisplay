@@ -32,6 +32,8 @@ extern "C" {
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
 }
+
+#include "../common/wd_vaapi_device.h"
 #endif
 
 namespace waydisplay {
@@ -39,8 +41,6 @@ namespace waydisplay {
 #if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER
 namespace {
 
-constexpr size_t kMaxSubmittedFrameMetadata = 64;
-constexpr size_t kMaxDecodedFrameQueue = 8;
 
 struct SubmittedFrameMetadata {
     wd_video_frame_payload_header header{};
@@ -367,7 +367,7 @@ bool take_submitted_metadata(ClientVideoDecoder* decoder,
 }
 
 bool queue_decoder_frame(ClientVideoDecoder* decoder) {
-    if (!decoder || decoder->decoded_frames.size() >= kMaxDecodedFrameQueue)
+    if (!decoder || decoder->decoded_frames.size() >= WD_CLIENT_VIDEO_DECODED_QUEUE_CAPACITY)
     {
         return false;
     }
@@ -459,7 +459,7 @@ bool client_video_decoder_create(ClientVideoDecoder** out_decoder) {
         (*out_decoder)->codec = nullptr;
         try
         {
-            (*out_decoder)->submitted_frames.reserve(kMaxSubmittedFrameMetadata);
+            (*out_decoder)->submitted_frames.reserve(WD_CLIENT_VIDEO_METADATA_QUEUE_CAPACITY);
         }
         catch (...)
         {
@@ -617,12 +617,12 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
                                (decoder->vaapi_required || !decoder->vaapi_auto_disabled);
     if (decoder->vaapi_requested)
     {
-        const AVHWDeviceType vaapi_type = av_hwdevice_find_type_by_name("vaapi");
-        const char* vaapi_device = std::getenv("WAYDISPLAY_VAAPI_DEVICE");
-        if (vaapi_type != AV_HWDEVICE_TYPE_NONE &&
-            av_hwdevice_ctx_create(&decoder->hw_device_ctx, vaapi_type, vaapi_device && *vaapi_device ? vaapi_device : nullptr,
-                                   nullptr, 0) >= 0)
+        char selected_device[PATH_MAX] = {};
+        if (wd_vaapi_open_automatic_device(&decoder->hw_device_ctx,
+                                           selected_device,
+                                           sizeof(selected_device)) >= 0)
         {
+            WD_LOG_INFO("VAAPI video decode device initialized: %s", selected_device);
             decoder->codec_ctx->hw_device_ctx = av_buffer_ref(decoder->hw_device_ctx);
             if (!decoder->codec_ctx->hw_device_ctx)
             {
@@ -705,7 +705,7 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
     const int64_t codec_pts = static_cast<int64_t>(packet.header.pts_usec);
     decoder->packet->pts = codec_pts;
 
-    if (decoder->submitted_frames.size() >= kMaxSubmittedFrameMetadata)
+    if (decoder->submitted_frames.size() >= WD_CLIENT_VIDEO_METADATA_QUEUE_CAPACITY)
     {
         av_packet_unref(decoder->packet);
         return false;

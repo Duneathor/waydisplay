@@ -2,13 +2,14 @@
 
 #include "video_decoder.hpp"
 
+#include "waydisplay/wd_config.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 
 namespace waydisplay {
 
-constexpr size_t WD_CLIENT_VIDEO_PRESENT_QUEUE_CAPACITY = 6;
 
 struct ClientQueuedVideoFrame {
     ClientVideoFrameBuffer buffer{};

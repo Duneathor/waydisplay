@@ -14,14 +14,14 @@
 #include <unistd.h>
 
 #ifndef WD_ASYNC_UDP_DRAIN_LIMIT
-#define WD_ASYNC_UDP_DRAIN_LIMIT 250u
+#define WD_ASYNC_UDP_DRAIN_LIMIT WD_ASYNC_SENDER_DRAIN_LIMIT
 #endif
 #ifndef WD_ASYNC_UDP_DRAIN_SLEEP_US
-#define WD_ASYNC_UDP_DRAIN_SLEEP_US 1000u
+#define WD_ASYNC_UDP_DRAIN_SLEEP_US WD_ASYNC_SENDER_DRAIN_SLEEP_US
 #endif
-#define WD_ASYNC_UDP_PENDING_MULTIPLIER 4u
-#define WD_ASYNC_UDP_PENDING_MIN_PACKETS 256u
-#define WD_ASYNC_UDP_PENDING_MAX_PACKETS 4096u
+#define WD_ASYNC_UDP_PENDING_MULTIPLIER WD_SERVER_ASYNC_UDP_PENDING_MULTIPLIER
+#define WD_ASYNC_UDP_PENDING_MIN_PACKETS WD_SERVER_ASYNC_UDP_PENDING_MIN_PACKETS
+#define WD_ASYNC_UDP_PENDING_MAX_PACKETS WD_SERVER_ASYNC_UDP_PENDING_MAX_PACKETS
 
 struct wd_async_udp_packet {
     struct wd_async_udp_packet* next;
@@ -160,9 +160,9 @@ bool wd_async_udp_sender_create(struct wd_async_udp_sender** out_sender, uint32_
 
     *out_sender = NULL;
 
-    if (entries < 8)
+    if (entries < WD_ASYNC_MIN_RING_ENTRIES)
     {
-        entries = 8;
+        entries = WD_ASYNC_MIN_RING_ENTRIES;
     }
 
     struct wd_async_udp_sender* sender = calloc(1, sizeof(*sender));

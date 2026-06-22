@@ -49,7 +49,7 @@ int main() {
         client_video_audio_sync_plan(UINT64_MAX, 0, 1);
     require(enormous_lead.decision == ClientVideoAudioSyncDecision::Hold,
             "an enormous lead should be held without overflow");
-    require(enormous_lead.retry_after_ms == CLIENT_VIDEO_AUDIO_SYNC_MAX_RETRY_MS,
+    require(enormous_lead.retry_after_ms == WD_CLIENT_VIDEO_AUDIO_MAX_RETRY_MS,
             "an enormous lead should clamp the retry delay");
 
     const ClientVideoAudioSyncPlan enormous_lag =

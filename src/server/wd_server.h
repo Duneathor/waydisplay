@@ -31,6 +31,7 @@
 #include "wd_net_run_state.h"
 #include "wd_net_listener.h"
 #include "wd_process.h"
+#include "wd_selection_delivery.h"
 
 struct wd_async_tcp_sender;
 struct wd_async_udp_sender;
@@ -79,11 +80,8 @@ struct wd_audio_stream;
 extern "C" {
 #endif
 
-#define WD_KEY_QUEUE_CAP     4096
-#define WD_POINTER_QUEUE_CAP 4096
-#define WD_PRESSED_KEY_CAP   256
-
 struct wd_server;
+struct wd_selection_capture;
 struct wd_video_encoder;
 
 struct wd_view {
@@ -723,11 +721,11 @@ struct wd_net_state {
     uint64_t               udp_send_pressure_log_ns;
     uint64_t               udp_send_pressure_drops;
 
-    struct wd_queued_key_event key_queue[WD_KEY_QUEUE_CAP];
+    struct wd_queued_key_event key_queue[WD_SERVER_KEY_QUEUE_CAPACITY];
     size_t                     key_queue_count;
     bool                       key_state_reset_pending;
 
-    struct wd_queued_pointer_event pointer_queue[WD_POINTER_QUEUE_CAP];
+    struct wd_queued_pointer_event pointer_queue[WD_SERVER_POINTER_QUEUE_CAPACITY];
     size_t                         pointer_queue_count;
 
     uint8_t* clipboard_text;
@@ -738,6 +736,8 @@ struct wd_net_state {
     uint8_t* primary_text;
     uint32_t primary_text_size;
     bool     primary_text_pending;
+    bool     clipboard_request_pending;
+    bool     primary_request_pending;
 };
 
 struct wd_server {
@@ -806,7 +806,7 @@ struct wd_server {
     struct wl_list                                    keyboard_shortcuts_inhibitors;
     struct wlr_keyboard_group*                        keyboard_group;
     struct wlr_keyboard*                              keyboard;
-    uint32_t                                          pressed_keycodes[WD_PRESSED_KEY_CAP];
+    uint32_t                                          pressed_keycodes[WD_SERVER_PRESSED_KEY_CAPACITY];
     size_t                                            pressed_keycode_count;
 
     struct wl_list views;
@@ -862,6 +862,11 @@ struct wd_server {
     uint32_t                             remote_primary_text_size;
     struct wlr_primary_selection_source* remote_primary_source;
 
+    struct wd_selection_capture* clipboard_capture;
+    struct wd_selection_capture* primary_capture;
+    struct wd_selection_delivery local_clipboard;
+    struct wd_selection_delivery local_primary;
+
     uint64_t                  last_summary_ns;
     uint64_t                  last_delta_summary_ns;
     uint64_t                  last_stats_ns;
@@ -878,7 +883,6 @@ struct wd_server {
     const char*               startup_command;
     struct wd_spawned_process startup_process;
     const char*               video_encoder_backend;
-    const char* vaapi_device;
 
     struct wd_net_state net;
 };
@@ -888,7 +892,7 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr 
                     const char* app_cmd, double output_scale,
                     uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height,
                     uint16_t tile_width, uint16_t tile_height, bool enable_xwayland,
-                    bool enable_xdg_dialog, const char* video_encoder_backend, const char* vaapi_device);
+                    bool enable_xdg_dialog, const char* video_encoder_backend);
 
 void wd_server_destroy(struct wd_server* server);
 
@@ -1008,6 +1012,8 @@ void wd_clipboard_destroy(struct wd_server* server);
 void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expected_session_id, uint64_t expected_connection_token, const uint8_t* payload,
                                           uint32_t payload_size, bool primary);
 void wd_clipboard_drain_and_apply(struct wd_server* server);
+void wd_clipboard_queue_client_request_locked(struct wd_net_state* net, bool primary);
+void wd_clipboard_send_pending_locked(struct wd_server* server);
 
 /* wd_server_net.c */
 bool  wd_net_init(struct wd_server* server, uint16_t tcp_port,

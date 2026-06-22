@@ -1,4 +1,5 @@
 #include "waydisplay/wd_time.h"
+#include "waydisplay/wd_input.h"
 #include "wd_server.h"
 
 #include <string.h>
@@ -6,8 +7,6 @@
 #include <wlr/types/wlr_scene.h>
 
 #define WD_POINTER_MOD_ALT (1u << 0)
-#define WD_BTN_LEFT        0x110
-#define WD_BTN_RIGHT       0x111
 
 static bool scene_surface_at(struct wd_server* server, double lx, double ly, struct wd_view** out_view, struct wlr_surface** out_surface,
                              double* out_sx, double* out_sy) {
@@ -129,11 +128,12 @@ void wd_pointer_queue_event_locked(struct wd_net_state* net, const struct wd_poi
         }
     }
 
-    if (net->pointer_queue_count >= WD_POINTER_QUEUE_CAP)
+    if (net->pointer_queue_count >= WD_SERVER_POINTER_QUEUE_CAPACITY)
     {
-        memmove(&net->pointer_queue[0], &net->pointer_queue[1], (WD_POINTER_QUEUE_CAP - 1) * sizeof(net->pointer_queue[0]));
+        memmove(&net->pointer_queue[0], &net->pointer_queue[1],
+                (WD_SERVER_POINTER_QUEUE_CAPACITY - 1u) * sizeof(net->pointer_queue[0]));
 
-        net->pointer_queue_count = WD_POINTER_QUEUE_CAP - 1;
+        net->pointer_queue_count = WD_SERVER_POINTER_QUEUE_CAPACITY - 1u;
         net->stats.pointer_events_dropped++;
     }
 
@@ -226,7 +226,7 @@ static void wd_pointer_update_hover_cursor(struct wd_server* server, struct wd_v
 
 static bool pointer_event_is_left_press(const struct wd_pointer_event_payload* event) {
     return event && event->event_type == WD_POINTER_EVENT_BUTTON && event->button_state == WD_POINTER_BUTTON_PRESSED &&
-           event->button == WD_BTN_LEFT;
+           event->button == WD_INPUT_BUTTON_LEFT;
 }
 
 static bool pointer_event_is_alt_left_press(const struct wd_pointer_event_payload* event) {
@@ -644,7 +644,7 @@ static double clamp_layout_y(struct wd_server* server, uint16_t y) {
 }
 
 void wd_pointer_drain_and_inject(struct wd_server* server) {
-    struct wd_queued_pointer_event local[WD_POINTER_QUEUE_CAP];
+    struct wd_queued_pointer_event local[WD_SERVER_POINTER_QUEUE_CAPACITY];
     size_t                         count = 0;
 
     if (!server || !server->seat)
@@ -656,9 +656,9 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
 
     count = server->net.pointer_queue_count;
 
-    if (count > WD_POINTER_QUEUE_CAP)
+    if (count > WD_SERVER_POINTER_QUEUE_CAPACITY)
     {
-        count = WD_POINTER_QUEUE_CAP;
+        count = WD_SERVER_POINTER_QUEUE_CAPACITY;
     }
 
     if (count > 0)
@@ -740,7 +740,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
             }
 
             if (event->event_type == WD_POINTER_EVENT_BUTTON && event->button_state == WD_POINTER_BUTTON_RELEASED &&
-                event->button == WD_BTN_LEFT)
+                event->button == WD_INPUT_BUTTON_LEFT)
             {
                 wd_pointer_update_resize(server);
                 wd_pointer_end_resize(server);
@@ -806,7 +806,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
                 }
             }
 
-            if (event->event_type == WD_POINTER_EVENT_BUTTON && event->button == WD_BTN_RIGHT)
+            if (event->event_type == WD_POINTER_EVENT_BUTTON && event->button == WD_INPUT_BUTTON_RIGHT)
             {
                 WD_LOG_DEBUG("right click %s had no target at layout %.1f %.1f "
                              "mods=0x%x",
@@ -840,7 +840,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
             }
         }
 
-        if (event->event_type == WD_POINTER_EVENT_BUTTON && event->button == WD_BTN_RIGHT)
+        if (event->event_type == WD_POINTER_EVENT_BUTTON && event->button == WD_INPUT_BUTTON_RIGHT)
         {
             WD_LOG_DEBUG("right click target %s at layout %.1f %.1f "
                          "surface=%p view=%p sx=%.1f sy=%.1f state=%s mods=0x%x",
@@ -858,7 +858,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
                 wd_cursor_set_shape(server, WD_CURSOR_SHAPE_DEFAULT);
                 break;
             case WD_POINTER_EVENT_BUTTON:
-                if (event->button == WD_BTN_LEFT && event->button_state == WD_POINTER_BUTTON_PRESSED)
+                if (event->button == WD_INPUT_BUTTON_LEFT && event->button_state == WD_POINTER_BUTTON_PRESSED)
                 {
                     wd_xwayland_view_handle_decoration_press(target_view, sx, sy);
                 }
@@ -945,7 +945,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
 
             wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
 
-            if (event->button == WD_BTN_RIGHT)
+            if (event->button == WD_INPUT_BUTTON_RIGHT)
             {
                 WD_LOG_DEBUG("notifying seat right click %s "
                              "button=0x%x time=%u surface=%p sx=%.1f sy=%.1f",

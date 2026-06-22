@@ -1,4 +1,5 @@
 #include "client_async_udp.hpp"
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
 
 #include <liburing.h>
@@ -20,10 +21,6 @@
 namespace waydisplay {
 namespace {
 
-constexpr uint32_t DEFAULT_RING_ENTRIES = 256;
-constexpr size_t   DEFAULT_PACKET_SIZE  = 65536;
-constexpr uint32_t DRAIN_LIMIT = 250;
-constexpr unsigned int DRAIN_SLEEP_US = 1000;
 
 char g_cancel_cqe_tag;
 void* const CANCEL_CQE = &g_cancel_cqe_tag;
@@ -314,7 +311,7 @@ bool drain_destroy_locked(ClientAsyncUdpReceiver* receiver) {
         return true;
     }
 
-    for (uint32_t i = 0; (!receiver->prepared.empty() || has_submitted_locked(receiver)) && i < DRAIN_LIMIT; ++i)
+    for (uint32_t i = 0; (!receiver->prepared.empty() || has_submitted_locked(receiver)) && i < WD_ASYNC_SENDER_DRAIN_LIMIT; ++i)
     {
         if (!receiver->prepared.empty())
         {
@@ -346,7 +343,7 @@ bool drain_destroy_locked(ClientAsyncUdpReceiver* receiver) {
         {
             break;
         }
-        usleep(DRAIN_SLEEP_US);
+        usleep(WD_ASYNC_SENDER_DRAIN_SLEEP_US);
     }
 
     return receiver->prepared.empty() && !has_submitted_locked(receiver);
@@ -361,15 +358,15 @@ ClientAsyncUdpReceiver* client_async_udp_receiver_create(int fd, uint32_t entrie
     }
     if (entries == 0)
     {
-        entries = DEFAULT_RING_ENTRIES;
+        entries = WD_CLIENT_ASYNC_UDP_DEFAULT_RING_ENTRIES;
     }
-    if (entries < 8)
+    if (entries < WD_ASYNC_MIN_RING_ENTRIES)
     {
-        entries = 8;
+        entries = WD_ASYNC_MIN_RING_ENTRIES;
     }
     if (packet_size == 0)
     {
-        packet_size = DEFAULT_PACKET_SIZE;
+        packet_size = WD_CLIENT_ASYNC_UDP_DEFAULT_PACKET_BYTES;
     }
 
     auto* receiver = new (std::nothrow) ClientAsyncUdpReceiver();
@@ -494,8 +491,8 @@ ClientAsyncUdpWaitResult client_async_udp_receiver_wait(ClientAsyncUdpReceiver* 
     }
 
     __kernel_timespec timeout{};
-    timeout.tv_sec = static_cast<__kernel_time64_t>(timeout_ns / 1000000000ull);
-    timeout.tv_nsec = static_cast<long>(timeout_ns % 1000000000ull);
+    timeout.tv_sec = static_cast<__kernel_time64_t>(timeout_ns / WD_NSEC_PER_SEC);
+    timeout.tv_nsec = static_cast<long>(timeout_ns % WD_NSEC_PER_SEC);
 
     io_uring_cqe* cqe = nullptr;
     const int rc = io_uring_wait_cqe_timeout(&receiver->ring, &cqe, &timeout);
@@ -522,11 +519,11 @@ bool client_async_udp_receiver_drain(ClientAsyncUdpReceiver* receiver, void* use
 
     if (max_packets == 0)
     {
-        max_packets = 4096;
+        max_packets = WD_CLIENT_ASYNC_UDP_DEFAULT_DRAIN_BATCH;
     }
 
     std::vector<std::pair<Buffer*, int>> completed;
-    completed.reserve(std::min<uint32_t>(max_packets, 256));
+    completed.reserve(std::min<uint32_t>(max_packets, WD_CLIENT_ASYNC_UDP_COMPLETION_RESERVE));
 
     {
         std::lock_guard<std::mutex> lock(receiver->mutex);

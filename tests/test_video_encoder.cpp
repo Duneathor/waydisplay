@@ -107,17 +107,17 @@ bool encode_until_packet(wd_video_encoder* encoder,
 }
 
 bool test_invalid_api() {
-    CHECK(!wd_video_encoder_create(nullptr, "software", nullptr));
+    CHECK(!wd_video_encoder_create(nullptr, "software"));
 
     wd_video_encoder* encoder = nullptr;
-    CHECK(!wd_video_encoder_create(&encoder, "invalid-backend", nullptr));
+    CHECK(!wd_video_encoder_create(&encoder, "invalid-backend"));
     CHECK(encoder == nullptr);
     CHECK(wd_video_encoder_backend_name(nullptr) != nullptr);
     CHECK(std::strcmp(wd_video_encoder_backend_name(nullptr), "none") == 0);
     CHECK(!wd_video_encoder_request_keyframe(nullptr));
     CHECK(!wd_video_encoder_configure(nullptr, nullptr));
 
-    CHECK(wd_video_encoder_create(&encoder, "software", nullptr));
+    CHECK(wd_video_encoder_create(&encoder, "software"));
     CHECK(encoder != nullptr);
     CHECK(std::strcmp(wd_video_encoder_backend_name(encoder), "software") == 0);
     CHECK(wd_video_encoder_choose_codec(encoder, 0) == 0);
@@ -142,7 +142,7 @@ bool test_invalid_api() {
 
 bool test_codec(uint32_t codec) {
     wd_video_encoder* encoder = nullptr;
-    CHECK(wd_video_encoder_create(&encoder, "software", nullptr));
+    CHECK(wd_video_encoder_create(&encoder, "software"));
 
     wd_video_encoder_config config{};
     config.session_id = 7;
@@ -211,7 +211,7 @@ int main() {
     }
 
     wd_video_encoder* encoder = nullptr;
-    if (!wd_video_encoder_create(&encoder, "software", nullptr))
+    if (!wd_video_encoder_create(&encoder, "software"))
     {
         return 1;
     }

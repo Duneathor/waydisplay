@@ -1,5 +1,7 @@
 #pragma once
 
+#include "waydisplay/wd_config.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -56,8 +58,8 @@ struct DirtyTextureUploadPlan {
 };
 struct ClientTextureUploadCostModel {
     uint64_t pixel_cost_q16 = 1ull << 16u;
-    uint64_t update_call_cost_ns = 16384;
-    uint64_t lock_call_cost_ns = 131072;
+    uint64_t update_call_cost_ns = WD_CLIENT_TEXTURE_UPDATE_CALL_COST_NS;
+    uint64_t lock_call_cost_ns = WD_CLIENT_TEXTURE_LOCK_CALL_COST_NS;
     uint64_t snapshot_pixel_cost_q16 = 1ull << 16u;
     uint32_t update_samples = 0;
     uint32_t lock_samples = 0;

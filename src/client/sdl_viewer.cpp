@@ -10,6 +10,7 @@
 #include "tile_reassembly.hpp"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
+#include "waydisplay/wd_input.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
@@ -41,11 +42,6 @@ SDL_FRect                           g_content_rect{0.0f, 0.0f, 1.0f, 1.0f};
 std::array<bool, SDL_SCANCODE_COUNT> g_forwarded_keys{};
 bool                                g_suppress_paste_v_keyup = false;
 
-constexpr uint16_t WD_BTN_LEFT   = 0x110;
-constexpr uint16_t WD_BTN_RIGHT  = 0x111;
-constexpr uint16_t WD_BTN_MIDDLE = 0x112;
-constexpr uint16_t WD_BTN_SIDE   = 0x113;
-constexpr uint16_t WD_BTN_EXTRA  = 0x114;
 
 constexpr uint16_t WD_POINTER_MOD_ALT   = 1u << 0;
 constexpr uint16_t WD_POINTER_MOD_SHIFT = 1u << 1;
@@ -95,7 +91,7 @@ uint32_t client_present_delay_ms(const ClientState& state, uint64_t last_present
         return 0;
     }
 
-    uint64_t remaining_ms = (interval_ns - elapsed_ns + 999999ull) / 1000000ull;
+    uint64_t remaining_ms = (interval_ns - elapsed_ns + WD_NSEC_PER_MSEC - 1ull) / WD_NSEC_PER_MSEC;
     if (remaining_ms == 0)
     {
         remaining_ms = 1;
@@ -820,16 +816,29 @@ uint16_t current_pointer_modifiers() {
     return result;
 }
 
-bool send_host_clipboard_to_server(ClientState& state, bool primary) {
+bool send_host_clipboard_to_server(ClientState& state, bool primary, bool force) {
     char* text = primary ? SDL_GetPrimarySelectionText() : SDL_GetClipboardText();
     if (!text)
     {
         return false;
     }
 
-    const bool ok = primary ? client_send_primary_text(state, text) : client_send_clipboard_text(state, text);
-
+    const ClientSelectionKind kind = primary ? ClientSelectionKind::Primary
+                                             : ClientSelectionKind::Clipboard;
+    const std::string value(text);
     SDL_free(text);
+
+    if (!client_selection_sync_should_send(state.selection_sync, kind, value, force))
+    {
+        return true;
+    }
+
+    const bool ok = primary ? client_send_primary_text(state, value.c_str())
+                            : client_send_clipboard_text(state, value.c_str());
+    if (ok)
+    {
+        client_selection_sync_note_sent(state.selection_sync, kind, value);
+    }
     return ok;
 }
 
@@ -859,19 +868,37 @@ void drain_remote_selection_updates(ClientState& state) {
         }
     }
 
-    if (have_clipboard)
+    if (have_clipboard &&
+        client_selection_sync_should_apply(state.selection_sync,
+                                           ClientSelectionKind::Clipboard,
+                                           clipboard))
     {
         if (!SDL_SetClipboardText(clipboard.c_str()))
         {
             log_sdl_warning("SDL_SetClipboardText");
         }
+        else
+        {
+            client_selection_sync_note_applied(state.selection_sync,
+                                               ClientSelectionKind::Clipboard,
+                                               clipboard);
+        }
     }
 
-    if (have_primary)
+    if (have_primary &&
+        client_selection_sync_should_apply(state.selection_sync,
+                                           ClientSelectionKind::Primary,
+                                           primary))
     {
         if (!SDL_SetPrimarySelectionText(primary.c_str()))
         {
             log_sdl_warning("SDL_SetPrimarySelectionText");
+        }
+        else
+        {
+            client_selection_sync_note_applied(state.selection_sync,
+                                               ClientSelectionKind::Primary,
+                                               primary);
         }
     }
 }
@@ -971,7 +998,8 @@ void update_udp_gap_pressure(ClientState& state, uint64_t max_gap_ns, uint64_t i
     uint64_t current = state.udp_gap_pressure_ns.load(std::memory_order_relaxed);
     uint64_t target  = 0;
 
-    if (udp_packets >= 16 && interarrival_samples >= 16 && max_gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
+    if (udp_packets >= WD_CLIENT_RUNTIME_GAP_MIN_SAMPLES &&
+        interarrival_samples >= WD_CLIENT_RUNTIME_GAP_MIN_SAMPLES && max_gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
     {
         target = max_gap_ns;
     }
@@ -2207,7 +2235,7 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler) {
     if (state.udp_receiver)
     {
         AsyncUdpDrainContext ctx{&state, &reassembler};
-        const bool ok = client_async_udp_receiver_drain(state.udp_receiver, &ctx, handle_async_udp_packet, 8192);
+        const bool ok = client_async_udp_receiver_drain(state.udp_receiver, &ctx, handle_async_udp_packet, WD_CLIENT_UDP_DRAIN_BATCH);
         client_reap_async_udp_receives(state);
         if (ok)
         {
@@ -2225,8 +2253,7 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler) {
 
 
 uint64_t client_udp_next_deadline_ns(ClientState& state, const TileReassembler& reassembler, uint64_t now_ns) {
-    constexpr uint64_t MAX_IDLE_WAIT_NS = 50000000ull;
-    uint64_t deadline_ns = now_ns + MAX_IDLE_WAIT_NS;
+    uint64_t deadline_ns = now_ns + WD_CLIENT_MAX_IDLE_WAIT_NS;
 
     const uint64_t reassembly_deadline_ns = reassembler.next_expiry_deadline_ns(state);
     if (reassembly_deadline_ns != 0 && reassembly_deadline_ns < deadline_ns)
@@ -2269,7 +2296,7 @@ bool client_wait_for_udp_activity(ClientState& state, uint64_t timeout_ns) {
     {
         return false;
     }
-    const uint64_t timeout_ms64 = (timeout_ns + 999999ull) / 1000000ull;
+    const uint64_t timeout_ms64 = (timeout_ns + WD_NSEC_PER_MSEC - 1ull) / WD_NSEC_PER_MSEC;
     const int timeout_ms = static_cast<int>(std::min<uint64_t>(timeout_ms64, static_cast<uint64_t>(INT_MAX)));
     pollfd descriptor{};
     descriptor.fd = state.udp_fd;
@@ -2297,7 +2324,7 @@ void udp_reader_main(ClientState* state) {
 
         if (client_has_pending_server_config(*state))
         {
-            if (!client_wait_for_udp_activity(*state, 10000000ull))
+            if (!client_wait_for_udp_activity(*state, WD_CLIENT_CONFIG_SYNC_WAIT_NS))
             {
                 state->running.store(false, std::memory_order_relaxed);
                 break;
@@ -2344,15 +2371,15 @@ uint16_t sdl_button_to_linux_button(uint8_t button) {
     switch (button)
     {
     case SDL_BUTTON_LEFT:
-        return WD_BTN_LEFT;
+        return WD_INPUT_BUTTON_LEFT;
     case SDL_BUTTON_RIGHT:
-        return WD_BTN_RIGHT;
+        return WD_INPUT_BUTTON_RIGHT;
     case SDL_BUTTON_MIDDLE:
-        return WD_BTN_MIDDLE;
+        return WD_INPUT_BUTTON_MIDDLE;
     case SDL_BUTTON_X1:
-        return WD_BTN_SIDE;
+        return WD_INPUT_BUTTON_SIDE;
     case SDL_BUTTON_X2:
-        return WD_BTN_EXTRA;
+        return WD_INPUT_BUTTON_EXTRA;
     default:
         return 0;
     }
@@ -2758,7 +2785,8 @@ void record_framebuffer_lock_stats(ClientState& state, uint64_t wait_ns, uint64_
     state.stats.framebuffer_lock_hold_sum_ns.fetch_add(hold_ns, std::memory_order_relaxed);
     record_atomic_max(state.stats.framebuffer_lock_hold_max_ns, hold_ns);
     const uint64_t old_ewma = state.framebuffer_lock_wait_ewma_ns.load(std::memory_order_relaxed);
-    const uint64_t next_ewma = old_ewma == 0 ? wait_ns : (old_ewma * 7ull + wait_ns) / 8ull;
+    const uint64_t next_ewma = old_ewma == 0 ? wait_ns : (old_ewma * WD_CLIENT_FRAMEBUFFER_LOCK_EWMA_OLD_NUMERATOR + wait_ns) /
+                                                    WD_CLIENT_FRAMEBUFFER_LOCK_EWMA_DENOMINATOR;
     state.framebuffer_lock_wait_ewma_ns.store(next_ewma, std::memory_order_relaxed);
 }
 
@@ -3143,6 +3171,16 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
         return;
     }
 
+    if (event.type == SDL_EVENT_CLIPBOARD_UPDATE)
+    {
+        if (!event.clipboard.owner &&
+            !send_host_clipboard_to_server(state, false, false))
+        {
+            WD_LOG_WARN("failed to synchronize host clipboard update");
+        }
+        return;
+    }
+
     if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP)
     {
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.repeat)
@@ -3170,7 +3208,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
                  * publish the selection, then synthesize V while Ctrl is already
                  * held remotely. Forwarding V here races ahead of publication.
                  */
-                send_host_clipboard_to_server(state, false);
+                send_host_clipboard_to_server(state, false, true);
                 g_suppress_paste_v_keyup = true;
                 return;
             }
@@ -3237,14 +3275,14 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
         pointer.button_state        = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? WD_POINTER_BUTTON_PRESSED : WD_POINTER_BUTTON_RELEASED;
         pointer.modifiers           = current_pointer_modifiers();
 
-        if (linux_button == WD_BTN_MIDDLE && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+        if (linux_button == WD_INPUT_BUTTON_MIDDLE && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
         {
             /*
              * Publish the host clipboard as primary selection first, then forward
              * the middle click so the Wayland client performs its normal primary
              * paste request.
              */
-            send_host_clipboard_to_server(state, true);
+            send_host_clipboard_to_server(state, true, true);
         }
 
         if (!client_send_pointer_event(state, pointer))

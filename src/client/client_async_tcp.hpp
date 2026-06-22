@@ -14,10 +14,12 @@ struct ClientAsyncTcpSenderStats {
     uint64_t partial_resubmits = 0;
     uint64_t coalesced         = 0;
     uint64_t inflight_max      = 0;
+    uint64_t inflight          = 0;
+    uint64_t pending_bytes     = 0;
 };
 
 ClientAsyncTcpSender* client_async_tcp_sender_create(uint32_t entries, uint64_t max_pending_bytes);
-void client_async_tcp_sender_destroy(ClientAsyncTcpSender* sender);
+ClientAsyncTcpSenderStats client_async_tcp_sender_destroy(ClientAsyncTcpSender* sender);
 
 void client_async_tcp_sender_reap(ClientAsyncTcpSender* sender);
 

@@ -102,13 +102,7 @@ enum wd_audio_transport {
     WD_AUDIO_TRANSPORT_TCP = 1,
 };
 
-#define WD_AUDIO_SAMPLE_RATE_DEFAULT       48000u
 #define WD_AUDIO_CHANNELS_MAX              2u
-#define WD_AUDIO_FRAME_SAMPLES_DEFAULT     960u
-#define WD_AUDIO_TARGET_LATENCY_MS_DEFAULT 60u
-#define WD_AUDIO_TARGET_LATENCY_MS_MIN     20u
-#define WD_AUDIO_TARGET_LATENCY_MS_MAX     500u
-#define WD_AUDIO_BITRATE_DEFAULT           128000u
 #define WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES  16384u
 
 enum wd_audio_packet_flags {
@@ -123,14 +117,6 @@ enum wd_video_mode {
     WD_VIDEO_MODE_FORCE = 2,
 };
 
-#define WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT 60u
-#define WD_VIDEO_MIN_DIRTY_PERCENT_MAX     100u
-#define WD_VIDEO_ENTER_SECONDS_DEFAULT     3u
-#define WD_VIDEO_ENTER_SECONDS_MAX         60u
-#define WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT 30u
-#define WD_VIDEO_EXIT_DIRTY_PERCENT_MAX     100u
-#define WD_VIDEO_EXIT_SECONDS_DEFAULT       30u
-#define WD_VIDEO_EXIT_SECONDS_MAX           300u
 
 
 enum wd_video_frame_flags {

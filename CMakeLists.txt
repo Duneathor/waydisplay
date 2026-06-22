@@ -181,6 +181,7 @@ add_library(waydisplay_common STATIC
     src/common/wd_time.c
     src/common/wd_log.c
     src/common/wd_net.c
+    src/common/wd_selection.c
     src/common/wd_tile.c
     src/common/wd_zstd.c
 )
@@ -205,6 +206,8 @@ add_library(waydisplay_server_lifecycle STATIC
     src/server/wd_net_listener.c
     src/server/wd_process.c
     src/server/wd_server_cli.c
+    src/server/wd_selection_capture.c
+    src/server/wd_selection_delivery.c
 )
 
 waydisplay_apply_common_warnings(waydisplay_server_lifecycle)
@@ -258,6 +261,7 @@ add_library(waydisplay_client_render_planning STATIC
     src/client/content_order.cpp
     src/client/present_telemetry.cpp
     src/client/render_wakeup.cpp
+    src/client/selection_sync.cpp
     src/client/stream_ownership.cpp
     src/client/udp_transport_lifecycle.cpp
     src/client/video_transition.cpp
@@ -753,6 +757,52 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.selection_protocol
+        TARGET waydisplay_test_selection_protocol
+        SOURCES tests/test_selection_protocol.cpp
+        LIBRARIES waydisplay_common
+        LABELS "clipboard;protocol"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.selection_sync
+        TARGET waydisplay_test_selection_sync
+        SOURCES tests/test_selection_sync.cpp
+        LIBRARIES waydisplay_client_render_planning
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+        LABELS "clipboard;lifecycle"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.selection_capture
+        TARGET waydisplay_test_selection_capture
+        SOURCES tests/test_selection_capture.cpp
+        LIBRARIES waydisplay_server_lifecycle
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "clipboard;lifecycle"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.selection_delivery
+        TARGET waydisplay_test_selection_delivery
+        SOURCES tests/test_selection_delivery.cpp
+        LIBRARIES waydisplay_server_lifecycle
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "clipboard;lifecycle"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.clipboard_sync_lifecycle
+        TARGET waydisplay_test_clipboard_sync_lifecycle
+        SOURCES tests/test_clipboard_sync_lifecycle.cpp
+        LIBRARIES waydisplay_common waydisplay_client_render_planning waydisplay_server_lifecycle
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "clipboard;lifecycle;protocol"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.tile_codec
         TARGET waydisplay_test_tile_codec
         SOURCES tests/test_tile_codec.cpp
@@ -853,6 +903,25 @@ if(WAYDISPLAY_BUILD_TESTS)
                 WD_ASYNC_UDP_DRAIN_LIMIT=0
             SKIP_RETURN_CODE 77
             LABELS "network;lifecycle;io_uring"
+        )
+
+
+        waydisplay_add_test(
+            NAME waydisplay.client_async_sender_shutdown
+            TARGET waydisplay_test_client_async_sender_shutdown
+            SOURCES
+                tests/test_client_async_sender_shutdown.cpp
+                src/client/client_async_tcp.cpp
+            LIBRARIES
+                waydisplay_common
+                PkgConfig::LIBURING
+            INCLUDE_DIRECTORIES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+            COMPILE_DEFINITIONS
+                WD_CLIENT_ASYNC_TCP_DRAIN_LIMIT=0
+            SKIP_RETURN_CODE 77
+            LABELS "network;lifecycle;io_uring;client"
         )
     endif()
 

@@ -56,11 +56,10 @@ the VA-API device before falling back to software encoding.
 
 The server defaults to `--video-encoder auto`, which tries FFmpeg's VA-API
 encoder first and falls back to `libx264`/`libx265` when the selected codec is
-not supported by the VA device. Select a backend explicitly with:
+not supported by an automatically discovered VA device. Select a backend explicitly with:
 
 ```sh
-waydisplay_server_wlroots --video-encoder vaapi \
-  --vaapi-device /dev/dri/renderD128 --app foot
+waydisplay_server_wlroots --video-encoder vaapi --app foot
 waydisplay_server_wlroots --video-encoder software --app foot
 ```
 

@@ -1,5 +1,7 @@
 #include "wd_tile_policy.h"
 
+#include "waydisplay/wd_config.h"
+
 #include <limits.h>
 #include <string.h>
 
@@ -13,7 +15,7 @@ uint16_t wd_tile_normalize_udp_payload_target(uint16_t udp_payload_target, uint1
     {
         default_target = maximum_target;
     }
-    if (udp_payload_target < 512)
+    if (udp_payload_target < WD_MIN_PROBED_UDP_PAYLOAD)
     {
         return default_target;
     }
@@ -82,28 +84,28 @@ struct wd_video_auto_entry_result wd_video_auto_entry_evaluate(
 
     const uint16_t min_dirty = metrics->minimum_dirty_percent != 0
                                    ? metrics->minimum_dirty_percent
-                                   : 60u;
-    uint16_t motion_dirty_floor = min_dirty / 3u;
-    if (motion_dirty_floor < 15u)
+                                   : WD_TILE_AUTO_ENTRY_MIN_DIRTY_PERCENT_DEFAULT;
+    uint16_t motion_dirty_floor = min_dirty / WD_TILE_AUTO_ENTRY_DIRTY_FLOOR_DIVISOR;
+    if (motion_dirty_floor < WD_TILE_AUTO_ENTRY_DIRTY_FLOOR_MIN_PERCENT)
     {
-        motion_dirty_floor = 15u;
+        motion_dirty_floor = WD_TILE_AUTO_ENTRY_DIRTY_FLOOR_MIN_PERCENT;
     }
     const uint16_t peak_dirty_percent = (uint16_t)(metrics->dirty_coverage_per_mille_peak / 10u);
     uint16_t peak_floor = min_dirty;
-    if (peak_floor < 50u)
+    if (peak_floor < WD_TILE_AUTO_ENTRY_PEAK_FLOOR_MIN_PERCENT)
     {
-        peak_floor = 50u;
+        peak_floor = WD_TILE_AUTO_ENTRY_PEAK_FLOOR_MIN_PERCENT;
     }
 
-    const bool sustained_motion = result.changed_frame_percent >= 25u;
+    const bool sustained_motion = result.changed_frame_percent >= WD_TILE_AUTO_ENTRY_CHANGED_FRAMES_PERCENT;
     const bool broad_motion = result.changed_dirty_percent >= min_dirty;
     const bool concentrated_motion = result.changed_dirty_percent >= motion_dirty_floor &&
                                      peak_dirty_percent >= peak_floor;
     const bool wire_pressure = metrics->tile_budget_bytes_per_second != 0 &&
-                               result.tile_budget_percent >= 65u;
+                               result.tile_budget_percent >= WD_TILE_AUTO_ENTRY_WIRE_PRESSURE_PERCENT;
     const bool fps_suppressed = metrics->requested_capture_fps != 0 &&
                                 (uint32_t)metrics->adaptive_capture_fps * 100u <
-                                    (uint32_t)metrics->requested_capture_fps * 85u;
+                                    (uint32_t)metrics->requested_capture_fps * WD_TILE_AUTO_ENTRY_FPS_PRESSURE_PERCENT;
     const bool queue_pressure = metrics->send_pressure_events != 0;
 
     result.candidate = !metrics->selection_suppressed && sustained_motion &&
@@ -149,13 +151,12 @@ bool wd_tile_xrgb_payload_may_compress(const uint8_t* payload, uint32_t payload_
     {
         return false;
     }
-    if (pixel_count <= 16u)
+    if (pixel_count <= WD_TILE_ADVISOR_SMALL_PAYLOAD_PIXELS)
     {
         return true;
     }
 
-    enum { SAMPLE_COUNT = 64 };
-    uint32_t colors[SAMPLE_COUNT];
+    uint32_t colors[WD_TILE_ADVISOR_ENTROPY_SAMPLE_COUNT];
     uint32_t unique_count = 0;
     uint32_t adjacent_repeats = 0;
     uint32_t repeated_deltas = 0;
@@ -164,7 +165,7 @@ bool wd_tile_xrgb_payload_may_compress(const uint8_t* payload, uint32_t payload_
     bool have_previous = false;
     bool have_delta = false;
 
-    const uint32_t samples = pixel_count < SAMPLE_COUNT ? pixel_count : SAMPLE_COUNT;
+    const uint32_t samples = pixel_count < WD_TILE_ADVISOR_ENTROPY_SAMPLE_COUNT ? pixel_count : WD_TILE_ADVISOR_ENTROPY_SAMPLE_COUNT;
     for (uint32_t i = 0; i < samples; ++i)
     {
         const uint32_t pixel_index = samples == 1 ? 0 :
@@ -205,7 +206,7 @@ bool wd_tile_xrgb_payload_may_compress(const uint8_t* payload, uint32_t payload_
         have_previous = true;
     }
 
-    return unique_count <= samples * 7u / 8u || adjacent_repeats >= 2u || repeated_deltas >= samples / 8u;
+    return unique_count <= samples * WD_TILE_ADVISOR_MAX_UNIQUE_NUMERATOR / WD_TILE_ADVISOR_MAX_UNIQUE_DENOMINATOR || adjacent_repeats >= WD_TILE_ADVISOR_MIN_ADJACENT_REPEATS || repeated_deltas >= samples / WD_TILE_ADVISOR_REPEATED_DELTA_DIVISOR;
 }
 
 
@@ -283,7 +284,7 @@ bool wd_tile_compression_advisor_should_attempt(struct wd_tile_compression_advis
         return true;
     }
     advisor->bypass_remaining--;
-    return (advisor->bypass_remaining % 16u) == 0;
+    return (advisor->bypass_remaining % WD_TILE_ADVISOR_BYPASS_PROBE_INTERVAL) == 0;
 }
 
 void wd_tile_compression_advisor_record(struct wd_tile_compression_advisor* advisor, bool worthwhile) {
@@ -298,10 +299,10 @@ void wd_tile_compression_advisor_record(struct wd_tile_compression_advisor* advi
         return;
     }
     advisor->poor_streak++;
-    if (advisor->poor_streak >= 8u)
+    if (advisor->poor_streak >= WD_TILE_ADVISOR_POOR_STREAK_LIMIT)
     {
         advisor->poor_streak = 0;
-        advisor->bypass_remaining = 64u;
+        advisor->bypass_remaining = WD_TILE_ADVISOR_BYPASS_ATTEMPTS;
     }
 }
 

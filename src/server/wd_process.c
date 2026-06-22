@@ -2,6 +2,8 @@
 
 #include "wd_process.h"
 
+#include "waydisplay/wd_config.h"
+
 #include <errno.h>
 #include <signal.h>
 #include <spawn.h>
@@ -369,9 +371,9 @@ static bool wd_spawned_process_wait_for_group(struct wd_spawned_process* process
         {
             return false;
         }
-        const unsigned int sleep_ms = timeout_ms - elapsed_ms < 10u
+        const unsigned int sleep_ms = timeout_ms - elapsed_ms < WD_SERVER_PROCESS_POLL_INTERVAL_MS
                                           ? timeout_ms - elapsed_ms
-                                          : 10u;
+                                          : WD_SERVER_PROCESS_POLL_INTERVAL_MS;
         wd_process_sleep_milliseconds(sleep_ms);
         elapsed_ms += sleep_ms;
     }

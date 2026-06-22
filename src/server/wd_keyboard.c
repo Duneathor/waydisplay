@@ -1,4 +1,5 @@
 #include "waydisplay/wd_time.h"
+#include "waydisplay/wd_input.h"
 #include "wd_server.h"
 
 #include <stdlib.h>
@@ -57,7 +58,8 @@ bool wd_keyboard_init(struct wd_server* server) {
     }
 
     wlr_keyboard_set_keymap(server->keyboard, keymap);
-    wlr_keyboard_set_repeat_info(server->keyboard, 25, 600);
+    wlr_keyboard_set_repeat_info(server->keyboard, WD_SERVER_KEYBOARD_REPEAT_RATE_HZ,
+                                 WD_SERVER_KEYBOARD_REPEAT_DELAY_MS);
     wlr_seat_set_keyboard(server->seat, server->keyboard);
 
     xkb_keymap_unref(keymap);
@@ -86,7 +88,7 @@ static void wd_stats_note_input_inject_locked(struct wd_net_state* net, uint64_t
 
 void wd_keyboard_queue_event_locked(struct wd_net_state* net, const struct wd_keyboard_event_payload* event,
                                     uint64_t server_rx_timestamp_ns) {
-    if (net->key_queue_count >= WD_KEY_QUEUE_CAP)
+    if (net->key_queue_count >= WD_SERVER_KEY_QUEUE_CAPACITY)
     {
         net->stats.key_events_dropped++;
         return;
@@ -106,10 +108,10 @@ void wd_keyboard_queue_event_locked(struct wd_net_state* net, const struct wd_ke
 static uint32_t key_time_msec(const struct wd_queued_key_event* event) {
     if (event && event->server_rx_timestamp_ns != 0)
     {
-        return (uint32_t)(event->server_rx_timestamp_ns / 1000000ull);
+        return (uint32_t)(event->server_rx_timestamp_ns / WD_NSEC_PER_MSEC);
     }
 
-    return (uint32_t)(wd_now_ns() / 1000000ull);
+    return (uint32_t)(wd_now_ns() / WD_NSEC_PER_MSEC);
 }
 
 static ssize_t wd_keyboard_find_pressed_key(const struct wd_server* server, uint32_t evdev_key_code) {
@@ -145,7 +147,7 @@ void wd_keyboard_note_key_state(struct wd_server* server, uint32_t evdev_key_cod
             return;
         }
 
-        if (server->pressed_keycode_count >= WD_PRESSED_KEY_CAP)
+        if (server->pressed_keycode_count >= WD_SERVER_PRESSED_KEY_CAPACITY)
         {
             server->net.stats.key_events_dropped++;
             return;
@@ -210,7 +212,7 @@ static void notify_key_and_modifiers(struct wd_server* server, const struct wd_q
     {
         enum xkb_key_direction direction = event->pressed ? XKB_KEY_DOWN : XKB_KEY_UP;
 
-        xkb_state_update_key(server->keyboard->xkb_state, event->evdev_key_code + 8, direction);
+        xkb_state_update_key(server->keyboard->xkb_state, event->evdev_key_code + WD_INPUT_XKB_KEYCODE_OFFSET, direction);
 
         server->keyboard->modifiers.depressed = xkb_state_serialize_mods(server->keyboard->xkb_state, XKB_STATE_MODS_DEPRESSED);
         server->keyboard->modifiers.latched   = xkb_state_serialize_mods(server->keyboard->xkb_state, XKB_STATE_MODS_LATCHED);
@@ -229,7 +231,7 @@ static void notify_key_and_modifiers(struct wd_server* server, const struct wd_q
 }
 
 void wd_keyboard_drain_and_inject(struct wd_server* server) {
-    struct wd_queued_key_event local[WD_KEY_QUEUE_CAP];
+    struct wd_queued_key_event local[WD_SERVER_KEY_QUEUE_CAPACITY];
     size_t                     count = 0;
 
     pthread_mutex_lock(&server->net.lock);
@@ -241,9 +243,9 @@ void wd_keyboard_drain_and_inject(struct wd_server* server) {
     }
 
     count = server->net.key_queue_count;
-    if (count > WD_KEY_QUEUE_CAP)
+    if (count > WD_SERVER_KEY_QUEUE_CAPACITY)
     {
-        count = WD_KEY_QUEUE_CAP;
+        count = WD_SERVER_KEY_QUEUE_CAPACITY;
     }
 
     if (count > 0)

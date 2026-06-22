@@ -1,5 +1,6 @@
 #include "client_async_tcp.hpp"
 
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_log.h"
 
@@ -23,12 +24,16 @@
 #define WD_CLIENT_ASYNC_SEND_FLAGS 0
 #endif
 
+#ifndef WD_CLIENT_ASYNC_TCP_DRAIN_LIMIT
+#define WD_CLIENT_ASYNC_TCP_DRAIN_LIMIT WD_ASYNC_SENDER_DRAIN_LIMIT
+#endif
+#ifndef WD_CLIENT_ASYNC_TCP_DRAIN_SLEEP_US
+#define WD_CLIENT_ASYNC_TCP_DRAIN_SLEEP_US WD_ASYNC_SENDER_DRAIN_SLEEP_US
+#endif
+
 namespace waydisplay {
 namespace {
 
-constexpr uint64_t DEFAULT_MAX_PENDING_BYTES = 1024ull * 1024ull;
-constexpr uint32_t DRAIN_LIMIT = 250;
-constexpr unsigned int DRAIN_SLEEP_US = 1000;
 
 char g_cancel_cqe_tag;
 void* const CANCEL_CQE = &g_cancel_cqe_tag;
@@ -56,7 +61,7 @@ struct ClientAsyncTcpSender {
     uint64_t inflight = 0;
     uint64_t inflight_max = 0;
     uint64_t pending_bytes = 0;
-    uint64_t max_pending_bytes = DEFAULT_MAX_PENDING_BYTES;
+    uint64_t max_pending_bytes = WD_CLIENT_ASYNC_TCP_DEFAULT_PENDING_BYTES;
     uint64_t queued = 0;
     uint64_t completed = 0;
     uint64_t failed = 0;
@@ -385,7 +390,8 @@ bool drain_locked(ClientAsyncTcpSender* sender) {
     shutdown_pending_fds_locked(sender);
     request_cancels_locked(sender);
 
-    for (uint32_t i = 0; sender->head && i < DRAIN_LIMIT; ++i)
+    const uint32_t drain_limit = WD_CLIENT_ASYNC_TCP_DRAIN_LIMIT;
+    for (uint32_t i = 0; sender->head && i < drain_limit; ++i)
     {
         reap_locked(sender);
         fail_unsubmitted_locked(sender);
@@ -394,18 +400,55 @@ bool drain_locked(ClientAsyncTcpSender* sender) {
             break;
         }
         request_cancels_locked(sender);
-        usleep(DRAIN_SLEEP_US);
+        usleep(WD_CLIENT_ASYNC_TCP_DRAIN_SLEEP_US);
     }
 
     return sender->head == nullptr;
 }
 
+void fail_all_after_ring_exit_locked(ClientAsyncTcpSender* sender) {
+    if (!sender || sender->ring_ready)
+    {
+        return;
+    }
+
+    Message* msg = sender->head;
+    while (msg)
+    {
+        Message* next = msg->next;
+        sender->failed++;
+        msg->submitted = false;
+        pending_remove(sender, msg);
+        delete msg;
+        msg = next;
+    }
+    sender->inflight = 0;
+}
+
+ClientAsyncTcpSenderStats snapshot_stats_locked(const ClientAsyncTcpSender* sender) {
+    ClientAsyncTcpSenderStats stats{};
+    if (!sender)
+    {
+        return stats;
+    }
+    stats.queued = sender->queued;
+    stats.completed = sender->completed;
+    stats.failed = sender->failed;
+    stats.overflows = sender->overflows;
+    stats.partial_resubmits = sender->partial_resubmits;
+    stats.coalesced = sender->coalesced;
+    stats.inflight_max = sender->inflight_max;
+    stats.inflight = sender->inflight;
+    stats.pending_bytes = sender->pending_bytes;
+    return stats;
+}
+
 } // namespace
 
 ClientAsyncTcpSender* client_async_tcp_sender_create(uint32_t entries, uint64_t max_pending_bytes) {
-    if (entries < 8)
+    if (entries < WD_ASYNC_MIN_RING_ENTRIES)
     {
-        entries = 8;
+        entries = WD_ASYNC_MIN_RING_ENTRIES;
     }
 
     auto* sender = new (std::nothrow) ClientAsyncTcpSender();
@@ -422,32 +465,37 @@ ClientAsyncTcpSender* client_async_tcp_sender_create(uint32_t entries, uint64_t 
     }
 
     sender->ring_ready = true;
-    sender->max_pending_bytes = max_pending_bytes != 0 ? max_pending_bytes : DEFAULT_MAX_PENDING_BYTES;
+    sender->max_pending_bytes = max_pending_bytes != 0 ? max_pending_bytes : WD_CLIENT_ASYNC_TCP_DEFAULT_PENDING_BYTES;
     return sender;
 }
 
-void client_async_tcp_sender_destroy(ClientAsyncTcpSender* sender) {
+ClientAsyncTcpSenderStats client_async_tcp_sender_destroy(ClientAsyncTcpSender* sender) {
+    ClientAsyncTcpSenderStats final_stats{};
     if (!sender)
     {
-        return;
+        return final_stats;
     }
 
     {
         std::lock_guard<std::mutex> lock(sender->mutex);
         if (!drain_locked(sender))
         {
-            WD_LOG_WARN("client async TCP sender destroy timed out; leaking pending ring buffers safely");
-            return;
+            WD_LOG_WARN("client async TCP sender destroy timed out; forcing io_uring teardown");
         }
         fail_unsubmitted_locked(sender);
         if (sender->ring_ready)
         {
+            /* queue_exit synchronizes cancellation before message buffers are
+             * released, matching the server sender ownership rule. */
             io_uring_queue_exit(&sender->ring);
             sender->ring_ready = false;
         }
+        fail_all_after_ring_exit_locked(sender);
+        final_stats = snapshot_stats_locked(sender);
     }
 
     delete sender;
+    return final_stats;
 }
 
 void client_async_tcp_sender_reap(ClientAsyncTcpSender* sender) {
@@ -509,22 +557,14 @@ bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_
 }
 
 ClientAsyncTcpSenderStats client_async_tcp_sender_stats(ClientAsyncTcpSender* sender) {
-    ClientAsyncTcpSenderStats stats{};
     if (!sender)
     {
-        return stats;
+        return {};
     }
 
     std::lock_guard<std::mutex> lock(sender->mutex);
     reap_locked(sender);
-    stats.queued            = sender->queued;
-    stats.completed         = sender->completed;
-    stats.failed            = sender->failed;
-    stats.overflows         = sender->overflows;
-    stats.partial_resubmits = sender->partial_resubmits;
-    stats.coalesced         = sender->coalesced;
-    stats.inflight_max      = sender->inflight_max;
-    return stats;
+    return snapshot_stats_locked(sender);
 }
 
 } // namespace waydisplay

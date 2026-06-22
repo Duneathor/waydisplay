@@ -451,33 +451,33 @@ static void view_pick_initial_size(struct wd_view* view, uint32_t* out_width, ui
          * Give them a generous parent-relative maximum while still letting clients
          * commit smaller natural sizes.
          */
-        width  = parent_w > 160 ? parent_w - 80 : parent_w;
-        height = parent_h > 160 ? parent_h - 80 : parent_h;
+        width  = parent_w > WD_SCENE_DIALOG_PARENT_THRESHOLD_PX ? parent_w - WD_SCENE_DIALOG_PARENT_INSET_PX : parent_w;
+        height = parent_h > WD_SCENE_DIALOG_PARENT_THRESHOLD_PX ? parent_h - WD_SCENE_DIALOG_PARENT_INSET_PX : parent_h;
 
-        if (output_w > 160 && width > output_w - 160)
+        if (output_w > WD_SCENE_OUTPUT_MARGIN_X_PX && width > output_w - WD_SCENE_OUTPUT_MARGIN_X_PX)
         {
-            width = output_w - 160;
+            width = output_w - WD_SCENE_OUTPUT_MARGIN_X_PX;
         }
 
-        if (output_h > 120 && height > output_h - 120)
+        if (output_h > WD_SCENE_OUTPUT_MARGIN_Y_PX && height > output_h - WD_SCENE_OUTPUT_MARGIN_Y_PX)
         {
-            height = output_h - 120;
+            height = output_h - WD_SCENE_OUTPUT_MARGIN_Y_PX;
         }
 
-        if (width < 320)
+        if (width < WD_SCENE_DIALOG_MIN_WIDTH_PX)
         {
-            width = 320;
+            width = WD_SCENE_DIALOG_MIN_WIDTH_PX;
         }
 
-        if (height < 200)
+        if (height < WD_SCENE_DIALOG_MIN_HEIGHT_PX)
         {
-            height = 200;
+            height = WD_SCENE_DIALOG_MIN_HEIGHT_PX;
         }
     }
     else if (view && (view->x != 0 || view->y != 0))
     {
-        width  = output_w > 160 ? output_w - 160 : output_w;
-        height = output_h > 120 ? output_h - 120 : output_h;
+        width  = output_w > WD_SCENE_OUTPUT_MARGIN_X_PX ? output_w - WD_SCENE_OUTPUT_MARGIN_X_PX : output_w;
+        height = output_h > WD_SCENE_OUTPUT_MARGIN_Y_PX ? output_h - WD_SCENE_OUTPUT_MARGIN_Y_PX : output_h;
     }
 
     if (out_width)
@@ -497,7 +497,7 @@ static void view_place_cascaded(struct wd_view* view) {
         return;
     }
 
-    int offset       = (int)((view->server->next_view_offset++ % 8) * 40);
+    int offset       = (int)((view->server->next_view_offset++ % WD_SCENE_CASCADE_POSITION_COUNT) * WD_SCENE_CASCADE_STEP_PX);
     view->x          = offset;
     view->y          = offset;
     view->positioned = true;
@@ -513,11 +513,11 @@ static void view_place_relative_to_parent(struct wd_view* view, struct wd_view* 
     uint32_t output_h = output_logical_height(view->server);
     uint32_t parent_w = view_surface_width_or(parent, output_w);
     uint32_t parent_h = view_surface_height_or(parent, output_h);
-    uint32_t child_w  = view_surface_width_or(view, 480);
-    uint32_t child_h  = view_surface_height_or(view, 320);
+    uint32_t child_w  = view_surface_width_or(view, WD_SCENE_CHILD_FALLBACK_WIDTH_PX);
+    uint32_t child_h  = view_surface_height_or(view, WD_SCENE_CHILD_FALLBACK_HEIGHT_PX);
 
     int x = parent->x + ((int)parent_w - (int)child_w) / 2;
-    int y = parent->y + ((int)parent_h - (int)child_h) / 3;
+    int y = parent->y + ((int)parent_h - (int)child_h) / WD_SCENE_CHILD_VERTICAL_POSITION_DIVISOR;
 
     view->x = clamp_i(x, 0, (int)output_w - 1);
     view->y = clamp_i(y, 0, (int)output_h - 1);

@@ -2,7 +2,11 @@
 
 #include <stdint.h>
 
-#define WD_NSEC_PER_SEC 1000000000ull
+#define WD_USEC_PER_MSEC 1000ull
+#define WD_MSEC_PER_SEC  1000ull
+#define WD_NSEC_PER_USEC 1000ull
+#define WD_NSEC_PER_MSEC (WD_NSEC_PER_USEC * WD_USEC_PER_MSEC)
+#define WD_NSEC_PER_SEC  (WD_NSEC_PER_MSEC * WD_MSEC_PER_SEC)
 
 #ifdef __cplusplus
 extern "C" {

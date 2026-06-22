@@ -5,6 +5,7 @@
 #include "wd_audio_encoder.h"
 #include "wd_audio_packetizer.h"
 #include "wd_audio_ring.h"
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_protocol.h"
@@ -16,12 +17,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define WD_AUDIO_CAPTURE_RING_MS 200u
-#define WD_AUDIO_TX_QUEUE_MS 100u
-#define WD_AUDIO_TX_MIN_PENDING_BYTES 4096u
-#define WD_AUDIO_WORKER_SLEEP_US 2000u
-#define WD_AUDIO_CAPTURE_NSEC_TOLERANCE_CYCLES 2u
-#define WD_AUDIO_CAPTURE_IDLE_DIAGNOSTIC_NS (10ull * 1000ull * 1000ull * 1000ull)
 
 
 static uint64_t wd_audio_tx_max_pending_bytes(uint32_t bitrate) {
@@ -48,8 +43,8 @@ static void wd_audio_limit_socket_send_buffer(int fd, uint64_t queue_bytes) {
 
 static void wd_audio_sleep_us(unsigned usec) {
     struct timespec ts;
-    ts.tv_sec = (time_t)(usec / 1000000u);
-    ts.tv_nsec = (long)(usec % 1000000u) * 1000L;
+    ts.tv_sec = (time_t)(usec / (WD_USEC_PER_MSEC * WD_MSEC_PER_SEC));
+    ts.tv_nsec = (long)(usec % (WD_USEC_PER_MSEC * WD_MSEC_PER_SEC)) * (long)WD_NSEC_PER_USEC;
     while (nanosleep(&ts, &ts) != 0)
     {
     }
@@ -132,7 +127,7 @@ static void wd_audio_stream_capture(
         timing->cycle_start_ns, stream->media_clock_start_ns,
         WD_AUDIO_SAMPLE_RATE_DEFAULT);
     const uint64_t tolerance = (uint64_t)frames *
-                               WD_AUDIO_CAPTURE_NSEC_TOLERANCE_CYCLES;
+                               WD_AUDIO_CAPTURE_TIMESTAMP_TOLERANCE_CYCLES;
     uint64_t first_pts = observed_first_pts;
 
     if (timing->position_reliable)
@@ -285,9 +280,10 @@ static void* wd_audio_stream_worker(void* userdata) {
                      WD_AUDIO_CAPTURE_IDLE_DIAGNOSTIC_NS)
         {
             stream->capture_idle_logged = true;
-            WD_LOG_WARN("private audio sink has received no PCM for 10 seconds: "
+            WD_LOG_WARN("private audio sink has received no PCM for %llu seconds: "
                         "sink=%s target=%s; the launched application may be idle "
                         "or its playback stream may not be routed to WayDisplay",
+                        (unsigned long long)(WD_AUDIO_CAPTURE_IDLE_DIAGNOSTIC_NS / WD_NSEC_PER_SEC),
                         wd_audio_capture_sink_name(stream->capture),
                         wd_audio_capture_sink_target(stream->capture));
         }
@@ -364,10 +360,10 @@ static void* wd_audio_stream_worker(void* userdata) {
                            __ATOMIC_RELAXED);
     }
 
-    for (unsigned i = 0; i < 20 && wd_async_tcp_sender_inflight(stream->tx) != 0; ++i)
+    for (unsigned i = 0; i < WD_AUDIO_TX_DRAIN_POLLS && wd_async_tcp_sender_inflight(stream->tx) != 0; ++i)
     {
         wd_async_tcp_sender_reap(stream->tx);
-        wd_audio_sleep_us(1000);
+        wd_audio_sleep_us(WD_AUDIO_TX_DRAIN_SLEEP_US);
     }
 
     return NULL;
@@ -514,11 +510,11 @@ bool wd_audio_stream_start(struct wd_audio_stream* stream, int tcp_fd,
     stream->force_discontinuity = true;
 
     const uint32_t capacity_frames =
-        (WD_AUDIO_SAMPLE_RATE_DEFAULT * WD_AUDIO_CAPTURE_RING_MS) / 1000u;
+        (WD_AUDIO_SAMPLE_RATE_DEFAULT * WD_AUDIO_CAPTURE_RING_MS) / WD_MSEC_PER_SEC;
     const uint32_t sample_count = WD_AUDIO_FRAME_SAMPLES_DEFAULT * channels;
     bool ok = wd_audio_pcm_ring_init(&stream->ring, capacity_frames, channels) &&
               wd_audio_encoder_create(&stream->encoder, channels, stream->bitrate) &&
-              wd_async_tcp_sender_create(&stream->tx, 32);
+              wd_async_tcp_sender_create(&stream->tx, WD_AUDIO_TX_RING_ENTRIES);
     if (ok)
     {
         stream->pcm_buffer = calloc(sample_count, sizeof(*stream->pcm_buffer));
@@ -577,7 +573,7 @@ bool wd_audio_stream_start(struct wd_audio_stream* stream, int tcp_fd,
     }
     while (__atomic_load_n(&stream->capture_callbacks_active, __ATOMIC_ACQUIRE) != 0)
     {
-        wd_audio_sleep_us(1000);
+        wd_audio_sleep_us(WD_AUDIO_TX_DRAIN_SLEEP_US);
     }
     if (stream->worker_started)
     {
@@ -615,7 +611,7 @@ void wd_audio_stream_stop(struct wd_audio_stream* stream) {
     }
     while (__atomic_load_n(&stream->capture_callbacks_active, __ATOMIC_ACQUIRE) != 0)
     {
-        wd_audio_sleep_us(1000);
+        wd_audio_sleep_us(WD_AUDIO_TX_DRAIN_SLEEP_US);
     }
     if (stream->worker_started)
     {

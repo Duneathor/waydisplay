@@ -49,6 +49,8 @@ struct ClientAudioPlayback {
 
 namespace {
 
+constexpr int OPUS_MAX_DECODE_SAMPLES = 5760;
+
 void SDLCALL audio_postmix_callback(void* userdata, const SDL_AudioSpec* spec,
                                     float* buffer, int buflen) {
     (void)buffer;
@@ -363,7 +365,7 @@ bool client_audio_playback_configure(ClientAudioPlayback* playback,
     playback->pre_skip_remaining = config.codec_delay_samples;
     playback->configured = true;
     playback->video_sync_waiting = true;
-    playback->decode_buffer.resize(static_cast<size_t>(5760u) * config.channels);
+    playback->decode_buffer.resize(static_cast<size_t>(OPUS_MAX_DECODE_SAMPLES) * config.channels);
     WD_LOG_INFO("audio playback configured: codec=opus rate=%u channels=%u frame_samples=%u bitrate=%u",
                 config.sample_rate, config.channels, config.frame_samples,
                 config.target_bitrate);
@@ -434,7 +436,7 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback,
     const uint8_t* packet = payload + sizeof(header);
     const int decoded = opus_decode_float(playback->decoder, packet,
                                           static_cast<opus_int32>(header.data_size),
-                                          playback->decode_buffer.data(), 5760, 0);
+                                          playback->decode_buffer.data(), OPUS_MAX_DECODE_SAMPLES, 0);
     if (decoded <= 0 || decoded != header.duration_samples)
     {
         clear_for_discontinuity_locked(playback);
@@ -450,7 +452,7 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback,
 
     (void)handle_device_starvation_locked(playback);
     const uint64_t current_playhead = device_playhead_locked(playback);
-    const uint64_t late_limit = (WD_AUDIO_SAMPLE_RATE_DEFAULT * 120u) / 1000u;
+    const uint64_t late_limit = (WD_AUDIO_SAMPLE_RATE_DEFAULT * WD_CLIENT_AUDIO_LATE_PACKET_MS) / WD_MSEC_PER_SEC;
     const bool late = playback->playing &&
                       packet_end_pts <= UINT64_MAX - late_limit &&
                       packet_end_pts + late_limit < current_playhead;

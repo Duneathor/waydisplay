@@ -16,8 +16,8 @@ ClientVideoAudioSyncPlan client_video_audio_sync_plan(uint64_t video_pts_usec,
     }
 
     const uint64_t video_samples = wd_media_usec_to_samples(video_pts_usec, sample_rate);
-    const uint64_t early = static_cast<uint64_t>(sample_rate) * 40u / 1000u;
-    const uint64_t late = static_cast<uint64_t>(sample_rate) * 80u / 1000u;
+    const uint64_t early = static_cast<uint64_t>(sample_rate) * WD_CLIENT_VIDEO_AUDIO_EARLY_MS / WD_MSEC_PER_SEC;
+    const uint64_t late = static_cast<uint64_t>(sample_rate) * WD_CLIENT_VIDEO_AUDIO_LATE_MS / WD_MSEC_PER_SEC;
     const uint64_t positive_delta = video_samples >= audio_playhead_samples
                                         ? video_samples - audio_playhead_samples
                                         : audio_playhead_samples - video_samples;
@@ -35,13 +35,13 @@ ClientVideoAudioSyncPlan client_video_audio_sync_plan(uint64_t video_pts_usec,
             video_samples - audio_playhead_samples - early;
         const uint64_t whole_seconds = wait_samples / sample_rate;
         const uint64_t remainder_samples = wait_samples % sample_rate;
-        const uint64_t whole_ms = whole_seconds > UINT32_MAX / 1000u
+        const uint64_t whole_ms = whole_seconds > UINT32_MAX / WD_MSEC_PER_SEC
                                       ? UINT32_MAX
-                                      : whole_seconds * 1000u;
+                                      : whole_seconds * WD_MSEC_PER_SEC;
         const uint64_t remainder_ms =
-            (remainder_samples * 1000u + sample_rate - 1u) / sample_rate;
+            (remainder_samples * WD_MSEC_PER_SEC + sample_rate - 1u) / sample_rate;
         const uint64_t wait_ms = std::min<uint64_t>(
-            CLIENT_VIDEO_AUDIO_SYNC_MAX_RETRY_MS, whole_ms + remainder_ms);
+            WD_CLIENT_VIDEO_AUDIO_MAX_RETRY_MS, whole_ms + remainder_ms);
         plan.retry_after_ms = static_cast<uint32_t>(wait_ms == 0 ? 1 : wait_ms);
     }
     else if (audio_playhead_samples > video_samples &&

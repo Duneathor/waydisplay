@@ -1,5 +1,6 @@
 #include "wd_net_listener.h"
 
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_net.h"
 
 #include <arpa/inet.h>
@@ -114,7 +115,7 @@ bool wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_t
                                     failed_stage, error_code);
     }
 
-    if (listen(listener->listen_fd, 3) < 0)
+    if (listen(listener->listen_fd, WD_NET_LISTEN_BACKLOG) < 0)
     {
         return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_LISTEN, errno,
                                     failed_stage, error_code);

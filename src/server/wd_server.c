@@ -57,7 +57,7 @@ static uint64_t wd_server_delta_summary_interval_locked(struct wd_server* server
     {
         uint64_t stale_or_superseded = net->stats.retx_req_stale_generation + net->stats.retx_tiles_superseded_by_fresh;
         uint64_t repair_activity = stale_or_superseded + net->stats.retx_tiles_req + net->stats.retx_req_ignored_live;
-        if (stale_or_superseded >= 16 && repair_activity != 0 &&
+        if (stale_or_superseded >= WD_SERVER_STALE_REPAIR_MIN_SAMPLES && repair_activity != 0 &&
             stale_or_superseded * 100ull >= repair_activity * (uint64_t)WD_LINK_STALE_REPAIR_BACKOFF_PERCENT)
         {
             interval_ns *= WD_LINK_STALE_REPAIR_BACKOFF_MULTIPLIER;
@@ -132,7 +132,9 @@ static void server_terminate_startup_process(struct wd_server* server) {
 
     int status = 0;
     int error_code = 0;
-    if (!wd_spawned_process_terminate_group(&server->startup_process, 1000u, 1000u,
+    if (!wd_spawned_process_terminate_group(&server->startup_process,
+                                            WD_SERVER_PROCESS_TERM_GRACE_MS,
+                                            WD_SERVER_PROCESS_KILL_GRACE_MS,
                                             &status, &error_code))
     {
         WD_LOG_ERROR("failed to terminate startup process group: %s", strerror(error_code));
@@ -519,7 +521,7 @@ static int server_frame_timer(void* data) {
     /* Rearm before render/readback/encode. If that work exceeds the 8 ms
      * compositor tick, the timer is already ready when this callback returns
      * instead of adding another unconditional 8 ms of latency. */
-    wl_event_source_timer_update(server->frame_timer, 8);
+    wl_event_source_timer_update(server->frame_timer, WD_SERVER_FRAME_SERVICE_INTERVAL_MS);
 
     server_process_pending_display_resize(server);
 
@@ -530,6 +532,7 @@ static int server_frame_timer(void* data) {
 
     pthread_mutex_lock(&server->net.lock);
     wd_server_reap_and_sample_async_locked(server);
+    wd_clipboard_send_pending_locked(server);
     wd_cursor_flush_pending_locked(server);
     pthread_mutex_unlock(&server->net.lock);
 
@@ -1411,7 +1414,7 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr 
                     const char* app_cmd, double output_scale, uint16_t output_refresh_hz,
                     uint32_t display_width, uint32_t display_height,
                     uint16_t tile_width, uint16_t tile_height, bool enable_xwayland,
-                    bool enable_xdg_dialog, const char* video_encoder_backend, const char* vaapi_device) {
+                    bool enable_xdg_dialog, const char* video_encoder_backend) {
     memset(server, 0, sizeof(*server));
     wd_spawned_process_init(&server->startup_process);
     server->input_wakeup_fd = -1;
@@ -1432,9 +1435,8 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr 
 
     server->startup_command      = app_cmd;
     server->video_encoder_backend = video_encoder_backend;
-    server->vaapi_device         = vaapi_device;
     server->output_scale         = output_scale;
-    server->output_refresh_mhz = (uint32_t)(output_refresh_hz != 0 ? output_refresh_hz : 60u) * 1000u;
+    server->output_refresh_mhz = (uint32_t)(output_refresh_hz != 0 ? output_refresh_hz : WD_SERVER_DEFAULT_REFRESH_HZ) * 1000u;
 #if WAYDISPLAY_ENABLE_XWAYLAND
     server->enable_xwayland = enable_xwayland;
 #else
@@ -1444,7 +1446,7 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr 
 
     if (server->output_scale <= 0.0)
     {
-        server->output_scale = 1.0;
+        server->output_scale = WD_SERVER_DEFAULT_OUTPUT_SCALE;
     }
 
     server->framebuffer_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(uint32_t));

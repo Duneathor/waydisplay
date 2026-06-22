@@ -17,6 +17,7 @@ bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool 
 bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payload& event);
 bool client_send_clipboard_text(ClientState& state, const char* text);
 bool client_send_primary_text(ClientState& state, const char* text);
+bool client_request_server_selections(ClientState& state);
 bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t height);
 bool client_send_config_applied(ClientState& state, uint8_t session_id, uint64_t config_epoch);
 

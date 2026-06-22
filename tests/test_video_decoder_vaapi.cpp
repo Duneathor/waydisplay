@@ -1,6 +1,5 @@
 #include "video_decoder.hpp"
 
-#include "vaapi_test_device.hpp"
 #include "waydisplay/wd_protocol.h"
 
 extern "C" {
@@ -9,11 +8,9 @@ extern "C" {
 
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -42,31 +39,6 @@ using waydisplay::ClientVideoPixelFormat;
 
 constexpr uint16_t kVaapiFixtureWidth = 128;
 constexpr uint16_t kVaapiFixtureHeight = 128;
-
-class EnvironmentGuard {
-public:
-    explicit EnvironmentGuard(const char* name) : name_(name) {
-        if (const char* value = std::getenv(name))
-        {
-            old_value_ = value;
-        }
-    }
-
-    ~EnvironmentGuard() {
-        if (old_value_)
-        {
-            (void)setenv(name_.c_str(), old_value_->c_str(), 1);
-        }
-        else
-        {
-            (void)unsetenv(name_.c_str());
-        }
-    }
-
-private:
-    std::string name_;
-    std::optional<std::string> old_value_;
-};
 
 std::vector<uint8_t> read_fixture(const char* name) {
     const std::string path = std::string(WAYDISPLAY_TEST_FIXTURE_DIR) + "/" + name;
@@ -114,24 +86,6 @@ ClientVideoDecoderConfig decoder_config(uint32_t codec, uint8_t hwdecode_mode) {
     config.codec = codec;
     config.hwdecode_mode = hwdecode_mode;
     return config;
-}
-
-bool test_missing_device(uint32_t codec) {
-    EnvironmentGuard guard("WAYDISPLAY_VAAPI_DEVICE");
-    CHECK(setenv("WAYDISPLAY_VAAPI_DEVICE", "/dev/waydisplay-vaapi-device-does-not-exist", 1) == 0);
-
-    ClientVideoDecoder* decoder = nullptr;
-    CHECK(waydisplay::client_video_decoder_create(&decoder));
-    CHECK(!waydisplay::client_video_decoder_configure(
-        decoder, decoder_config(codec, WD_CLIENT_VIDEO_HWDECODE_VAAPI)));
-    waydisplay::client_video_decoder_destroy(decoder);
-
-    CHECK(waydisplay::client_video_decoder_create(&decoder));
-    CHECK(waydisplay::client_video_decoder_configure(
-        decoder, decoder_config(codec, WD_CLIENT_VIDEO_HWDECODE_AUTO)));
-    CHECK(std::strstr(waydisplay::client_video_decoder_backend_name(decoder), "vaapi") == nullptr);
-    waydisplay::client_video_decoder_destroy(decoder);
-    return true;
 }
 
 enum class VaapiDecodeResult {
@@ -277,20 +231,6 @@ int main() {
         return 77;
     }
 
-    const std::optional<std::string> device = waydisplay::test::find_vaapi_test_device();
-    if (!device)
-    {
-        std::fprintf(stderr, "SKIP: no usable VAAPI render node\n");
-        return 77;
-    }
-
-    EnvironmentGuard guard("WAYDISPLAY_VAAPI_DEVICE");
-    if (setenv("WAYDISPLAY_VAAPI_DEVICE", device->c_str(), 1) != 0)
-    {
-        std::perror("setenv WAYDISPLAY_VAAPI_DEVICE");
-        return 1;
-    }
-    std::fprintf(stderr, "VAAPI decoder test device: %s\n", device->c_str());
 
     bool attempted = false;
     bool decoded = false;
@@ -323,8 +263,5 @@ int main() {
         return 77;
     }
 
-    const uint32_t failure_codec = (supported & WD_VIDEO_CODEC_H264) != 0
-                                       ? WD_VIDEO_CODEC_H264
-                                       : WD_VIDEO_CODEC_H265;
-    return test_missing_device(failure_codec) ? 0 : 1;
+    return 0;
 }
