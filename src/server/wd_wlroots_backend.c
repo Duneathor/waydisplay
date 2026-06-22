@@ -186,7 +186,7 @@ bool wd_wlroots_init(struct wd_server* server) {
     }
     else
     {
-        WD_LOG_INFO("xdg-dialog disabled by --no-xdg-dialog");
+        WD_LOG_INFO("xdg-dialog disabled by configuration");
     }
 
     if (!wd_xdg_toplevel_icon_init(server))

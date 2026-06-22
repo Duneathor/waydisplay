@@ -1,5 +1,76 @@
 # Building WayDisplay
 
+## GCC build profiles
+
+WayDisplay supports GCC and G++ only. The checked-in CMake presets provide four
+single-purpose build profiles:
+
+| Preset | Compiler behavior | Debug logging |
+| --- | --- | --- |
+| `debug` | `-O0 -g3 -ggdb -fno-omit-frame-pointer` | Enabled |
+| `release` | `-O3` plus GCC link-time optimization | Disabled |
+| `profile` | Native `-O3`/LTO build instrumented with `-fprofile-generate` | Disabled |
+| `native` | `-O3`, LTO, `-march=native`, and PGO when data is available | Disabled |
+
+Normal informational logging remains controlled by `WAYDISPLAY_ENABLE_LOGGING`.
+The `Debug` profile always enables both normal and debug-level logging. Release,
+Profile, and Native always compile out debug-level logging.
+
+Build a portable optimized binary with:
+
+```sh
+cmake --preset release
+cmake --build --preset release
+```
+
+Use `Native` for a binary intended only for the machine on which it is built:
+
+```sh
+cmake --preset native
+cmake --build --preset native
+```
+
+Without profile data, `Native` still uses `-O3`, GCC LTO, `-march=native`, and
+`-mtune=native`. CMake reports `pgo_data_available=FALSE` during configuration.
+
+### GCC profile-guided optimization workflow
+
+`Profile` and `Native` intentionally share `build-native`. This keeps GCC's
+object-derived profile names stable between profile generation and profile use.
+Profile data is stored in `build-pgo-data`; it is a CMake cache path, not an
+environment variable or runtime setting.
+
+Start by clearing stale profile data and building the instrumented binaries:
+
+```sh
+cmake --preset profile
+cmake --build build-native --target pgo-clean
+cmake --build --preset profile --clean-first
+```
+
+Run a representative WayDisplay workload with the instrumented client and
+server. Exercise the codecs, tile/video transitions, input, audio, clipboard,
+reconnect, and shutdown paths that matter for the intended deployment. Exit the
+processes normally so GCC flushes their counters.
+
+Then reconfigure the same build tree for profile use and rebuild it:
+
+```sh
+cmake --preset native
+cmake --build --preset native --clean-first
+```
+
+The Native configure summary must report `pgo_data_available=TRUE`. If no
+`.gcda` files exist, CMake deliberately omits `-fprofile-use` and produces the
+non-PGO native build instead. GCC coverage-mismatch diagnostics remain enabled;
+profile data from changed sources must be discarded and regenerated rather than
+silently accepted.
+
+Direct configurations may select the same profiles with
+`-DCMAKE_BUILD_TYPE=Debug|Release|Profile|Native`. Override
+`WAYDISPLAY_PGO_DATA_DIR` only when the generation and use configurations point
+to the same persistent directory.
+
 For a clean dependency-light compile check of the common library, disable the SDL
 client and wlroots server targets:
 
@@ -71,18 +142,14 @@ without HEVC encode, in which case use client option `--video-codec h264`.
 
 ## Tile-size selection
 
-The server advertises its runtime tile dimensions in the `WD_MSG_SERVER_CONFIG`
-payload. The default remains `128x64`; for bandwidth-limited/high-latency links,
-start the wlroots server with smaller tiles, for example:
+Tile geometry is build-time stream policy in `include/waydisplay/wd_config.h`.
+`WD_TILE_WIDTH` and `WD_TILE_HEIGHT` define the base grid advertised in
+`WD_MSG_SERVER_CONFIG`. The stream encoder may aggregate dirty base tiles into
+the configured 128x64, 64x64, 32x32, and 16x16 wire-tile ladder according to
+packet, compression, and link-budget conditions.
 
-```sh
-waydisplay-server --wan-tiles
-# or explicitly:
-waydisplay-server --tile-size 64x64
-```
-
-Smaller tiles can reduce over-send for small UI changes, at the cost of more tile
-metadata and packetization overhead.
+Changing the base geometry affects tile IDs, queue sizing, and damage behavior;
+rebuild and run the full test suite rather than selecting a per-launch tile mode.
 
 ## WAN client budget
 
@@ -95,8 +162,6 @@ or known-constrained links, the client can request a cap below the probe:
 waydisplay-client <server> 5000 6000 --rate-kib 4096
 # or a more conservative shared-link cap:
 waydisplay-client <server> 5000 6000 --rate-kib 2048
-# shorthand for a constrained Wi-Fi/WAN link:
-waydisplay-client <server> 5000 6000 --wan
 ```
 
 The requested budget is a cap: the server will not raise its throughput-probed
@@ -186,3 +251,9 @@ cmake --build --preset tests-full
 The wlroots presets deliberately disable audio and video codecs so a generated
 Wayland-header or scene-test failure is not hidden by an unrelated hardware
 codec test. The full preset restores all default optional backends.
+
+## Runtime arguments and build-time policy
+
+The supported client/server command lines and the options intentionally kept in
+`wd_config.h` are documented in [`docs/command-line.md`](docs/command-line.md).
+Legacy aliases are rejected rather than silently translated.

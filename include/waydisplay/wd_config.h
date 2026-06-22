@@ -8,8 +8,25 @@
 extern "C" {
 #endif
 
-/* Product/runtime defaults.  These values are shared by runtime setup, CLI
- * validation, help text, and tests. */
+/*
+ * Configuration ownership
+ * -----------------------
+ * This header is the single build-time policy surface for both endpoints.
+ * Only launch-, connection-, and hardware-specific choices remain available
+ * on the command line; see docs/command-line.md for that contract.
+ *
+ * Knobs use explicit unit suffixes whenever practical: _NS, _US, _MS,
+ * _SECONDS, _BYTES, _KIB, _ENTRIES, _PACKETS, _SAMPLES, _HZ, _PERCENT, and
+ * _PX.  Values without a unit are ratios, counts, enum-compatible modes, or
+ * derived constants.  Change policy here, rebuild, and run the tests rather
+ * than adding environment-variable or legacy command-line aliases.
+ */
+
+/* Server startup defaults.
+ * CLI-overridable: application, listen address, output scale/refresh,
+ * renderer, and video encoder backend.  Configuration-only: Xwayland and
+ * xdg-dialog feature policy.  Scale is stored in thousandths so bounds remain
+ * exact in compile-time assertions. */
 #define WD_SERVER_DEFAULT_APP_COMMAND             "foot"
 #define WD_SERVER_DEFAULT_LISTEN_IPV4              "127.0.0.1"
 #define WD_SERVER_DEFAULT_OUTPUT_SCALE_MILLI       1000u
@@ -25,11 +42,12 @@ extern "C" {
 #define WD_SERVER_DEFAULT_VIDEO_ENCODER_BACKEND    "auto"
 #define WD_SERVER_DEFAULT_ENABLE_XWAYLAND          1
 #define WD_SERVER_DEFAULT_ENABLE_XDG_DIALOG        1
-#define WD_SERVER_WAN_TILE_WIDTH                   64u
-#define WD_SERVER_WAN_TILE_HEIGHT                  64u
-#define WD_CLIENT_WAN_RATE_KIB_PER_SECOND          4096u
 
-/* Display/tile defaults. */
+/* Virtual output and tile geometry.
+ * WD_DISPLAY_* is the default server output; WD_MAX_RENDER_* is the accepted
+ * client/server envelope.  WD_TILE_* is the configuration-only base transport
+ * grid.  Compression benchmark mode values are 0=auto, 1=off, 2=attempt, and
+ * 3=force; production builds should normally use auto. */
 #define WD_DISPLAY_WIDTH  1664u
 #define WD_DISPLAY_HEIGHT 1024u
 
@@ -41,6 +59,8 @@ extern "C" {
 
 #define WD_TILE_WIDTH  16u
 #define WD_TILE_HEIGHT 16u
+#define WD_SERVER_TILE_COMPRESSION_BENCHMARK_MODE_DEFAULT 0u
+#define WD_ZSTD_LEVEL 1 /* Zstd level for tile payloads; higher uses more CPU. */
 
 #define WD_BASE_TILE_WIDTH  16u
 #define WD_BASE_TILE_HEIGHT 16u
@@ -56,7 +76,10 @@ extern "C" {
 
 #define WD_UNCOMPRESSED_TILE_BYTES ((uint32_t)(WD_TILE_WIDTH * WD_TILE_HEIGHT * WD_BYTES_PER_PIXEL))
 
-/* Network defaults and limits. */
+/* Core network defaults and hard limits.
+ * The TCP port is CLI-overridable.  Timeouts bound handshake/send operations;
+ * payload and socket-buffer sizes cap memory and datagram behavior.  Probe
+ * target/duration control how much traffic is spent estimating link capacity. */
 #define WD_DEFAULT_TCP_PORT              5000u
 #define WD_TCP_HANDSHAKE_TIMEOUT_MS      3000L
 #define WD_TCP_CONNECTED_SEND_TIMEOUT_MS 3000L
@@ -67,7 +90,11 @@ extern "C" {
 #define WD_THROUGHPUT_PROBE_TARGET_BYTES (8u * 1024u * 1024u)
 #define WD_THROUGHPUT_PROBE_DURATION_MS  750u
 
-/* Async I/O and network-session sizing. */
+/* Async I/O ownership, memory, and queue sizing.
+ * Ring-entry counts control concurrency.  Pending-byte/packet limits bound
+ * retained memory.  Drain limits and sleeps bound shutdown latency.  Raising
+ * these values may improve burst tolerance at the cost of memory and longer
+ * teardown; lowering them increases backpressure and overflow risk. */
 #define WD_ASYNC_MIN_RING_ENTRIES                    8u
 #define WD_ASYNC_SENDER_DRAIN_LIMIT                  250u
 #define WD_ASYNC_SENDER_DRAIN_SLEEP_US               1000u
@@ -81,6 +108,8 @@ extern "C" {
 #define WD_CLIENT_ASYNC_UDP_DEFAULT_DRAIN_BATCH      4096u
 #define WD_CLIENT_ASYNC_UDP_COMPLETION_RESERVE       256u
 
+/* Per-channel rings and memory ceilings.  Control favors message count,
+ * video favors retained bytes, and UDP favors packet concurrency. */
 #define WD_SERVER_CONTROL_TX_RING_ENTRIES            64u
 #define WD_SERVER_CONTROL_TX_PENDING_BYTES           (4ull * 1024ull * 1024ull)
 #define WD_SERVER_VIDEO_TX_RING_ENTRIES              32u
@@ -93,6 +122,7 @@ extern "C" {
 #define WD_CLIENT_INPUT_TIMESTAMP_HISTORY_ENTRIES    256u
 #define WD_NET_LISTEN_BACKLOG                        3
 
+/* Session establishment, probe, gap, and repair deadlines. */
 #define WD_NET_AUX_CHANNEL_ACCEPT_TIMEOUT_NS         (500ull * WD_NSEC_PER_MSEC)
 #define WD_NET_MTU_PROBE_CLIENT_DEADLINE_NS          (500ull * WD_NSEC_PER_MSEC)
 #define WD_NET_THROUGHPUT_DEADLINE_PADDING_MS        500u
@@ -102,7 +132,10 @@ extern "C" {
 #define WD_NET_CLIENT_GAP_GRACE_NS                   (50ull * WD_NSEC_PER_MSEC)
 #define WD_NET_CLIENT_REPAIR_RETRY_MIN_NS            (10ull * WD_NSEC_PER_MSEC)
 
-/* IPv4 path-MTU candidates and conservative direct payload fallbacks. */
+/* IPv4 path-MTU discovery policy.
+ * *_BYTES values are link MTU candidates; *_PAYLOAD_* values are conservative
+ * application payloads after transport overhead.  The list is ordered from
+ * optimistic to conservative and is used automatically, not exposed by CLI. */
 #define WD_NET_MTU_PROBE_JUMBO_BYTES                 9000u
 #define WD_NET_MTU_PROBE_LARGE_BYTES                 8192u
 #define WD_NET_MTU_PROBE_MEDIUM_BYTES                4096u
@@ -114,7 +147,11 @@ extern "C" {
 #define WD_NET_MTU_PROBE_PAYLOAD_LOW                 1300u
 #define WD_NET_MTU_PROBE_PAYLOAD_FLOOR               1200u
 
-/* Logging and statistics cadence. */
+/* Logging, telemetry, and feedback cadence.
+ * Sample intervals update internal rates; log intervals control operator
+ * output; client feedback and summary promotion determine how quickly the
+ * server sees runtime pressure.  Shorter intervals react faster but increase
+ * wakeups and control traffic. */
 #define WD_STATS_SAMPLE_INTERVAL_NS          WD_NSEC_PER_SEC
 #define WD_STATS_LOG_INTERVAL_NS             (60ull * WD_STATS_SAMPLE_INTERVAL_NS)
 #define WD_LOG_RATE_LIMIT_INTERVAL_NS        WD_STATS_SAMPLE_INTERVAL_NS
@@ -123,20 +160,19 @@ extern "C" {
 #define WD_CLIENT_SUMMARY_PROMOTE_INTERVAL_NS (10ull * 1000ull * 1000ull)
 
 
-/* Tile generation summary cadence.
- *
- * Full summaries are large at high resolutions, so they are sent only when
- * summary state is reset (connect/resize/reconfigure) and as a rare sanity
- * refresh. Delta summaries carry normal generation updates.
- */
+/* Tile-generation summary cadence.
+ * Full summaries are large and therefore rare; delta summaries carry normal
+ * changes.  The clean interval is slower than the active interval to reduce
+ * idle control traffic. */
 #define WD_GENERATION_SUMMARY_FULL_SANITY_INTERVAL_NS 60000000000ull
 #define WD_GENERATION_SUMMARY_DELTA_INTERVAL_NS       50000000ull
 #define WD_GENERATION_SUMMARY_CLEAN_DELTA_INTERVAL_NS 200000000ull
 
-/* Link-profile timing.  These values are intentionally conservative: very
- * low measured RTTs keep today's LAN-friendly floors instead of shrinking
- * repair timers too aggressively, while high-latency links are capped around
- * a practical worst-case terrestrial RTT. */
+/* Adaptive link-profile bounds and repair pressure.
+ * RTT, summary, retransmit, and reassembly values are clamped between MIN and
+ * MAX with DEFAULT used before measurement.  Pressure percentages decide when
+ * gaps/loss justify repair work.  Larger timing values tolerate jitter but
+ * delay recovery; smaller values recover faster but can cause duplicate work. */
 #define WD_LINK_RTT_MIN_NS       30000000ull
 #define WD_LINK_RTT_DEFAULT_NS   100000000ull
 #define WD_LINK_RTT_MAX_NS       800000000ull
@@ -177,8 +213,10 @@ extern "C" {
 #define WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES     256u
 
 
-/* Audio/video product defaults.  Protocol headers validate these values but
- * do not own product policy. */
+/* Audio and automatic-video product policy.
+ * Audio values define the negotiated product defaults.  Video dirty coverage
+ * and enter/exit durations govern automatic switching between tile and video
+ * transport.  These detailed thresholds are intentionally configuration-only. */
 #define WD_AUDIO_SAMPLE_RATE_DEFAULT                48000u
 #define WD_AUDIO_FRAME_SAMPLES_DEFAULT              960u
 #define WD_AUDIO_TARGET_LATENCY_MS_DEFAULT          60u
@@ -194,7 +232,10 @@ extern "C" {
 #define WD_VIDEO_EXIT_SECONDS_DEFAULT               30u
 #define WD_VIDEO_EXIT_SECONDS_MAX                   300u
 
-/* Audio/video media-pipeline policy. */
+/* Audio/video pipeline buffering and scheduling.
+ * Audio ring/queue values trade latency for underrun tolerance.  Worker/drain
+ * timings control wakeups and bounded shutdown.  Client early/late thresholds
+ * decide whether video waits for audio or is dropped to catch up. */
 #define WD_AUDIO_CAPTURE_RING_MS                    200u
 #define WD_AUDIO_TX_QUEUE_MS                        100u
 #define WD_AUDIO_TX_MIN_PENDING_BYTES               4096u
@@ -209,10 +250,17 @@ extern "C" {
 #define WD_CLIENT_VIDEO_AUDIO_MAX_RETRY_MS          20u
 #define WD_CLIENT_AUDIO_LATE_PACKET_MS              120u
 
-/* Clipboard and primary-selection capture policy. */
+/* Clipboard and primary-selection capture.
+ * INITIAL_BYTES is the first allocation for asynchronous reads; TIMEOUT_MS
+ * prevents a selection owner from holding compositor resources indefinitely.
+ * Protocol payload limits remain in wd_protocol.h. */
 #define WD_SELECTION_CAPTURE_INITIAL_BYTES          4096u
 #define WD_SELECTION_CAPTURE_TIMEOUT_MS             2000u
 
+/* Encoder implementation policy.
+ * Software threads bound CPU parallelism.  GOP controls keyframe cadence.
+ * VAAPI probe settings test capability cheaply; pool/async depth control the
+ * number of hardware surfaces and queued operations. */
 #define WD_VIDEO_ENCODER_FALLBACK_FPS               30u
 #define WD_VIDEO_ENCODER_SOFTWARE_THREADS           2u
 #define WD_VIDEO_ENCODER_GOP_SECONDS                1u
@@ -222,7 +270,11 @@ extern "C" {
 #define WD_VIDEO_ENCODER_VAAPI_FRAME_POOL_SIZE      4u
 #define WD_VIDEO_ENCODER_VAAPI_ASYNC_DEPTH          "1"
 
-/* Stream policy defaults. */
+/* Client request defaults and top-level stream budgets.
+ * FPS and limited-mode bounds constrain client requests.  Throughput safety
+ * reserves link headroom.  Video bitrate 0 in a request means derive from the
+ * link; WD_VIDEO_DEFAULT_* is the fallback when a fixed estimate is required.
+ * Hardware-decode values are enum-compatible client policy modes. */
 #define WD_DEFAULT_PARTIAL_FPS                     60u
 #define WD_MAX_REASONABLE_FPS                      120u
 #define WD_STREAM_TOKEN_BURST_DIVISOR              4u
@@ -237,9 +289,10 @@ extern "C" {
 #define WD_CLIENT_VIDEO_HWDECODE_VAAPI                 2u
 
 
-/* Stream link health policy.  Tile size is not adapted globally: each dirty
- * tile is encoded at the largest supported wire size that satisfies the
- * current packet/budget/loss rules. */
+/* Stream adaptation and link-health policy.
+ * Loss/pressure streaks reduce rate or FPS; sustained good periods increase
+ * them.  Recovery/cooldown values prevent oscillation.  Wire tile size is
+ * chosen per dirty region from the supported ladder rather than by a CLI mode. */
 #define WD_WIRE_TILE_MAX_WIDTH                        128u
 #define WD_WIRE_TILE_MAX_HEIGHT                       64u
 #define WD_STREAM_LINK_LOSS_SECONDS_TO_DECREASE       1u
@@ -263,7 +316,11 @@ extern "C" {
 #define WD_STREAM_FPS_INCREASE_PERCENT               110u
 #define WD_STREAM_FPS_GOOD_SECONDS_TO_INCREASE       3u
 
-/* Stream worker, tile-selection, and compression policy. */
+/* Stream workers, compression, and automatic video entry.
+ * Thread/result limits bound CPU and queue fan-out.  Compression requires both
+ * absolute and percentage savings.  The tile advisor samples entropy and
+ * bypasses repeatedly poor candidates.  Automatic video entry combines dirty
+ * coverage, sustained change, wire pressure, and FPS pressure. */
 #define WD_STREAM_ENCODER_MAX_THREADS                 4u
 #define WD_STREAM_ENCODER_RESERVED_CPUS               1u
 #define WD_STREAM_ENCODER_MAX_RESULTS_PER_JOB         32u
@@ -273,6 +330,8 @@ extern "C" {
 #define WD_STREAM_VIDEO_CLIENT_FAILURE_SECONDS        3u
 #define WD_STREAM_VIDEO_DERIVED_BUDGET_PERCENT        75u
 
+/* Supported wire-tile ladder, largest to base.  Keep endpoints aligned with
+ * the protocol geometry and derive counts instead of repeating literals. */
 #define WD_TILE_SIZE_LARGE_WIDTH                      128u
 #define WD_TILE_SIZE_LARGE_HEIGHT                     64u
 #define WD_TILE_SIZE_MEDIUM_WIDTH                     64u
@@ -286,6 +345,7 @@ extern "C" {
     ((WD_WIRE_TILE_MAX_WIDTH / WD_BASE_TILE_WIDTH) * \
      (WD_WIRE_TILE_MAX_HEIGHT / WD_BASE_TILE_HEIGHT))
 
+/* Tile compressibility advisor and automatic-video thresholds. */
 #define WD_TILE_ADVISOR_ENTROPY_SAMPLE_COUNT          64u
 #define WD_TILE_ADVISOR_SMALL_PAYLOAD_PIXELS          16u
 #define WD_TILE_ADVISOR_MAX_UNIQUE_NUMERATOR          7u
@@ -303,7 +363,10 @@ extern "C" {
 #define WD_TILE_AUTO_ENTRY_WIRE_PRESSURE_PERCENT      65u
 #define WD_TILE_AUTO_ENTRY_FPS_PRESSURE_PERCENT       85u
 
-/* Coefficients used to derive link timers from measured RTT and jitter. */
+/* Link-timer formula coefficients.
+ * These multipliers, divisors, and fixed margins turn measured RTT/jitter into
+ * summary, retransmit, and reassembly deadlines before clamping to the bounds
+ * above. */
 #define WD_LINK_PROFILE_JITTER_MULTIPLIER             2u
 #define WD_LINK_PROFILE_SUMMARY_MARGIN_NS             (50ull * WD_NSEC_PER_MSEC)
 #define WD_LINK_PROFILE_RETRANSMIT_MARGIN_NS          (100ull * WD_NSEC_PER_MSEC)
@@ -313,7 +376,11 @@ extern "C" {
 #define WD_LINK_PROFILE_CLEAN_SUMMARY_RTT_DIVISOR     2u
 #define WD_LINK_PROFILE_CLEAN_TO_ACTIVE_MULTIPLIER    2u
 
-/* Client interaction/render-loop tuning. */
+/* Client window, render loop, decoder queues, and UI behavior.
+ * Debounce/wait values trade responsiveness for wakeups.  Upload thresholds
+ * choose dirty rectangles versus bounding/full uploads.  Decoder queue
+ * capacities are ordered metadata >= decoded >= present.  Context-menu and
+ * wheel values are local UI geometry, not protocol policy. */
 #define WD_CLIENT_DEFAULT_TARGET_FPS           WD_DEFAULT_PARTIAL_FPS
 #define WD_CLIENT_RESIZE_DEBOUNCE_NS           150000000ull
 #define WD_CLIENT_FRAME_DELAY_MS               8
@@ -322,6 +389,8 @@ extern "C" {
 /* Render-planning calibration.  Fixed costs are elapsed nanoseconds rather
  * than equivalent pixel counts; the implementation combines them with the
  * measured per-pixel cost. */
+/* Render-cost calibration.  Fixed call costs are nanoseconds; per-pixel cost
+ * uses Q16 fixed point and an EWMA with clamped samples. */
 #define WD_CLIENT_RENDER_COST_MIN_SAMPLES              4u
 #define WD_CLIENT_TEXTURE_UPDATE_CALL_COST_NS           16384ull
 #define WD_CLIENT_TEXTURE_LOCK_CALL_COST_NS             131072ull
@@ -333,6 +402,7 @@ extern "C" {
 #define WD_CLIENT_RENDER_COST_MAX_Q16                   (1000ull << 16u)
 #define WD_CLIENT_BOUNDS_UPLOAD_MIN_SAVINGS_PERCENT     15u
 #define WD_CLIENT_FULL_UPLOAD_MIN_SAVINGS_PERCENT       20u
+/* Client window, framebuffer, decoder, and local UI bounds. */
 #define WD_CLIENT_MIN_WINDOW_WIDTH             64
 #define WD_CLIENT_MIN_WINDOW_HEIGHT            64
 #define WD_CLIENT_MAX_FRAMEBUFFER_BYTES        (512ull * 1024ull * 1024ull)
@@ -347,6 +417,7 @@ extern "C" {
 #define WD_CLIENT_CONTEXT_MENU_TEXT_SCALE      1
 #define WD_CLIENT_CONTEXT_MENU_TEXT_X          8
 #define WD_CLIENT_CONTEXT_MENU_TEXT_Y          6
+/* Client event-loop networking and runtime feedback cadence. */
 #define WD_CLIENT_UDP_DRAIN_BATCH              8192u
 #define WD_CLIENT_MAX_IDLE_WAIT_NS             (50ull * WD_NSEC_PER_MSEC)
 #define WD_CLIENT_CONFIG_SYNC_WAIT_NS          (10ull * WD_NSEC_PER_MSEC)
@@ -354,7 +425,11 @@ extern "C" {
 #define WD_CLIENT_FRAMEBUFFER_LOCK_EWMA_OLD_NUMERATOR 7u
 #define WD_CLIENT_FRAMEBUFFER_LOCK_EWMA_DENOMINATOR   8u
 
-/* Server interaction tuning. */
+/* Server compositor, input, and child-process behavior.
+ * Move/resize zones and minimum sizes shape interaction.  Frame-service and
+ * repair sampling control compositor work cadence.  Input capacities bound
+ * queued events.  Repeat settings emulate a keyboard.  Process grace periods
+ * bound TERM/KILL shutdown and polling. */
 #define WD_FALLBACK_MOVE_ZONE_HEIGHT       32.0
 #define WD_RESIZE_EDGE_ZONE                8.0
 #define WD_MIN_WINDOW_WIDTH                120u
@@ -371,7 +446,10 @@ extern "C" {
 #define WD_SERVER_PROCESS_KILL_GRACE_MS            1000u
 #define WD_SERVER_PROCESS_POLL_INTERVAL_MS         10u
 
-/* Initial scene placement policy. */
+/* Initial native-surface scene placement.
+ * Margins/insets keep new windows visible, cascade values spread peers, and
+ * fallback dimensions place dialogs/children that do not provide usable
+ * geometry. */
 #define WD_SCENE_DIALOG_PARENT_THRESHOLD_PX         160u
 #define WD_SCENE_DIALOG_PARENT_INSET_PX             80u
 #define WD_SCENE_OUTPUT_MARGIN_X_PX                 160u
@@ -384,7 +462,10 @@ extern "C" {
 #define WD_SCENE_CHILD_FALLBACK_HEIGHT_PX           320u
 #define WD_SCENE_CHILD_VERTICAL_POSITION_DIVISOR    3u
 
-/* Xwayland decoration/layout defaults. */
+/* Xwayland fallback geometry and server-side decorations.
+ * Used only when WD_SERVER_DEFAULT_ENABLE_XWAYLAND is enabled and the build
+ * contains Xwayland support.  Pixel values define initial visibility and
+ * titlebar/button layout. */
 #define WD_XWAYLAND_DEFAULT_WIDTH      800u
 #define WD_XWAYLAND_DEFAULT_HEIGHT     600u
 #define WD_XWAYLAND_MIN_VISIBLE_WIDTH  64u
@@ -469,6 +550,8 @@ WD_CONFIG_STATIC_ASSERT(WD_SERVER_MIN_REFRESH_HZ > 0u &&
                         "server refresh defaults must be ordered");
 WD_CONFIG_STATIC_ASSERT(WD_TILE_WIDTH > 0u && WD_TILE_HEIGHT > 0u,
                         "tile dimensions must be nonzero");
+WD_CONFIG_STATIC_ASSERT(WD_SERVER_TILE_COMPRESSION_BENCHMARK_MODE_DEFAULT <= 3u,
+                        "tile compression benchmark mode must be valid");
 WD_CONFIG_STATIC_ASSERT(WD_BASE_TILE_WIDTH > 0u && WD_BASE_TILE_HEIGHT > 0u,
                         "base tile dimensions must be nonzero");
 WD_CONFIG_STATIC_ASSERT(WD_WIRE_TILE_MAX_WIDTH % WD_BASE_TILE_WIDTH == 0u &&
@@ -508,8 +591,6 @@ WD_CONFIG_STATIC_ASSERT(WD_CLIENT_RENDER_COST_EWMA_OLD_NUMERATOR <
                         "render EWMA must retain less than one full sample");
 
 #undef WD_CONFIG_STATIC_ASSERT
-
-#define WD_ZSTD_LEVEL 1
 
 #ifdef __cplusplus
 }

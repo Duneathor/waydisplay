@@ -7,14 +7,69 @@
   },
   "configurePresets": [
     {
-      "name": "tests-base",
+      "name": "gcc-base",
       "hidden": true,
       "generator": "Unix Makefiles",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "WayDisplay GCC Debug",
+      "inherits": "gcc-base",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "WAYDISPLAY_BUILD_TESTS": "OFF",
+        "WAYDISPLAY_RUN_TESTS_ON_BUILD": "OFF"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "WayDisplay GCC Release",
+      "inherits": "gcc-base",
+      "binaryDir": "${sourceDir}/build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "WAYDISPLAY_BUILD_TESTS": "OFF",
+        "WAYDISPLAY_RUN_TESTS_ON_BUILD": "OFF"
+      }
+    },
+    {
+      "name": "profile",
+      "displayName": "WayDisplay GCC PGO instrumentation",
+      "inherits": "gcc-base",
+      "binaryDir": "${sourceDir}/build-native",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Profile",
+        "WAYDISPLAY_PGO_DATA_DIR": "${sourceDir}/build-pgo-data",
+        "WAYDISPLAY_BUILD_TESTS": "OFF",
+        "WAYDISPLAY_RUN_TESTS_ON_BUILD": "OFF"
+      }
+    },
+    {
+      "name": "native",
+      "displayName": "WayDisplay GCC native optimized",
+      "inherits": "gcc-base",
+      "binaryDir": "${sourceDir}/build-native",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Native",
+        "WAYDISPLAY_PGO_DATA_DIR": "${sourceDir}/build-pgo-data",
+        "WAYDISPLAY_BUILD_TESTS": "OFF",
+        "WAYDISPLAY_RUN_TESTS_ON_BUILD": "OFF"
+      }
+    },
+    {
+      "name": "tests-base",
+      "hidden": true,
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "WAYDISPLAY_BUILD_TESTS": "ON",
         "WAYDISPLAY_RUN_TESTS_ON_BUILD": "ON"
-      }
+      },
+      "inherits": "gcc-base"
     },
     {
       "name": "tests",
@@ -94,6 +149,22 @@
     }
   ],
   "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "profile",
+      "configurePreset": "profile"
+    },
+    {
+      "name": "native",
+      "configurePreset": "native"
+    },
     {
       "name": "tests",
       "configurePreset": "tests"

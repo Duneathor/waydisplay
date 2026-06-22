@@ -13,14 +13,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(cmake/WayDisplayBuildProfiles.cmake)
+
 option(WAYDISPLAY_BUILD_CLIENT_SDL "Build the SDL WayDisplay client" ON)
 option(WAYDISPLAY_BUILD_WLROOTS_SERVER "Build the wlroots headless compositor server" ON)
 option(WAYDISPLAY_BUILD_LEGACY_PROTO "Build the old monolithic prototype" OFF)
 option(WAYDISPLAY_BUILD_TESTS "Build WayDisplay unit tests" ON)
 option(WAYDISPLAY_RUN_TESTS_ON_BUILD "Run CTest as part of the default build" ON)
-option(WAYDISPLAY_BUILD_FUZZERS "Build libFuzzer protocol/reassembly targets" OFF)
 option(WAYDISPLAY_ENABLE_LOGGING "Enable WayDisplay runtime logging" ON)
-option(WAYDISPLAY_ENABLE_DEBUG_LOGGING "Enable WayDisplay debug-level logging" OFF)
 option(WAYDISPLAY_ENABLE_XWAYLAND "Enable Xwayland support in the wlroots server" ON)
 option(WAYDISPLAY_ENABLE_H265_SERVER_ENCODER "Enable H.265 server encoder backends when available" ON)
 option(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER "Enable H.265 client decoder backends when available" ON)
@@ -30,6 +30,11 @@ option(WAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER "Enable optional VAAPI client hard
 option(WAYDISPLAY_ENABLE_AUDIO "Enable audio capture and playback when dependencies are available" ON)
 option(WAYDISPLAY_REQUIRE_CODEC_TESTS "Fail configuration unless requested codec tests can be built" OFF)
 option(WAYDISPLAY_REQUIRE_WLROOTS_TESTS "Fail configuration unless wlroots tests can be built" OFF)
+
+add_compile_definitions(
+    WAYDISPLAY_ENABLE_LOGGING=$<IF:$<CONFIG:Debug>,1,$<BOOL:${WAYDISPLAY_ENABLE_LOGGING}>>
+    WAYDISPLAY_ENABLE_DEBUG_LOGGING=$<IF:$<CONFIG:Debug>,1,0>
+)
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -192,11 +197,6 @@ target_include_directories(waydisplay_common PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_compile_definitions(waydisplay_common PUBLIC
-    WAYDISPLAY_ENABLE_LOGGING=$<BOOL:${WAYDISPLAY_ENABLE_LOGGING}>
-    WAYDISPLAY_ENABLE_DEBUG_LOGGING=$<BOOL:${WAYDISPLAY_ENABLE_DEBUG_LOGGING}>
-)
-
 target_link_libraries(waydisplay_common PUBLIC
     PkgConfig::ZSTD
 )
@@ -241,6 +241,7 @@ target_include_directories(waydisplay_server_tile_policy PUBLIC
 )
 
 add_library(waydisplay_client_config STATIC
+    src/client/client_cli.cpp
     src/client/client_config_validation.cpp
 )
 
@@ -664,6 +665,20 @@ if(WAYDISPLAY_BUILD_TESTS)
     include(CTest)
     enable_testing()
 
+    add_test(
+        NAME waydisplay.cmake_build_profiles
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DWAYDISPLAY_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/build-profile-contract
+            -DWAYDISPLAY_C_COMPILER=${CMAKE_C_COMPILER}
+            -DWAYDISPLAY_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_build_profiles.cmake
+    )
+    set_tests_properties(waydisplay.cmake_build_profiles PROPERTIES
+        TIMEOUT 120
+        LABELS "cmake;build"
+    )
+
     function(waydisplay_add_test)
         cmake_parse_arguments(WAYDISPLAY_TEST
             ""
@@ -740,6 +755,14 @@ if(WAYDISPLAY_BUILD_TESTS)
         TARGET waydisplay_test_client_config
         SOURCES tests/test_client_config.cpp
         LIBRARIES waydisplay_client_config
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.client_cli
+        TARGET waydisplay_test_client_cli
+        SOURCES tests/test_client_cli.cpp
+        LIBRARIES waydisplay_client_config
+        LABELS "cli;client"
     )
 
     waydisplay_add_test(
@@ -1225,25 +1248,21 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 endif()
 
-if(WAYDISPLAY_BUILD_FUZZERS)
-    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        message(FATAL_ERROR "WAYDISPLAY_BUILD_FUZZERS requires Clang/libFuzzer")
-    endif()
-
-    add_executable(waydisplay_fuzz_tile_protocol tests/fuzz_tile_protocol.cpp)
-    target_link_libraries(waydisplay_fuzz_tile_protocol PRIVATE waydisplay_common)
-    target_compile_options(waydisplay_fuzz_tile_protocol PRIVATE -fsanitize=fuzzer,address,undefined)
-    target_link_options(waydisplay_fuzz_tile_protocol PRIVATE -fsanitize=fuzzer,address,undefined)
-
-    add_executable(waydisplay_fuzz_tile_reassembly tests/fuzz_tile_reassembly.cpp)
-    target_link_libraries(waydisplay_fuzz_tile_reassembly PRIVATE waydisplay_client_tile_reassembly)
-    target_compile_options(waydisplay_fuzz_tile_reassembly PRIVATE -fsanitize=fuzzer,address,undefined)
-    target_link_options(waydisplay_fuzz_tile_reassembly PRIVATE -fsanitize=fuzzer,address,undefined)
-endif()
 
 # -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
+
+message(STATUS "WayDisplay GCC build profile:")
+if(CMAKE_CONFIGURATION_TYPES)
+    message(STATUS "  configurations=${CMAKE_CONFIGURATION_TYPES}")
+else()
+    message(STATUS "  active=${CMAKE_BUILD_TYPE}")
+endif()
+message(STATUS "  gcc=${CMAKE_C_COMPILER_VERSION}")
+message(STATUS "  lto_flag=${WAYDISPLAY_GCC_LTO_FLAG}")
+message(STATUS "  pgo_data_dir=${WAYDISPLAY_PGO_DATA_DIR}")
+message(STATUS "  pgo_data_available=${WAYDISPLAY_PGO_DATA_AVAILABLE}")
 
 message(STATUS "WayDisplay build options:")
 message(STATUS "  WAYDISPLAY_BUILD_CLIENT_SDL=${WAYDISPLAY_BUILD_CLIENT_SDL}")
@@ -1251,9 +1270,7 @@ message(STATUS "  WAYDISPLAY_BUILD_WLROOTS_SERVER=${WAYDISPLAY_BUILD_WLROOTS_SER
 message(STATUS "  WAYDISPLAY_BUILD_LEGACY_PROTO=${WAYDISPLAY_BUILD_LEGACY_PROTO}")
 message(STATUS "  WAYDISPLAY_BUILD_TESTS=${WAYDISPLAY_BUILD_TESTS}")
 message(STATUS "  WAYDISPLAY_RUN_TESTS_ON_BUILD=${WAYDISPLAY_RUN_TESTS_ON_BUILD}")
-message(STATUS "  WAYDISPLAY_BUILD_FUZZERS=${WAYDISPLAY_BUILD_FUZZERS}")
 message(STATUS "  WAYDISPLAY_ENABLE_LOGGING=${WAYDISPLAY_ENABLE_LOGGING}")
-message(STATUS "  WAYDISPLAY_ENABLE_DEBUG_LOGGING=${WAYDISPLAY_ENABLE_DEBUG_LOGGING}")
 message(STATUS "  WAYDISPLAY_ENABLE_XWAYLAND=${WAYDISPLAY_ENABLE_XWAYLAND}")
 message(STATUS "  WAYDISPLAY_ENABLE_H265_SERVER_ENCODER=${WAYDISPLAY_ENABLE_H265_SERVER_ENCODER}")
 message(STATUS "  WAYDISPLAY_ENABLE_H265_CLIENT_DECODER=${WAYDISPLAY_ENABLE_H265_CLIENT_DECODER}")
