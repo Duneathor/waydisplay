@@ -8,11 +8,11 @@
 #include <signal.h>
 #include <spawn.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
-#include <stdlib.h>
-#include <string.h>
 
 extern char** environ;
 
@@ -25,8 +25,8 @@ static bool wd_process_env_entry_matches(const char* entry, const char* name) {
     return strncmp(entry, name, name_length) == 0 && entry[name_length] == '=';
 }
 
-static const struct wd_process_env_change* wd_process_find_change(
-    const struct wd_process_env_change* changes, size_t change_count, const char* entry) {
+static const struct wd_process_env_change* wd_process_find_change(const struct wd_process_env_change* changes, size_t change_count,
+                                                                  const char* entry) {
     for (size_t i = 0; i < change_count; ++i)
     {
         if (wd_process_env_entry_matches(entry, changes[i].name))
@@ -71,13 +71,11 @@ static void wd_process_free_environment(char** environment, size_t inherited_cou
     free(environment);
 }
 
-static char** wd_process_build_environment(const struct wd_process_env_change* changes,
-                                           size_t change_count, size_t* inherited_count_out,
+static char** wd_process_build_environment(const struct wd_process_env_change* changes, size_t change_count, size_t* inherited_count_out,
                                            int* error_code) {
     for (size_t i = 0; i < change_count; ++i)
     {
-        if (!wd_process_env_name_valid(changes[i].name) ||
-            (changes[i].action != WD_PROCESS_ENV_UNSET && !changes[i].value))
+        if (!wd_process_env_name_valid(changes[i].name) || (changes[i].action != WD_PROCESS_ENV_UNSET && !changes[i].value))
         {
             if (error_code)
             {
@@ -118,8 +116,7 @@ static char** wd_process_build_environment(const struct wd_process_env_change* c
     size_t environment_count = 0;
     for (size_t i = 0; i < inherited_capacity; ++i)
     {
-        const struct wd_process_env_change* change =
-            wd_process_find_change(changes, change_count, environ[i]);
+        const struct wd_process_env_change* change = wd_process_find_change(changes, change_count, environ[i]);
         if (!change)
         {
             environment[environment_count++] = environ[i];
@@ -137,8 +134,7 @@ static char** wd_process_build_environment(const struct wd_process_env_change* c
     const size_t inherited_count = environment_count;
     for (size_t i = 0; i < change_count; ++i)
     {
-        if (changes[i].action == WD_PROCESS_ENV_UNSET ||
-            (changes[i].action == WD_PROCESS_ENV_SET_IF_ABSENT && change_seen[i]))
+        if (changes[i].action == WD_PROCESS_ENV_UNSET || (changes[i].action == WD_PROCESS_ENV_SET_IF_ABSENT && change_seen[i]))
         {
             continue;
         }
@@ -176,9 +172,8 @@ void wd_spawned_process_init(struct wd_spawned_process* process) {
     process->process_group = -1;
 }
 
-bool wd_spawn_shell_command(struct wd_spawned_process* process, const char* command,
-                            const struct wd_process_env_change* changes, size_t change_count,
-                            int* error_code) {
+bool wd_spawn_shell_command(struct wd_spawned_process* process, const char* command, const struct wd_process_env_change* changes,
+                            size_t change_count, int* error_code) {
     if (error_code)
     {
         *error_code = 0;
@@ -194,10 +189,9 @@ bool wd_spawn_shell_command(struct wd_spawned_process* process, const char* comm
 
     wd_spawned_process_init(process);
 
-    size_t inherited_count = 0;
-    int environment_error = 0;
-    char** child_environment = wd_process_build_environment(
-        changes, change_count, &inherited_count, &environment_error);
+    size_t inherited_count   = 0;
+    int    environment_error = 0;
+    char** child_environment = wd_process_build_environment(changes, change_count, &inherited_count, &environment_error);
     if (!child_environment)
     {
         if (error_code)
@@ -208,7 +202,7 @@ bool wd_spawn_shell_command(struct wd_spawned_process* process, const char* comm
     }
 
     posix_spawnattr_t attributes;
-    int spawn_error = posix_spawnattr_init(&attributes);
+    int               spawn_error = posix_spawnattr_init(&attributes);
     if (spawn_error != 0)
     {
         wd_process_free_environment(child_environment, inherited_count);
@@ -219,7 +213,7 @@ bool wd_spawn_shell_command(struct wd_spawned_process* process, const char* comm
         return false;
     }
 
-    short flags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK;
+    short    flags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK;
     sigset_t default_signals;
     sigset_t signal_mask;
     sigemptyset(&default_signals);
@@ -246,8 +240,7 @@ bool wd_spawn_shell_command(struct wd_spawned_process* process, const char* comm
     if (spawn_error == 0)
     {
         char* const argv[] = {(char*)"/bin/sh", (char*)"-c", (char*)command, NULL};
-        spawn_error = posix_spawn(&child_pid, "/bin/sh", NULL, &attributes, argv,
-                                  child_environment);
+        spawn_error        = posix_spawn(&child_pid, "/bin/sh", NULL, &attributes, argv, child_environment);
     }
 
     posix_spawnattr_destroy(&attributes);
@@ -277,8 +270,7 @@ static void wd_process_sleep_milliseconds(unsigned int milliseconds) {
     }
 }
 
-enum wd_process_reap_result wd_spawned_process_reap_nonblocking(
-    struct wd_spawned_process* process, int* status, int* error_code) {
+enum wd_process_reap_result wd_spawned_process_reap_nonblocking(struct wd_spawned_process* process, int* status, int* error_code) {
     if (status)
     {
         *status = 0;
@@ -292,7 +284,7 @@ enum wd_process_reap_result wd_spawned_process_reap_nonblocking(
         return WD_PROCESS_REAP_NONE;
     }
 
-    int child_status = 0;
+    int   child_status = 0;
     pid_t result;
     do
     {
@@ -338,16 +330,13 @@ bool wd_spawned_process_group_alive(const struct wd_spawned_process* process) {
     return errno == EPERM;
 }
 
-static bool wd_spawned_process_wait_for_group(struct wd_spawned_process* process,
-                                              unsigned int timeout_ms, int* status,
-                                              int* error_code) {
+static bool wd_spawned_process_wait_for_group(struct wd_spawned_process* process, unsigned int timeout_ms, int* status, int* error_code) {
     unsigned int elapsed_ms = 0;
     for (;;)
     {
-        int child_status = 0;
-        int reap_error = 0;
-        const enum wd_process_reap_result reap_result =
-            wd_spawned_process_reap_nonblocking(process, &child_status, &reap_error);
+        int                               child_status = 0;
+        int                               reap_error   = 0;
+        const enum wd_process_reap_result reap_result  = wd_spawned_process_reap_nonblocking(process, &child_status, &reap_error);
         if (reap_result == WD_PROCESS_REAP_EXITED && status)
         {
             *status = child_status;
@@ -371,18 +360,15 @@ static bool wd_spawned_process_wait_for_group(struct wd_spawned_process* process
         {
             return false;
         }
-        const unsigned int sleep_ms = timeout_ms - elapsed_ms < WD_SERVER_PROCESS_POLL_INTERVAL_MS
-                                          ? timeout_ms - elapsed_ms
-                                          : WD_SERVER_PROCESS_POLL_INTERVAL_MS;
+        const unsigned int sleep_ms =
+            timeout_ms - elapsed_ms < WD_SERVER_PROCESS_POLL_INTERVAL_MS ? timeout_ms - elapsed_ms : WD_SERVER_PROCESS_POLL_INTERVAL_MS;
         wd_process_sleep_milliseconds(sleep_ms);
         elapsed_ms += sleep_ms;
     }
 }
 
-bool wd_spawned_process_terminate_group(struct wd_spawned_process* process,
-                                        unsigned int terminate_timeout_ms,
-                                        unsigned int kill_timeout_ms, int* status,
-                                        int* error_code) {
+bool wd_spawned_process_terminate_group(struct wd_spawned_process* process, unsigned int terminate_timeout_ms, unsigned int kill_timeout_ms,
+                                        int* status, int* error_code) {
     if (status)
     {
         *status = 0;
@@ -402,10 +388,9 @@ bool wd_spawned_process_terminate_group(struct wd_spawned_process* process,
 
     if (!wd_spawned_process_group_alive(process))
     {
-        int child_status = 0;
-        int reap_error = 0;
-        const enum wd_process_reap_result reap_result =
-            wd_spawned_process_reap_nonblocking(process, &child_status, &reap_error);
+        int                               child_status = 0;
+        int                               reap_error   = 0;
+        const enum wd_process_reap_result reap_result  = wd_spawned_process_reap_nonblocking(process, &child_status, &reap_error);
         if (reap_result == WD_PROCESS_REAP_EXITED && status)
         {
             *status = child_status;

@@ -25,7 +25,7 @@ uint16_t wd_tiles_for_height_with_tile(uint32_t height, uint16_t tile_height) {
 uint16_t wd_total_tiles_for_size_with_tile(uint32_t width, uint32_t height, uint16_t tile_width, uint16_t tile_height) {
     const uint16_t tiles_x = wd_tiles_for_width_with_tile(width, tile_width);
     const uint16_t tiles_y = wd_tiles_for_height_with_tile(height, tile_height);
-    const uint32_t total = (uint32_t)tiles_x * (uint32_t)tiles_y;
+    const uint32_t total   = (uint32_t)tiles_x * (uint32_t)tiles_y;
     return tiles_x == 0 || tiles_y == 0 || total == 0 || total > UINT16_MAX ? 0 : (uint16_t)total;
 }
 
@@ -112,8 +112,8 @@ uint32_t wd_tile_visible_height_for(uint32_t display_height, uint16_t tile_id, u
 }
 
 uint32_t wd_fnv1a_tile_hash_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
-                                                  uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width,
-                                                  uint16_t tile_height) {
+                                              uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width,
+                                              uint16_t tile_height) {
     if (!framebuffer_xrgb8888 || !wd_tile_id_valid_for(tile_id, total_tiles) || tile_width == 0 || tile_height == 0)
     {
         return 0;

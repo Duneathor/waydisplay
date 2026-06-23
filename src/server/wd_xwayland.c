@@ -447,9 +447,9 @@ static void handle_xwayland_surface_map(struct wl_listener* listener, void* data
 
     xwayland_view_mark_mapped(view, true);
 
-    WD_LOG_DEBUG("Xwayland surface mapped view=%p geom=%dx%d+%d+%d title=%s class=%s", (void*)view,
-                 (int)view->xwayland_surface->width, (int)view->xwayland_surface->height, (int)view->xwayland_surface->x,
-                 (int)view->xwayland_surface->y, view->title ? view->title : "", view->app_id ? view->app_id : "");
+    WD_LOG_DEBUG("Xwayland surface mapped view=%p geom=%dx%d+%d+%d title=%s class=%s", (void*)view, (int)view->xwayland_surface->width,
+                 (int)view->xwayland_surface->height, (int)view->xwayland_surface->x, (int)view->xwayland_surface->y,
+                 view->title ? view->title : "", view->app_id ? view->app_id : "");
 }
 
 static void handle_xwayland_surface_unmap(struct wl_listener* listener, void* data) {
@@ -601,8 +601,8 @@ static void xwayland_view_associate(struct wd_view* view) {
         xwayland_mark_scene_dirty(view);
     }
 
-    WD_LOG_DEBUG("Xwayland associated view=%p scene_tree=%p mapped=%d managed=%d override_redirect=%d parent=%p",
-                 (void*)view, (void*)view->scene_tree, view->mapped ? 1 : 0, xwayland_view_is_managed(view) ? 1 : 0,
+    WD_LOG_DEBUG("Xwayland associated view=%p scene_tree=%p mapped=%d managed=%d override_redirect=%d parent=%p", (void*)view,
+                 (void*)view->scene_tree, view->mapped ? 1 : 0, xwayland_view_is_managed(view) ? 1 : 0,
                  view->xwayland_surface->override_redirect ? 1 : 0, (void*)view->xwayland_surface->parent);
 }
 
@@ -674,7 +674,6 @@ static void xwayland_view_set_maximized(struct wd_view* view, bool maximize) {
     xwayland_mark_scene_dirty(view);
 }
 
-
 void wd_xwayland_handle_output_resize(struct wd_server* server) {
     if (!server)
     {
@@ -682,8 +681,7 @@ void wd_xwayland_handle_output_resize(struct wd_server* server) {
     }
 
     struct wd_view* view;
-    wl_list_for_each(view, &server->views, link)
-    {
+    wl_list_for_each(view, &server->views, link) {
         if (!view || !view->xwayland_surface || !view->mapped)
         {
             continue;

@@ -1,7 +1,6 @@
 #include "video_decoder.hpp"
-#include "wd_video_encoder.h"
-
 #include "waydisplay/wd_protocol.h"
+#include "wd_video_encoder.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -20,21 +19,21 @@ using waydisplay::ClientVideoFrameBuffer;
 using waydisplay::ClientVideoPacket;
 using waydisplay::ClientVideoPixelFormat;
 
-#define CHECK(condition)                                                                          \
-    do                                                                                             \
-    {                                                                                              \
-        if (!(condition))                                                                          \
-        {                                                                                          \
-            std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #condition);   \
-            return false;                                                                          \
-        }                                                                                          \
+#define CHECK(condition)                                                                                                                   \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        if (!(condition))                                                                                                                  \
+        {                                                                                                                                  \
+            std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #condition);                                             \
+            return false;                                                                                                                  \
+        }                                                                                                                                  \
     } while (false)
 
-constexpr uint32_t kWidth = 65;
-constexpr uint32_t kHeight = 49;
-constexpr uint32_t kCodedWidth = 66;
+constexpr uint32_t kWidth       = 65;
+constexpr uint32_t kHeight      = 49;
+constexpr uint32_t kCodedWidth  = 66;
 constexpr uint32_t kCodedHeight = 50;
-constexpr uint32_t kStride = 72;
+constexpr uint32_t kStride      = 72;
 
 void fill_frame(std::vector<uint32_t>& pixels, uint32_t frame_number) {
     std::fill(pixels.begin(), pixels.end(), UINT32_C(0xff000000));
@@ -42,72 +41,69 @@ void fill_frame(std::vector<uint32_t>& pixels, uint32_t frame_number) {
     {
         for (uint32_t x = 0; x < kWidth; ++x)
         {
-            const uint32_t phase = frame_number * 29u;
-            const uint32_t red = (x * 4u + phase) & 0xffu;
-            const uint32_t green = (y * 6u + phase * 2u) & 0xffu;
-            const uint32_t blue = ((x + y) * 3u + phase * 3u) & 0xffu;
-            pixels[static_cast<size_t>(y) * kStride + x] =
-                UINT32_C(0xff000000) | (red << 16u) | (green << 8u) | blue;
+            const uint32_t phase                         = frame_number * 29u;
+            const uint32_t red                           = (x * 4u + phase) & 0xffu;
+            const uint32_t green                         = (y * 6u + phase * 2u) & 0xffu;
+            const uint32_t blue                          = ((x + y) * 3u + phase * 3u) & 0xffu;
+            pixels[static_cast<size_t>(y) * kStride + x] = UINT32_C(0xff000000) | (red << 16u) | (green << 8u) | blue;
         }
     }
 }
 
 uint64_t luma_checksum(const ClientVideoFrameBuffer& frame) {
     const size_t y_size = static_cast<size_t>(frame.y_pitch) * frame.height;
-    return std::accumulate(frame.bytes.begin(), frame.bytes.begin() + static_cast<ptrdiff_t>(y_size),
-                           UINT64_C(0));
+    return std::accumulate(frame.bytes.begin(), frame.bytes.begin() + static_cast<ptrdiff_t>(y_size), UINT64_C(0));
 }
 
-bool configure_pair(wd_video_encoder* encoder, ClientVideoDecoder* decoder, uint32_t codec,
-                    uint64_t content_epoch) {
+bool configure_pair(wd_video_encoder* encoder, ClientVideoDecoder* decoder, uint32_t codec, uint64_t content_epoch) {
     wd_video_encoder_config encoder_config{};
-    encoder_config.session_id = 11;
-    encoder_config.connection_token = UINT64_C(0x1122334455667788);
-    encoder_config.content_epoch = content_epoch;
-    encoder_config.width = kWidth;
-    encoder_config.height = kHeight;
-    encoder_config.target_fps = 30;
+    encoder_config.session_id             = 11;
+    encoder_config.connection_token       = UINT64_C(0x1122334455667788);
+    encoder_config.content_epoch          = content_epoch;
+    encoder_config.width                  = kWidth;
+    encoder_config.height                 = kHeight;
+    encoder_config.target_fps             = 30;
     encoder_config.bitrate_kib_per_second = 4096;
-    encoder_config.codec = codec;
+    encoder_config.codec                  = codec;
     CHECK(wd_video_encoder_configure(encoder, &encoder_config));
 
     ClientVideoDecoderConfig decoder_config{};
-    decoder_config.session_id = encoder_config.session_id;
+    decoder_config.session_id       = encoder_config.session_id;
     decoder_config.connection_token = encoder_config.connection_token;
-    decoder_config.content_epoch = content_epoch;
-    decoder_config.width = kWidth;
-    decoder_config.height = kHeight;
-    decoder_config.coded_width = kCodedWidth;
-    decoder_config.coded_height = kCodedHeight;
-    decoder_config.target_fps = encoder_config.target_fps;
-    decoder_config.codec = codec;
-    decoder_config.hwdecode_mode = WD_CLIENT_VIDEO_HWDECODE_OFF;
+    decoder_config.content_epoch    = content_epoch;
+    decoder_config.width            = kWidth;
+    decoder_config.height           = kHeight;
+    decoder_config.coded_width      = kCodedWidth;
+    decoder_config.coded_height     = kCodedHeight;
+    decoder_config.target_fps       = encoder_config.target_fps;
+    decoder_config.codec            = codec;
+    decoder_config.hwdecode_mode    = WD_CLIENT_VIDEO_HWDECODE_OFF;
     CHECK(waydisplay::client_video_decoder_configure(decoder, decoder_config));
     return true;
 }
 
 bool run_codec(uint32_t codec) {
-    wd_video_encoder* encoder = nullptr;
+    wd_video_encoder*   encoder = nullptr;
     ClientVideoDecoder* decoder = nullptr;
     CHECK(wd_video_encoder_create(&encoder, "software"));
     CHECK(waydisplay::client_video_decoder_create(&decoder));
     CHECK(configure_pair(encoder, decoder, codec, 1));
 
-    std::vector<uint32_t> pixels(static_cast<size_t>(kStride) * kHeight);
-    std::vector<uint64_t> checksums;
+    std::vector<uint32_t>                      pixels(static_cast<size_t>(kStride) * kHeight);
+    std::vector<uint64_t>                      checksums;
     std::vector<wd_video_frame_payload_header> submitted_headers;
-    uint64_t previous_frame_id = 0;
-    bool saw_keyframe = false;
+    uint64_t                                   previous_frame_id = 0;
+    bool                                       saw_keyframe      = false;
 
     for (uint32_t frame_number = 0; frame_number < 24 && checksums.size() < 3; ++frame_number)
     {
         fill_frame(pixels, frame_number);
         wd_video_encoder_input_xrgb8888 input{};
-        input.pixels = pixels.data();
-        input.width = kWidth;
-        input.height = kHeight;
+        input.pixels        = pixels.data();
+        input.width         = kWidth;
+        input.height        = kHeight;
         input.stride_pixels = kStride;
-        input.pts_usec = UINT64_C(2000000) + static_cast<uint64_t>(frame_number) * UINT64_C(33333);
+        input.pts_usec      = UINT64_C(2000000) + static_cast<uint64_t>(frame_number) * UINT64_C(33333);
 
         wd_video_encoder_packet encoded{};
         CHECK(wd_video_encoder_encode_xrgb8888(encoder, &input, &encoded));
@@ -121,15 +117,14 @@ bool run_codec(uint32_t codec) {
         CHECK(encoded.header.height == kHeight);
         CHECK(encoded.header.coded_width == kCodedWidth);
         CHECK(encoded.header.coded_height == kCodedHeight);
-        CHECK(wd_video_frame_payload_size_is_valid(
-            &encoded.header,
-            static_cast<uint32_t>(sizeof(encoded.header)) + encoded.header.data_size));
+        CHECK(wd_video_frame_payload_size_is_valid(&encoded.header,
+                                                   static_cast<uint32_t>(sizeof(encoded.header)) + encoded.header.data_size));
         previous_frame_id = encoded.header.frame_id;
-        saw_keyframe = saw_keyframe || (encoded.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
+        saw_keyframe      = saw_keyframe || (encoded.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
 
         ClientVideoPacket packet{};
         packet.header = encoded.header;
-        packet.data = encoded.data;
+        packet.data   = encoded.data;
         submitted_headers.push_back(encoded.header);
         ClientDecodedVideoFrame decoded{};
         CHECK(waydisplay::client_video_decoder_decode(decoder, packet, &decoded));
@@ -141,11 +136,9 @@ bool run_codec(uint32_t codec) {
                 break;
             }
 
-            const auto submitted = std::find_if(
-                submitted_headers.begin(), submitted_headers.end(),
-                [&decoded](const wd_video_frame_payload_header& header) {
-                    return header.frame_id == decoded.frame_id;
-                });
+            const auto submitted =
+                std::find_if(submitted_headers.begin(), submitted_headers.end(),
+                             [&decoded](const wd_video_frame_payload_header& header) { return header.frame_id == decoded.frame_id; });
             CHECK(submitted != submitted_headers.end());
 
             ClientVideoFrameBuffer output{};
@@ -169,26 +162,25 @@ bool run_codec(uint32_t codec) {
 
     CHECK(saw_keyframe);
     CHECK(checksums.size() >= 2);
-    CHECK(std::adjacent_find(checksums.begin(), checksums.end(), std::not_equal_to<>()) !=
-          checksums.end());
+    CHECK(std::adjacent_find(checksums.begin(), checksums.end(), std::not_equal_to<>()) != checksums.end());
 
     waydisplay::client_video_decoder_reset(decoder);
     wd_video_encoder_reset(encoder);
     CHECK(configure_pair(encoder, decoder, codec, 2));
     CHECK(wd_video_encoder_request_keyframe(encoder));
 
-    bool decoded_new_epoch = false;
+    bool decoded_new_epoch      = false;
     bool saw_new_epoch_keyframe = false;
     submitted_headers.clear();
     for (uint32_t frame_number = 30; frame_number < 42 && !decoded_new_epoch; ++frame_number)
     {
         fill_frame(pixels, frame_number);
         wd_video_encoder_input_xrgb8888 input{};
-        input.pixels = pixels.data();
-        input.width = kWidth;
-        input.height = kHeight;
+        input.pixels        = pixels.data();
+        input.width         = kWidth;
+        input.height        = kHeight;
         input.stride_pixels = kStride;
-        input.pts_usec = UINT64_C(5000000) + static_cast<uint64_t>(frame_number) * UINT64_C(33333);
+        input.pts_usec      = UINT64_C(5000000) + static_cast<uint64_t>(frame_number) * UINT64_C(33333);
         wd_video_encoder_packet encoded{};
         CHECK(wd_video_encoder_encode_xrgb8888(encoder, &input, &encoded));
         if (encoded.header.data_size == 0)
@@ -204,7 +196,7 @@ bool run_codec(uint32_t codec) {
         }
         submitted_headers.push_back(encoded.header);
 
-        ClientVideoPacket packet{encoded.header, encoded.data};
+        ClientVideoPacket       packet{encoded.header, encoded.data};
         ClientDecodedVideoFrame decoded{};
         CHECK(waydisplay::client_video_decoder_decode(decoder, packet, &decoded));
         for (;;)
@@ -213,11 +205,9 @@ bool run_codec(uint32_t codec) {
             {
                 break;
             }
-            const auto submitted = std::find_if(
-                submitted_headers.begin(), submitted_headers.end(),
-                [&decoded](const wd_video_frame_payload_header& header) {
-                    return header.frame_id == decoded.frame_id;
-                });
+            const auto submitted =
+                std::find_if(submitted_headers.begin(), submitted_headers.end(),
+                             [&decoded](const wd_video_frame_payload_header& header) { return header.frame_id == decoded.frame_id; });
             CHECK(submitted != submitted_headers.end());
             ClientVideoFrameBuffer output{};
             CHECK(waydisplay::client_video_decoder_swap_output_frame(decoder, output));
@@ -245,17 +235,15 @@ bool run_codec(uint32_t codec) {
 } // namespace
 
 int main() {
-    wd_video_encoder* encoder = nullptr;
+    wd_video_encoder*   encoder = nullptr;
     ClientVideoDecoder* decoder = nullptr;
-    if (!wd_video_encoder_create(&encoder, "software") ||
-        !waydisplay::client_video_decoder_create(&decoder))
+    if (!wd_video_encoder_create(&encoder, "software") || !waydisplay::client_video_decoder_create(&decoder))
     {
         wd_video_encoder_destroy(encoder);
         waydisplay::client_video_decoder_destroy(decoder);
         return 1;
     }
-    const uint32_t common = wd_video_encoder_supported_codecs(encoder) &
-                            waydisplay::client_video_decoder_supported_codecs(decoder);
+    const uint32_t common = wd_video_encoder_supported_codecs(encoder) & waydisplay::client_video_decoder_supported_codecs(decoder);
     wd_video_encoder_destroy(encoder);
     waydisplay::client_video_decoder_destroy(decoder);
 

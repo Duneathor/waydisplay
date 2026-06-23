@@ -19,30 +19,26 @@ void reset_pending_content_locked(ClientState& state, ClientContentOwner owner) 
     /* A remote content-epoch advance invalidates any upload already in
      * progress even when ownership remains on the same transport. Ordinary
      * video frames do not change this local ownership epoch. */
-    const uint64_t local_epoch = owner == ClientContentOwner::Video
-                                     ? state.stream_ownership.reset_to_video()
-                                     : state.stream_ownership.reset_to_tiles();
+    const uint64_t local_epoch =
+        owner == ClientContentOwner::Video ? state.stream_ownership.reset_to_video() : state.stream_ownership.reset_to_tiles();
     state.pending_dirty_epoch = local_epoch;
 }
 
 void reset_present_telemetry(ClientState& state) {
     std::lock_guard<std::mutex> present_lock(state.present_mutex);
-    std::fill(state.pending_tile_telemetry.begin(), state.pending_tile_telemetry.end(),
-              ClientPendingTileTelemetry{});
+    std::fill(state.pending_tile_telemetry.begin(), state.pending_tile_telemetry.end(), ClientPendingTileTelemetry{});
 }
 
 } // namespace
 
-ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint64_t content_epoch,
-                                                       ClientContentOwner owner) {
+ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint64_t content_epoch, ClientContentOwner owner) {
     if (content_epoch == 0)
     {
         return ClientContentEpochDecision::Stale;
     }
 
     std::lock_guard<std::mutex> transition_lock(state.remote_content_mutex);
-    if (content_epoch < state.remote_content_epoch ||
-        (content_epoch == state.remote_content_epoch && owner != state.remote_content_owner))
+    if (content_epoch < state.remote_content_epoch || (content_epoch == state.remote_content_epoch && owner != state.remote_content_owner))
     {
         return ClientContentEpochDecision::Stale;
     }

@@ -1,8 +1,7 @@
 #include "client_async_udp.hpp"
+
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
-
-#include <liburing.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -12,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <liburing.h>
 #include <mutex>
 #include <new>
 #include <unistd.h>
@@ -21,14 +21,13 @@
 namespace waydisplay {
 namespace {
 
-
-char g_cancel_cqe_tag;
+char        g_cancel_cqe_tag;
 void* const CANCEL_CQE = &g_cancel_cqe_tag;
 
 struct Buffer {
     std::vector<uint8_t> bytes;
-    bool                 prepared        = false;
-    bool                 submitted       = false;
+    bool                 prepared         = false;
+    bool                 submitted        = false;
     bool                 cancel_requested = false;
 };
 
@@ -53,23 +52,23 @@ bool is_transient_receive_error(int err) {
 
 struct ClientAsyncUdpReceiver {
     std::mutex mutex;
-    io_uring  ring{};
-    bool      ring_ready = false;
-    int       fd         = -1;
+    io_uring   ring{};
+    bool       ring_ready = false;
+    int        fd         = -1;
 
     std::vector<Buffer>  buffers;
     std::vector<Buffer*> prepared;
 
-    uint64_t inflight      = 0;
-    uint64_t inflight_max  = 0;
-    uint64_t submitted     = 0;
-    uint64_t retired       = 0;
-    uint64_t completed     = 0;
-    uint64_t failed        = 0;
-    uint64_t submit_failed = 0;
-    uint64_t cancels       = 0;
+    uint64_t inflight          = 0;
+    uint64_t inflight_max      = 0;
+    uint64_t submitted         = 0;
+    uint64_t retired           = 0;
+    uint64_t completed         = 0;
+    uint64_t failed            = 0;
+    uint64_t submit_failed     = 0;
+    uint64_t cancels           = 0;
     uint64_t accounting_errors = 0;
-    bool     fatal         = false;
+    bool     fatal             = false;
 };
 
 namespace {
@@ -90,8 +89,7 @@ void clear_prepared_locked(ClientAsyncUdpReceiver* receiver) {
 }
 
 bool prepare_receive_locked(ClientAsyncUdpReceiver* receiver, Buffer& buffer) {
-    if (!receiver || !receiver->ring_ready || receiver->fd < 0 || buffer.prepared || buffer.submitted ||
-        buffer.bytes.empty())
+    if (!receiver || !receiver->ring_ready || receiver->fd < 0 || buffer.prepared || buffer.submitted || buffer.bytes.empty())
     {
         return false;
     }
@@ -154,8 +152,7 @@ bool flush_prepared_locked(ClientAsyncUdpReceiver* receiver) {
 
     if (submitted_now != 0)
     {
-        receiver->prepared.erase(receiver->prepared.begin(), receiver->prepared.begin() +
-                                                        static_cast<std::ptrdiff_t>(submitted_now));
+        receiver->prepared.erase(receiver->prepared.begin(), receiver->prepared.begin() + static_cast<std::ptrdiff_t>(submitted_now));
     }
     return true;
 }
@@ -186,7 +183,6 @@ bool post_receives_locked(ClientAsyncUdpReceiver* receiver) {
     return flush_prepared_locked(receiver);
 }
 
-
 bool submit_prepared_for_shutdown_locked(ClientAsyncUdpReceiver* receiver) {
     if (!receiver || !receiver->ring_ready || receiver->prepared.empty())
     {
@@ -194,7 +190,7 @@ bool submit_prepared_for_shutdown_locked(ClientAsyncUdpReceiver* receiver) {
     }
 
     const size_t prepared_count = receiver->prepared.size();
-    const int rc = io_uring_submit(&receiver->ring);
+    const int    rc             = io_uring_submit(&receiver->ring);
     if (rc <= 0)
     {
         return false;
@@ -208,14 +204,13 @@ bool submit_prepared_for_shutdown_locked(ClientAsyncUdpReceiver* receiver) {
         {
             continue;
         }
-        buffer->prepared = false;
+        buffer->prepared  = false;
         buffer->submitted = true;
         receiver->inflight++;
         receiver->submitted++;
         receiver->inflight_max = std::max(receiver->inflight_max, receiver->inflight);
     }
-    receiver->prepared.erase(receiver->prepared.begin(), receiver->prepared.begin() +
-                                                     static_cast<std::ptrdiff_t>(submitted_now));
+    receiver->prepared.erase(receiver->prepared.begin(), receiver->prepared.begin() + static_cast<std::ptrdiff_t>(submitted_now));
     return receiver->prepared.empty();
 }
 
@@ -244,7 +239,7 @@ void check_accounting_locked(ClientAsyncUdpReceiver* receiver) {
 void mark_buffer_complete_locked(ClientAsyncUdpReceiver* receiver, Buffer* buffer) {
     if (buffer && buffer->submitted)
     {
-        buffer->submitted = false;
+        buffer->submitted        = false;
         buffer->cancel_requested = false;
         if (receiver)
         {
@@ -418,8 +413,7 @@ ClientAsyncUdpReceiver* client_async_udp_receiver_create(int fd, uint32_t entrie
     return receiver;
 }
 
-ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpReceiver* receiver,
-                                                               ClientAsyncUdpReceiverStats* final_stats) {
+ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpReceiver* receiver, ClientAsyncUdpReceiverStats* final_stats) {
     if (!receiver)
     {
         return ClientAsyncUdpDetachResult::Detached;
@@ -491,11 +485,11 @@ ClientAsyncUdpWaitResult client_async_udp_receiver_wait(ClientAsyncUdpReceiver* 
     }
 
     __kernel_timespec timeout{};
-    timeout.tv_sec = static_cast<__kernel_time64_t>(timeout_ns / WD_NSEC_PER_SEC);
+    timeout.tv_sec  = static_cast<__kernel_time64_t>(timeout_ns / WD_NSEC_PER_SEC);
     timeout.tv_nsec = static_cast<long>(timeout_ns % WD_NSEC_PER_SEC);
 
     io_uring_cqe* cqe = nullptr;
-    const int rc = io_uring_wait_cqe_timeout(&receiver->ring, &cqe, &timeout);
+    const int     rc  = io_uring_wait_cqe_timeout(&receiver->ring, &cqe, &timeout);
     if (rc == 0 && cqe)
     {
         return ClientAsyncUdpWaitResult::Ready;
@@ -510,8 +504,8 @@ ClientAsyncUdpWaitResult client_async_udp_receiver_wait(ClientAsyncUdpReceiver* 
     return ClientAsyncUdpWaitResult::Failed;
 }
 
-bool client_async_udp_receiver_drain(ClientAsyncUdpReceiver* receiver, void* userdata,
-                                     ClientAsyncUdpPacketHandler handler, uint32_t max_packets) {
+bool client_async_udp_receiver_drain(ClientAsyncUdpReceiver* receiver, void* userdata, ClientAsyncUdpPacketHandler handler,
+                                     uint32_t max_packets) {
     if (!receiver || !handler)
     {
         return false;
@@ -576,8 +570,8 @@ bool client_async_udp_receiver_drain(ClientAsyncUdpReceiver* receiver, void* use
 
     for (const auto& packet : completed)
     {
-        Buffer* buffer = packet.first;
-        const int size = packet.second;
+        Buffer*   buffer = packet.first;
+        const int size   = packet.second;
         if (buffer && size > 0 && !handler(userdata, buffer->bytes.data(), static_cast<size_t>(size)))
         {
             std::lock_guard<std::mutex> lock(receiver->mutex);

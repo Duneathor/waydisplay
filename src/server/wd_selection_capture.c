@@ -29,8 +29,7 @@ void wd_selection_capture_buffer_destroy(struct wd_selection_capture_buffer* buf
     memset(buffer, 0, sizeof(*buffer));
 }
 
-static bool reserve_capture_bytes(struct wd_selection_capture_buffer* buffer,
-                                  uint32_t required) {
+static bool reserve_capture_bytes(struct wd_selection_capture_buffer* buffer, uint32_t required) {
     if (required <= buffer->capacity)
     {
         return true;
@@ -58,8 +57,7 @@ static bool reserve_capture_bytes(struct wd_selection_capture_buffer* buffer,
     return true;
 }
 
-bool wd_selection_capture_buffer_append(struct wd_selection_capture_buffer* buffer,
-                                        const uint8_t* data, size_t size) {
+bool wd_selection_capture_buffer_append(struct wd_selection_capture_buffer* buffer, const uint8_t* data, size_t size) {
     if (!buffer || (!data && size > 0) || buffer->failed)
     {
         return false;
@@ -91,8 +89,7 @@ bool wd_selection_capture_buffer_append(struct wd_selection_capture_buffer* buff
     return true;
 }
 
-bool wd_selection_capture_buffer_finish(struct wd_selection_capture_buffer* buffer,
-                                        uint8_t** out_text, uint32_t* out_size) {
+bool wd_selection_capture_buffer_finish(struct wd_selection_capture_buffer* buffer, uint8_t** out_text, uint32_t* out_size) {
     if (out_text)
     {
         *out_text = NULL;
@@ -108,8 +105,7 @@ bool wd_selection_capture_buffer_finish(struct wd_selection_capture_buffer* buff
     }
 
     uint32_t normalized_size = 0;
-    if (!wd_selection_text_normalize_size(buffer->data, buffer->size,
-                                          &normalized_size))
+    if (!wd_selection_text_normalize_size(buffer->data, buffer->size, &normalized_size))
     {
         buffer->failed = true;
         return false;

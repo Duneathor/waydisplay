@@ -27,12 +27,11 @@ void add_input_sequence(ClientPresentTelemetryBatch& batch, uint64_t sequence) {
 } // namespace
 
 void claim_tile_present_telemetry(const std::vector<ClientPendingTileTelemetry>& pending,
-                                  const std::vector<ClientTileGenerationUpdate>& updates,
-                                  uint64_t content_epoch, uint64_t claimed_ns,
+                                  const std::vector<ClientTileGenerationUpdate>& updates, uint64_t content_epoch, uint64_t claimed_ns,
                                   ClientPresentTelemetryBatch& out_batch) {
     out_batch.clear();
     out_batch.content_epoch = content_epoch;
-    out_batch.claimed_ns = claimed_ns;
+    out_batch.claimed_ns    = claimed_ns;
 
     std::unordered_set<uint64_t> claimed_completion_ids;
     claimed_completion_ids.reserve(updates.size());
@@ -43,8 +42,7 @@ void claim_tile_present_telemetry(const std::vector<ClientPendingTileTelemetry>&
             continue;
         }
         const ClientPendingTileTelemetry& item = pending[update.tile_id];
-        if (item.completion_id == 0 || item.generation != update.generation ||
-            item.content_epoch != content_epoch ||
+        if (item.completion_id == 0 || item.generation != update.generation || item.content_epoch != content_epoch ||
             !claimed_completion_ids.insert(item.completion_id).second)
         {
             continue;
@@ -68,8 +66,7 @@ void claim_tile_present_telemetry(const std::vector<ClientPendingTileTelemetry>&
     }
 }
 
-void commit_tile_present_telemetry(std::vector<ClientPendingTileTelemetry>& pending,
-                                   const std::vector<ClientTileGenerationUpdate>& updates,
+void commit_tile_present_telemetry(std::vector<ClientPendingTileTelemetry>& pending, const std::vector<ClientTileGenerationUpdate>& updates,
                                    uint64_t content_epoch) {
     for (const ClientTileGenerationUpdate& update : updates)
     {
@@ -78,8 +75,7 @@ void commit_tile_present_telemetry(std::vector<ClientPendingTileTelemetry>& pend
             continue;
         }
         ClientPendingTileTelemetry& item = pending[update.tile_id];
-        if (item.content_epoch == content_epoch && item.completion_id != 0 &&
-            item.generation == update.generation)
+        if (item.content_epoch == content_epoch && item.completion_id != 0 && item.generation == update.generation)
         {
             item = ClientPendingTileTelemetry{};
         }

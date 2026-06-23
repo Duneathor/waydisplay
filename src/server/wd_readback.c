@@ -25,12 +25,12 @@ static void readback_box_from_damage(struct wd_server* server, int max_width, in
                 continue;
             }
 
-            const uint32_t bx = tile_id % (uint32_t)server->base_tiles_x;
-            const uint32_t by = tile_id / (uint32_t)server->base_tiles_x;
-            int tx1 = (int)(bx * (uint32_t)server->base_tile_width);
-            int ty1 = (int)(by * (uint32_t)server->base_tile_height);
-            int tx2 = tx1 + (int)server->base_tile_width;
-            int ty2 = ty1 + (int)server->base_tile_height;
+            const uint32_t bx  = tile_id % (uint32_t)server->base_tiles_x;
+            const uint32_t by  = tile_id / (uint32_t)server->base_tiles_x;
+            int            tx1 = (int)(bx * (uint32_t)server->base_tile_width);
+            int            ty1 = (int)(by * (uint32_t)server->base_tile_height);
+            int            tx2 = tx1 + (int)server->base_tile_width;
+            int            ty2 = ty1 + (int)server->base_tile_height;
 
             if (tx1 < 0)
             {
@@ -231,8 +231,8 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
     struct wlr_output_state state;
     wlr_output_state_init(&state);
 
-    enum wd_render_result result = WD_RENDER_RESULT_ERROR;
-    bool                  built_state = false;
+    enum wd_render_result result                  = WD_RENDER_RESULT_ERROR;
+    bool                  built_state             = false;
     bool                  captured_complete_frame = false;
 
     if (!wlr_scene_output_build_state(server->scene_output, &state, NULL))
@@ -286,8 +286,7 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
     bool full_readback = true;
     readback_box_from_damage(server, read_width, read_height, &read_x, &read_y, &read_width, &read_height, &full_readback);
 
-    if (full_readback &&
-        (full_read_width < (int)server->display_width || full_read_height < (int)server->display_height))
+    if (full_readback && (full_read_width < (int)server->display_width || full_read_height < (int)server->display_height))
     {
         memset(server->framebuffer_xrgb8888, 0, server->framebuffer_bytes);
     }
@@ -301,7 +300,7 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
         if (readback_buffer_data_ptr_xrgb8888(server, state.buffer, full_read_width, full_read_height))
         {
             captured_complete_frame = true;
-            result = WD_RENDER_RESULT_FRAME;
+            result                  = WD_RENDER_RESULT_FRAME;
             goto commit_only;
         }
 
@@ -350,7 +349,7 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
 
     wlr_texture_destroy(texture);
     captured_complete_frame = full_readback;
-    result = WD_RENDER_RESULT_FRAME;
+    result                  = WD_RENDER_RESULT_FRAME;
 
 commit_only:
     if (built_state)

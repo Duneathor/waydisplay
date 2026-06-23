@@ -1,5 +1,4 @@
 #include "client_async_tcp.hpp"
-
 #include "waydisplay/wd_protocol.h"
 
 #include <cstdio>
@@ -7,14 +6,14 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define CHECK(condition)                                                                            \
-    do                                                                                              \
-    {                                                                                               \
-        if (!(condition))                                                                           \
-        {                                                                                           \
-            std::fprintf(stderr, "FAIL: %s:%d: %s\n", __FILE__, __LINE__, #condition);             \
-            std::exit(1);                                                                           \
-        }                                                                                           \
+#define CHECK(condition)                                                                                                                   \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        if (!(condition))                                                                                                                  \
+        {                                                                                                                                  \
+            std::fprintf(stderr, "FAIL: %s:%d: %s\n", __FILE__, __LINE__, #condition);                                                     \
+            std::exit(1);                                                                                                                  \
+        }                                                                                                                                  \
     } while (0)
 
 int main() {
@@ -30,8 +29,7 @@ int main() {
     CHECK(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0);
 
     const unsigned char payload[32] = {};
-    CHECK(client_async_tcp_send_message(sender, sockets[0], WD_MSG_POINTER_EVENT,
-                                        payload, sizeof(payload)));
+    CHECK(client_async_tcp_send_message(sender, sockets[0], WD_MSG_POINTER_EVENT, payload, sizeof(payload)));
 
     const ClientAsyncTcpSenderStats stats = client_async_tcp_sender_destroy(sender);
     CHECK(stats.queued == 1);

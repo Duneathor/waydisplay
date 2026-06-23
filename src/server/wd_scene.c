@@ -1,6 +1,6 @@
-#include "wd_server.h"
-#include "wd_scene_policy.h"
 #include "wd_scene_graph.h"
+#include "wd_scene_policy.h"
+#include "wd_server.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1224,9 +1224,8 @@ static void popup_unconstrain_now(struct wd_view* view, struct wlr_xdg_popup* po
      * the root toplevel surface coordinate system. view->x/y locate the XDG
      * window geometry in layout coordinates. */
     struct wd_scene_policy_box policy_box;
-    wd_scene_policy_popup_constraint_box(view->x, view->y, view->xdg_surface->geometry.x,
-                                         view->xdg_surface->geometry.y, (int)output_logical_width(view->server),
-                                         (int)output_logical_height(view->server), &policy_box);
+    wd_scene_policy_popup_constraint_box(view->x, view->y, view->xdg_surface->geometry.x, view->xdg_surface->geometry.y,
+                                         (int)output_logical_width(view->server), (int)output_logical_height(view->server), &policy_box);
 
     struct wlr_box output_box = {
         .x      = policy_box.x,
@@ -1388,7 +1387,7 @@ static bool popup_commit_tracker_ensure_scene_tree(struct wd_popup_commit_tracke
         return state && state->scene_tree;
     }
 
-    struct wd_view*      view   = state->view;
+    struct wd_view*       view  = state->view;
     struct wlr_xdg_popup* popup = state->popup;
     if (!view || !view->server || !view->xdg_surface_tree || !popup || !popup->base || !popup->parent)
     {
@@ -1466,8 +1465,8 @@ static void popup_commit_tracker_mark_dirty(struct wd_popup_commit_tracker* stat
 
     if (state->have_damage_bounds)
     {
-        wd_server_mark_rect_dirty(state->view->server, state->damage_bounds.x, state->damage_bounds.y,
-                                  state->damage_bounds.width, state->damage_bounds.height);
+        wd_server_mark_rect_dirty(state->view->server, state->damage_bounds.x, state->damage_bounds.y, state->damage_bounds.width,
+                                  state->damage_bounds.height);
     }
 
     if (state->scene_tree)
@@ -1569,8 +1568,8 @@ static void popup_commit_tracker_handle_destroy(struct wl_listener* listener, vo
     {
         if (state->have_damage_bounds)
         {
-            wd_server_mark_rect_dirty(state->view->server, state->damage_bounds.x, state->damage_bounds.y,
-                                      state->damage_bounds.width, state->damage_bounds.height);
+            wd_server_mark_rect_dirty(state->view->server, state->damage_bounds.x, state->damage_bounds.y, state->damage_bounds.width,
+                                      state->damage_bounds.height);
         }
         wd_server_mark_view_dirty(state->view);
     }
@@ -1899,7 +1898,6 @@ static void view_handle_request_maximize(struct wl_listener* listener, void* dat
     wd_server_mark_view_dirty(view);
 }
 
-
 void wd_scene_handle_output_resize(struct wd_server* server) {
     if (!server)
     {
@@ -1910,8 +1908,7 @@ void wd_scene_handle_output_resize(struct wd_server* server) {
     uint32_t output_h = output_logical_height(server);
 
     struct wd_view* view;
-    wl_list_for_each(view, &server->views, link)
-    {
+    wl_list_for_each(view, &server->views, link) {
         if (!view || !view->xdg_surface || !view->xdg_surface->toplevel)
         {
             continue;
@@ -2064,8 +2061,7 @@ static void server_handle_new_xdg_popup(struct wl_listener* listener, void* data
     struct wd_view* view = popup_parent_view(server, popup);
     if (!view)
     {
-        WD_LOG_ERROR("ignoring xdg popup with unknown protocol parent popup=%p parent_surface=%p",
-                     (void*)popup, (void*)popup->parent);
+        WD_LOG_ERROR("ignoring xdg popup with unknown protocol parent popup=%p parent_surface=%p", (void*)popup, (void*)popup->parent);
         return;
     }
 

@@ -1,6 +1,5 @@
-#include "wd_video_encoder.h"
-
 #include "waydisplay/wd_protocol.h"
+#include "wd_video_encoder.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -17,19 +16,19 @@
 
 namespace {
 
-#define CHECK(condition)                                                                          \
-    do                                                                                             \
-    {                                                                                              \
-        if (!(condition))                                                                          \
-        {                                                                                          \
-            std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #condition);   \
-            return false;                                                                          \
-        }                                                                                          \
+#define CHECK(condition)                                                                                                                   \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        if (!(condition))                                                                                                                  \
+        {                                                                                                                                  \
+            std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #condition);                                             \
+            return false;                                                                                                                  \
+        }                                                                                                                                  \
     } while (false)
 
-constexpr uint32_t kWidth = 65;
-constexpr uint32_t kHeight = 49;
-constexpr uint32_t kStride = 71;
+constexpr uint32_t kWidth           = 65;
+constexpr uint32_t kHeight          = 49;
+constexpr uint32_t kStride          = 71;
 constexpr uint64_t kConnectionToken = UINT64_C(0x1020304050607080);
 
 uint32_t compiled_codec_mask() {
@@ -49,21 +48,18 @@ void fill_pattern(std::vector<uint32_t>& pixels, uint32_t frame_index) {
     {
         for (uint32_t x = 0; x < kWidth; ++x)
         {
-            const uint32_t red = (x * 3u + frame_index * 17u) & 0xffu;
-            const uint32_t green = (y * 5u + frame_index * 11u) & 0xffu;
-            const uint32_t blue = ((x ^ y) * 7u + frame_index * 23u) & 0xffu;
-            pixels[static_cast<size_t>(y) * kStride + x] =
-                UINT32_C(0xff000000) | (red << 16u) | (green << 8u) | blue;
+            const uint32_t red                           = (x * 3u + frame_index * 17u) & 0xffu;
+            const uint32_t green                         = (y * 5u + frame_index * 11u) & 0xffu;
+            const uint32_t blue                          = ((x ^ y) * 7u + frame_index * 23u) & 0xffu;
+            pixels[static_cast<size_t>(y) * kStride + x] = UINT32_C(0xff000000) | (red << 16u) | (green << 8u) | blue;
         }
     }
 }
 
-bool packet_metadata_is_valid(const wd_video_encoder_packet& packet,
-                              const wd_video_encoder_config& config) {
+bool packet_metadata_is_valid(const wd_video_encoder_packet& packet, const wd_video_encoder_config& config) {
     CHECK(packet.data != nullptr);
     CHECK(packet.header.data_size != 0);
-    CHECK(wd_video_frame_payload_size_is_valid(
-        &packet.header, static_cast<uint32_t>(sizeof(packet.header)) + packet.header.data_size));
+    CHECK(wd_video_frame_payload_size_is_valid(&packet.header, static_cast<uint32_t>(sizeof(packet.header)) + packet.header.data_size));
     CHECK(packet.header.session_id == config.session_id);
     CHECK(packet.header.connection_token == config.connection_token);
     CHECK(packet.header.content_epoch == config.content_epoch);
@@ -78,21 +74,18 @@ bool packet_metadata_is_valid(const wd_video_encoder_packet& packet,
     return true;
 }
 
-bool encode_until_packet(wd_video_encoder* encoder,
-                         const wd_video_encoder_config& config,
-                         std::vector<uint32_t>& pixels,
-                         uint32_t first_frame_index,
-                         wd_video_encoder_packet& out_packet) {
+bool encode_until_packet(wd_video_encoder* encoder, const wd_video_encoder_config& config, std::vector<uint32_t>& pixels,
+                         uint32_t first_frame_index, wd_video_encoder_packet& out_packet) {
     for (uint32_t attempt = 0; attempt < 12; ++attempt)
     {
         const uint32_t frame_index = first_frame_index + attempt;
         fill_pattern(pixels, frame_index);
         wd_video_encoder_input_xrgb8888 input{};
-        input.pixels = pixels.data();
-        input.width = kWidth;
-        input.height = kHeight;
+        input.pixels        = pixels.data();
+        input.width         = kWidth;
+        input.height        = kHeight;
         input.stride_pixels = kStride;
-        input.pts_usec = UINT64_C(1000000) + static_cast<uint64_t>(frame_index) * UINT64_C(33333);
+        input.pts_usec      = UINT64_C(1000000) + static_cast<uint64_t>(frame_index) * UINT64_C(33333);
 
         wd_video_encoder_packet packet{};
         CHECK(wd_video_encoder_encode_xrgb8888(encoder, &input, &packet));
@@ -131,7 +124,7 @@ bool test_invalid_api() {
     CHECK(!wd_video_encoder_configure(encoder, &invalid));
 
     wd_video_encoder_input_xrgb8888 input{};
-    wd_video_encoder_packet packet{};
+    wd_video_encoder_packet         packet{};
     CHECK(!wd_video_encoder_encode_xrgb8888(encoder, &input, &packet));
     CHECK(packet.header.data_size == 0);
 
@@ -145,27 +138,27 @@ bool test_codec(uint32_t codec) {
     CHECK(wd_video_encoder_create(&encoder, "software"));
 
     wd_video_encoder_config config{};
-    config.session_id = 7;
-    config.connection_token = kConnectionToken;
-    config.content_epoch = 3;
-    config.width = kWidth;
-    config.height = kHeight;
-    config.target_fps = 30;
+    config.session_id             = 7;
+    config.connection_token       = kConnectionToken;
+    config.content_epoch          = 3;
+    config.width                  = kWidth;
+    config.height                 = kHeight;
+    config.target_fps             = 30;
     config.bitrate_kib_per_second = 2048;
-    config.codec = codec;
+    config.codec                  = codec;
 
     CHECK(wd_video_encoder_configure(encoder, &config));
     CHECK(wd_video_encoder_configure(encoder, &config));
     CHECK(std::strcmp(wd_video_encoder_backend_name(encoder), "software") != 0);
 
-    std::vector<uint32_t> pixels(static_cast<size_t>(kStride) * kHeight);
+    std::vector<uint32_t>   pixels(static_cast<size_t>(kStride) * kHeight);
     wd_video_encoder_packet first{};
     CHECK(encode_until_packet(encoder, config, pixels, 0, first));
     CHECK((first.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0);
     CHECK((first.header.flags & WD_VIDEO_FRAME_CONFIG) != 0);
     CHECK(first.header.frame_id == 1);
 
-    const uint64_t first_frame_id = first.header.frame_id;
+    const uint64_t          first_frame_id = first.header.frame_id;
     wd_video_encoder_packet second{};
     CHECK(encode_until_packet(encoder, config, pixels, 20, second));
     CHECK(second.header.frame_id > first_frame_id);
@@ -183,11 +176,11 @@ bool test_codec(uint32_t codec) {
     wd_video_encoder_reset(encoder);
     fill_pattern(pixels, 100);
     wd_video_encoder_input_xrgb8888 input{};
-    input.pixels = pixels.data();
-    input.width = kWidth;
-    input.height = kHeight;
+    input.pixels        = pixels.data();
+    input.width         = kWidth;
+    input.height        = kHeight;
     input.stride_pixels = kStride;
-    input.pts_usec = UINT64_C(9000000);
+    input.pts_usec      = UINT64_C(9000000);
     wd_video_encoder_packet after_reset{};
     CHECK(!wd_video_encoder_encode_xrgb8888(encoder, &input, &after_reset));
 
@@ -216,7 +209,7 @@ int main() {
         return 1;
     }
     const uint32_t supported = wd_video_encoder_supported_codecs(encoder);
-    const uint32_t compiled = compiled_codec_mask();
+    const uint32_t compiled  = compiled_codec_mask();
     if ((supported & ~compiled) != 0)
     {
         std::fprintf(stderr, "encoder reported codecs not enabled by this build: 0x%x\n", supported);
@@ -230,15 +223,11 @@ int main() {
     }
 
     const uint32_t chosen = wd_video_encoder_choose_codec(encoder, compiled);
-    const uint32_t expected_choice = (supported & WD_VIDEO_CODEC_H265) != 0
-                                         ? WD_VIDEO_CODEC_H265
-                                         : ((supported & WD_VIDEO_CODEC_H264) != 0
-                                                ? WD_VIDEO_CODEC_H264
-                                                : 0);
+    const uint32_t expected_choice =
+        (supported & WD_VIDEO_CODEC_H265) != 0 ? WD_VIDEO_CODEC_H265 : ((supported & WD_VIDEO_CODEC_H264) != 0 ? WD_VIDEO_CODEC_H264 : 0);
     if (chosen != expected_choice)
     {
-        std::fprintf(stderr, "unexpected codec choice: got=0x%x expected=0x%x\n", chosen,
-                     expected_choice);
+        std::fprintf(stderr, "unexpected codec choice: got=0x%x expected=0x%x\n", chosen, expected_choice);
         wd_video_encoder_destroy(encoder);
         return 1;
     }

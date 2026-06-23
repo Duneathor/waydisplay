@@ -19,11 +19,9 @@ struct wd_selection_capture_buffer {
 void wd_selection_capture_buffer_init(struct wd_selection_capture_buffer* buffer);
 void wd_selection_capture_buffer_destroy(struct wd_selection_capture_buffer* buffer);
 
-bool wd_selection_capture_buffer_append(struct wd_selection_capture_buffer* buffer,
-                                        const uint8_t* data, size_t size);
+bool wd_selection_capture_buffer_append(struct wd_selection_capture_buffer* buffer, const uint8_t* data, size_t size);
 
-bool wd_selection_capture_buffer_finish(struct wd_selection_capture_buffer* buffer,
-                                        uint8_t** out_text, uint32_t* out_size);
+bool wd_selection_capture_buffer_finish(struct wd_selection_capture_buffer* buffer, uint8_t** out_text, uint32_t* out_size);
 
 #ifdef __cplusplus
 }

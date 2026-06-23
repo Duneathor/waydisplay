@@ -11,16 +11,12 @@ enum class ClientVideoPhase : uint8_t {
 };
 
 struct ClientVideoTransitionDecision {
-    ClientVideoPhase next_phase = ClientVideoPhase::Tiles;
-    bool reset_decoder = false;
-    bool accept_payload = false;
+    ClientVideoPhase next_phase     = ClientVideoPhase::Tiles;
+    bool             reset_decoder  = false;
+    bool             accept_payload = false;
 };
 
-ClientVideoTransitionDecision client_video_transition(ClientVideoPhase phase,
-                                                       bool content_epoch_advanced,
-                                                       bool end_of_stream,
-                                                       bool resize,
-                                                       bool keyframe,
-                                                       bool has_payload);
+ClientVideoTransitionDecision client_video_transition(ClientVideoPhase phase, bool content_epoch_advanced, bool end_of_stream, bool resize,
+                                                      bool keyframe, bool has_payload);
 
 } // namespace waydisplay

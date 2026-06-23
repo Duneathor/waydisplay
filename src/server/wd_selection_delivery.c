@@ -33,8 +33,7 @@ void wd_selection_delivery_mark_unknown(struct wd_selection_delivery* delivery) 
     delivery->pending = false;
 }
 
-bool wd_selection_delivery_set_owned(struct wd_selection_delivery* delivery,
-                                     uint8_t* text, uint32_t size) {
+bool wd_selection_delivery_set_owned(struct wd_selection_delivery* delivery, uint8_t* text, uint32_t size) {
     if (!delivery || (!text && size != 0))
     {
         free(text);
@@ -56,8 +55,7 @@ void wd_selection_delivery_request(struct wd_selection_delivery* delivery) {
     }
 }
 
-bool wd_selection_delivery_pending(const struct wd_selection_delivery* delivery,
-                                   const uint8_t** text, uint32_t* size) {
+bool wd_selection_delivery_pending(const struct wd_selection_delivery* delivery, const uint8_t** text, uint32_t* size) {
     if (text)
     {
         *text = NULL;

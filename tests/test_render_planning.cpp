@@ -1,10 +1,10 @@
 #include "content_order.hpp"
 #include "present_telemetry.hpp"
 #include "render_planning.hpp"
-#include "wd_client.hpp"
 #include "render_wakeup.hpp"
 #include "stream_ownership.hpp"
 #include "video_decoder.hpp"
+#include "wd_client.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -35,8 +35,7 @@ void test_coalesces_horizontal_and_vertical_runs() {
 
     coalesce_dirty_texture_rects(rects, 64, 64);
     require(rects.size() == 1, "adjacent rectangles should coalesce");
-    require(rects[0].x == 0 && rects[0].y == 0 && rects[0].w == 32 && rects[0].h == 32,
-            "coalesced rectangle geometry");
+    require(rects[0].x == 0 && rects[0].y == 0 && rects[0].w == 32 && rects[0].h == 32, "coalesced rectangle geometry");
 }
 
 void test_clamps_to_frame() {
@@ -48,11 +47,11 @@ void test_clamps_to_frame() {
 
 void test_upload_planner_modes() {
     std::vector<ClientDirtyRect> sparse{{0, 0, 16, 16}, {512, 512, 16, 16}};
-    DirtyTextureUploadPlan sparse_plan = plan_dirty_texture_upload(sparse, 1024, 1024);
+    DirtyTextureUploadPlan       sparse_plan = plan_dirty_texture_upload(sparse, 1024, 1024);
     require(sparse_plan.mode == DirtyTextureUploadMode::Rects, "sparse rectangles should remain partial");
 
     std::vector<ClientDirtyRect> dense{{0, 0, 800, 800}};
-    DirtyTextureUploadPlan dense_plan = plan_dirty_texture_upload(dense, 1024, 1024);
+    DirtyTextureUploadPlan       dense_plan = plan_dirty_texture_upload(dense, 1024, 1024);
     require(dense_plan.mode == DirtyTextureUploadMode::Full, "dense update should use a full upload");
 }
 
@@ -67,8 +66,7 @@ void test_dirty_tile_grid_deduplicates_and_coalesces() {
     std::vector<ClientDirtyRect> rects;
     grid.take_rects(rects);
     require(rects.size() == 1, "rectangular dirty tile block should become one rectangle");
-    require(rects[0].x == 0 && rects[0].y == 0 && rects[0].w == 32 && rects[0].h == 32,
-            "dirty grid rectangle geometry");
+    require(rects[0].x == 0 && rects[0].y == 0 && rects[0].w == 32 && rects[0].h == 32, "dirty grid rectangle geometry");
     require(grid.dirty_tile_count() == 0, "taking dirty rectangles should clear the grid");
 
     require(grid.mark_rect({48, 32, 2, 2}), "edge tile should be markable");
@@ -84,35 +82,28 @@ void test_upload_planner_prices_sparse_updates_separately_from_locks() {
         sparse.push_back({offset, offset, 1, 1});
     }
     const DirtyTextureUploadPlan plan = plan_dirty_texture_upload(sparse, 1024, 1024);
-    require(plan.mode == DirtyTextureUploadMode::Rects,
-            "multiple sparse SDL_UpdateTexture calls should not be priced as texture locks");
+    require(plan.mode == DirtyTextureUploadMode::Rects, "multiple sparse SDL_UpdateTexture calls should not be priced as texture locks");
 }
-
 
 void test_initial_connection_configures_dirty_grid_without_resize() {
     ClientDirtyTileGrid grid;
-    require(configure_client_dirty_tile_grid(grid, 1422, 773, 16, 16),
-            "stable-geometry connection should configure the dirty grid");
-    require(grid.mark_rect({0, 0, 16, 16}),
-            "cached reconnect tile should be accepted before any resize event");
-    require(grid.mark_rect({1408, 768, 14, 5}),
-            "cached reconnect edge tile should be accepted at final geometry");
-    require(grid.dirty_tile_count() == 2,
-            "reconnect dirty grid should retain cached framebuffer work");
+    require(configure_client_dirty_tile_grid(grid, 1422, 773, 16, 16), "stable-geometry connection should configure the dirty grid");
+    require(grid.mark_rect({0, 0, 16, 16}), "cached reconnect tile should be accepted before any resize event");
+    require(grid.mark_rect({1408, 768, 14, 5}), "cached reconnect edge tile should be accepted at final geometry");
+    require(grid.dirty_tile_count() == 2, "reconnect dirty grid should retain cached framebuffer work");
 }
 
 void test_dirty_tile_grid_randomized_exact_coverage() {
-    constexpr uint32_t frame_width = 50;
+    constexpr uint32_t frame_width  = 50;
     constexpr uint32_t frame_height = 34;
-    constexpr uint16_t tile_width = 16;
-    constexpr uint16_t tile_height = 16;
+    constexpr uint16_t tile_width   = 16;
+    constexpr uint16_t tile_height  = 16;
 
     ClientDirtyTileGrid grid;
-    require(grid.reset(frame_width, frame_height, tile_width, tile_height),
-            "randomized dirty grid should configure");
+    require(grid.reset(frame_width, frame_height, tile_width, tile_height), "randomized dirty grid should configure");
 
-    uint32_t random_state = 0x6d2b79f5u;
-    const auto next_random = [&]() {
+    uint32_t   random_state = 0x6d2b79f5u;
+    const auto next_random  = [&]() {
         random_state = random_state * 1664525u + 1013904223u;
         return random_state;
     };
@@ -121,7 +112,7 @@ void test_dirty_tile_grid_randomized_exact_coverage() {
     {
         grid.clear();
         std::vector<uint8_t> expected(static_cast<size_t>(frame_width) * frame_height, 0);
-        const uint32_t rect_count = 1u + next_random() % 24u;
+        const uint32_t       rect_count = 1u + next_random() % 24u;
         for (uint32_t i = 0; i < rect_count; ++i)
         {
             const ClientDirtyRect input{
@@ -131,7 +122,7 @@ void test_dirty_tile_grid_randomized_exact_coverage() {
                 static_cast<uint16_t>(next_random() % 36u),
             };
             ClientDirtyRect visible{};
-            const bool should_mark = clamp_dirty_rect(input, frame_width, frame_height, visible);
+            const bool      should_mark = clamp_dirty_rect(input, frame_width, frame_height, visible);
             require(grid.mark_rect(input) == should_mark, "dirty-grid mark result should match clipping");
             if (!should_mark)
             {
@@ -167,8 +158,7 @@ void test_dirty_tile_grid_randomized_exact_coverage() {
         for (const ClientDirtyRect& rect : rects)
         {
             require(rect.w != 0 && rect.h != 0, "dirty-grid output rectangles must be nonempty");
-            require(static_cast<uint32_t>(rect.x) + rect.w <= frame_width &&
-                        static_cast<uint32_t>(rect.y) + rect.h <= frame_height,
+            require(static_cast<uint32_t>(rect.x) + rect.w <= frame_width && static_cast<uint32_t>(rect.y) + rect.h <= frame_height,
                     "dirty-grid output rectangles must be clipped");
             for (uint32_t y = rect.y; y < static_cast<uint32_t>(rect.y) + rect.h; ++y)
             {
@@ -186,17 +176,14 @@ void test_dirty_tile_grid_randomized_exact_coverage() {
 }
 
 void test_video_upload_preserves_pending_tile_work() {
-    require(!should_collect_pending_tile_dirty(false, true),
-            "video upload should not consume pending tile dirty regions");
-    require(!should_clear_pending_tile_dirty(false, true),
-            "video upload should not discard pending tile dirty regions");
-    require(should_clear_pending_tile_dirty(true, false),
-            "a full framebuffer upload may consume pending tile dirty regions");
+    require(!should_collect_pending_tile_dirty(false, true), "video upload should not consume pending tile dirty regions");
+    require(!should_clear_pending_tile_dirty(false, true), "video upload should not discard pending tile dirty regions");
+    require(should_clear_pending_tile_dirty(true, false), "a full framebuffer upload may consume pending tile dirty regions");
 }
 
 void test_render_wakeup_sequence_and_wait() {
     ClientRenderWake wake;
-    const uint64_t initial = wake.sequence();
+    const uint64_t   initial = wake.sequence();
     require(!wake.wait_for_change(initial, 1), "render wake should time out without a signal");
 
     std::thread signal_thread([&]() {
@@ -212,13 +199,12 @@ void test_render_wakeup_sequence_and_wait() {
     require(wake.wait_for_change(observed, 500), "a signal before waiting should not be lost");
 }
 
-
 ClientVideoFrameBuffer make_test_video_frame(uint8_t fill) {
     ClientVideoFrameBuffer frame{};
-    frame.format = ClientVideoPixelFormat::IYUV;
-    frame.width = 4;
-    frame.height = 4;
-    frame.y_pitch = 4;
+    frame.format   = ClientVideoPixelFormat::IYUV;
+    frame.width    = 4;
+    frame.height   = 4;
+    frame.y_pitch  = 4;
     frame.uv_pitch = 2;
     frame.u_offset = 16;
     frame.v_offset = 20;
@@ -228,22 +214,17 @@ ClientVideoFrameBuffer make_test_video_frame(uint8_t fill) {
 
 void test_video_present_queue_preserves_held_head() {
     ClientVideoPresentQueue queue(3);
-    require(queue.push_decoded(make_test_video_frame(1), 4, 4, 1, 1000, 9),
-            "first decoded frame should queue");
-    require(queue.push_decoded(make_test_video_frame(2), 4, 4, 2, 2000, 9),
-            "second decoded frame should queue");
-    require(queue.push_decoded(make_test_video_frame(3), 4, 4, 3, 3000, 9),
-            "third decoded frame should queue");
+    require(queue.push_decoded(make_test_video_frame(1), 4, 4, 1, 1000, 9), "first decoded frame should queue");
+    require(queue.push_decoded(make_test_video_frame(2), 4, 4, 2, 2000, 9), "second decoded frame should queue");
+    require(queue.push_decoded(make_test_video_frame(3), 4, 4, 3, 3000, 9), "third decoded frame should queue");
 
-    bool dropped_newest = false;
-    ClientVideoFrameBuffer decode_buffer = queue.take_decode_buffer(dropped_newest);
+    bool                   dropped_newest = false;
+    ClientVideoFrameBuffer decode_buffer  = queue.take_decode_buffer(dropped_newest);
     require(dropped_newest, "a full queue should recycle the newest waiting frame");
-    require(queue.front() && queue.front()->frame_id == 1,
-            "overflow must preserve the oldest frame waiting for audio");
+    require(queue.front() && queue.front()->frame_id == 1, "overflow must preserve the oldest frame waiting for audio");
 
     decode_buffer.bytes.assign(decode_buffer.bytes.size(), 4);
-    require(queue.push_decoded(std::move(decode_buffer), 4, 4, 4, 4000, 9),
-            "latest decoded frame should replace the discarded queue tail");
+    require(queue.push_decoded(std::move(decode_buffer), 4, 4, 4, 4000, 9), "latest decoded frame should replace the discarded queue tail");
 
     ClientQueuedVideoFrame frame = queue.pop_front();
     require(frame.frame_id == 1, "held presentation head should remain first");
@@ -257,10 +238,10 @@ void test_video_present_queue_preserves_held_head() {
 
 void test_iyuv_frame_buffer_layout_validation() {
     ClientVideoFrameBuffer frame{};
-    frame.format = ClientVideoPixelFormat::IYUV;
-    frame.width = 5;
-    frame.height = 3;
-    frame.y_pitch = 5;
+    frame.format   = ClientVideoPixelFormat::IYUV;
+    frame.width    = 5;
+    frame.height   = 3;
+    frame.y_pitch  = 5;
     frame.uv_pitch = 3;
     frame.u_offset = 15;
     frame.v_offset = 21;
@@ -272,7 +253,7 @@ void test_iyuv_frame_buffer_layout_validation() {
 }
 
 void test_stream_ownership_epochs() {
-    ClientStreamOwnership ownership;
+    ClientStreamOwnership                ownership;
     const ClientContentOwnershipSnapshot initial = ownership.snapshot();
     require(initial.owner == ClientContentOwner::Tiles, "initial owner should be tiles");
 
@@ -281,14 +262,11 @@ void test_stream_ownership_epochs() {
     require(ownership.is_current(video_epoch, ClientContentOwner::Video), "video epoch should be current");
 
     const uint64_t same_video_epoch = ownership.begin_video_stream();
-    require(same_video_epoch == video_epoch,
-            "new video frames must not invalidate an upload from the same stream");
-    require(ownership.is_current(video_epoch, ClientContentOwner::Video),
-            "same-stream video uploads should remain current");
+    require(same_video_epoch == video_epoch, "new video frames must not invalidate an upload from the same stream");
+    require(ownership.is_current(video_epoch, ClientContentOwner::Video), "same-stream video uploads should remain current");
 
     const uint64_t reset_video_epoch = ownership.reset_to_video();
-    require(reset_video_epoch > video_epoch,
-            "a remote video content-epoch change must invalidate older uploads");
+    require(reset_video_epoch > video_epoch, "a remote video content-epoch change must invalidate older uploads");
 
     const uint64_t tile_epoch = ownership.end_video_stream();
     require(tile_epoch > reset_video_epoch, "end-of-stream should advance ownership epoch");
@@ -302,23 +280,17 @@ void test_remote_content_epochs_reject_late_cross_transport_packets() {
     state.pending_present_generation.assign(16, 0);
 
     client_reset_content_epoch(state, 10, ClientContentOwner::Tiles);
-    require(client_accept_content_epoch(state, 11, ClientContentOwner::Video) ==
-                ClientContentEpochDecision::Advanced,
+    require(client_accept_content_epoch(state, 11, ClientContentOwner::Video) == ClientContentEpochDecision::Advanced,
             "new video epoch should advance");
-    require(client_accept_content_epoch(state, 10, ClientContentOwner::Tiles) ==
-                ClientContentEpochDecision::Stale,
+    require(client_accept_content_epoch(state, 10, ClientContentOwner::Tiles) == ClientContentEpochDecision::Stale,
             "late tile epoch should be rejected after video ownership");
-    require(client_accept_content_epoch(state, 11, ClientContentOwner::Tiles) ==
-                ClientContentEpochDecision::Stale,
+    require(client_accept_content_epoch(state, 11, ClientContentOwner::Tiles) == ClientContentEpochDecision::Stale,
             "same epoch cannot change transport ownership");
-    require(client_accept_content_epoch(state, 12, ClientContentOwner::Tiles) ==
-                ClientContentEpochDecision::Advanced,
+    require(client_accept_content_epoch(state, 12, ClientContentOwner::Tiles) == ClientContentEpochDecision::Advanced,
             "new tile epoch should supersede video ownership");
-    require(client_accept_content_epoch(state, 11, ClientContentOwner::Video) ==
-                ClientContentEpochDecision::Stale,
+    require(client_accept_content_epoch(state, 11, ClientContentOwner::Video) == ClientContentEpochDecision::Stale,
             "late video frame should be rejected after tile recovery");
 }
-
 
 void test_present_telemetry_claims_only_matching_generation_batch() {
     std::vector<ClientPendingTileTelemetry> pending(4);
@@ -328,24 +300,20 @@ void test_present_telemetry_claims_only_matching_generation_batch() {
     pending[3] = {4, 7, 10, 160, 13};
 
     std::vector<ClientTileGenerationUpdate> updates{{0, 5}, {1, 6}, {2, 9}, {3, 9}};
-    ClientPresentTelemetryBatch batch;
+    ClientPresentTelemetryBatch             batch;
     claim_tile_present_telemetry(pending, updates, 7, 200, batch);
 
     require(batch.content_epoch == 7, "claimed telemetry should retain content epoch");
-    require(batch.tile_count == 1 && batch.completion_count == 1,
-            "only the exact epoch and generation should be claimed");
-    require(batch.claimed_ns == 200 && batch.completion_age_sum_ns == 100 &&
-                batch.oldest_completion_ns == 100 && batch.newest_completion_ns == 100,
+    require(batch.tile_count == 1 && batch.completion_count == 1, "only the exact epoch and generation should be claimed");
+    require(batch.claimed_ns == 200 && batch.completion_age_sum_ns == 100 && batch.oldest_completion_ns == 100 &&
+                batch.newest_completion_ns == 100,
             "claimed completion timing should be aggregated without absolute-time overflow");
-    require(batch.input_sequence_count == 1 && batch.input_sequences[0] == 11,
-            "input sequences should be deduplicated and bounded");
-    require(pending[0].generation == 5 && pending[1].generation == 4,
-            "claiming should not remove telemetry before presentation succeeds");
+    require(batch.input_sequence_count == 1 && batch.input_sequences[0] == 11, "input sequences should be deduplicated and bounded");
+    require(pending[0].generation == 5 && pending[1].generation == 4, "claiming should not remove telemetry before presentation succeeds");
     commit_tile_present_telemetry(pending, updates, 7);
     require(pending[0].generation == 0 && pending[1].generation == 4,
             "successful presentation should remove only the exact matching record");
-    require(pending[2].generation == 9 && pending[3].generation == 10,
-            "stale-epoch and not-yet-presented records should remain pending");
+    require(pending[2].generation == 9 && pending[3].generation == 10, "stale-epoch and not-yet-presented records should remain pending");
 }
 
 void test_present_telemetry_input_sequence_set_is_bounded() {
@@ -353,17 +321,14 @@ void test_present_telemetry_input_sequence_set_is_bounded() {
     std::vector<ClientTileGenerationUpdate> updates;
     for (uint16_t tile_id = 0; tile_id < pending.size(); ++tile_id)
     {
-        pending[tile_id] = {static_cast<uint64_t>(tile_id) + 1u, 3, 1,
-                            100ull + tile_id, 1000ull + tile_id};
+        pending[tile_id] = {static_cast<uint64_t>(tile_id) + 1u, 3, 1, 100ull + tile_id, 1000ull + tile_id};
         updates.push_back({tile_id, 1});
     }
     ClientPresentTelemetryBatch batch;
     claim_tile_present_telemetry(pending, updates, 3, 10000, batch);
     require(batch.completion_count == pending.size(), "all matching tile completion samples should aggregate");
-    require(batch.input_sequence_count == batch.input_sequences.size(),
-            "input correlation set should remain bounded");
+    require(batch.input_sequence_count == batch.input_sequences.size(), "input correlation set should remain bounded");
 }
-
 
 void test_present_telemetry_counts_large_tile_completion_once() {
     std::vector<ClientPendingTileTelemetry> pending(4);
@@ -378,15 +343,13 @@ void test_present_telemetry_counts_large_tile_completion_once() {
     claim_tile_present_telemetry(pending, updates, 9, 700, batch);
     require(batch.tile_count == 1 && batch.completion_count == 1,
             "one wire-tile completion covering multiple base tiles should count once");
-    require(batch.completion_age_sum_ns == 200,
-            "deduplicated wire-tile completion should contribute one latency sample");
-    require(batch.input_sequence_count == 1 && batch.input_sequences[0] == 77,
-            "large-tile input correlation should be reported once");
+    require(batch.completion_age_sum_ns == 200, "deduplicated wire-tile completion should contribute one latency sample");
+    require(batch.input_sequence_count == 1 && batch.input_sequences[0] == 77, "large-tile input correlation should be reported once");
 }
 
 void test_tile_generation_claim_commit_and_requeue() {
-    std::vector<uint64_t> pending{3, 4, 0, 7};
-    std::vector<uint64_t> presented{1, 4, 0, 5};
+    std::vector<uint64_t>                   pending{3, 4, 0, 7};
+    std::vector<uint64_t>                   presented{1, 4, 0, 5};
     std::vector<ClientTileGenerationUpdate> updates;
 
     claim_pending_tile_generations(pending, presented, std::vector<uint16_t>{0, 1, 3}, updates);
@@ -398,8 +361,7 @@ void test_tile_generation_claim_commit_and_requeue() {
 
     claim_all_pending_tile_generations(pending, presented, updates);
     commit_tile_generation_updates(presented, updates);
-    require(presented[0] == 3 && presented[1] == 4 && presented[3] == 7,
-            "successful presentation should advance presented generations");
+    require(presented[0] == 3 && presented[1] == 4 && presented[3] == 7, "successful presentation should advance presented generations");
 }
 
 void test_summary_pending_index_tracks_only_active_tiles() {
@@ -425,19 +387,17 @@ void test_texture_upload_cost_calibration_changes_plan() {
 
     ClientTextureUploadCostModel low_call_cost{};
     low_call_cost.update_call_cost_ns = 1;
-    low_call_cost.lock_call_cost_ns = 1000000;
-    low_call_cost.update_samples = 4;
-    low_call_cost.lock_samples = 4;
-    DirtyTextureUploadPlan sparse = plan_dirty_texture_upload(rects, 1024, 1024, low_call_cost);
-    require(sparse.mode == DirtyTextureUploadMode::Rects,
-            "low update-call overhead should preserve sparse rectangles");
+    low_call_cost.lock_call_cost_ns   = 1000000;
+    low_call_cost.update_samples      = 4;
+    low_call_cost.lock_samples        = 4;
+    DirtyTextureUploadPlan sparse     = plan_dirty_texture_upload(rects, 1024, 1024, low_call_cost);
+    require(sparse.mode == DirtyTextureUploadMode::Rects, "low update-call overhead should preserve sparse rectangles");
 
     ClientTextureUploadCostModel high_call_cost = low_call_cost;
-    high_call_cost.update_call_cost_ns = 1000000;
-    high_call_cost.lock_call_cost_ns = 1;
-    DirtyTextureUploadPlan bounded = plan_dirty_texture_upload(rects, 1024, 1024, high_call_cost);
-    require(bounded.mode == DirtyTextureUploadMode::Bounds,
-            "high update-call overhead should prefer one bounding upload");
+    high_call_cost.update_call_cost_ns          = 1000000;
+    high_call_cost.lock_call_cost_ns            = 1;
+    DirtyTextureUploadPlan bounded              = plan_dirty_texture_upload(rects, 1024, 1024, high_call_cost);
+    require(bounded.mode == DirtyTextureUploadMode::Bounds, "high update-call overhead should prefer one bounding upload");
 
     ClientTextureUploadCostModel observed{};
     observe_texture_upload_call(observed, false, 500000, 1024);
@@ -454,12 +414,9 @@ void test_texture_upload_cost_calibration_changes_plan() {
     }
     const uint64_t fixed_before_spike = robust.update_call_cost_ns;
     observe_texture_upload_call(robust, false, 100000000, 1024);
-    require(robust.update_call_cost_ns < fixed_before_spike * 2,
-            "one upload stall should be bounded instead of dominating the model");
+    require(robust.update_call_cost_ns < fixed_before_spike * 2, "one upload stall should be bounded instead of dominating the model");
     require(robust.snapshot_samples == 8, "snapshot observations should be tracked independently");
 }
-
-
 
 } // namespace
 

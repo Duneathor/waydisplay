@@ -1,9 +1,9 @@
-#include "waydisplay/wd_time.h"
 #include "waydisplay/wd_input.h"
 #include "waydisplay/wd_selection.h"
-#include "wd_server.h"
-#include "wd_selection_capture.h"
+#include "waydisplay/wd_time.h"
 #include "wd_async_tcp.h"
+#include "wd_selection_capture.h"
+#include "wd_server.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -16,7 +16,6 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <xkbcommon/xkbcommon.h>
-
 
 struct wd_remote_data_source {
     struct wlr_data_source source;
@@ -33,55 +32,46 @@ struct wd_remote_primary_source {
 };
 
 struct wd_selection_capture {
-    struct wd_server*                   server;
-    bool                                primary;
-    int                                 read_fd;
-    struct wl_event_source*             read_source;
-    struct wl_event_source*             timeout_source;
-    struct wd_selection_capture_buffer  buffer;
+    struct wd_server*                  server;
+    bool                               primary;
+    int                                read_fd;
+    struct wl_event_source*            read_source;
+    struct wl_event_source*            timeout_source;
+    struct wd_selection_capture_buffer buffer;
 };
 
-static struct wd_selection_capture** selection_capture_slot(struct wd_server* server,
-                                                            bool primary) {
+static struct wd_selection_capture** selection_capture_slot(struct wd_server* server, bool primary) {
     return primary ? &server->primary_capture : &server->clipboard_capture;
 }
 
-static struct wd_selection_delivery* local_selection_delivery(
-    struct wd_server* server, bool primary) {
+static struct wd_selection_delivery* local_selection_delivery(struct wd_server* server, bool primary) {
     return primary ? &server->local_primary : &server->local_clipboard;
 }
 
 static void mark_local_selection_unknown(struct wd_server* server, bool primary) {
     if (server)
     {
-        wd_selection_delivery_mark_unknown(
-            local_selection_delivery(server, primary));
+        wd_selection_delivery_mark_unknown(local_selection_delivery(server, primary));
     }
 }
 
-static void store_local_selection(struct wd_server* server, bool primary,
-                                  uint8_t* text, uint32_t text_size) {
-    if (!server || !wd_selection_delivery_set_owned(
-                       local_selection_delivery(server, primary), text,
-                       text_size))
+static void store_local_selection(struct wd_server* server, bool primary, uint8_t* text, uint32_t text_size) {
+    if (!server || !wd_selection_delivery_set_owned(local_selection_delivery(server, primary), text, text_size))
     {
         return;
     }
 
-    WD_LOG_DEBUG("captured local %s selection (%u bytes)",
-                 primary ? "primary" : "clipboard", text_size);
+    WD_LOG_DEBUG("captured local %s selection (%u bytes)", primary ? "primary" : "clipboard", text_size);
 }
 
-static void selection_capture_finish(struct wd_selection_capture* capture,
-                                     bool complete) {
+static void selection_capture_finish(struct wd_selection_capture* capture, bool complete) {
     if (!capture)
     {
         return;
     }
 
-    struct wd_server* server = capture->server;
-    struct wd_selection_capture** slot = selection_capture_slot(server,
-                                                                capture->primary);
+    struct wd_server*             server = capture->server;
+    struct wd_selection_capture** slot   = selection_capture_slot(server, capture->primary);
     if (*slot == capture)
     {
         *slot = NULL;
@@ -105,18 +95,16 @@ static void selection_capture_finish(struct wd_selection_capture* capture,
 
     if (complete)
     {
-        uint8_t* text = NULL;
+        uint8_t* text      = NULL;
         uint32_t text_size = 0;
-        if (wd_selection_capture_buffer_finish(&capture->buffer, &text,
-                                               &text_size))
+        if (wd_selection_capture_buffer_finish(&capture->buffer, &text, &text_size))
         {
             store_local_selection(server, capture->primary, text, text_size);
         }
         else
         {
             mark_local_selection_unknown(server, capture->primary);
-            WD_LOG_WARN("discarding invalid local %s selection",
-                        capture->primary ? "primary" : "clipboard");
+            WD_LOG_WARN("discarding invalid local %s selection", capture->primary ? "primary" : "clipboard");
         }
     }
     else
@@ -144,18 +132,16 @@ static void cancel_selection_capture(struct wd_server* server, bool primary) {
 static int selection_capture_readable(int fd, uint32_t mask, void* data) {
     (void)fd;
     struct wd_selection_capture* capture = data;
-    uint8_t chunk[8192];
+    uint8_t                      chunk[8192];
 
     for (;;)
     {
         ssize_t count = read(capture->read_fd, chunk, sizeof(chunk));
         if (count > 0)
         {
-            if (!wd_selection_capture_buffer_append(&capture->buffer, chunk,
-                                                    (size_t)count))
+            if (!wd_selection_capture_buffer_append(&capture->buffer, chunk, (size_t)count))
             {
-                WD_LOG_WARN("local %s selection exceeds capture limits",
-                            capture->primary ? "primary" : "clipboard");
+                WD_LOG_WARN("local %s selection exceeds capture limits", capture->primary ? "primary" : "clipboard");
                 selection_capture_finish(capture, false);
                 return 0;
             }
@@ -182,8 +168,7 @@ static int selection_capture_readable(int fd, uint32_t mask, void* data) {
             return 0;
         }
 
-        WD_LOG_WARN("failed to read local %s selection: %s",
-                    capture->primary ? "primary" : "clipboard", strerror(errno));
+        WD_LOG_WARN("failed to read local %s selection: %s", capture->primary ? "primary" : "clipboard", strerror(errno));
         selection_capture_finish(capture, false);
         return 0;
     }
@@ -191,8 +176,7 @@ static int selection_capture_readable(int fd, uint32_t mask, void* data) {
 
 static int selection_capture_timeout(void* data) {
     struct wd_selection_capture* capture = data;
-    WD_LOG_WARN("timed out capturing local %s selection",
-                capture->primary ? "primary" : "clipboard");
+    WD_LOG_WARN("timed out capturing local %s selection", capture->primary ? "primary" : "clipboard");
     selection_capture_finish(capture, false);
     return 0;
 }
@@ -207,8 +191,7 @@ static const char* choose_text_mime_type(const struct wl_array* mime_types) {
     for (size_t preference = 0; preference < sizeof(preferred) / sizeof(preferred[0]); ++preference)
     {
         char** offered;
-        wl_array_for_each(offered, mime_types)
-        {
+        wl_array_for_each(offered, mime_types) {
             if (*offered && strcmp(*offered, preferred[preference]) == 0)
             {
                 return *offered;
@@ -224,13 +207,11 @@ static bool prepare_capture_pipe(int pipe_fds[2]) {
         return false;
     }
 
-    int read_flags = fcntl(pipe_fds[0], F_GETFL);
-    int read_fd_flags = fcntl(pipe_fds[0], F_GETFD);
+    int read_flags     = fcntl(pipe_fds[0], F_GETFL);
+    int read_fd_flags  = fcntl(pipe_fds[0], F_GETFD);
     int write_fd_flags = fcntl(pipe_fds[1], F_GETFD);
-    if (read_flags < 0 || read_fd_flags < 0 || write_fd_flags < 0 ||
-        fcntl(pipe_fds[0], F_SETFL, read_flags | O_NONBLOCK) != 0 ||
-        fcntl(pipe_fds[0], F_SETFD, read_fd_flags | FD_CLOEXEC) != 0 ||
-        fcntl(pipe_fds[1], F_SETFD, write_fd_flags | FD_CLOEXEC) != 0)
+    if (read_flags < 0 || read_fd_flags < 0 || write_fd_flags < 0 || fcntl(pipe_fds[0], F_SETFL, read_flags | O_NONBLOCK) != 0 ||
+        fcntl(pipe_fds[0], F_SETFD, read_fd_flags | FD_CLOEXEC) != 0 || fcntl(pipe_fds[1], F_SETFD, write_fd_flags | FD_CLOEXEC) != 0)
     {
         close(pipe_fds[0]);
         close(pipe_fds[1]);
@@ -239,9 +220,7 @@ static bool prepare_capture_pipe(int pipe_fds[2]) {
     return true;
 }
 
-static struct wd_selection_capture* begin_selection_capture(struct wd_server* server,
-                                                            bool primary,
-                                                            int* out_write_fd) {
+static struct wd_selection_capture* begin_selection_capture(struct wd_server* server, bool primary, int* out_write_fd) {
     if (out_write_fd)
     {
         *out_write_fd = -1;
@@ -257,8 +236,7 @@ static struct wd_selection_capture* begin_selection_capture(struct wd_server* se
     int pipe_fds[2];
     if (!prepare_capture_pipe(pipe_fds))
     {
-        WD_LOG_WARN("failed to create local selection capture pipe: %s",
-                    strerror(errno));
+        WD_LOG_WARN("failed to create local selection capture pipe: %s", strerror(errno));
         return NULL;
     }
 
@@ -275,16 +253,11 @@ static struct wd_selection_capture* begin_selection_capture(struct wd_server* se
     capture->read_fd = pipe_fds[0];
     wd_selection_capture_buffer_init(&capture->buffer);
 
-    capture->read_source = wl_event_loop_add_fd(
-        server->event_loop, capture->read_fd,
-        WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR,
-        selection_capture_readable, capture);
-    capture->timeout_source = wl_event_loop_add_timer(server->event_loop,
-                                                       selection_capture_timeout,
-                                                       capture);
+    capture->read_source = wl_event_loop_add_fd(server->event_loop, capture->read_fd, WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR,
+                                                selection_capture_readable, capture);
+    capture->timeout_source = wl_event_loop_add_timer(server->event_loop, selection_capture_timeout, capture);
     if (!capture->read_source || !capture->timeout_source ||
-        wl_event_source_timer_update(capture->timeout_source,
-                                     WD_SELECTION_CAPTURE_TIMEOUT_MS) != 0)
+        wl_event_source_timer_update(capture->timeout_source, WD_SELECTION_CAPTURE_TIMEOUT_MS) != 0)
     {
         if (capture->read_source)
         {
@@ -302,12 +275,11 @@ static struct wd_selection_capture* begin_selection_capture(struct wd_server* se
     }
 
     *selection_capture_slot(server, primary) = capture;
-    *out_write_fd = pipe_fds[1];
+    *out_write_fd                            = pipe_fds[1];
     return capture;
 }
 
-static void capture_data_source(struct wd_server* server,
-                                struct wlr_data_source* source) {
+static void capture_data_source(struct wd_server* server, struct wlr_data_source* source) {
     cancel_selection_capture(server, false);
     if (!source)
     {
@@ -333,8 +305,7 @@ static void capture_data_source(struct wd_server* server,
     wlr_data_source_send(source, mime_type, write_fd);
 }
 
-static void capture_primary_source(struct wd_server* server,
-                                   struct wlr_primary_selection_source* source) {
+static void capture_primary_source(struct wd_server* server, struct wlr_primary_selection_source* source) {
     cancel_selection_capture(server, true);
     if (!source)
     {
@@ -577,8 +548,8 @@ void wd_clipboard_destroy(struct wd_server* server) {
     wd_selection_delivery_destroy(&server->local_primary);
 }
 
-static bool payload_to_text_copy(uint8_t expected_session_id, uint64_t expected_connection_token, const uint8_t* payload, uint32_t payload_size, uint8_t** out_text,
-                                 uint32_t* out_text_size) {
+static bool payload_to_text_copy(uint8_t expected_session_id, uint64_t expected_connection_token, const uint8_t* payload,
+                                 uint32_t payload_size, uint8_t** out_text, uint32_t* out_text_size) {
     if (out_text)
     {
         *out_text = NULL;
@@ -595,8 +566,7 @@ static bool payload_to_text_copy(uint8_t expected_session_id, uint64_t expected_
     }
 
     struct wd_selection_text_view view;
-    if (!wd_selection_payload_decode(payload, payload_size, expected_session_id,
-                                     expected_connection_token, &view))
+    if (!wd_selection_payload_decode(payload, payload_size, expected_session_id, expected_connection_token, &view))
     {
         return false;
     }
@@ -617,8 +587,8 @@ static bool payload_to_text_copy(uint8_t expected_session_id, uint64_t expected_
     return true;
 }
 
-void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expected_session_id, uint64_t expected_connection_token, const uint8_t* payload,
-                                          uint32_t payload_size, bool primary) {
+void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expected_session_id, uint64_t expected_connection_token,
+                                          const uint8_t* payload, uint32_t payload_size, bool primary) {
     if (!net)
     {
         return;
@@ -649,8 +619,7 @@ void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expe
     }
 }
 
-void wd_clipboard_queue_client_request_locked(struct wd_net_state* net,
-                                                bool primary) {
+void wd_clipboard_queue_client_request_locked(struct wd_net_state* net, bool primary) {
     if (!net)
     {
         return;
@@ -667,16 +636,13 @@ void wd_clipboard_queue_client_request_locked(struct wd_net_state* net,
 }
 
 static bool send_local_selection_locked(struct wd_server* server, bool primary) {
-    struct wd_net_state* net = &server->net;
-    struct wd_selection_delivery* delivery =
-        local_selection_delivery(server, primary);
-    const uint8_t* text = NULL;
-    uint32_t text_size = 0;
-    const uint16_t message_type = primary ? WD_MSG_PRIMARY_SET
-                                          : WD_MSG_CLIPBOARD_SET;
+    struct wd_net_state*          net          = &server->net;
+    struct wd_selection_delivery* delivery     = local_selection_delivery(server, primary);
+    const uint8_t*                text         = NULL;
+    uint32_t                      text_size    = 0;
+    const uint16_t                message_type = primary ? WD_MSG_PRIMARY_SET : WD_MSG_CLIPBOARD_SET;
 
-    if (!wd_selection_delivery_pending(delivery, &text, &text_size) ||
-        !net->client_connected || net->tcp_fd < 0 || !net->control_tx ||
+    if (!wd_selection_delivery_pending(delivery, &text, &text_size) || !net->client_connected || net->tcp_fd < 0 || !net->control_tx ||
         net->session_id == 0 || net->connection_token == 0)
     {
         return false;
@@ -687,10 +653,8 @@ static bool send_local_selection_locked(struct wd_server* server, bool primary) 
         return false;
     }
 
-    const size_t capacity = sizeof(struct wd_selection_payload_header) +
-                            (size_t)text_size;
-    if (capacity > UINT32_MAX ||
-        !wd_async_tcp_sender_can_queue(net->control_tx, (uint32_t)capacity))
+    const size_t capacity = sizeof(struct wd_selection_payload_header) + (size_t)text_size;
+    if (capacity > UINT32_MAX || !wd_async_tcp_sender_can_queue(net->control_tx, (uint32_t)capacity))
     {
         return false;
     }
@@ -701,19 +665,16 @@ static bool send_local_selection_locked(struct wd_server* server, bool primary) 
         return false;
     }
 
-    uint32_t payload_size = 0;
-    const bool encoded = wd_selection_payload_encode(
-        net->session_id, net->connection_token, WD_SELECTION_MIME_TEXT_UTF8,
-        text, text_size, payload, capacity, &payload_size);
-    const bool queued = encoded && wd_async_tcp_send_message(
-        net->control_tx, net->tcp_fd, message_type, payload, payload_size);
+    uint32_t   payload_size = 0;
+    const bool encoded = wd_selection_payload_encode(net->session_id, net->connection_token, WD_SELECTION_MIME_TEXT_UTF8, text, text_size,
+                                                     payload, capacity, &payload_size);
+    const bool queued  = encoded && wd_async_tcp_send_message(net->control_tx, net->tcp_fd, message_type, payload, payload_size);
     free(payload);
 
     if (queued)
     {
         wd_selection_delivery_mark_queued(delivery);
-        WD_LOG_DEBUG("queued local %s selection for client (%u bytes)",
-                     primary ? "primary" : "clipboard", text_size);
+        WD_LOG_DEBUG("queued local %s selection for client (%u bytes)", primary ? "primary" : "clipboard", text_size);
     }
     return queued;
 }
@@ -1019,9 +980,9 @@ void wd_clipboard_drain_and_apply(struct wd_server* server) {
     bool     have_clipboard      = false;
     bool     paste_requested     = false;
 
-    uint8_t* primary_text      = NULL;
-    uint32_t primary_text_size = 0;
-    bool     have_primary      = false;
+    uint8_t* primary_text        = NULL;
+    uint32_t primary_text_size   = 0;
+    bool     have_primary        = false;
     bool     clipboard_requested = false;
     bool     primary_requested   = false;
 
@@ -1049,8 +1010,8 @@ void wd_clipboard_drain_and_apply(struct wd_server* server) {
         have_primary                     = true;
     }
 
-    clipboard_requested = server->net.clipboard_request_pending;
-    primary_requested   = server->net.primary_request_pending;
+    clipboard_requested                   = server->net.clipboard_request_pending;
+    primary_requested                     = server->net.primary_request_pending;
     server->net.clipboard_request_pending = false;
     server->net.primary_request_pending   = false;
 

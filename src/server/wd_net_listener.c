@@ -10,10 +10,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-static bool wd_net_listener_fail(struct wd_net_listener* listener,
-                                 enum wd_net_listener_stage stage, int error_code,
-                                 enum wd_net_listener_stage* failed_stage,
-                                 int* out_error_code) {
+static bool wd_net_listener_fail(struct wd_net_listener* listener, enum wd_net_listener_stage stage, int error_code,
+                                 enum wd_net_listener_stage* failed_stage, int* out_error_code) {
     if (failed_stage)
     {
         *failed_stage = stage;
@@ -56,8 +54,7 @@ void wd_net_listener_close(struct wd_net_listener* listener) {
     wd_net_listener_init(listener);
 }
 
-bool wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_tcp_port,
-                          const struct in_addr* bind_address,
+bool wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_tcp_port, const struct in_addr* bind_address,
                           enum wd_net_listener_stage* failed_stage, int* error_code) {
     if (!listener)
     {
@@ -85,15 +82,13 @@ bool wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_t
     listener->listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (listener->listen_fd < 0)
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_SOCKET, errno,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_SOCKET, errno, failed_stage, error_code);
     }
 
     const int yes = 1;
     if (setsockopt(listener->listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0)
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_REUSEADDR, errno,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_REUSEADDR, errno, failed_stage, error_code);
     }
 
     struct in_addr selected_address;
@@ -111,40 +106,33 @@ bool wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_t
 
     if (bind(listener->listen_fd, (struct sockaddr*)&tcp_address, sizeof(tcp_address)) < 0)
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_BIND, errno,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_BIND, errno, failed_stage, error_code);
     }
 
     if (listen(listener->listen_fd, WD_NET_LISTEN_BACKLOG) < 0)
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_LISTEN, errno,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_LISTEN, errno, failed_stage, error_code);
     }
 
     socklen_t tcp_address_size = sizeof(tcp_address);
-    if (getsockname(listener->listen_fd, (struct sockaddr*)&tcp_address,
-                    &tcp_address_size) < 0)
+    if (getsockname(listener->listen_fd, (struct sockaddr*)&tcp_address, &tcp_address_size) < 0)
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_GETSOCKNAME, errno,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_GETSOCKNAME, errno, failed_stage, error_code);
     }
     if (tcp_address_size != sizeof(tcp_address))
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_GETSOCKNAME, EIO,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_GETSOCKNAME, EIO, failed_stage, error_code);
     }
     listener->tcp_port = ntohs(tcp_address.sin_port);
     if (listener->tcp_port == 0)
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_GETSOCKNAME, EIO,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_GETSOCKNAME, EIO, failed_stage, error_code);
     }
 
     listener->udp_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (listener->udp_fd < 0)
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_SOCKET, errno,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_SOCKET, errno, failed_stage, error_code);
     }
 
     struct sockaddr_in udp_address;
@@ -155,33 +143,27 @@ bool wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_t
 
     if (bind(listener->udp_fd, (struct sockaddr*)&udp_address, sizeof(udp_address)) < 0)
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_BIND, errno,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_BIND, errno, failed_stage, error_code);
     }
 
     socklen_t udp_address_size = sizeof(udp_address);
-    if (getsockname(listener->udp_fd, (struct sockaddr*)&udp_address,
-                    &udp_address_size) < 0)
+    if (getsockname(listener->udp_fd, (struct sockaddr*)&udp_address, &udp_address_size) < 0)
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_GETSOCKNAME, errno,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_GETSOCKNAME, errno, failed_stage, error_code);
     }
     if (udp_address_size != sizeof(udp_address))
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_GETSOCKNAME, EIO,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_GETSOCKNAME, EIO, failed_stage, error_code);
     }
     listener->udp_port = ntohs(udp_address.sin_port);
     if (listener->udp_port == 0)
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_GETSOCKNAME, EIO,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_GETSOCKNAME, EIO, failed_stage, error_code);
     }
 
     if (wd_set_nonblocking(listener->udp_fd) < 0)
     {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_NONBLOCK, errno,
-                                    failed_stage, error_code);
+        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_NONBLOCK, errno, failed_stage, error_code);
     }
 
     return true;

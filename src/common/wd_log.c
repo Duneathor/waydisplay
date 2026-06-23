@@ -8,12 +8,14 @@
 static const char* wd_log_level_name(enum wd_log_level level) {
     switch (level)
     {
-    case WD_LOG_LEVEL_ERROR:
-        return "error";
-    case WD_LOG_LEVEL_WARN:
-        return "warn";
     case WD_LOG_LEVEL_INFO:
         return "info";
+    case WD_LOG_LEVEL_WARN:
+        return "warn";
+    case WD_LOG_LEVEL_ERROR:
+        return "error";
+    case WD_LOG_LEVEL_STATS:
+        return "stats";
     case WD_LOG_LEVEL_DEBUG:
         return "debug";
     }
@@ -45,13 +47,12 @@ static bool wd_log_format_timestamp(char* buffer, size_t buffer_size) {
         return false;
     }
 
-    const int written = snprintf(buffer + date_length, buffer_size - date_length, ".%03ld",
-                                 now.tv_nsec / 1000000L);
+    const int written = snprintf(buffer + date_length, buffer_size - date_length, ".%03ld", now.tv_nsec / 1000000L);
     return written > 0 && (size_t)written < buffer_size - date_length;
 }
 
 void wd_log_message_va(enum wd_log_level level, const char* fmt, va_list args) {
-    char timestamp[32];
+    char       timestamp[32];
     const bool have_timestamp = wd_log_format_timestamp(timestamp, sizeof(timestamp));
 
     flockfile(stderr);

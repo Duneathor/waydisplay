@@ -28,11 +28,10 @@ struct wd_net_listener {
     uint16_t udp_port;
 };
 
-void wd_net_listener_init(struct wd_net_listener* listener);
-bool wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_tcp_port,
-                          const struct in_addr* bind_address,
-                          enum wd_net_listener_stage* failed_stage, int* error_code);
-void wd_net_listener_close(struct wd_net_listener* listener);
+void        wd_net_listener_init(struct wd_net_listener* listener);
+bool        wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_tcp_port, const struct in_addr* bind_address,
+                                 enum wd_net_listener_stage* failed_stage, int* error_code);
+void        wd_net_listener_close(struct wd_net_listener* listener);
 const char* wd_net_listener_stage_name(enum wd_net_listener_stage stage);
 
 #ifdef __cplusplus

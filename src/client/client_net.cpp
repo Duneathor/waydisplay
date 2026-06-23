@@ -1,24 +1,23 @@
 #include "client_net.hpp"
-#include "content_order.hpp"
 
 #include "client_async_tcp.hpp"
 #include "client_async_udp.hpp"
 #include "client_config_validation.hpp"
+#include "content_order.hpp"
 #include "video_decoder.hpp"
-
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
+#include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_selection.h"
 #include "waydisplay/wd_time.h"
-#include "waydisplay/wd_media_clock.h"
 
 #include <algorithm>
+#include <arpa/inet.h>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cmath>
-#include <arpa/inet.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -37,11 +36,10 @@ constexpr size_t MAX_RETRANSMIT_REQUEST_ENTRY_CAP =
     (MAX_TILE_REPAIR_REQUEST_PAYLOAD_BYTES - sizeof(wd_tile_repair_request_payload_header)) / sizeof(wd_tile_repair_entry);
 constexpr size_t MAX_RETRANSMIT_ENTRIES_PER_MESSAGE =
     MAX_RETRANSMIT_REQUEST_ENTRY_CAP > UINT16_MAX ? UINT16_MAX : MAX_RETRANSMIT_REQUEST_ENTRY_CAP;
-constexpr uint64_t RETRANSMIT_GRACE_MIN_NS            = WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS;
-constexpr uint64_t RETRANSMIT_GRACE_DEFAULT_NS        = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
-constexpr uint64_t RETRANSMIT_GRACE_MAX_NS            = WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS;
-constexpr uint64_t MTU_PROBE_SERVER_STARTUP_DELAY_NS =
-    WD_NET_PROBE_STARTUP_DELAY_MS * WD_NSEC_PER_MSEC;
+constexpr uint64_t RETRANSMIT_GRACE_MIN_NS           = WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS;
+constexpr uint64_t RETRANSMIT_GRACE_DEFAULT_NS       = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
+constexpr uint64_t RETRANSMIT_GRACE_MAX_NS           = WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS;
+constexpr uint64_t MTU_PROBE_SERVER_STARTUP_DELAY_NS = WD_NET_PROBE_STARTUP_DELAY_MS * WD_NSEC_PER_MSEC;
 
 const char* video_mode_name(uint8_t mode) {
     switch (mode)
@@ -102,19 +100,17 @@ uint64_t clamp_timer_ns(uint64_t ns, uint64_t min_ns, uint64_t max_ns) {
 }
 
 uint64_t udp_gap_pressure_ns(const ClientState& state) {
-    return clamp_timer_ns(state.udp_gap_pressure_ns.load(std::memory_order_relaxed),
-                          0, WD_LINK_RTT_MAX_NS);
+    return clamp_timer_ns(state.udp_gap_pressure_ns.load(std::memory_order_relaxed), 0, WD_LINK_RTT_MAX_NS);
 }
 
 uint64_t summary_retransmit_grace_ns(const ClientState& state) {
-    uint64_t grace_ns = clamp_timer_ns(state.summary_retransmit_grace_ns.load(std::memory_order_relaxed),
-                                       WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS);
-    uint64_t gap_ns = udp_gap_pressure_ns(state);
+    uint64_t grace_ns = clamp_timer_ns(state.summary_retransmit_grace_ns.load(std::memory_order_relaxed), WD_LINK_SUMMARY_GRACE_MIN_NS,
+                                       WD_LINK_SUMMARY_GRACE_MAX_NS);
+    uint64_t gap_ns   = udp_gap_pressure_ns(state);
     if (gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
     {
         uint64_t gap_grace_ns = gap_ns + WD_NET_CLIENT_GAP_GRACE_NS;
-        grace_ns = std::max(grace_ns, clamp_timer_ns(gap_grace_ns,
-                                                     WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS));
+        grace_ns = std::max(grace_ns, clamp_timer_ns(gap_grace_ns, WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS));
     }
     return grace_ns;
 }
@@ -122,41 +118,34 @@ uint64_t summary_retransmit_grace_ns(const ClientState& state) {
 uint64_t retransmit_rerequest_interval_ns(const ClientState& state) {
     uint64_t rerequest_ns = clamp_timer_ns(state.retransmit_rerequest_interval_ns.load(std::memory_order_relaxed),
                                            WD_LINK_RETRANSMIT_REREQUEST_MIN_NS, WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
-    uint64_t gap_ns = udp_gap_pressure_ns(state);
+    uint64_t gap_ns       = udp_gap_pressure_ns(state);
     if (gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
     {
-        rerequest_ns = std::max(rerequest_ns, clamp_timer_ns(gap_ns * 2ull,
-                                                            WD_LINK_RETRANSMIT_REREQUEST_MIN_NS,
-                                                            WD_LINK_RETRANSMIT_REREQUEST_MAX_NS));
+        rerequest_ns =
+            std::max(rerequest_ns, clamp_timer_ns(gap_ns * 2ull, WD_LINK_RETRANSMIT_REREQUEST_MIN_NS, WD_LINK_RETRANSMIT_REREQUEST_MAX_NS));
     }
     return rerequest_ns;
 }
 
 uint64_t retransmit_inflight_grace_ns_locked(const ClientState& state) {
-    uint64_t inflight_ns = clamp_timer_ns(state.retx_inflight_grace_ns,
-                                          WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS,
-                                          WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS);
+    uint64_t inflight_ns =
+        clamp_timer_ns(state.retx_inflight_grace_ns, WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS, WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS);
     uint64_t gap_ns = udp_gap_pressure_ns(state);
     if (gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
     {
-        inflight_ns = std::max(inflight_ns, clamp_timer_ns(gap_ns * 2ull,
-                                                          WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS,
-                                                          WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS));
+        inflight_ns =
+            std::max(inflight_ns, clamp_timer_ns(gap_ns * 2ull, WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS, WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS));
     }
     return inflight_ns;
 }
 
 uint64_t summary_clean_interval_ns_locked(const ClientState& state) {
-    return clamp_timer_ns(ms_to_ns(state.config.clean_summary_interval_ms,
-                                   WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS),
-                          WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS,
-                          WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS);
+    return clamp_timer_ns(ms_to_ns(state.config.clean_summary_interval_ms, WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS),
+                          WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS, WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS);
 }
 
 uint64_t large_summary_repair_grace_ns_locked(const ClientState& state) {
-    return std::max({summary_retransmit_grace_ns(state),
-                     retransmit_rerequest_interval_ns(state),
-                     summary_clean_interval_ns_locked(state)});
+    return std::max({summary_retransmit_grace_ns(state), retransmit_rerequest_interval_ns(state), summary_clean_interval_ns_locked(state)});
 }
 
 bool recent_concrete_repair_loss_signal(const ClientState& state, uint64_t now_ns) {
@@ -178,8 +167,8 @@ bool large_summary_repair_batch_locked(ClientState& state, uint16_t total_tiles,
     }
 
     const uint64_t large_grace_ns = large_summary_repair_grace_ns_locked(state);
-    const bool blocked = min_candidate_age_ns < large_grace_ns ||
-                         (state.summary_large_repair_not_before_ns != 0 && now_ns < state.summary_large_repair_not_before_ns);
+    const bool     blocked        = min_candidate_age_ns < large_grace_ns ||
+                                    (state.summary_large_repair_not_before_ns != 0 && now_ns < state.summary_large_repair_not_before_ns);
 
     if (blocked)
     {
@@ -196,23 +185,16 @@ bool large_summary_repair_batch_locked(ClientState& state, uint16_t total_tiles,
 }
 
 void apply_link_timers_from_config(ClientState& state, const wd_server_config_payload& config) {
-    const uint64_t summary_grace_ns = clamp_timer_ns(ms_to_ns(config.summary_retransmit_grace_ms,
-                                                              WD_LINK_SUMMARY_GRACE_DEFAULT_NS),
+    const uint64_t summary_grace_ns = clamp_timer_ns(ms_to_ns(config.summary_retransmit_grace_ms, WD_LINK_SUMMARY_GRACE_DEFAULT_NS),
                                                      WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS);
-    const uint64_t rerequest_ns = clamp_timer_ns(ms_to_ns(config.retransmit_rerequest_ms,
-                                                          WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS),
-                                                 WD_LINK_RETRANSMIT_REREQUEST_MIN_NS,
-                                                 WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
-    const uint64_t inflight_ns = clamp_timer_ns(ms_to_ns(config.retransmit_inflight_grace_ms,
-                                                         WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS),
-                                                WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS,
-                                                WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS);
-    const uint64_t reassembly_ns = clamp_timer_ns(ms_to_ns(config.tile_reassembly_timeout_ms,
-                                                           WD_LINK_TILE_REASSEMBLY_DEFAULT_NS),
-                                                  WD_LINK_TILE_REASSEMBLY_MIN_NS, WD_LINK_TILE_REASSEMBLY_MAX_NS);
+    const uint64_t rerequest_ns     = clamp_timer_ns(ms_to_ns(config.retransmit_rerequest_ms, WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS),
+                                                     WD_LINK_RETRANSMIT_REREQUEST_MIN_NS, WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
+    const uint64_t inflight_ns      = clamp_timer_ns(ms_to_ns(config.retransmit_inflight_grace_ms, WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS),
+                                                     WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS, WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS);
+    const uint64_t reassembly_ns    = clamp_timer_ns(ms_to_ns(config.tile_reassembly_timeout_ms, WD_LINK_TILE_REASSEMBLY_DEFAULT_NS),
+                                                     WD_LINK_TILE_REASSEMBLY_MIN_NS, WD_LINK_TILE_REASSEMBLY_MAX_NS);
     const uint64_t reassembly_floor_ns = clamp_timer_ns(std::max<uint64_t>(WD_LINK_TILE_REASSEMBLY_MIN_NS, reassembly_ns / 2),
-                                                        WD_LINK_TILE_REASSEMBLY_MIN_NS,
-                                                        WD_LINK_TILE_REASSEMBLY_MAX_NS);
+                                                        WD_LINK_TILE_REASSEMBLY_MIN_NS, WD_LINK_TILE_REASSEMBLY_MAX_NS);
 
     state.summary_retransmit_grace_ns.store(summary_grace_ns, std::memory_order_relaxed);
     state.retransmit_rerequest_interval_ns.store(rerequest_ns, std::memory_order_relaxed);
@@ -321,8 +303,7 @@ void log_udp_endpoint(const ClientState& state) {
 }
 
 ClientAsyncTcpSender* create_client_tcp_sender(const char* label) {
-    ClientAsyncTcpSender* sender = client_async_tcp_sender_create(WD_CLIENT_TCP_TX_RING_ENTRIES,
-                                                                  WD_CLIENT_TCP_TX_PENDING_BYTES);
+    ClientAsyncTcpSender* sender = client_async_tcp_sender_create(WD_CLIENT_TCP_TX_RING_ENTRIES, WD_CLIENT_TCP_TX_PENDING_BYTES);
     if (!sender)
     {
         WD_LOG_WARN("io_uring TCP sender unavailable for %s channel; using synchronous sends", label ? label : "unknown");
@@ -348,9 +329,8 @@ size_t client_async_udp_packet_bytes(const wd_server_config_payload& config) {
 }
 
 ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state, const wd_server_config_payload& config) {
-    const size_t packet_bytes = client_async_udp_packet_bytes(config);
-    ClientAsyncUdpReceiver* receiver = client_async_udp_receiver_create(state.udp_fd, WD_CLIENT_UDP_RX_RING_ENTRIES,
-                                                                        packet_bytes);
+    const size_t            packet_bytes = client_async_udp_packet_bytes(config);
+    ClientAsyncUdpReceiver* receiver     = client_async_udp_receiver_create(state.udp_fd, WD_CLIENT_UDP_RX_RING_ENTRIES, packet_bytes);
     if (!receiver)
     {
         if (state.udp_fd >= 0 && wd_set_nonblocking(state.udp_fd) < 0)
@@ -377,10 +357,9 @@ ClientAsyncUdpDetachResult destroy_client_udp_receiver(ClientState& state) {
         return ClientAsyncUdpDetachResult::Detached;
     }
 
-    ClientAsyncUdpReceiverStats final_stats{};
-    const ClientAsyncUdpStatsSeen before = state.udp_seen;
-    const ClientAsyncUdpDetachResult result =
-        client_async_udp_receiver_destroy(state.udp_receiver, &final_stats);
+    ClientAsyncUdpReceiverStats      final_stats{};
+    const ClientAsyncUdpStatsSeen    before = state.udp_seen;
+    const ClientAsyncUdpDetachResult result = client_async_udp_receiver_destroy(state.udp_receiver, &final_stats);
     if (result == ClientAsyncUdpDetachResult::Detached)
     {
         if (final_stats.posted >= before.posted)
@@ -403,8 +382,7 @@ ClientAsyncUdpDetachResult destroy_client_udp_receiver(ClientState& state) {
         }
         if (final_stats.submit_failed >= before.submit_failed)
         {
-            state.stats.udp_async_submit_failed.fetch_add(final_stats.submit_failed - before.submit_failed,
-                                                           std::memory_order_relaxed);
+            state.stats.udp_async_submit_failed.fetch_add(final_stats.submit_failed - before.submit_failed, std::memory_order_relaxed);
         }
         if (final_stats.cancels >= before.cancels)
         {
@@ -415,7 +393,7 @@ ClientAsyncUdpDetachResult destroy_client_udp_receiver(ClientState& state) {
         if (final_stats.accounting_errors >= before.accounting_errors)
         {
             state.stats.udp_async_accounting_errors.fetch_add(final_stats.accounting_errors - before.accounting_errors,
-                                                               std::memory_order_relaxed);
+                                                              std::memory_order_relaxed);
         }
         state.stats.udp_async_inflight_current.store(0, std::memory_order_relaxed);
         state.stats.udp_async_prepared_current.store(0, std::memory_order_relaxed);
@@ -444,8 +422,7 @@ ClientAsyncTcpSender* sender_for_fd(ClientState& state, int fd) {
     return nullptr;
 }
 
-bool client_send_tcp_message_queued(ClientState& state, int fd, uint16_t message_type, const void* payload,
-                                    uint32_t payload_size) {
+bool client_send_tcp_message_queued(ClientState& state, int fd, uint16_t message_type, const void* payload, uint32_t payload_size) {
     if (fd < 0)
     {
         return false;
@@ -492,10 +469,8 @@ void update_async_seen(ClientState& state, ClientAsyncTcpSender* sender, ClientA
     }
 
     uint64_t current_max = state.stats.tcp_async_inflight_max.load(std::memory_order_relaxed);
-    while (stats.inflight_max > current_max &&
-           !state.stats.tcp_async_inflight_max.compare_exchange_weak(current_max, stats.inflight_max,
-                                                                     std::memory_order_relaxed,
-                                                                     std::memory_order_relaxed))
+    while (stats.inflight_max > current_max && !state.stats.tcp_async_inflight_max.compare_exchange_weak(
+                                                   current_max, stats.inflight_max, std::memory_order_relaxed, std::memory_order_relaxed))
     {
     }
 
@@ -517,7 +492,7 @@ void update_async_udp_seen(ClientState& state) {
     }
 
     ClientAsyncUdpReceiverStats stats = client_async_udp_receiver_stats(state.udp_receiver);
-    ClientAsyncUdpStatsSeen& seen = state.udp_seen;
+    ClientAsyncUdpStatsSeen&    seen  = state.udp_seen;
     if (stats.posted >= seen.posted)
     {
         state.stats.udp_async_posted.fetch_add(stats.posted - seen.posted, std::memory_order_relaxed);
@@ -544,18 +519,15 @@ void update_async_udp_seen(ClientState& state) {
     }
     if (stats.accounting_errors >= seen.accounting_errors)
     {
-        state.stats.udp_async_accounting_errors.fetch_add(stats.accounting_errors - seen.accounting_errors,
-                                                           std::memory_order_relaxed);
+        state.stats.udp_async_accounting_errors.fetch_add(stats.accounting_errors - seen.accounting_errors, std::memory_order_relaxed);
     }
 
     state.stats.udp_async_inflight_current.store(stats.inflight, std::memory_order_relaxed);
     state.stats.udp_async_prepared_current.store(stats.prepared, std::memory_order_relaxed);
 
     uint64_t current_max = state.stats.udp_async_inflight_max.load(std::memory_order_relaxed);
-    while (stats.inflight_max > current_max &&
-           !state.stats.udp_async_inflight_max.compare_exchange_weak(current_max, stats.inflight_max,
-                                                                     std::memory_order_relaxed,
-                                                                     std::memory_order_relaxed))
+    while (stats.inflight_max > current_max && !state.stats.udp_async_inflight_max.compare_exchange_weak(
+                                                   current_max, stats.inflight_max, std::memory_order_relaxed, std::memory_order_relaxed))
     {
     }
 
@@ -701,7 +673,7 @@ bool open_input_tcp_socket(ClientState& state) {
     }
 
     wd_input_channel_hello_payload hello{};
-    hello.session_id = state.config.session_id;
+    hello.session_id       = state.config.session_id;
     hello.connection_token = state.config.connection_token;
 
     if (!wd_send_tcp_message(fd, WD_MSG_INPUT_CHANNEL_HELLO, &hello, sizeof(hello)))
@@ -710,7 +682,7 @@ bool open_input_tcp_socket(ClientState& state) {
         return false;
     }
 
-    state.input_tcp_fd = fd;
+    state.input_tcp_fd     = fd;
     state.input_tcp_sender = create_client_tcp_sender("input");
     log_tcp_channel_endpoint("input", state.input_tcp_fd);
     return true;
@@ -729,7 +701,7 @@ bool open_selection_tcp_socket(ClientState& state) {
     }
 
     wd_selection_channel_hello_payload hello{};
-    hello.session_id = state.config.session_id;
+    hello.session_id       = state.config.session_id;
     hello.connection_token = state.config.connection_token;
 
     if (!wd_send_tcp_message(fd, WD_MSG_SELECTION_CHANNEL_HELLO, &hello, sizeof(hello)))
@@ -738,7 +710,7 @@ bool open_selection_tcp_socket(ClientState& state) {
         return false;
     }
 
-    state.selection_tcp_fd = fd;
+    state.selection_tcp_fd     = fd;
     state.selection_tcp_sender = create_client_tcp_sender("selection");
     log_tcp_channel_endpoint("selection", state.selection_tcp_fd);
     return true;
@@ -757,10 +729,10 @@ bool open_video_tcp_socket(ClientState& state) {
     }
 
     wd_video_channel_hello_payload hello{};
-    hello.session_id      = state.config.session_id;
+    hello.session_id       = state.config.session_id;
     hello.connection_token = state.config.connection_token;
-    hello.video_codecs    = state.video_codecs;
-    hello.video_transport = state.video_transport;
+    hello.video_codecs     = state.video_codecs;
+    hello.video_transport  = state.video_transport;
 
     if (!wd_send_tcp_message(fd, WD_MSG_VIDEO_CHANNEL_HELLO, &hello, sizeof(hello)))
     {
@@ -791,10 +763,10 @@ bool open_audio_tcp_socket(ClientState& state) {
     }
 
     wd_audio_channel_hello_payload hello{};
-    hello.session_id = state.config.session_id;
+    hello.session_id       = state.config.session_id;
     hello.connection_token = state.config.connection_token;
-    hello.audio_codecs = state.audio_codec;
-    hello.audio_transport = state.audio_transport;
+    hello.audio_codecs     = state.audio_codec;
+    hello.audio_transport  = state.audio_transport;
 
     if (!wd_send_tcp_message(fd, WD_MSG_AUDIO_CHANNEL_HELLO, &hello, sizeof(hello)))
     {
@@ -864,7 +836,8 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
             continue;
         }
 
-        if (h.session_id != start.session_id || h.connection_token != start.connection_token || h.tile_pkt_count != start.probe_count || h.tile_pkt_id >= start.probe_count)
+        if (h.session_id != start.session_id || h.connection_token != start.connection_token || h.tile_pkt_count != start.probe_count ||
+            h.tile_pkt_id >= start.probe_count)
         {
             continue;
         }
@@ -879,8 +852,8 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
             continue;
         }
 
-        const uint64_t rx_ns = wd_now_ns();
-        uint64_t offset_ns  = rx_ns - start_ns;
+        const uint64_t rx_ns     = wd_now_ns();
+        uint64_t       offset_ns = rx_ns - start_ns;
         if (offset_ns > MTU_PROBE_SERVER_STARTUP_DELAY_NS)
         {
             offset_ns -= MTU_PROBE_SERVER_STARTUP_DELAY_NS;
@@ -910,7 +883,7 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
         }
         variance_ns /= static_cast<double>(probe_offsets_ns.size());
 
-        const double stddev_ns = std::sqrt(variance_ns);
+        const double stddev_ns       = std::sqrt(variance_ns);
         state.retx_inflight_grace_ns = clamp_retransmit_grace_ns(static_cast<uint64_t>(mean_ns + 2.0 * stddev_ns));
     }
     else
@@ -947,11 +920,11 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
 
     const bool duration_limited = start.probe_count == UINT8_MAX;
 
-    uint64_t bytes_received = 0;
-    uint32_t packets_received = 0;
-    const uint64_t start_ns = wd_now_ns();
-    const uint64_t deadline_ns = start_ns + (static_cast<uint64_t>(start.duration_ms) +
-                                  WD_NET_THROUGHPUT_DEADLINE_PADDING_MS) * WD_NSEC_PER_MSEC;
+    uint64_t       bytes_received   = 0;
+    uint32_t       packets_received = 0;
+    const uint64_t start_ns         = wd_now_ns();
+    const uint64_t deadline_ns =
+        start_ns + (static_cast<uint64_t>(start.duration_ms) + WD_NET_THROUGHPUT_DEADLINE_PADDING_MS) * WD_NSEC_PER_MSEC;
 
     std::vector<uint8_t> recvbuf(WD_UDP_TILE_HEADER_MAX_SIZE + UINT16_MAX);
 
@@ -991,7 +964,8 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
             continue;
         }
 
-        if (h.session_id != start.session_id || h.connection_token != start.connection_token || h.tile_pkt_count != start.probe_count || h.tile_pkt_id >= start.probe_count)
+        if (h.session_id != start.session_id || h.connection_token != start.connection_token || h.tile_pkt_count != start.probe_count ||
+            h.tile_pkt_id >= start.probe_count)
         {
             continue;
         }
@@ -1039,51 +1013,46 @@ bool handle_link_probe_ping(ClientState& state, const uint8_t* payload, uint32_t
 
 bool receive_server_config(ClientState& state) {
     wd_client_hello_payload hello{};
-    hello.client_udp_port      = state.client_udp_port;
-    hello.requested_capture_fps                  = state.stream_config.target_fps;
-    hello.desired_width               = state.desired_width;
-    hello.desired_height              = state.desired_height;
-    hello.limited_udp_kib_per_second  = state.stream_config.limited_udp_kib_per_second;
-    const bool video_allowed = state.stream_config.video_mode != WD_VIDEO_MODE_OFF;
-    const uint32_t supported_video_codecs = client_video_decoder_supported_codecs(state.video_decoder);
-    const uint32_t requested_video_codecs = state.stream_config.video_codec_mask &
-                                           (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265);
+    hello.client_udp_port                  = state.client_udp_port;
+    hello.requested_capture_fps            = state.stream_config.target_fps;
+    hello.desired_width                    = state.desired_width;
+    hello.desired_height                   = state.desired_height;
+    hello.limited_udp_kib_per_second       = state.stream_config.limited_udp_kib_per_second;
+    const bool     video_allowed           = state.stream_config.video_mode != WD_VIDEO_MODE_OFF;
+    const uint32_t supported_video_codecs  = client_video_decoder_supported_codecs(state.video_decoder);
+    const uint32_t requested_video_codecs  = state.stream_config.video_codec_mask & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265);
     const uint32_t advertised_video_codecs = video_allowed ? (supported_video_codecs & requested_video_codecs) : 0;
-    const bool video_decoder_available = advertised_video_codecs != 0;
-    const bool audio_available = !state.stream_config.disable_audio &&
-                                 state.audio_playback && client_audio_playback_available();
-    hello.capabilities                = video_decoder_available ? WD_CLIENT_CAP_VIDEO_STREAM : 0;
+    const bool     video_decoder_available = advertised_video_codecs != 0;
+    const bool     audio_available = !state.stream_config.disable_audio && state.audio_playback && client_audio_playback_available();
+    hello.capabilities             = video_decoder_available ? WD_CLIENT_CAP_VIDEO_STREAM : 0;
     if (audio_available)
     {
         hello.capabilities |= WD_CLIENT_CAP_AUDIO_STREAM;
-        hello.audio_codecs = WD_AUDIO_CODEC_OPUS;
-        hello.audio_transport = WD_AUDIO_TRANSPORT_TCP;
-        hello.audio_max_channels = WD_AUDIO_CHANNELS_MAX;
+        hello.audio_codecs            = WD_AUDIO_CODEC_OPUS;
+        hello.audio_transport         = WD_AUDIO_TRANSPORT_TCP;
+        hello.audio_max_channels      = WD_AUDIO_CHANNELS_MAX;
         hello.audio_target_latency_ms = WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
     }
-    hello.video_codecs                = advertised_video_codecs;
-    hello.video_transport             = video_decoder_available ? WD_VIDEO_TRANSPORT_TCP : 0;
-    hello.video_mode                  = state.stream_config.video_mode;
-    hello.video_min_dirty_percent     = state.stream_config.video_min_dirty_percent;
-    hello.video_enter_seconds         = state.stream_config.video_enter_seconds;
+    hello.video_codecs                 = advertised_video_codecs;
+    hello.video_transport              = video_decoder_available ? WD_VIDEO_TRANSPORT_TCP : 0;
+    hello.video_mode                   = state.stream_config.video_mode;
+    hello.video_min_dirty_percent      = state.stream_config.video_min_dirty_percent;
+    hello.video_enter_seconds          = state.stream_config.video_enter_seconds;
     hello.video_bitrate_kib_per_second = state.stream_config.video_bitrate_kib_per_second;
-    hello.video_exit_dirty_percent      = state.stream_config.video_exit_dirty_percent;
-    hello.video_exit_seconds            = state.stream_config.video_exit_seconds;
+    hello.video_exit_dirty_percent     = state.stream_config.video_exit_dirty_percent;
+    hello.video_exit_seconds           = state.stream_config.video_exit_seconds;
 
-    WD_LOG_INFO("video mode control: mode=%s codec=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u hwdecode=%s decoder=%s",
-                video_mode_name(state.stream_config.video_mode),
-                video_codec_name(requested_video_codecs),
-                static_cast<unsigned>(state.stream_config.video_bitrate_kib_per_second),
-                static_cast<unsigned>(state.stream_config.video_min_dirty_percent),
-                static_cast<unsigned>(state.stream_config.video_enter_seconds),
-                static_cast<unsigned>(state.stream_config.video_exit_dirty_percent),
-                static_cast<unsigned>(state.stream_config.video_exit_seconds),
-                video_hwdecode_mode_name(state.stream_config.video_hwdecode_mode),
-                video_decoder_available ? "yes" : "no");
+    WD_LOG_INFO(
+        "video mode control: mode=%s codec=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u "
+        "hwdecode=%s decoder=%s",
+        video_mode_name(state.stream_config.video_mode), video_codec_name(requested_video_codecs),
+        static_cast<unsigned>(state.stream_config.video_bitrate_kib_per_second),
+        static_cast<unsigned>(state.stream_config.video_min_dirty_percent), static_cast<unsigned>(state.stream_config.video_enter_seconds),
+        static_cast<unsigned>(state.stream_config.video_exit_dirty_percent), static_cast<unsigned>(state.stream_config.video_exit_seconds),
+        video_hwdecode_mode_name(state.stream_config.video_hwdecode_mode), video_decoder_available ? "yes" : "no");
     WD_LOG_INFO("audio mode: requested=%s backend=%s codec=%s transport=%s target_latency_ms=%u",
-                state.stream_config.disable_audio ? "disabled" : "enabled",
-                client_audio_playback_backend_name(), audio_available ? "opus" : "none",
-                audio_available ? "tcp" : "none", WD_AUDIO_TARGET_LATENCY_MS_DEFAULT);
+                state.stream_config.disable_audio ? "disabled" : "enabled", client_audio_playback_backend_name(),
+                audio_available ? "opus" : "none", audio_available ? "tcp" : "none", WD_AUDIO_TARGET_LATENCY_MS_DEFAULT);
 
     if (!wd_send_tcp_message(state.tcp_fd, WD_MSG_CLIENT_HELLO, &hello, sizeof(hello)))
     {
@@ -1161,53 +1130,44 @@ bool receive_server_config(ClientState& state) {
     if (!client_normalize_and_validate_server_config(state.config, &config_error))
     {
         WD_LOG_ERROR("invalid or unsupported server config: reason=%s display=%ux%u tile=%ux%u grid=%ux%u total=%u udp=%u",
-                     client_config_validation_error_name(config_error), state.config.width, state.config.height,
-                     state.config.tile_width, state.config.tile_height, state.config.tiles_x, state.config.tiles_y,
-                     state.config.total_tiles, state.config.udp_payload_target);
+                     client_config_validation_error_name(config_error), state.config.width, state.config.height, state.config.tile_width,
+                     state.config.tile_height, state.config.tiles_x, state.config.tiles_y, state.config.total_tiles,
+                     state.config.udp_payload_target);
         return false;
     }
 
     apply_link_timers_from_config(state, state.config);
-    state.media_clock_id = state.config.media_clock_id;
+    state.media_clock_id              = state.config.media_clock_id;
     state.media_clock_local_origin_ns = wd_now_ns();
 
     state.video_stream_negotiated = (state.config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0 &&
                                     (state.config.video_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) != 0 &&
                                     state.config.video_transport == WD_VIDEO_TRANSPORT_TCP;
-    state.video_codecs = state.video_stream_negotiated ? state.config.video_codecs : 0;
-    state.video_transport = state.video_stream_negotiated ? state.config.video_transport : 0;
-    state.audio_stream_negotiated = !state.stream_config.disable_audio &&
-                                    (state.config.capabilities & WD_SERVER_CAP_AUDIO_STREAM) != 0 &&
+    state.video_codecs            = state.video_stream_negotiated ? state.config.video_codecs : 0;
+    state.video_transport         = state.video_stream_negotiated ? state.config.video_transport : 0;
+    state.audio_stream_negotiated = !state.stream_config.disable_audio && (state.config.capabilities & WD_SERVER_CAP_AUDIO_STREAM) != 0 &&
                                     state.config.audio_codec == WD_AUDIO_CODEC_OPUS &&
-                                    state.config.audio_transport == WD_AUDIO_TRANSPORT_TCP &&
-                                    state.audio_playback != nullptr;
-    state.audio_codec = state.audio_stream_negotiated ? state.config.audio_codec : 0;
-    state.audio_transport = state.audio_stream_negotiated ? state.config.audio_transport : 0;
-    state.audio_channels = state.audio_stream_negotiated ? state.config.audio_channels : 0;
-    state.audio_target_latency_ms = state.audio_stream_negotiated
-                                        ? state.config.audio_target_latency_ms : 0;
+                                    state.config.audio_transport == WD_AUDIO_TRANSPORT_TCP && state.audio_playback != nullptr;
+    state.audio_codec             = state.audio_stream_negotiated ? state.config.audio_codec : 0;
+    state.audio_transport         = state.audio_stream_negotiated ? state.config.audio_transport : 0;
+    state.audio_channels          = state.audio_stream_negotiated ? state.config.audio_channels : 0;
+    state.audio_target_latency_ms = state.audio_stream_negotiated ? state.config.audio_target_latency_ms : 0;
 
     WD_LOG_INFO("UDP payload target: %u", state.config.udp_payload_target);
-    WD_LOG_INFO("video stream negotiation: %s codec=%s transport=%s",
-                state.video_stream_negotiated ? "enabled" : "unavailable",
+    WD_LOG_INFO("video stream negotiation: %s codec=%s transport=%s", state.video_stream_negotiated ? "enabled" : "unavailable",
                 state.video_stream_negotiated ? video_codec_name(state.video_codecs) : "none",
                 state.video_stream_negotiated ? "tcp" : "none");
     WD_LOG_INFO("audio stream negotiation: %s codec=%s transport=%s rate=%u channels=%u target_latency_ms=%u",
-                state.audio_stream_negotiated ? "enabled" :
-                    (state.stream_config.disable_audio ? "disabled by client" : "unavailable"),
-                state.audio_stream_negotiated ? "opus" : "none",
-                state.audio_stream_negotiated ? "tcp" : "none",
-                state.audio_stream_negotiated ? state.config.audio_sample_rate : 0,
-                state.audio_channels, state.audio_target_latency_ms);
+                state.audio_stream_negotiated ? "enabled" : (state.stream_config.disable_audio ? "disabled by client" : "unavailable"),
+                state.audio_stream_negotiated ? "opus" : "none", state.audio_stream_negotiated ? "tcp" : "none",
+                state.audio_stream_negotiated ? state.config.audio_sample_rate : 0, state.audio_channels, state.audio_target_latency_ms);
     WD_LOG_INFO("link timers: rtt=%ums summary_grace=%ums rerequest=%ums inflight=%ums reassembly=%ums summary_delta=%u/%ums",
-                state.config.link_rtt_ms, state.config.summary_retransmit_grace_ms,
-                state.config.retransmit_rerequest_ms, state.config.retransmit_inflight_grace_ms,
-                state.config.tile_reassembly_timeout_ms, state.config.active_summary_interval_ms,
+                state.config.link_rtt_ms, state.config.summary_retransmit_grace_ms, state.config.retransmit_rerequest_ms,
+                state.config.retransmit_inflight_grace_ms, state.config.tile_reassembly_timeout_ms, state.config.active_summary_interval_ms,
                 state.config.clean_summary_interval_ms);
 
     return true;
 }
-
 
 struct SummaryRepairCandidate {
     uint16_t tile_id;
@@ -1262,19 +1222,17 @@ void ensure_retransmit_tracking_locked(ClientState& state, uint16_t total_tiles)
 }
 
 void clear_summary_pending_locked(ClientState& state, uint16_t tile_id) {
-    if (tile_id >= state.retx_summary_pending_generation.size() ||
-        tile_id >= state.retx_summary_pending_since_ns.size() ||
+    if (tile_id >= state.retx_summary_pending_generation.size() || tile_id >= state.retx_summary_pending_since_ns.size() ||
         tile_id >= state.retx_summary_pending_position.size())
     {
         return;
     }
 
-    (void)summary_pending_index_remove(state.retx_summary_pending_tiles,
-                                       state.retx_summary_pending_position, tile_id);
+    (void)summary_pending_index_remove(state.retx_summary_pending_tiles, state.retx_summary_pending_position, tile_id);
 
     state.retx_summary_pending_generation[tile_id] = 0;
-    state.retx_summary_pending_since_ns[tile_id] = 0;
-    state.retx_summary_pending_count = static_cast<uint32_t>(state.retx_summary_pending_tiles.size());
+    state.retx_summary_pending_since_ns[tile_id]   = 0;
+    state.retx_summary_pending_count               = static_cast<uint32_t>(state.retx_summary_pending_tiles.size());
 }
 
 void schedule_summary_pending_due_locked(ClientState& state, uint16_t tile_id, uint64_t generation, uint64_t due_ns) {
@@ -1283,23 +1241,20 @@ void schedule_summary_pending_due_locked(ClientState& state, uint16_t tile_id, u
 
 void set_summary_pending_locked(ClientState& state, uint16_t tile_id, uint64_t generation, uint64_t now_ns) {
     if (generation == 0 || tile_id >= state.retx_summary_pending_generation.size() ||
-        tile_id >= state.retx_summary_pending_since_ns.size() ||
-        tile_id >= state.retx_summary_pending_position.size() ||
+        tile_id >= state.retx_summary_pending_since_ns.size() || tile_id >= state.retx_summary_pending_position.size() ||
         state.retx_summary_pending_generation[tile_id] >= generation)
     {
         return;
     }
 
-    if (!summary_pending_index_add(state.retx_summary_pending_tiles,
-                                   state.retx_summary_pending_position, tile_id))
+    if (!summary_pending_index_add(state.retx_summary_pending_tiles, state.retx_summary_pending_position, tile_id))
     {
         return;
     }
     state.retx_summary_pending_generation[tile_id] = generation;
-    state.retx_summary_pending_since_ns[tile_id] = now_ns;
-    const uint64_t grace_ns = summary_retransmit_grace_ns(state);
-    schedule_summary_pending_due_locked(state, tile_id, generation,
-                                        now_ns > UINT64_MAX - grace_ns ? UINT64_MAX : now_ns + grace_ns);
+    state.retx_summary_pending_since_ns[tile_id]   = now_ns;
+    const uint64_t grace_ns                        = summary_retransmit_grace_ns(state);
+    schedule_summary_pending_due_locked(state, tile_id, generation, now_ns > UINT64_MAX - grace_ns ? UINT64_MAX : now_ns + grace_ns);
     state.retx_summary_pending_count = static_cast<uint32_t>(state.retx_summary_pending_tiles.size());
 }
 
@@ -1309,8 +1264,8 @@ bool client_repair_pressure_high_locked(const ClientState& state, uint16_t total
         return false;
     }
 
-    const uint64_t pressure_tiles = std::max<uint64_t>(WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES,
-                                                       (uint64_t)total_tiles * WD_CLIENT_REPAIR_PRESSURE_PERCENT / 100ull);
+    const uint64_t pressure_tiles =
+        std::max<uint64_t>(WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES, (uint64_t)total_tiles * WD_CLIENT_REPAIR_PRESSURE_PERCENT / 100ull);
     return state.retx_queue.size() >= pressure_tiles || state.retx_summary_pending_count >= pressure_tiles;
 }
 
@@ -1371,8 +1326,8 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
     const uint64_t now_ns = wd_now_ns();
 
-    if (!wd_counted_payload_size_is_valid(payload_size, sizeof(wd_tile_summary_payload_header),
-                                             summary.tile_count, sizeof(wd_tile_generation_entry)) ||
+    if (!wd_counted_payload_size_is_valid(payload_size, sizeof(wd_tile_summary_payload_header), summary.tile_count,
+                                          sizeof(wd_tile_generation_entry)) ||
         (summary.flags & ~WD_TILE_SUMMARY_FLAG_MASK) != 0)
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
@@ -1396,8 +1351,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
         return;
     }
 
-    if (client_accept_content_epoch(state, summary.content_epoch, ClientContentOwner::Tiles) ==
-        ClientContentEpochDecision::Stale)
+    if (client_accept_content_epoch(state, summary.content_epoch, ClientContentOwner::Tiles) == ClientContentEpochDecision::Stale)
     {
         return;
     }
@@ -1413,7 +1367,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
         ensure_retransmit_tracking_locked(state, total_tiles);
 
-        uint64_t newly_deferred_from_summary = 0;
+        uint64_t                            newly_deferred_from_summary = 0;
         std::vector<SummaryRepairCandidate> candidates;
         candidates.reserve(summary.tile_count);
         uint64_t min_candidate_age_ns = UINT64_MAX;
@@ -1478,7 +1432,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             }
 
             const uint64_t candidate_age_ns = pending_since_ns != 0 && now_ns >= pending_since_ns ? now_ns - pending_since_ns : 0;
-            min_candidate_age_ns = std::min(min_candidate_age_ns, candidate_age_ns);
+            min_candidate_age_ns            = std::min(min_candidate_age_ns, candidate_age_ns);
             candidates.push_back({entry.tile_id, entry.tile_generation, pending_since_ns});
         }
 
@@ -1503,8 +1457,8 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
             return;
         }
 
-        uint64_t newly_queued_from_summary = 0;
-        uint64_t summary_to_retx_local_sum_ns = 0;
+        uint64_t newly_queued_from_summary     = 0;
+        uint64_t summary_to_retx_local_sum_ns  = 0;
         uint64_t summary_to_retx_local_samples = 0;
 
         for (const SummaryRepairCandidate& candidate : candidates)
@@ -1533,7 +1487,6 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
     }
 }
 
-
 void promote_deferred_summary_retransmits_locked(ClientState& state) {
     std::lock_guard<std::mutex> config_lock(state.config_mutex);
     std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
@@ -1552,10 +1505,10 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
     }
 
     state.stats.summary_promote_passes.fetch_add(1, std::memory_order_relaxed);
-    const uint64_t now_ns = wd_now_ns();
+    const uint64_t                      now_ns = wd_now_ns();
     std::vector<SummaryRepairCandidate> candidates;
-    uint64_t min_candidate_age_ns = UINT64_MAX;
-    uint64_t scanned = 0;
+    uint64_t                            min_candidate_age_ns = UINT64_MAX;
+    uint64_t                            scanned              = 0;
 
     while (!state.retx_summary_due_queue.empty() && state.retx_summary_due_queue.front().due_ns <= now_ns)
     {
@@ -1563,8 +1516,7 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
         state.retx_summary_due_queue.pop_front();
         scanned++;
 
-        if (due.tile_id >= total_tiles ||
-            state.retx_summary_pending_generation[due.tile_id] != due.generation)
+        if (due.tile_id >= total_tiles || state.retx_summary_pending_generation[due.tile_id] != due.generation)
         {
             continue;
         }
@@ -1583,20 +1535,20 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
         }
 
         uint64_t retry_due_ns = 0;
-        if (state.retx_inflight_generation[due.tile_id] >= due.generation &&
-            state.retx_inflight_since_ns[due.tile_id] != 0)
+        if (state.retx_inflight_generation[due.tile_id] >= due.generation && state.retx_inflight_since_ns[due.tile_id] != 0)
         {
             const uint64_t grace_ns = retransmit_inflight_grace_ns_locked(state);
-            retry_due_ns = state.retx_inflight_since_ns[due.tile_id] > UINT64_MAX - grace_ns ?
-                               UINT64_MAX : state.retx_inflight_since_ns[due.tile_id] + grace_ns;
+            retry_due_ns            = state.retx_inflight_since_ns[due.tile_id] > UINT64_MAX - grace_ns
+                                          ? UINT64_MAX
+                                          : state.retx_inflight_since_ns[due.tile_id] + grace_ns;
         }
-        if (state.retx_last_requested_generation[due.tile_id] >= due.generation &&
-            state.retx_last_request_ns[due.tile_id] != 0)
+        if (state.retx_last_requested_generation[due.tile_id] >= due.generation && state.retx_last_request_ns[due.tile_id] != 0)
         {
-            const uint64_t rerequest_ns = retransmit_rerequest_interval_ns(state);
-            const uint64_t request_due_ns = state.retx_last_request_ns[due.tile_id] > UINT64_MAX - rerequest_ns ?
-                                                UINT64_MAX : state.retx_last_request_ns[due.tile_id] + rerequest_ns;
-            retry_due_ns = std::max(retry_due_ns, request_due_ns);
+            const uint64_t rerequest_ns   = retransmit_rerequest_interval_ns(state);
+            const uint64_t request_due_ns = state.retx_last_request_ns[due.tile_id] > UINT64_MAX - rerequest_ns
+                                                ? UINT64_MAX
+                                                : state.retx_last_request_ns[due.tile_id] + rerequest_ns;
+            retry_due_ns                  = std::max(retry_due_ns, request_due_ns);
         }
         if (retry_due_ns > now_ns)
         {
@@ -1605,7 +1557,7 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
         }
 
         const uint64_t candidate_age_ns = now_ns >= since_ns ? now_ns - since_ns : 0;
-        min_candidate_age_ns = std::min(min_candidate_age_ns, candidate_age_ns);
+        min_candidate_age_ns            = std::min(min_candidate_age_ns, candidate_age_ns);
         candidates.push_back({due.tile_id, due.generation, since_ns});
     }
 
@@ -1617,11 +1569,9 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
 
     state.stats.summary_promote_candidates.fetch_add(candidates.size(), std::memory_order_relaxed);
 
-    if (client_repair_pressure_high_locked(state, total_tiles) &&
-        candidates.size() > WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES)
+    if (client_repair_pressure_high_locked(state, total_tiles) && candidates.size() > WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES)
     {
-        std::sort(candidates.begin(), candidates.end(), [](const SummaryRepairCandidate& a,
-                                                           const SummaryRepairCandidate& b) {
+        std::sort(candidates.begin(), candidates.end(), [](const SummaryRepairCandidate& a, const SummaryRepairCandidate& b) {
             if (a.pending_since_ns != b.pending_since_ns)
             {
                 return a.pending_since_ns < b.pending_since_ns;
@@ -1634,15 +1584,13 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
             schedule_summary_pending_due_locked(state, candidates[i].tile_id, candidates[i].generation,
                                                 now_ns + WD_NET_CLIENT_REPAIR_RETRY_MIN_NS);
         }
-        state.stats.summary_retx_pressure_dropped.fetch_add(candidates.size() - keep,
-                                                            std::memory_order_relaxed);
+        state.stats.summary_retx_pressure_dropped.fetch_add(candidates.size() - keep, std::memory_order_relaxed);
         candidates.resize(keep);
     }
 
     if (large_summary_repair_batch_locked(state, total_tiles, candidates.size(), min_candidate_age_ns, now_ns, true))
     {
-        const uint64_t retry_ns = std::max<uint64_t>(now_ns + WD_NET_CLIENT_REPAIR_RETRY_MIN_NS,
-                                                     state.summary_large_repair_not_before_ns);
+        const uint64_t retry_ns = std::max<uint64_t>(now_ns + WD_NET_CLIENT_REPAIR_RETRY_MIN_NS, state.summary_large_repair_not_before_ns);
         for (const SummaryRepairCandidate& candidate : candidates)
         {
             schedule_summary_pending_due_locked(state, candidate.tile_id, candidate.generation, retry_ns);
@@ -1650,8 +1598,8 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
         return;
     }
 
-    uint64_t newly_queued = 0;
-    uint64_t summary_to_retx_local_sum_ns = 0;
+    uint64_t newly_queued                  = 0;
+    uint64_t summary_to_retx_local_sum_ns  = 0;
     uint64_t summary_to_retx_local_samples = 0;
 
     for (const SummaryRepairCandidate& candidate : candidates)
@@ -1679,10 +1627,10 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
     }
 }
 
-bool selection_payload_to_string(const uint8_t* payload, uint32_t payload_size, uint8_t expected_session_id, uint64_t expected_connection_token, std::string& out) {
+bool selection_payload_to_string(const uint8_t* payload, uint32_t payload_size, uint8_t expected_session_id,
+                                 uint64_t expected_connection_token, std::string& out) {
     wd_selection_text_view view{};
-    if (!wd_selection_payload_decode(payload, payload_size, expected_session_id,
-                                     expected_connection_token, &view))
+    if (!wd_selection_payload_decode(payload, payload_size, expected_session_id, expected_connection_token, &view))
     {
         return false;
     }
@@ -1692,11 +1640,11 @@ bool selection_payload_to_string(const uint8_t* payload, uint32_t payload_size, 
 }
 
 void store_selection_text(ClientState& state, const uint8_t* payload, uint32_t payload_size, bool primary) {
-    uint8_t session_id = 0;
+    uint8_t  session_id       = 0;
     uint64_t connection_token = 0;
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
-        session_id = state.config.session_id;
+        session_id       = state.config.session_id;
         connection_token = state.config.connection_token;
     }
 
@@ -1728,11 +1676,11 @@ void store_cursor_shape(ClientState& state, const uint8_t* payload, uint32_t pay
     wd_cursor_shape_payload cursor{};
     std::memcpy(&cursor, payload, sizeof(cursor));
 
-    uint8_t session_id = 0;
+    uint8_t  session_id       = 0;
     uint64_t connection_token = 0;
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
-        session_id = state.config.session_id;
+        session_id       = state.config.session_id;
         connection_token = state.config.connection_token;
     }
 
@@ -1744,19 +1692,18 @@ void store_cursor_shape(ClientState& state, const uint8_t* payload, uint32_t pay
     }
 }
 
-
 void discard_pending_video_frame(ClientState& state) {
     bool wake_render = false;
     {
         std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
         std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
-        const uint64_t tile_epoch = state.stream_ownership.end_video_stream();
+        const uint64_t              tile_epoch = state.stream_ownership.end_video_stream();
         state.video_present_queue.clear();
         state.pending_video_frame_dirty.store(false, std::memory_order_release);
         if (state.pending_dirty_tiles.dirty_tile_count() != 0)
         {
             state.pending_dirty_epoch = tile_epoch;
-            wake_render = true;
+            wake_render               = true;
         }
     }
     if (wake_render)
@@ -1765,12 +1712,11 @@ void discard_pending_video_frame(ClientState& state) {
     }
 }
 
-void reset_video_decoder(ClientState& state, const char* reason,
-                         ClientVideoPhase next_phase = ClientVideoPhase::AwaitingKeyframe) {
+void reset_video_decoder(ClientState& state, const char* reason, ClientVideoPhase next_phase = ClientVideoPhase::AwaitingKeyframe) {
     std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
     client_video_decoder_reset(state.video_decoder);
     state.video_decoder_needs_keyframe = next_phase != ClientVideoPhase::Video;
-    state.video_phase = next_phase;
+    state.video_phase                  = next_phase;
     state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
     state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
     state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
@@ -1793,34 +1739,33 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
     if (!client_normalize_and_validate_server_config(config, &config_error))
     {
         WD_LOG_ERROR("ignoring invalid server config update: reason=%s display=%ux%u tile=%ux%u grid=%ux%u total=%u udp=%u",
-                     client_config_validation_error_name(config_error), config.width, config.height,
-                     config.tile_width, config.tile_height, config.tiles_x, config.tiles_y,
-                     config.total_tiles, config.udp_payload_target);
+                     client_config_validation_error_name(config_error), config.width, config.height, config.tile_width, config.tile_height,
+                     config.tiles_x, config.tiles_y, config.total_tiles, config.udp_payload_target);
         return;
     }
 
     apply_link_timers_from_config(state, config);
 
-    const bool new_video_stream_negotiated = (config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0 &&
-                                             (config.video_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) != 0 &&
-                                             config.video_transport == WD_VIDEO_TRANSPORT_TCP;
-    const uint32_t new_video_codecs = new_video_stream_negotiated ? config.video_codecs : 0;
-    const uint16_t new_video_transport = new_video_stream_negotiated ? config.video_transport : 0;
+    const bool     new_video_stream_negotiated = (config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0 &&
+                                                 (config.video_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) != 0 &&
+                                                 config.video_transport == WD_VIDEO_TRANSPORT_TCP;
+    const uint32_t new_video_codecs            = new_video_stream_negotiated ? config.video_codecs : 0;
+    const uint16_t new_video_transport         = new_video_stream_negotiated ? config.video_transport : 0;
 
     bool reset_video = false;
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
-        const bool same_connection = state.config.session_id == config.session_id &&
-                                     state.config.connection_token == config.connection_token;
-        uint64_t newest_config_epoch = same_connection ? state.config.config_epoch : 0;
-        const wd_server_config_payload* same_epoch_config = same_connection ? &state.config : nullptr;
+        const bool                  same_connection =
+            state.config.session_id == config.session_id && state.config.connection_token == config.connection_token;
+        uint64_t                        newest_config_epoch = same_connection ? state.config.config_epoch : 0;
+        const wd_server_config_payload* same_epoch_config   = same_connection ? &state.config : nullptr;
         if (state.pending_config_valid && state.pending_config.session_id == config.session_id &&
             state.pending_config.connection_token == config.connection_token)
         {
             if (state.pending_config.config_epoch > newest_config_epoch)
             {
                 newest_config_epoch = state.pending_config.config_epoch;
-                same_epoch_config = &state.pending_config;
+                same_epoch_config   = &state.pending_config;
             }
             else if (state.pending_config.config_epoch == newest_config_epoch)
             {
@@ -1829,30 +1774,27 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
         }
         if (config.config_epoch < newest_config_epoch)
         {
-            WD_LOG_DEBUG("ignoring stale server config epoch=%llu newest=%llu",
-                         static_cast<unsigned long long>(config.config_epoch),
+            WD_LOG_DEBUG("ignoring stale server config epoch=%llu newest=%llu", static_cast<unsigned long long>(config.config_epoch),
                          static_cast<unsigned long long>(newest_config_epoch));
             return;
         }
-        if (config.config_epoch == newest_config_epoch && same_epoch_config &&
-            std::memcmp(same_epoch_config, &config, sizeof(config)) != 0)
+        if (config.config_epoch == newest_config_epoch && same_epoch_config && std::memcmp(same_epoch_config, &config, sizeof(config)) != 0)
         {
-            WD_LOG_ERROR("rejecting conflicting server config epoch=%llu",
-                         static_cast<unsigned long long>(config.config_epoch));
+            WD_LOG_ERROR("rejecting conflicting server config epoch=%llu", static_cast<unsigned long long>(config.config_epoch));
             return;
         }
 
         const bool have_current_config = state.config.session_id != 0;
         reset_video = have_current_config &&
-                      (state.config.session_id != config.session_id || state.config.connection_token != config.connection_token || state.config.width != config.width ||
-                       state.config.height != config.height || state.video_codecs != new_video_codecs ||
-                       state.video_transport != new_video_transport);
+                      (state.config.session_id != config.session_id || state.config.connection_token != config.connection_token ||
+                       state.config.width != config.width || state.config.height != config.height ||
+                       state.video_codecs != new_video_codecs || state.video_transport != new_video_transport);
 
         state.video_stream_negotiated = new_video_stream_negotiated;
-        state.video_codecs = new_video_codecs;
-        state.video_transport = new_video_transport;
-        state.pending_config       = config;
-        state.pending_config_valid = true;
+        state.video_codecs            = new_video_codecs;
+        state.video_transport         = new_video_transport;
+        state.pending_config          = config;
+        state.pending_config_valid    = true;
     }
 
     state.render_wake.signal();
@@ -1862,9 +1804,8 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
     }
 }
 
-
-bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_t payload_size,
-                             ClientVideoPacket& packet, bool& control_frame) {
+bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_t payload_size, ClientVideoPacket& packet,
+                             bool& control_frame) {
     control_frame = false;
     if (!payload || payload_size < sizeof(wd_video_frame_payload_header))
     {
@@ -1891,16 +1832,16 @@ bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_
         return false;
     }
 
-    uint8_t  session_id = 0;
+    uint8_t  session_id       = 0;
     uint64_t connection_token = 0;
-    uint16_t width      = 0;
-    uint16_t height     = 0;
+    uint16_t width            = 0;
+    uint16_t height           = 0;
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
-        session_id = state.config.session_id;
+        session_id       = state.config.session_id;
         connection_token = state.config.connection_token;
-        width      = state.config.width;
-        height     = state.config.height;
+        width            = state.config.width;
+        height           = state.config.height;
     }
 
     if (packet.header.session_id != session_id || packet.header.connection_token != connection_token)
@@ -1909,8 +1850,9 @@ bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_
         return false;
     }
 
-    if (((packet.header.width != width || packet.header.height != height) ||
-         packet.header.coded_width < packet.header.width || packet.header.coded_height < packet.header.height) && !control_frame)
+    if (((packet.header.width != width || packet.header.height != height) || packet.header.coded_width < packet.header.width ||
+         packet.header.coded_height < packet.header.height) &&
+        !control_frame)
     {
         state.stats.video_invalid_frames_rx.fetch_add(1, std::memory_order_relaxed);
         reset_video_decoder(state, "video frame geometry mismatch");
@@ -1921,20 +1863,17 @@ bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_
     return true;
 }
 
-
-bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder,
-                                 const ClientDecodedVideoFrame& frame) {
-    if (!decoder || frame.format != ClientVideoPixelFormat::IYUV ||
-        frame.width == 0 || frame.height == 0)
+bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder, const ClientDecodedVideoFrame& frame) {
+    if (!decoder || frame.format != ClientVideoPixelFormat::IYUV || frame.width == 0 || frame.height == 0)
     {
         return false;
     }
 
-    uint16_t config_width = 0;
+    uint16_t config_width  = 0;
     uint16_t config_height = 0;
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
-        config_width = state.config.width;
+        config_width  = state.config.width;
         config_height = state.config.height;
     }
 
@@ -1945,8 +1884,7 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
 
     {
         std::lock_guard<std::mutex> content_lock(state.remote_content_mutex);
-        if (frame.content_epoch != state.remote_content_epoch ||
-            state.remote_content_owner != ClientContentOwner::Video)
+        if (frame.content_epoch != state.remote_content_epoch || state.remote_content_owner != ClientContentOwner::Video)
         {
             return false;
         }
@@ -1960,25 +1898,22 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
             return false;
         }
 
-        bool dropped_newest = false;
-        ClientVideoFrameBuffer decode_buffer =
-            state.video_present_queue.take_decode_buffer(dropped_newest);
+        bool                   dropped_newest = false;
+        ClientVideoFrameBuffer decode_buffer  = state.video_present_queue.take_decode_buffer(dropped_newest);
         if (!client_video_decoder_swap_output_frame(decoder, decode_buffer))
         {
             state.video_present_queue.recycle(std::move(decode_buffer));
             return false;
         }
-        if (!decode_buffer.valid() || decode_buffer.width != frame.width ||
-            decode_buffer.height != frame.height)
+        if (!decode_buffer.valid() || decode_buffer.width != frame.width || decode_buffer.height != frame.height)
         {
             (void)client_video_decoder_swap_output_frame(decoder, decode_buffer);
             state.video_present_queue.recycle(std::move(decode_buffer));
             return false;
         }
 
-        if (!state.video_present_queue.push_decoded(std::move(decode_buffer), frame.width,
-                                                    frame.height, frame.frame_id,
-                                                    frame.pts_usec, ownership.epoch))
+        if (!state.video_present_queue.push_decoded(std::move(decode_buffer), frame.width, frame.height, frame.frame_id, frame.pts_usec,
+                                                    ownership.epoch))
         {
             return false;
         }
@@ -1986,18 +1921,16 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
         {
             state.stats.video_queue_overflow_drops.fetch_add(1, std::memory_order_relaxed);
         }
-        const uint64_t depth = state.video_present_queue.size();
-        uint64_t observed = state.stats.video_queue_depth_max.load(std::memory_order_relaxed);
-        while (depth > observed &&
-               !state.stats.video_queue_depth_max.compare_exchange_weak(
-                   observed, depth, std::memory_order_relaxed, std::memory_order_relaxed))
+        const uint64_t depth    = state.video_present_queue.size();
+        uint64_t       observed = state.stats.video_queue_depth_max.load(std::memory_order_relaxed);
+        while (depth > observed && !state.stats.video_queue_depth_max.compare_exchange_weak(observed, depth, std::memory_order_relaxed,
+                                                                                            std::memory_order_relaxed))
         {
         }
 
         state.pending_dirty_tiles.clear();
         state.pending_dirty_rect_count.store(0, std::memory_order_release);
-        std::fill(state.pending_present_generation.begin(),
-                  state.pending_present_generation.end(), 0);
+        std::fill(state.pending_present_generation.begin(), state.pending_present_generation.end(), 0);
         state.pending_dirty_epoch = ownership.epoch;
         state.pending_video_frame_dirty.store(true, std::memory_order_release);
     }
@@ -2008,7 +1941,7 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
 
 void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
     ClientVideoPacket packet{};
-    bool control_frame = false;
+    bool              control_frame = false;
     if (!video_payload_to_packet(state, payload, payload_size, packet, control_frame))
     {
         return;
@@ -2016,34 +1949,32 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
 
     const ClientContentOwner content_owner =
         (packet.header.flags & WD_VIDEO_FRAME_END_OF_STREAM) != 0 ? ClientContentOwner::Tiles : ClientContentOwner::Video;
-    const ClientContentEpochDecision content_decision =
-        client_accept_content_epoch(state, packet.header.content_epoch, content_owner);
+    const ClientContentEpochDecision content_decision = client_accept_content_epoch(state, packet.header.content_epoch, content_owner);
     if (content_decision == ClientContentEpochDecision::Stale)
     {
         state.stats.video_stale_frames_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    const bool resize = (packet.header.flags & WD_VIDEO_FRAME_RESIZE) != 0;
-    const bool end_of_stream = (packet.header.flags & WD_VIDEO_FRAME_END_OF_STREAM) != 0;
-    const bool keyframe = (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
+    const bool                    resize        = (packet.header.flags & WD_VIDEO_FRAME_RESIZE) != 0;
+    const bool                    end_of_stream = (packet.header.flags & WD_VIDEO_FRAME_END_OF_STREAM) != 0;
+    const bool                    keyframe      = (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
     ClientVideoTransitionDecision transition{};
     {
         std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
-        transition = client_video_transition(state.video_phase,
-                                             content_decision == ClientContentEpochDecision::Advanced &&
-                                                 content_owner == ClientContentOwner::Video,
-                                             end_of_stream, resize, keyframe,
-                                             packet.header.data_size != 0);
+        transition = client_video_transition(
+            state.video_phase, content_decision == ClientContentEpochDecision::Advanced && content_owner == ClientContentOwner::Video,
+            end_of_stream, resize, keyframe, packet.header.data_size != 0);
         if (transition.reset_decoder)
         {
             client_video_decoder_reset(state.video_decoder);
             state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
             state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
             state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
-            WD_LOG_INFO("video decoder reset: reason=%s", resize ? "video resize" :
-                        end_of_stream ? "video end-of-stream" : "video content epoch advanced");
+            WD_LOG_INFO("video decoder reset: reason=%s", resize          ? "video resize"
+                                                          : end_of_stream ? "video end-of-stream"
+                                                                          : "video content epoch advanced");
         }
-        state.video_phase = transition.next_phase;
+        state.video_phase                  = transition.next_phase;
         state.video_decoder_needs_keyframe = state.video_phase != ClientVideoPhase::Video;
     }
 
@@ -2068,8 +1999,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         /* A fresh keyframe with a lower ID means the sender restarted its
          * codec/sequence without changing the display session. Recover rather
          * than dropping the restarted stream forever. */
-        if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0 &&
-            packet.header.frame_id < last_presented)
+        if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0 && packet.header.frame_id < last_presented)
         {
             reset_video_decoder(state, "video frame id restart");
         }
@@ -2084,13 +2014,13 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
 
     {
         std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
-        const auto reset_decoder_locked = [&state](const char* reason) {
+        const auto                  reset_decoder_locked = [&state](const char* reason) {
             client_video_decoder_reset(state.video_decoder);
             state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
             state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
             state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
             state.video_decoder_needs_keyframe = true;
-            state.video_phase = ClientVideoPhase::AwaitingKeyframe;
+            state.video_phase                  = ClientVideoPhase::AwaitingKeyframe;
             WD_LOG_INFO("video decoder reset: reason=%s", reason);
         };
         if (state.video_decoder_needs_keyframe && (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
@@ -2100,29 +2030,29 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         }
 
         ClientVideoDecoderConfig config{};
-        config.session_id   = packet.header.session_id;
+        config.session_id       = packet.header.session_id;
         config.connection_token = packet.header.connection_token;
-        config.content_epoch = packet.header.content_epoch;
-        config.width        = packet.header.width;
-        config.height       = packet.header.height;
-        config.coded_width  = packet.header.coded_width != 0 ? packet.header.coded_width : packet.header.width;
-        config.coded_height = packet.header.coded_height != 0 ? packet.header.coded_height : packet.header.height;
-        config.target_fps    = state.stream_config.target_fps;
-        config.codec         = packet.header.codec;
-        config.hwdecode_mode = state.stream_config.video_hwdecode_mode;
+        config.content_epoch    = packet.header.content_epoch;
+        config.width            = packet.header.width;
+        config.height           = packet.header.height;
+        config.coded_width      = packet.header.coded_width != 0 ? packet.header.coded_width : packet.header.width;
+        config.coded_height     = packet.header.coded_height != 0 ? packet.header.coded_height : packet.header.height;
+        config.target_fps       = state.stream_config.target_fps;
+        config.codec            = packet.header.codec;
+        config.hwdecode_mode    = state.stream_config.video_hwdecode_mode;
 
         if (!client_video_decoder_configure(state.video_decoder, config))
         {
             state.video_decoder_needs_keyframe = true;
-            state.video_phase = ClientVideoPhase::AwaitingKeyframe;
+            state.video_phase                  = ClientVideoPhase::AwaitingKeyframe;
             state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
             return;
         }
 
         ClientDecodedVideoFrame frame{};
-        const uint64_t decode_start_ns = wd_now_ns();
-        bool decoded = client_video_decoder_decode(state.video_decoder, packet, &frame);
-        const uint64_t decode_elapsed_ns = wd_now_ns() - decode_start_ns;
+        const uint64_t          decode_start_ns   = wd_now_ns();
+        bool                    decoded           = client_video_decoder_decode(state.video_decoder, packet, &frame);
+        const uint64_t          decode_elapsed_ns = wd_now_ns() - decode_start_ns;
         state.stats.video_decode_sum_ns.fetch_add(decode_elapsed_ns, std::memory_order_relaxed);
         state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
 
@@ -2133,12 +2063,11 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
              * the decoder immediately as software and retry that same keyframe
              * instead of waiting for a later periodic keyframe. */
             client_video_decoder_reset(state.video_decoder);
-            if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0 &&
-                client_video_decoder_configure(state.video_decoder, config))
+            if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0 && client_video_decoder_configure(state.video_decoder, config))
             {
-                frame = ClientDecodedVideoFrame{};
-                const uint64_t retry_start_ns = wd_now_ns();
-                decoded = client_video_decoder_decode(state.video_decoder, packet, &frame);
+                frame                           = ClientDecodedVideoFrame{};
+                const uint64_t retry_start_ns   = wd_now_ns();
+                decoded                         = client_video_decoder_decode(state.video_decoder, packet, &frame);
                 const uint64_t retry_elapsed_ns = wd_now_ns() - retry_start_ns;
                 state.stats.video_decode_sum_ns.fetch_add(retry_elapsed_ns, std::memory_order_relaxed);
                 state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
@@ -2179,7 +2108,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         }
 
         state.video_decoder_needs_keyframe = false;
-        state.video_phase = ClientVideoPhase::Video;
+        state.video_phase                  = ClientVideoPhase::Video;
     }
 
     /* Actual video presentation is recorded by the SDL render thread after
@@ -2198,11 +2127,10 @@ void audio_tcp_reader_main(ClientState* state) {
 
     while (state && state->running.load(std::memory_order_relaxed))
     {
-        uint16_t message_type = 0;
-        uint8_t* payload = nullptr;
-        uint32_t payload_size = 0;
-        const uint32_t limit = static_cast<uint32_t>(sizeof(wd_audio_packet_payload_header)) +
-                               WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES;
+        uint16_t       message_type = 0;
+        uint8_t*       payload      = nullptr;
+        uint32_t       payload_size = 0;
+        const uint32_t limit        = static_cast<uint32_t>(sizeof(wd_audio_packet_payload_header)) + WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES;
         if (!wd_recv_tcp_message_limited(fd, limit, &message_type, &payload, &payload_size))
         {
             break;
@@ -2211,50 +2139,35 @@ void audio_tcp_reader_main(ClientState* state) {
         state->stats.audio_messages_rx.fetch_add(1, std::memory_order_relaxed);
         state->stats.audio_bytes_rx.fetch_add(payload_size, std::memory_order_relaxed);
         bool ok = true;
-        if (message_type == WD_MSG_AUDIO_CONFIG &&
-            payload_size == sizeof(wd_audio_config_payload))
+        if (message_type == WD_MSG_AUDIO_CONFIG && payload_size == sizeof(wd_audio_config_payload))
         {
             wd_audio_config_payload config{};
             std::memcpy(&config, payload, sizeof(config));
-            ok = config.session_id == state->config.session_id &&
-                 config.connection_token == state->config.connection_token &&
+            ok = config.session_id == state->config.session_id && config.connection_token == state->config.connection_token &&
                  config.media_clock_id == state->media_clock_id &&
-                 client_audio_playback_configure(state->audio_playback, config,
-                                                 state->audio_target_latency_ms);
+                 client_audio_playback_configure(state->audio_playback, config, state->audio_target_latency_ms);
         }
         else if (message_type == WD_MSG_AUDIO_PACKET)
         {
             state->stats.audio_packets_rx.fetch_add(1, std::memory_order_relaxed);
-            const uint64_t before_discontinuities =
-                client_audio_playback_discontinuities(state->audio_playback);
-            const uint64_t before_late_drops =
-                client_audio_playback_late_drops(state->audio_playback);
-            const uint64_t before_underflows =
-                client_audio_playback_underflows(state->audio_playback);
-            ok = client_audio_playback_handle_packet(state->audio_playback, payload, payload_size);
-            const uint64_t after_discontinuities =
-                client_audio_playback_discontinuities(state->audio_playback);
-            const uint64_t after_late_drops =
-                client_audio_playback_late_drops(state->audio_playback);
-            const uint64_t after_underflows =
-                client_audio_playback_underflows(state->audio_playback);
+            const uint64_t before_discontinuities = client_audio_playback_discontinuities(state->audio_playback);
+            const uint64_t before_late_drops      = client_audio_playback_late_drops(state->audio_playback);
+            const uint64_t before_underflows      = client_audio_playback_underflows(state->audio_playback);
+            ok                                    = client_audio_playback_handle_packet(state->audio_playback, payload, payload_size);
+            const uint64_t after_discontinuities  = client_audio_playback_discontinuities(state->audio_playback);
+            const uint64_t after_late_drops       = client_audio_playback_late_drops(state->audio_playback);
+            const uint64_t after_underflows       = client_audio_playback_underflows(state->audio_playback);
             if (after_discontinuities > before_discontinuities)
             {
-                state->stats.audio_discontinuities.fetch_add(
-                    after_discontinuities - before_discontinuities,
-                    std::memory_order_relaxed);
+                state->stats.audio_discontinuities.fetch_add(after_discontinuities - before_discontinuities, std::memory_order_relaxed);
             }
             if (after_late_drops > before_late_drops)
             {
-                state->stats.audio_late_drops.fetch_add(
-                    after_late_drops - before_late_drops,
-                    std::memory_order_relaxed);
+                state->stats.audio_late_drops.fetch_add(after_late_drops - before_late_drops, std::memory_order_relaxed);
             }
             if (after_underflows > before_underflows)
             {
-                state->stats.audio_underflows.fetch_add(
-                    after_underflows - before_underflows,
-                    std::memory_order_relaxed);
+                state->stats.audio_underflows.fetch_add(after_underflows - before_underflows, std::memory_order_relaxed);
             }
         }
         else if (message_type == WD_MSG_ERROR)
@@ -2306,8 +2219,7 @@ void video_tcp_reader_main(ClientState* state) {
 
         const uint32_t video_payload_limit =
             static_cast<uint32_t>(sizeof(wd_video_frame_payload_header)) + WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES;
-        if (!wd_recv_tcp_message_limited(fd, video_payload_limit,
-                                         &message_type, &payload, &payload_size))
+        if (!wd_recv_tcp_message_limited(fd, video_payload_limit, &message_type, &payload, &payload_size))
         {
             break;
         }
@@ -2413,8 +2325,7 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
     {
         WD_LOG_WARN("failed to create video decoder skeleton");
     }
-    WD_LOG_INFO("video decoder: backend=%s codecs=0x%x available=%s",
-                client_video_decoder_backend_name(state.video_decoder),
+    WD_LOG_INFO("video decoder: backend=%s codecs=0x%x available=%s", client_video_decoder_backend_name(state.video_decoder),
                 client_video_decoder_supported_codecs(state.video_decoder),
                 client_video_decoder_available(state.video_decoder) ? "yes" : "no");
 
@@ -2425,10 +2336,8 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
             WD_LOG_WARN("failed to create audio playback state");
         }
     }
-    WD_LOG_INFO("audio playback: requested=%s backend=%s available=%s",
-                state.stream_config.disable_audio ? "no" : "yes",
-                client_audio_playback_backend_name(),
-                state.audio_playback ? "yes" : "no");
+    WD_LOG_INFO("audio playback: requested=%s backend=%s available=%s", state.stream_config.disable_audio ? "no" : "yes",
+                client_audio_playback_backend_name(), state.audio_playback ? "yes" : "no");
 
     if (!open_udp_socket(state))
     {
@@ -2457,29 +2366,29 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
 
     if (open_input_tcp_socket(state))
     {
-            WD_LOG_INFO("input TCP channel: enabled");
+        WD_LOG_INFO("input TCP channel: enabled");
     }
     else
     {
-            WD_LOG_INFO("input TCP channel: unavailable, using control TCP");
+        WD_LOG_INFO("input TCP channel: unavailable, using control TCP");
     }
 
     if (open_selection_tcp_socket(state))
     {
-            WD_LOG_INFO("selection TCP channel: enabled");
+        WD_LOG_INFO("selection TCP channel: enabled");
     }
     else
     {
-            WD_LOG_INFO("selection TCP channel: unavailable, using control TCP");
+        WD_LOG_INFO("selection TCP channel: unavailable, using control TCP");
     }
 
     if (open_video_tcp_socket(state))
     {
-            WD_LOG_INFO("video TCP channel: enabled");
+        WD_LOG_INFO("video TCP channel: enabled");
     }
     else if (state.video_stream_negotiated)
     {
-            WD_LOG_INFO("video TCP channel: unavailable");
+        WD_LOG_INFO("video TCP channel: unavailable");
     }
 
     if (open_audio_tcp_socket(state))
@@ -2496,8 +2405,8 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
     state.presented_generation.assign(state.tile_count(), 0);
     state.pending_present_generation.assign(state.tile_count(), 0);
     state.pending_tile_telemetry.assign(state.tile_count(), ClientPendingTileTelemetry{});
-    if (!configure_client_dirty_tile_grid(state.pending_dirty_tiles, state.config.width, state.config.height,
-                                          state.config.tile_width, state.config.tile_height))
+    if (!configure_client_dirty_tile_grid(state.pending_dirty_tiles, state.config.width, state.config.height, state.config.tile_width,
+                                          state.config.tile_height))
     {
         WD_LOG_ERROR("failed to configure client dirty tile grid during connection");
         client_disconnect(state);
@@ -2518,8 +2427,8 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         state.retx_summary_pending_tiles.clear();
         state.retx_summary_pending_position.assign(state.tile_count(), UINT32_MAX);
         state.retx_summary_due_queue.clear();
-        state.retx_summary_pending_count = 0;
-        state.next_summary_promote_ns = 0;
+        state.retx_summary_pending_count         = 0;
+        state.next_summary_promote_ns            = 0;
         state.summary_large_repair_not_before_ns = 0;
         state.summary_repair_loss_signal_until_ns.store(0, std::memory_order_relaxed);
     }
@@ -2594,7 +2503,7 @@ void client_disconnect(ClientState& state) {
         std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
         client_video_decoder_reset(state.video_decoder);
         client_video_decoder_destroy(state.video_decoder);
-        state.video_decoder = nullptr;
+        state.video_decoder                = nullptr;
         state.video_decoder_needs_keyframe = true;
     }
     client_audio_playback_destroy(state.audio_playback);
@@ -2818,14 +2727,10 @@ bool client_send_selection_text(ClientState& state, uint16_t message_type, const
     }
 
     std::vector<uint8_t> payload(sizeof(wd_selection_payload_header) + text_len);
-    uint32_t payload_size = 0;
-    if (!wd_selection_payload_encode(state.config.session_id,
-                                     state.config.connection_token,
-                                     WD_SELECTION_MIME_TEXT_UTF8,
-                                     reinterpret_cast<const uint8_t*>(text),
-                                     static_cast<uint32_t>(text_len),
-                                     payload.data(), payload.size(),
-                                     &payload_size))
+    uint32_t             payload_size = 0;
+    if (!wd_selection_payload_encode(state.config.session_id, state.config.connection_token, WD_SELECTION_MIME_TEXT_UTF8,
+                                     reinterpret_cast<const uint8_t*>(text), static_cast<uint32_t>(text_len), payload.data(),
+                                     payload.size(), &payload_size))
     {
         WD_LOG_ERROR("selection text is not valid UTF-8");
         return false;
@@ -2837,7 +2742,7 @@ bool client_send_selection_text(ClientState& state, uint16_t message_type, const
         destroy_client_tcp_sender(state.selection_tcp_sender);
         ::close(state.selection_tcp_fd);
         state.selection_tcp_fd = -1;
-        ok = client_send_tcp_message_queued(state, state.tcp_fd, message_type, payload.data(), payload_size);
+        ok                     = client_send_tcp_message_queued(state, state.tcp_fd, message_type, payload.data(), payload_size);
     }
 
     if (ok)
@@ -2854,8 +2759,7 @@ bool client_send_selection_text(ClientState& state, uint16_t message_type, const
     return ok;
 }
 
-static bool client_send_selection_request(ClientState& state,
-                                          uint16_t message_type) {
+static bool client_send_selection_request(ClientState& state, uint16_t message_type) {
     int fd = state.selection_tcp_fd >= 0 ? state.selection_tcp_fd : state.tcp_fd;
     if (fd < 0)
     {
@@ -2868,8 +2772,8 @@ static bool client_send_selection_request(ClientState& state,
         destroy_client_tcp_sender(state.selection_tcp_sender);
         ::close(state.selection_tcp_fd);
         state.selection_tcp_fd = -1;
-        fd = state.tcp_fd;
-        ok = client_send_tcp_message_queued(state, fd, message_type, nullptr, 0);
+        fd                     = state.tcp_fd;
+        ok                     = client_send_tcp_message_queued(state, fd, message_type, nullptr, 0);
     }
     return ok;
 }
@@ -2883,10 +2787,8 @@ bool client_send_primary_text(ClientState& state, const char* text) {
 }
 
 bool client_request_server_selections(ClientState& state) {
-    const bool clipboard_ok = client_send_selection_request(
-        state, WD_MSG_CLIPBOARD_REQUEST);
-    const bool primary_ok = client_send_selection_request(
-        state, WD_MSG_PRIMARY_REQUEST);
+    const bool clipboard_ok = client_send_selection_request(state, WD_MSG_CLIPBOARD_REQUEST);
+    const bool primary_ok   = client_send_selection_request(state, WD_MSG_PRIMARY_REQUEST);
     return clipboard_ok && primary_ok;
 }
 
@@ -2897,14 +2799,13 @@ bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t hei
     }
 
     wd_display_resize_payload resize{};
-    resize.session_id = state.config.session_id;
+    resize.session_id       = state.config.session_id;
     resize.connection_token = state.config.connection_token;
-    resize.width      = width;
-    resize.height     = height;
+    resize.width            = width;
+    resize.height           = height;
 
     return client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_DISPLAY_RESIZE, &resize, sizeof(resize));
 }
-
 
 bool client_send_config_applied(ClientState& state, uint8_t session_id, uint64_t config_epoch) {
     if (state.tcp_fd < 0 || session_id == 0 || config_epoch == 0)
@@ -2921,7 +2822,6 @@ bool client_send_config_applied(ClientState& state, uint8_t session_id, uint64_t
     applied.config_epoch = config_epoch;
     return client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_CONFIG_APPLIED, &applied, sizeof(applied));
 }
-
 
 bool client_send_stats(ClientState& state, const wd_client_stats_payload& stats) {
     if (state.tcp_fd < 0)
@@ -2941,7 +2841,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
     std::vector<wd_tile_repair_entry> entries;
     entries.reserve(MAX_RETRANSMIT_ENTRIES_PER_MESSAGE);
 
-    uint8_t session_id = 0;
+    uint8_t  session_id       = 0;
     uint64_t connection_token = 0;
 
     {
@@ -2949,7 +2849,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
         std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
         std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
 
-        session_id = state.config.session_id;
+        session_id       = state.config.session_id;
         connection_token = state.config.connection_token;
 
         const uint64_t now_ns = wd_now_ns();
@@ -2970,7 +2870,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
                 continue;
             }
 
-            const uint64_t target_generation = state.retx_queued_generation[tile_id];
+            const uint64_t target_generation      = state.retx_queued_generation[tile_id];
             state.retx_queued_generation[tile_id] = 0;
 
             if (target_generation == 0)
@@ -3001,7 +2901,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
             }
 
             state.retx_last_requested_generation[tile_id] = target_generation;
-            state.retx_last_request_ns[tile_id]          = now_ns;
+            state.retx_last_request_ns[tile_id]           = now_ns;
 
             wd_tile_repair_entry request{};
             request.tile_id              = tile_id;
@@ -3016,7 +2916,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
     }
 
     wd_tile_repair_request_payload_header header{};
-    header.session_id    = session_id;
+    header.session_id       = session_id;
     header.connection_token = connection_token;
     {
         std::lock_guard<std::mutex> content_lock(state.remote_content_mutex);
@@ -3031,7 +2931,8 @@ bool client_flush_retransmit_requests(ClientState& state) {
     std::memcpy(payload.data(), &header, sizeof(header));
     std::memcpy(payload.data() + sizeof(header), entries.data(), entries.size() * sizeof(wd_tile_repair_entry));
 
-    const bool ok = client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_TILE_REPAIR_REQUEST, payload.data(), static_cast<uint32_t>(payload.size()));
+    const bool ok = client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_TILE_REPAIR_REQUEST, payload.data(),
+                                                   static_cast<uint32_t>(payload.size()));
 
     if (!ok)
     {

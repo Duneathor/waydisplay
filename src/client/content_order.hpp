@@ -14,8 +14,7 @@ enum class ClientContentEpochDecision : uint8_t {
     Advanced,
 };
 
-ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint64_t content_epoch,
-                                                       ClientContentOwner owner);
-void client_reset_content_epoch(ClientState& state, uint64_t content_epoch, ClientContentOwner owner);
+ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint64_t content_epoch, ClientContentOwner owner);
+void                       client_reset_content_epoch(ClientState& state, uint64_t content_epoch, ClientContentOwner owner);
 
 } // namespace waydisplay

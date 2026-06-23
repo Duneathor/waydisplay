@@ -23,10 +23,12 @@ enum {
      * This is a one-time capability probe, so the extra surface size is
      * negligible and avoids false negatives from an undersized test frame.
      */
-    WD_VAAPI_PROBE_WIDTH = 256,
-    WD_VAAPI_PROBE_HEIGHT = 256,
+    WD_VAAPI_PROBE_WIDTH      = 256,
+    WD_VAAPI_PROBE_HEIGHT     = 256,
     WD_FFMPEG_FRAME_ALIGNMENT = 32,
 };
+#include "../common/wd_vaapi_device.h"
+
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
@@ -35,8 +37,6 @@ enum {
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
-
-#include "../common/wd_vaapi_device.h"
 #endif
 
 enum wd_video_encoder_preference {
@@ -52,10 +52,10 @@ enum wd_video_encoder_backend {
 };
 
 struct wd_video_encoder {
-    struct wd_video_encoder_config config;
-    bool                           configured;
-    bool                           keyframe_requested;
-    uint64_t                       next_frame_id;
+    struct wd_video_encoder_config   config;
+    bool                             configured;
+    bool                             keyframe_requested;
+    uint64_t                         next_frame_id;
     enum wd_video_encoder_preference preference;
     enum wd_video_encoder_backend    active_backend;
     char                             vaapi_device[PATH_MAX];
@@ -112,11 +112,11 @@ static void wd_video_encoder_release_backend(struct wd_video_encoder* encoder) {
     encoder->sws_ctx = NULL;
 
     free(encoder->padded_pixels);
-    encoder->padded_pixels = NULL;
+    encoder->padded_pixels         = NULL;
     encoder->padded_pixel_capacity = 0;
 
     free(encoder->packet_copy);
-    encoder->packet_copy = NULL;
+    encoder->packet_copy          = NULL;
     encoder->packet_copy_capacity = 0;
 
     av_packet_free(&encoder->packet);
@@ -133,15 +133,13 @@ static const AVCodec* wd_video_encoder_find_software_codec(uint32_t codec) {
     switch (codec)
     {
 #if WAYDISPLAY_HAVE_H264_SERVER_ENCODER
-    case WD_VIDEO_CODEC_H264:
-    {
+    case WD_VIDEO_CODEC_H264: {
         const AVCodec* avc = avcodec_find_encoder_by_name("libx264");
         return avc ? avc : avcodec_find_encoder(AV_CODEC_ID_H264);
     }
 #endif
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
-    case WD_VIDEO_CODEC_H265:
-    {
+    case WD_VIDEO_CODEC_H265: {
         const AVCodec* hevc = avcodec_find_encoder_by_name("libx265");
         return hevc ? hevc : avcodec_find_encoder(AV_CODEC_ID_HEVC);
     }
@@ -201,9 +199,7 @@ static bool wd_video_encoder_ensure_vaapi_device(struct wd_video_encoder* encode
     }
 
     encoder->vaapi_device_attempted = true;
-    const int rc = wd_vaapi_open_automatic_device(&encoder->vaapi_device_ctx,
-                                                   encoder->vaapi_device,
-                                                   sizeof(encoder->vaapi_device));
+    const int rc = wd_vaapi_open_automatic_device(&encoder->vaapi_device_ctx, encoder->vaapi_device, sizeof(encoder->vaapi_device));
     if (rc < 0)
     {
         wd_video_encoder_log_av_error("failed to discover a VAAPI encode device", rc);
@@ -211,7 +207,7 @@ static bool wd_video_encoder_ensure_vaapi_device(struct wd_video_encoder* encode
         return false;
     }
 
-    WD_LOG_INFO("VAAPI video encode device initialized: %s", encoder->vaapi_device);
+    WD_LOG_DEBUG("VAAPI video encode device initialized: %s", encoder->vaapi_device);
     return true;
 }
 
@@ -225,7 +221,7 @@ static uint32_t wd_video_encoder_detect_vaapi_codecs(struct wd_video_encoder* en
         return encoder->vaapi_supported_codecs;
     }
 
-    encoder->vaapi_probe_complete = true;
+    encoder->vaapi_probe_complete   = true;
     encoder->vaapi_supported_codecs = 0;
     if (!wd_video_encoder_ensure_vaapi_device(encoder))
     {
@@ -233,24 +229,21 @@ static uint32_t wd_video_encoder_detect_vaapi_codecs(struct wd_video_encoder* en
     }
 
 #if WAYDISPLAY_HAVE_H264_SERVER_ENCODER
-    if (wd_video_encoder_find_vaapi_codec(WD_VIDEO_CODEC_H264) &&
-        wd_video_encoder_probe_vaapi_codec(encoder, WD_VIDEO_CODEC_H264))
+    if (wd_video_encoder_find_vaapi_codec(WD_VIDEO_CODEC_H264) && wd_video_encoder_probe_vaapi_codec(encoder, WD_VIDEO_CODEC_H264))
     {
         encoder->vaapi_supported_codecs |= WD_VIDEO_CODEC_H264;
     }
 #endif
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
-    if (wd_video_encoder_find_vaapi_codec(WD_VIDEO_CODEC_H265) &&
-        wd_video_encoder_probe_vaapi_codec(encoder, WD_VIDEO_CODEC_H265))
+    if (wd_video_encoder_find_vaapi_codec(WD_VIDEO_CODEC_H265) && wd_video_encoder_probe_vaapi_codec(encoder, WD_VIDEO_CODEC_H265))
     {
         encoder->vaapi_supported_codecs |= WD_VIDEO_CODEC_H265;
     }
 #endif
 
-    WD_LOG_INFO("VAAPI video encode codecs on %s: h264=%s h265=%s",
-                encoder->vaapi_device,
-                (encoder->vaapi_supported_codecs & WD_VIDEO_CODEC_H264) != 0 ? "yes" : "no",
-                (encoder->vaapi_supported_codecs & WD_VIDEO_CODEC_H265) != 0 ? "yes" : "no");
+    WD_LOG_DEBUG("VAAPI video encode codecs on %s: h264=%s h265=%s", encoder->vaapi_device,
+                 (encoder->vaapi_supported_codecs & WD_VIDEO_CODEC_H264) != 0 ? "yes" : "no",
+                 (encoder->vaapi_supported_codecs & WD_VIDEO_CODEC_H265) != 0 ? "yes" : "no");
     return encoder->vaapi_supported_codecs;
 }
 
@@ -268,17 +261,15 @@ static uint32_t wd_video_encoder_detect_supported_codecs(struct wd_video_encoder
         return wd_video_encoder_detect_vaapi_codecs(encoder) & ~encoder->vaapi_failed_codecs;
     case WD_VIDEO_ENCODER_PREFERENCE_AUTO:
     default:
-        return wd_video_encoder_detect_software_codecs() |
-               wd_video_encoder_detect_vaapi_codecs(encoder);
+        return wd_video_encoder_detect_software_codecs() | wd_video_encoder_detect_vaapi_codecs(encoder);
     }
 }
 
-static bool wd_video_encoder_config_matches(const struct wd_video_encoder* encoder,
-                                            const struct wd_video_encoder_config* config) {
-    return encoder && config && encoder->configured && encoder->codec_ctx &&
-           encoder->config.session_id == config->session_id && encoder->config.connection_token == config->connection_token && encoder->config.content_epoch == config->content_epoch && encoder->config.width == config->width &&
-           encoder->config.height == config->height && encoder->config.target_fps == config->target_fps &&
-           encoder->config.bitrate_kib_per_second == config->bitrate_kib_per_second &&
+static bool wd_video_encoder_config_matches(const struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config) {
+    return encoder && config && encoder->configured && encoder->codec_ctx && encoder->config.session_id == config->session_id &&
+           encoder->config.connection_token == config->connection_token && encoder->config.content_epoch == config->content_epoch &&
+           encoder->config.width == config->width && encoder->config.height == config->height &&
+           encoder->config.target_fps == config->target_fps && encoder->config.bitrate_kib_per_second == config->bitrate_kib_per_second &&
            encoder->config.codec == config->codec;
 }
 
@@ -315,11 +306,9 @@ static int wd_video_encoder_even_dimension(uint16_t value) {
     return dimension;
 }
 
-static void wd_video_encoder_set_context_defaults(AVCodecContext* codec_ctx,
-                                                  const AVCodec* codec,
-                                                  const struct wd_video_encoder_config* config,
-                                                  enum AVPixelFormat pixel_format) {
-    const int fps = wd_video_encoder_effective_fps(config);
+static void wd_video_encoder_set_context_defaults(AVCodecContext* codec_ctx, const AVCodec* codec,
+                                                  const struct wd_video_encoder_config* config, enum AVPixelFormat pixel_format) {
+    const int     fps     = wd_video_encoder_effective_fps(config);
     const int64_t bitrate = wd_video_encoder_bitrate_bits_per_second(config);
 
     codec_ctx->codec_type   = AVMEDIA_TYPE_VIDEO;
@@ -329,8 +318,7 @@ static void wd_video_encoder_set_context_defaults(AVCodecContext* codec_ctx,
     codec_ctx->pix_fmt      = pixel_format;
     codec_ctx->time_base    = (AVRational){1, 1000000};
     codec_ctx->framerate    = (AVRational){fps, 1};
-    codec_ctx->gop_size     = (fps > 0 ? fps : (int)WD_VIDEO_ENCODER_FALLBACK_FPS) *
-                              WD_VIDEO_ENCODER_GOP_SECONDS;
+    codec_ctx->gop_size     = (fps > 0 ? fps : (int)WD_VIDEO_ENCODER_FALLBACK_FPS) * WD_VIDEO_ENCODER_GOP_SECONDS;
     codec_ctx->max_b_frames = 0;
     codec_ctx->bit_rate     = bitrate;
 }
@@ -349,15 +337,15 @@ static bool wd_video_encoder_probe_vaapi_codec(struct wd_video_encoder* encoder,
 
     struct wd_video_encoder_config probe_config;
     memset(&probe_config, 0, sizeof(probe_config));
-    probe_config.width = WD_VAAPI_PROBE_WIDTH;
-    probe_config.height = WD_VAAPI_PROBE_HEIGHT;
-    probe_config.target_fps = WD_VIDEO_ENCODER_VAAPI_PROBE_FPS;
+    probe_config.width                  = WD_VAAPI_PROBE_WIDTH;
+    probe_config.height                 = WD_VAAPI_PROBE_HEIGHT;
+    probe_config.target_fps             = WD_VIDEO_ENCODER_VAAPI_PROBE_FPS;
     probe_config.bitrate_kib_per_second = WD_VIDEO_ENCODER_VAAPI_PROBE_BITRATE_KIB;
-    probe_config.codec = codec_id;
+    probe_config.codec                  = codec_id;
 
-    AVCodecContext* codec_ctx = avcodec_alloc_context3(codec);
-    AVBufferRef* frames_ref = NULL;
-    bool supported = false;
+    AVCodecContext* codec_ctx  = avcodec_alloc_context3(codec);
+    AVBufferRef*    frames_ref = NULL;
+    bool            supported  = false;
     if (!codec_ctx)
     {
         return false;
@@ -371,10 +359,10 @@ static bool wd_video_encoder_probe_vaapi_codec(struct wd_video_encoder* encoder,
     }
 
     AVHWFramesContext* frames = (AVHWFramesContext*)frames_ref->data;
-    frames->format = AV_PIX_FMT_VAAPI;
-    frames->sw_format = AV_PIX_FMT_NV12;
-    frames->width = codec_ctx->width;
-    frames->height = codec_ctx->height;
+    frames->format            = AV_PIX_FMT_VAAPI;
+    frames->sw_format         = AV_PIX_FMT_NV12;
+    frames->width             = codec_ctx->width;
+    frames->height            = codec_ctx->height;
     frames->initial_pool_size = WD_VIDEO_ENCODER_VAAPI_PROBE_POOL_SIZE;
     if (av_hwframe_ctx_init(frames_ref) < 0)
     {
@@ -399,10 +387,8 @@ done:
     return supported;
 }
 
-static bool wd_video_encoder_allocate_common(struct wd_video_encoder* encoder,
-                                             const AVCodec* codec,
-                                             const struct wd_video_encoder_config* config,
-                                             enum AVPixelFormat pixel_format) {
+static bool wd_video_encoder_allocate_common(struct wd_video_encoder* encoder, const AVCodec* codec,
+                                             const struct wd_video_encoder_config* config, enum AVPixelFormat pixel_format) {
     encoder->codec     = codec;
     encoder->codec_ctx = avcodec_alloc_context3(codec);
     encoder->frame     = av_frame_alloc();
@@ -417,8 +403,7 @@ static bool wd_video_encoder_allocate_common(struct wd_video_encoder* encoder,
     return true;
 }
 
-static bool wd_video_encoder_configure_software(struct wd_video_encoder* encoder,
-                                                const struct wd_video_encoder_config* config) {
+static bool wd_video_encoder_configure_software(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config) {
     const AVCodec* codec = wd_video_encoder_find_software_codec(config->codec);
     if (!codec || !wd_video_encoder_allocate_common(encoder, codec, config, AV_PIX_FMT_YUV420P))
     {
@@ -436,13 +421,12 @@ static bool wd_video_encoder_configure_software(struct wd_video_encoder* encoder
         (void)av_opt_set(encoder->codec_ctx->priv_data, "forced-idr", "1", 0);
         if (config->codec == WD_VIDEO_CODEC_H264)
         {
-            (void)av_opt_set(encoder->codec_ctx->priv_data, "x264-params",
-                             "repeat-headers=1:sliced-threads=1", 0);
+            (void)av_opt_set(encoder->codec_ctx->priv_data, "x264-params", "repeat-headers=1:sliced-threads=1", 0);
         }
         else
         {
-            (void)av_opt_set(encoder->codec_ctx->priv_data, "x265-params",
-                             "repeat-headers=1:log-level=error:pools=none:frame-threads=1", 0);
+            (void)av_opt_set(encoder->codec_ctx->priv_data, "x265-params", "repeat-headers=1:log-level=error:pools=none:frame-threads=1",
+                             0);
         }
     }
 
@@ -463,11 +447,8 @@ static bool wd_video_encoder_configure_software(struct wd_video_encoder* encoder
         return false;
     }
 
-    encoder->sws_ctx = sws_getContext(encoder->codec_ctx->width, encoder->codec_ctx->height,
-                                      AV_PIX_FMT_BGRA,
-                                      encoder->codec_ctx->width, encoder->codec_ctx->height,
-                                      encoder->codec_ctx->pix_fmt, SWS_FAST_BILINEAR,
-                                      NULL, NULL, NULL);
+    encoder->sws_ctx = sws_getContext(encoder->codec_ctx->width, encoder->codec_ctx->height, AV_PIX_FMT_BGRA, encoder->codec_ctx->width,
+                                      encoder->codec_ctx->height, encoder->codec_ctx->pix_fmt, SWS_FAST_BILINEAR, NULL, NULL, NULL);
     if (!encoder->sws_ctx)
     {
         wd_video_encoder_release_backend(encoder);
@@ -478,10 +459,8 @@ static bool wd_video_encoder_configure_software(struct wd_video_encoder* encoder
     return true;
 }
 
-static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder,
-                                             const struct wd_video_encoder_config* config) {
-    if (!wd_video_encoder_ensure_vaapi_device(encoder) ||
-        (wd_video_encoder_detect_vaapi_codecs(encoder) & config->codec) == 0)
+static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config) {
+    if (!wd_video_encoder_ensure_vaapi_device(encoder) || (wd_video_encoder_detect_vaapi_codecs(encoder) & config->codec) == 0)
     {
         return false;
     }
@@ -492,7 +471,7 @@ static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder,
         return false;
     }
 
-    encoder->upload_frame = av_frame_alloc();
+    encoder->upload_frame     = av_frame_alloc();
     encoder->vaapi_frames_ctx = av_hwframe_ctx_alloc(encoder->vaapi_device_ctx);
     if (!encoder->upload_frame || !encoder->vaapi_frames_ctx)
     {
@@ -545,11 +524,8 @@ static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder,
         return false;
     }
 
-    encoder->sws_ctx = sws_getContext(encoder->codec_ctx->width, encoder->codec_ctx->height,
-                                      AV_PIX_FMT_BGRA,
-                                      encoder->codec_ctx->width, encoder->codec_ctx->height,
-                                      AV_PIX_FMT_NV12, SWS_FAST_BILINEAR,
-                                      NULL, NULL, NULL);
+    encoder->sws_ctx = sws_getContext(encoder->codec_ctx->width, encoder->codec_ctx->height, AV_PIX_FMT_BGRA, encoder->codec_ctx->width,
+                                      encoder->codec_ctx->height, AV_PIX_FMT_NV12, SWS_FAST_BILINEAR, NULL, NULL, NULL);
     if (!encoder->sws_ctx)
     {
         wd_video_encoder_release_backend(encoder);
@@ -560,11 +536,9 @@ static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder,
     return true;
 }
 
-static bool wd_video_encoder_copy_packet(struct wd_video_encoder* encoder, const AVPacket* src,
-                                         uint64_t fallback_pts_usec,
+static bool wd_video_encoder_copy_packet(struct wd_video_encoder* encoder, const AVPacket* src, uint64_t fallback_pts_usec,
                                          struct wd_video_encoder_packet* packet) {
-    if (!encoder || !src || !packet || src->size <= 0 ||
-        (uint64_t)src->size > WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES)
+    if (!encoder || !src || !packet || src->size <= 0 || (uint64_t)src->size > WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES)
     {
         return false;
     }
@@ -576,35 +550,34 @@ static bool wd_video_encoder_copy_packet(struct wd_video_encoder* encoder, const
         {
             return false;
         }
-        encoder->packet_copy = new_copy;
+        encoder->packet_copy          = new_copy;
         encoder->packet_copy_capacity = (size_t)src->size;
     }
     memcpy(encoder->packet_copy, src->data, (size_t)src->size);
 
     memset(packet, 0, sizeof(*packet));
-    packet->header.session_id = encoder->config.session_id;
+    packet->header.session_id       = encoder->config.session_id;
     packet->header.connection_token = encoder->config.connection_token;
-    packet->header.content_epoch = encoder->config.content_epoch;
-    packet->header.codec      = encoder->config.codec;
-    packet->header.flags      = 0;
+    packet->header.content_epoch    = encoder->config.content_epoch;
+    packet->header.codec            = encoder->config.codec;
+    packet->header.flags            = 0;
     if ((src->flags & AV_PKT_FLAG_KEY) != 0)
     {
         packet->header.flags |= WD_VIDEO_FRAME_KEYFRAME | WD_VIDEO_FRAME_CONFIG;
     }
-    packet->header.frame_id      = encoder->next_frame_id++;
-    packet->header.pts_usec      = src->pts != AV_NOPTS_VALUE ? (uint64_t)src->pts : fallback_pts_usec;
-    packet->header.width         = encoder->config.width;
-    packet->header.height        = encoder->config.height;
-    packet->header.coded_width   = (uint16_t)encoder->codec_ctx->width;
-    packet->header.coded_height  = (uint16_t)encoder->codec_ctx->height;
-    packet->header.data_size     = (uint32_t)src->size;
-    packet->data                 = encoder->packet_copy;
+    packet->header.frame_id     = encoder->next_frame_id++;
+    packet->header.pts_usec     = src->pts != AV_NOPTS_VALUE ? (uint64_t)src->pts : fallback_pts_usec;
+    packet->header.width        = encoder->config.width;
+    packet->header.height       = encoder->config.height;
+    packet->header.coded_width  = (uint16_t)encoder->codec_ctx->width;
+    packet->header.coded_height = (uint16_t)encoder->codec_ctx->height;
+    packet->header.data_size    = (uint32_t)src->size;
+    packet->data                = encoder->packet_copy;
     return true;
 }
 #endif
 
-static bool wd_video_encoder_parse_preference(const char* backend,
-                                              enum wd_video_encoder_preference* preference) {
+static bool wd_video_encoder_parse_preference(const char* backend, enum wd_video_encoder_preference* preference) {
     if (!preference)
     {
         return false;
@@ -628,8 +601,7 @@ static bool wd_video_encoder_parse_preference(const char* backend,
     return false;
 }
 
-bool wd_video_encoder_create(struct wd_video_encoder** out_encoder,
-                             const char* video_encoder_backend) {
+bool wd_video_encoder_create(struct wd_video_encoder** out_encoder, const char* video_encoder_backend) {
     if (!out_encoder)
     {
         return false;
@@ -647,7 +619,7 @@ bool wd_video_encoder_create(struct wd_video_encoder** out_encoder,
     {
         return false;
     }
-    encoder->preference = preference;
+    encoder->preference     = preference;
     encoder->active_backend = WD_VIDEO_ENCODER_BACKEND_NONE;
 
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
@@ -716,9 +688,8 @@ uint32_t wd_video_encoder_choose_codec(struct wd_video_encoder* encoder, uint32_
     }
 
     const uint32_t requested = client_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265);
-    const uint32_t software = requested & wd_video_encoder_detect_software_codecs();
-    const uint32_t vaapi = requested & wd_video_encoder_detect_vaapi_codecs(encoder) &
-                           ~encoder->vaapi_failed_codecs;
+    const uint32_t software  = requested & wd_video_encoder_detect_software_codecs();
+    const uint32_t vaapi     = requested & wd_video_encoder_detect_vaapi_codecs(encoder) & ~encoder->vaapi_failed_codecs;
 
     if (encoder->preference != WD_VIDEO_ENCODER_PREFERENCE_SOFTWARE)
     {
@@ -773,11 +744,9 @@ const char* wd_video_encoder_backend_name(const struct wd_video_encoder* encoder
     }
 }
 
-bool wd_video_encoder_configure(struct wd_video_encoder* encoder,
-                                const struct wd_video_encoder_config* config) {
-    if (!encoder || !config ||
-        (config->codec != WD_VIDEO_CODEC_H265 && config->codec != WD_VIDEO_CODEC_H264) ||
-        config->width == 0 || config->height == 0)
+bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config) {
+    if (!encoder || !config || (config->codec != WD_VIDEO_CODEC_H265 && config->codec != WD_VIDEO_CODEC_H264) || config->width == 0 ||
+        config->height == 0)
     {
         return false;
     }
@@ -788,22 +757,20 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder,
         return true;
     }
 
-    const bool new_session = !encoder->configured ||
-                             encoder->config.session_id != config->session_id ||
+    const bool new_session = !encoder->configured || encoder->config.session_id != config->session_id ||
                              encoder->config.connection_token != config->connection_token ||
                              encoder->config.content_epoch != config->content_epoch;
 
     wd_video_encoder_release_backend(encoder);
     encoder->configured = false;
 
-    bool configured = false;
+    bool configured      = false;
     bool vaapi_attempted = false;
     if (encoder->preference != WD_VIDEO_ENCODER_PREFERENCE_SOFTWARE &&
-        (encoder->preference == WD_VIDEO_ENCODER_PREFERENCE_VAAPI ||
-         (encoder->vaapi_failed_codecs & config->codec) == 0))
+        (encoder->preference == WD_VIDEO_ENCODER_PREFERENCE_VAAPI || (encoder->vaapi_failed_codecs & config->codec) == 0))
     {
         vaapi_attempted = true;
-        configured = wd_video_encoder_configure_vaapi(encoder, config);
+        configured      = wd_video_encoder_configure_vaapi(encoder, config);
         if (configured)
         {
             encoder->vaapi_failed_codecs &= ~config->codec;
@@ -813,8 +780,8 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder,
             encoder->vaapi_failed_codecs |= config->codec;
             if (encoder->preference == WD_VIDEO_ENCODER_PREFERENCE_AUTO)
             {
-                WD_LOG_WARN("VAAPI %s encoder unavailable on %s; falling back to software",
-                            wd_video_encoder_codec_name(config->codec), encoder->vaapi_device);
+                WD_LOG_WARN("VAAPI %s encoder unavailable on %s; falling back to software", wd_video_encoder_codec_name(config->codec),
+                            encoder->vaapi_device);
             }
         }
     }
@@ -828,8 +795,7 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder,
     {
         if (vaapi_attempted && encoder->preference == WD_VIDEO_ENCODER_PREFERENCE_VAAPI)
         {
-            WD_LOG_WARN("forced VAAPI %s encoder unavailable on %s",
-                        wd_video_encoder_codec_name(config->codec), encoder->vaapi_device);
+            WD_LOG_WARN("forced VAAPI %s encoder unavailable on %s", wd_video_encoder_codec_name(config->codec), encoder->vaapi_device);
         }
         wd_video_encoder_release_backend(encoder);
         return false;
@@ -843,12 +809,11 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder,
         encoder->next_frame_id = 1;
     }
 
-    WD_LOG_INFO("video encoder configured: backend=%s codec=%s size=%ux%u fps=%u bitrate_kib=%u%s%s",
-                encoder->codec && encoder->codec->name ? encoder->codec->name : "unknown",
-                wd_video_encoder_codec_name(config->codec), config->width, config->height,
-                config->target_fps, config->bitrate_kib_per_second,
-                encoder->active_backend == WD_VIDEO_ENCODER_BACKEND_VAAPI ? " device=" : "",
-                encoder->active_backend == WD_VIDEO_ENCODER_BACKEND_VAAPI ? encoder->vaapi_device : "");
+    WD_LOG_DEBUG("video encoder configured: backend=%s codec=%s size=%ux%u fps=%u bitrate_kib=%u%s%s",
+                 encoder->codec && encoder->codec->name ? encoder->codec->name : "unknown", wd_video_encoder_codec_name(config->codec),
+                 config->width, config->height, config->target_fps, config->bitrate_kib_per_second,
+                 encoder->active_backend == WD_VIDEO_ENCODER_BACKEND_VAAPI ? " device=" : "",
+                 encoder->active_backend == WD_VIDEO_ENCODER_BACKEND_VAAPI ? encoder->vaapi_device : "");
     return true;
 #else
     encoder->config             = *config;
@@ -870,11 +835,9 @@ bool wd_video_encoder_request_keyframe(struct wd_video_encoder* encoder) {
 }
 
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
-static const uint32_t* wd_video_encoder_prepare_xrgb_source(struct wd_video_encoder* encoder,
-                                                           const struct wd_video_encoder_input_xrgb8888* input,
-                                                           uint32_t coded_width,
-                                                           uint32_t coded_height,
-                                                           uint32_t* out_stride_pixels) {
+static const uint32_t* wd_video_encoder_prepare_xrgb_source(struct wd_video_encoder*                      encoder,
+                                                            const struct wd_video_encoder_input_xrgb8888* input, uint32_t coded_width,
+                                                            uint32_t coded_height, uint32_t* out_stride_pixels) {
     if (!encoder || !input || !out_stride_pixels || coded_width == 0 || coded_height == 0)
     {
         return NULL;
@@ -894,15 +857,15 @@ static const uint32_t* wd_video_encoder_prepare_xrgb_source(struct wd_video_enco
         {
             return NULL;
         }
-        encoder->padded_pixels = new_pixels;
+        encoder->padded_pixels         = new_pixels;
         encoder->padded_pixel_capacity = needed;
     }
 
     for (uint32_t y = 0; y < coded_height; ++y)
     {
-        const uint32_t src_y = y < input->height ? y : input->height - 1u;
-        const uint32_t* src = input->pixels + (size_t)src_y * input->stride_pixels;
-        uint32_t* dst = encoder->padded_pixels + (size_t)y * coded_width;
+        const uint32_t  src_y = y < input->height ? y : input->height - 1u;
+        const uint32_t* src   = input->pixels + (size_t)src_y * input->stride_pixels;
+        uint32_t*       dst   = encoder->padded_pixels + (size_t)y * coded_width;
         memcpy(dst, src, (size_t)input->width * sizeof(*dst));
         const uint32_t edge = input->width != 0 ? src[input->width - 1u] : 0xff000000u;
         for (uint32_t x = input->width; x < coded_width; ++x)
@@ -915,30 +878,26 @@ static const uint32_t* wd_video_encoder_prepare_xrgb_source(struct wd_video_enco
     return encoder->padded_pixels;
 }
 
-static bool wd_video_encoder_prepare_frame(struct wd_video_encoder* encoder,
-                                           const struct wd_video_encoder_input_xrgb8888* input) {
-    uint32_t source_stride_pixels = 0;
-    const uint32_t* source_pixels = wd_video_encoder_prepare_xrgb_source(
-        encoder, input, (uint32_t)encoder->codec_ctx->width,
-        (uint32_t)encoder->codec_ctx->height, &source_stride_pixels);
+static bool wd_video_encoder_prepare_frame(struct wd_video_encoder* encoder, const struct wd_video_encoder_input_xrgb8888* input) {
+    uint32_t        source_stride_pixels = 0;
+    const uint32_t* source_pixels = wd_video_encoder_prepare_xrgb_source(encoder, input, (uint32_t)encoder->codec_ctx->width,
+                                                                         (uint32_t)encoder->codec_ctx->height, &source_stride_pixels);
     if (!source_pixels)
     {
         return false;
     }
 
     const uint8_t* src_slices[4] = {(const uint8_t*)source_pixels, NULL, NULL, NULL};
-    const int src_stride[4] = {(int)(source_stride_pixels * WD_BYTES_PER_PIXEL), 0, 0, 0};
+    const int      src_stride[4] = {(int)(source_stride_pixels * WD_BYTES_PER_PIXEL), 0, 0, 0};
 
     if (encoder->active_backend == WD_VIDEO_ENCODER_BACKEND_VAAPI)
     {
-        if (!encoder->upload_frame || !encoder->vaapi_frames_ctx ||
-            av_frame_make_writable(encoder->upload_frame) < 0)
+        if (!encoder->upload_frame || !encoder->vaapi_frames_ctx || av_frame_make_writable(encoder->upload_frame) < 0)
         {
             return false;
         }
 
-        if (sws_scale(encoder->sws_ctx, src_slices, src_stride, 0,
-                      encoder->codec_ctx->height, encoder->upload_frame->data,
+        if (sws_scale(encoder->sws_ctx, src_slices, src_stride, 0, encoder->codec_ctx->height, encoder->upload_frame->data,
                       encoder->upload_frame->linesize) != encoder->upload_frame->height)
         {
             return false;
@@ -964,39 +923,33 @@ static bool wd_video_encoder_prepare_frame(struct wd_video_encoder* encoder,
         {
             return false;
         }
-        if (sws_scale(encoder->sws_ctx, src_slices, src_stride, 0,
-                      encoder->codec_ctx->height, encoder->frame->data,
+        if (sws_scale(encoder->sws_ctx, src_slices, src_stride, 0, encoder->codec_ctx->height, encoder->frame->data,
                       encoder->frame->linesize) != encoder->frame->height)
         {
             return false;
         }
     }
 
-    encoder->frame->pts = (int64_t)input->pts_usec;
-    encoder->frame->pict_type = encoder->keyframe_requested
-                                    ? AV_PICTURE_TYPE_I
-                                    : AV_PICTURE_TYPE_NONE;
+    encoder->frame->pts       = (int64_t)input->pts_usec;
+    encoder->frame->pict_type = encoder->keyframe_requested ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
     return true;
 }
 #endif
 
-bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder,
-                                      const struct wd_video_encoder_input_xrgb8888* input,
+bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const struct wd_video_encoder_input_xrgb8888* input,
                                       struct wd_video_encoder_packet* packet) {
     if (packet)
     {
         memset(packet, 0, sizeof(*packet));
     }
 
-    if (!encoder || !input || !packet || !input->pixels || input->width == 0 ||
-        input->height == 0 || input->stride_pixels < input->width)
+    if (!encoder || !input || !packet || !input->pixels || input->width == 0 || input->height == 0 || input->stride_pixels < input->width)
     {
         return false;
     }
 
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
-    if (!encoder->configured || !encoder->codec_ctx || !encoder->frame ||
-        !encoder->packet || !encoder->sws_ctx ||
+    if (!encoder->configured || !encoder->codec_ctx || !encoder->frame || !encoder->packet || !encoder->sws_ctx ||
         input->width != encoder->config.width || input->height != encoder->config.height)
     {
         return false;
@@ -1007,7 +960,7 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder,
         return false;
     }
 
-    bool frame_sent = false;
+    bool frame_sent  = false;
     bool have_output = false;
 
     for (int attempt = 0; attempt < 2 && !frame_sent; ++attempt)
@@ -1039,8 +992,7 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder,
             }
             if (!have_output)
             {
-                if (!wd_video_encoder_copy_packet(encoder, encoder->packet,
-                                                  input->pts_usec, packet))
+                if (!wd_video_encoder_copy_packet(encoder, encoder->packet, input->pts_usec, packet))
                 {
                     av_packet_unref(encoder->packet);
                     return false;
@@ -1071,8 +1023,7 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder,
         }
         if (!have_output)
         {
-            if (!wd_video_encoder_copy_packet(encoder, encoder->packet,
-                                              input->pts_usec, packet))
+            if (!wd_video_encoder_copy_packet(encoder, encoder->packet, input->pts_usec, packet))
             {
                 av_packet_unref(encoder->packet);
                 return false;

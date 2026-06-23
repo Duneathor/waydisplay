@@ -1,12 +1,12 @@
 #include "wd_server.h"
-#include "wd_dirty_region_scheduler.h"
-#include "wd_async_tcp.h"
-#include "wd_async_udp.h"
-#include "wd_audio_stream.h"
-#include "wd_audio_routing.h"
 
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
+#include "wd_async_tcp.h"
+#include "wd_async_udp.h"
+#include "wd_audio_routing.h"
+#include "wd_audio_stream.h"
+#include "wd_dirty_region_scheduler.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -20,7 +20,6 @@
 
 static struct wd_server*     g_server_for_signal   = NULL;
 static volatile sig_atomic_t g_terminate_requested = 0;
-
 
 static uint64_t wd_server_clamp_u64(uint64_t value, uint64_t min_value, uint64_t max_value) {
     if (value < min_value)
@@ -42,9 +41,8 @@ static uint64_t wd_server_delta_summary_interval_locked(struct wd_server* server
     }
 
     struct wd_net_state* net = &server->net;
-    bool active = net->retransmit_queue_count != 0 || net->stats.retx_req_rx != 0 ||
-                  net->stats.retx_req_stale_generation != 0 || net->stats.retx_req_upgraded_generation != 0 ||
-                  net->stats.retx_tiles_superseded_by_fresh != 0 ||
+    bool active = net->retransmit_queue_count != 0 || net->stats.retx_req_rx != 0 || net->stats.retx_req_stale_generation != 0 ||
+                  net->stats.retx_req_upgraded_generation != 0 || net->stats.retx_tiles_superseded_by_fresh != 0 ||
                   net->stats.client_partial_tiles_timed_out != 0 || net->stats.client_retx_requests_tx != 0;
 
     uint64_t interval_ns = active ? net->active_summary_interval_ns : net->clean_summary_interval_ns;
@@ -56,14 +54,12 @@ static uint64_t wd_server_delta_summary_interval_locked(struct wd_server* server
     if (active)
     {
         uint64_t stale_or_superseded = net->stats.retx_req_stale_generation + net->stats.retx_tiles_superseded_by_fresh;
-        uint64_t repair_activity = stale_or_superseded + net->stats.retx_tiles_req + net->stats.retx_req_ignored_live;
+        uint64_t repair_activity     = stale_or_superseded + net->stats.retx_tiles_req + net->stats.retx_req_ignored_live;
         if (stale_or_superseded >= WD_SERVER_STALE_REPAIR_MIN_SAMPLES && repair_activity != 0 &&
             stale_or_superseded * 100ull >= repair_activity * (uint64_t)WD_LINK_STALE_REPAIR_BACKOFF_PERCENT)
         {
             interval_ns *= WD_LINK_STALE_REPAIR_BACKOFF_MULTIPLIER;
-            interval_ns = wd_server_clamp_u64(interval_ns,
-                                              WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS,
-                                              WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
+            interval_ns = wd_server_clamp_u64(interval_ns, WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS, WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
             net->stats.tcp_summary_repair_backoff++;
         }
     }
@@ -104,10 +100,9 @@ static void server_reap_startup_process(struct wd_server* server) {
         return;
     }
 
-    int status = 0;
-    int error_code = 0;
-    enum wd_process_reap_result result = wd_spawned_process_reap_nonblocking(
-        &server->startup_process, &status, &error_code);
+    int                         status     = 0;
+    int                         error_code = 0;
+    enum wd_process_reap_result result     = wd_spawned_process_reap_nonblocking(&server->startup_process, &status, &error_code);
     if (result == WD_PROCESS_REAP_EXITED)
     {
         server_log_startup_process_status("startup command exited", status);
@@ -117,8 +112,7 @@ static void server_reap_startup_process(struct wd_server* server) {
         WD_LOG_ERROR("failed to reap startup command: %s", strerror(error_code));
     }
 
-    if (server->startup_process.pid <= 0 &&
-        !wd_spawned_process_group_alive(&server->startup_process))
+    if (server->startup_process.pid <= 0 && !wd_spawned_process_group_alive(&server->startup_process))
     {
         server->startup_process.process_group = -1;
     }
@@ -130,11 +124,9 @@ static void server_terminate_startup_process(struct wd_server* server) {
         return;
     }
 
-    int status = 0;
+    int status     = 0;
     int error_code = 0;
-    if (!wd_spawned_process_terminate_group(&server->startup_process,
-                                            WD_SERVER_PROCESS_TERM_GRACE_MS,
-                                            WD_SERVER_PROCESS_KILL_GRACE_MS,
+    if (!wd_spawned_process_terminate_group(&server->startup_process, WD_SERVER_PROCESS_TERM_GRACE_MS, WD_SERVER_PROCESS_KILL_GRACE_MS,
                                             &status, &error_code))
     {
         WD_LOG_ERROR("failed to terminate startup process group: %s", strerror(error_code));
@@ -153,23 +145,22 @@ static bool launch_startup_command(struct wd_server* server) {
         return true;
     }
 
-    const char* audio_sink = wd_audio_stream_sink_name(server->net.audio_stream);
-    const char* audio_target = wd_audio_stream_sink_target(server->net.audio_stream);
+    const char*                 audio_sink   = wd_audio_stream_sink_name(server->net.audio_stream);
+    const char*                 audio_target = wd_audio_stream_sink_target(server->net.audio_stream);
     struct wd_audio_routing_env audio_routing;
-    if (!wd_audio_routing_env_build(&audio_routing, audio_sink, audio_target,
-                                    getpid()))
+    if (!wd_audio_routing_env_build(&audio_routing, audio_sink, audio_target, getpid()))
     {
         WD_LOG_ERROR("failed to construct private audio routing environment");
         return false;
     }
 
     struct wd_process_env_change environment[20];
-    size_t environment_count = 0;
-#define WD_ADD_ENV(name_value, value_value, action_value)                                           \
-    do                                                                                              \
-    {                                                                                               \
-        environment[environment_count++] = (struct wd_process_env_change){                          \
-            .name = (name_value), .value = (value_value), .action = (action_value)};                \
+    size_t                       environment_count = 0;
+#define WD_ADD_ENV(name_value, value_value, action_value)                                                                                  \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        environment[environment_count++] =                                                                                                 \
+            (struct wd_process_env_change){.name = (name_value), .value = (value_value), .action = (action_value)};                        \
     } while (0)
 
     WD_ADD_ENV("WAYLAND_DISPLAY", server->socket_name, WD_PROCESS_ENV_SET);
@@ -214,8 +205,7 @@ static bool launch_startup_command(struct wd_server* server) {
 #undef WD_ADD_ENV
 
     int spawn_error = 0;
-    if (!wd_spawn_shell_command(&server->startup_process, server->startup_command,
-                                environment, environment_count, &spawn_error))
+    if (!wd_spawn_shell_command(&server->startup_process, server->startup_command, environment, environment_count, &spawn_error))
     {
         WD_LOG_ERROR("failed to launch app command: %s", strerror(spawn_error));
         return false;
@@ -223,12 +213,10 @@ static bool launch_startup_command(struct wd_server* server) {
 
     WD_LOG_INFO("launched app pid=%d process_group=%d command=%s audio_sink=%s "
                 "pipewire_target=%s audio_scope=%s fallback=%s",
-                server->startup_process.pid, server->startup_process.process_group,
-                server->startup_command,
+                server->startup_process.pid, server->startup_process.process_group, server->startup_command,
                 audio_routing.enabled ? audio_routing.pulse_sink : "system-default",
                 audio_routing.enabled ? audio_routing.pipewire_target : "system-default",
-                audio_routing.enabled ? audio_routing.scope : "none",
-                audio_routing.enabled ? "disabled" : "system-policy");
+                audio_routing.enabled ? audio_routing.scope : "none", audio_routing.enabled ? "disabled" : "system-policy");
 
     return true;
 }
@@ -248,9 +236,9 @@ static void server_process_pending_display_resize(struct wd_server* server) {
         return;
     }
 
-    uint64_t serial = net->display_resize_request_serial;
-    uint32_t width  = net->display_resize_width;
-    uint32_t height = net->display_resize_height;
+    uint64_t serial             = net->display_resize_request_serial;
+    uint32_t width              = net->display_resize_width;
+    uint32_t height             = net->display_resize_height;
     net->display_resize_pending = false;
     pthread_mutex_unlock(&net->lock);
 
@@ -307,7 +295,7 @@ void wd_server_wake_input(struct wd_server* server) {
 }
 
 static int server_input_wakeup(int fd, uint32_t mask, void* data) {
-    struct wd_server* server = data;
+    struct wd_server* server      = data;
     uint64_t          wake_events = 0;
     bool              read_failed = false;
 
@@ -320,7 +308,7 @@ static int server_input_wakeup(int fd, uint32_t mask, void* data) {
     {
         for (;;)
         {
-            uint64_t value = 0;
+            uint64_t value    = 0;
             ssize_t  received = read(fd, &value, sizeof(value));
 
             if (received == (ssize_t)sizeof(value))
@@ -372,10 +360,10 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
 
     if (server->net.control_tx)
     {
-        uint64_t queued = wd_async_tcp_sender_queued(server->net.control_tx);
+        uint64_t queued    = wd_async_tcp_sender_queued(server->net.control_tx);
         uint64_t completed = wd_async_tcp_sender_completed(server->net.control_tx);
-        uint64_t failed = wd_async_tcp_sender_failed(server->net.control_tx);
-        uint64_t partial = wd_async_tcp_sender_partial_resubmits(server->net.control_tx);
+        uint64_t failed    = wd_async_tcp_sender_failed(server->net.control_tx);
+        uint64_t partial   = wd_async_tcp_sender_partial_resubmits(server->net.control_tx);
         uint64_t overflows = wd_async_tcp_sender_overflows(server->net.control_tx);
         if (queued > server->net.control_tx_queued_seen)
         {
@@ -418,7 +406,7 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
         const uint64_t failed = wd_async_tcp_sender_failed(server->net.video_tx);
         if (failed > server->net.video_tx_failed_seen)
         {
-            const uint64_t new_failures = failed - server->net.video_tx_failed_seen;
+            const uint64_t new_failures      = failed - server->net.video_tx_failed_seen;
             server->net.video_tx_failed_seen = failed;
             server->net.stats.video_tcp_send_failed += new_failures;
 
@@ -434,11 +422,11 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
 
     if (server->net.udp_tx)
     {
-        uint64_t queued = wd_async_udp_sender_queued(server->net.udp_tx);
-        uint64_t completed = wd_async_udp_sender_completed(server->net.udp_tx);
-        uint64_t failed = wd_async_udp_sender_failed(server->net.udp_tx);
-        uint64_t fallbacks = wd_async_udp_sender_fallbacks(server->net.udp_tx);
-        uint64_t submit_calls = wd_async_udp_sender_submit_calls(server->net.udp_tx);
+        uint64_t queued          = wd_async_udp_sender_queued(server->net.udp_tx);
+        uint64_t completed       = wd_async_udp_sender_completed(server->net.udp_tx);
+        uint64_t failed          = wd_async_udp_sender_failed(server->net.udp_tx);
+        uint64_t fallbacks       = wd_async_udp_sender_fallbacks(server->net.udp_tx);
+        uint64_t submit_calls    = wd_async_udp_sender_submit_calls(server->net.udp_tx);
         uint64_t partial_submits = wd_async_udp_sender_partial_submits(server->net.udp_tx);
         if (queued > server->net.udp_tx_queued_seen)
         {
@@ -538,11 +526,11 @@ static int server_frame_timer(void* data) {
 
     const bool scene_damage_promoted = server_promote_wlroots_scene_damage(server);
 
-    bool should_render = wd_stream_policy_should_render_now(server, t);
-    bool render_attempted = false;
-    bool tile_stream_pass = false;
-    uint64_t render_readback_ns = 0;
-    enum wd_render_result render_result = WD_RENDER_RESULT_IDLE;
+    bool                  should_render      = wd_stream_policy_should_render_now(server, t);
+    bool                  render_attempted   = false;
+    bool                  tile_stream_pass   = false;
+    uint64_t              render_readback_ns = 0;
+    enum wd_render_result render_result      = WD_RENDER_RESULT_IDLE;
 
     if (should_render)
     {
@@ -552,9 +540,9 @@ static int server_frame_timer(void* data) {
         }
 
         const uint64_t render_start_ns = wd_now_ns();
-        render_result = wd_render_scene_and_readback_xrgb8888(server);
-        render_readback_ns = wd_now_ns() - render_start_ns;
-        render_attempted = true;
+        render_result                  = wd_render_scene_and_readback_xrgb8888(server);
+        render_readback_ns             = wd_now_ns() - render_start_ns;
+        render_attempted               = true;
 
         if (render_result == WD_RENDER_RESULT_FRAME)
         {
@@ -596,7 +584,7 @@ static int server_frame_timer(void* data) {
     {
         uint64_t delta_interval_ns = WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
         pthread_mutex_lock(&server->net.lock);
-        delta_interval_ns = wd_server_delta_summary_interval_locked(server, t);
+        delta_interval_ns            = wd_server_delta_summary_interval_locked(server, t);
         const bool should_send_delta = server->last_delta_summary_ns == 0 || t - server->last_delta_summary_ns >= delta_interval_ns;
         if (should_send_delta && server->net.summary_dirty_count != 0)
         {
@@ -811,15 +799,15 @@ static void scene_damage_buffer_iterator(struct wlr_scene_buffer* scene_buffer, 
 
     if (!state->have_bounds)
     {
-        state->bounds = (struct wlr_box){.x = sx, .y = sy, .width = width, .height = height};
+        state->bounds      = (struct wlr_box){.x = sx, .y = sy, .width = width, .height = height};
         state->have_bounds = true;
     }
     else
     {
-        int x1 = sx < state->bounds.x ? sx : state->bounds.x;
-        int y1 = sy < state->bounds.y ? sy : state->bounds.y;
-        int x2 = sx + width;
-        int y2 = sy + height;
+        int x1     = sx < state->bounds.x ? sx : state->bounds.x;
+        int y1     = sy < state->bounds.y ? sy : state->bounds.y;
+        int x2     = sx + width;
+        int y2     = sy + height;
         int old_x2 = state->bounds.x + state->bounds.width;
         int old_y2 = state->bounds.y + state->bounds.height;
         if (old_x2 > x2)
@@ -839,8 +827,7 @@ static void scene_damage_buffer_iterator(struct wlr_scene_buffer* scene_buffer, 
     }
 }
 
-static bool scene_node_damage(struct wd_server* server, struct wlr_scene_node* node, int offset_x, int offset_y,
-                              struct wlr_box* out_box) {
+static bool scene_node_damage(struct wd_server* server, struct wlr_scene_node* node, int offset_x, int offset_y, struct wlr_box* out_box) {
     if (!node)
     {
         return false;
@@ -1044,7 +1031,6 @@ void wd_server_set_default_geometry(struct wd_server* server) {
     (void)wd_server_set_geometry(server, WD_DISPLAY_WIDTH, WD_DISPLAY_HEIGHT);
 }
 
-
 bool wd_server_request_display_size(struct wd_server* server, uint32_t width, uint32_t height) {
     if (!server || width == 0 || height == 0 || width > WD_MAX_RENDER_WIDTH || height > WD_MAX_RENDER_HEIGHT)
     {
@@ -1055,25 +1041,22 @@ bool wd_server_request_display_size(struct wd_server* server, uint32_t width, ui
 
     pthread_mutex_lock(&net->lock);
 
-    uint64_t serial = ++net->display_resize_request_serial;
-    net->display_resize_width  = width;
-    net->display_resize_height = height;
+    uint64_t serial             = ++net->display_resize_request_serial;
+    net->display_resize_width   = width;
+    net->display_resize_height  = height;
     net->display_resize_pending = true;
 
-    while (wd_net_run_state_is_running(&net->run_state) &&
-           net->display_resize_completed_serial < serial)
+    while (wd_net_run_state_is_running(&net->run_state) && net->display_resize_completed_serial < serial)
     {
         pthread_cond_wait(&net->display_resize_cond, &net->lock);
     }
 
-    bool ok = wd_net_run_state_is_running(&net->run_state) &&
-              net->display_resize_completed_serial >= serial && net->display_resize_result;
+    bool ok = wd_net_run_state_is_running(&net->run_state) && net->display_resize_completed_serial >= serial && net->display_resize_result;
 
     pthread_mutex_unlock(&net->lock);
 
     return ok;
 }
-
 
 struct wd_display_geometry_snapshot {
     uint32_t display_width;
@@ -1091,23 +1074,23 @@ struct wd_display_geometry_snapshot {
 };
 
 struct wd_resize_allocations {
-    uint32_t* framebuffer_xrgb8888;
-    uint32_t* framebuffer_shadow_xrgb8888;
+    uint32_t*             framebuffer_xrgb8888;
+    uint32_t*             framebuffer_shadow_xrgb8888;
     struct wd_tile_state* tiles;
-    bool* damage_tiles;
-    uint16_t* dirty_regions;
-    bool* dirty_region_queued;
-    uint64_t* dirty_region_enqueued_ns;
-    uint64_t* dirty_epochs;
-    uint16_t* dirty_queue;
-    bool* dirty_queued;
-    uint64_t* dirty_queue_enqueued_ns;
-    uint16_t* retransmit_queue;
-    bool* retransmit_queued;
-    uint64_t* retransmit_queue_enqueued_ns;
-    uint64_t* retransmit_requested_generation;
-    bool* summary_dirty_tiles;
-    uint16_t* summary_dirty_queue;
+    bool*                 damage_tiles;
+    uint16_t*             dirty_regions;
+    bool*                 dirty_region_queued;
+    uint64_t*             dirty_region_enqueued_ns;
+    uint64_t*             dirty_epochs;
+    uint16_t*             dirty_queue;
+    bool*                 dirty_queued;
+    uint64_t*             dirty_queue_enqueued_ns;
+    uint16_t*             retransmit_queue;
+    bool*                 retransmit_queued;
+    uint64_t*             retransmit_queue_enqueued_ns;
+    uint64_t*             retransmit_requested_generation;
+    bool*                 summary_dirty_tiles;
+    uint16_t*             summary_dirty_queue;
 };
 
 static struct wd_display_geometry_snapshot wd_server_capture_geometry(const struct wd_server* server) {
@@ -1187,29 +1170,28 @@ static bool wd_resize_allocations_prepare(struct wd_resize_allocations* allocs, 
 
     memset(allocs, 0, sizeof(*allocs));
 
-    allocs->framebuffer_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(*allocs->framebuffer_xrgb8888));
-    allocs->framebuffer_shadow_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(*allocs->framebuffer_shadow_xrgb8888));
-    allocs->tiles                = calloc(server->total_tiles, sizeof(*allocs->tiles));
-    allocs->damage_tiles         = calloc(server->total_base_tiles, sizeof(*allocs->damage_tiles));
-    allocs->dirty_regions        = calloc(server->total_tiles, sizeof(*allocs->dirty_regions));
-    allocs->dirty_region_queued  = calloc(server->total_tiles, sizeof(*allocs->dirty_region_queued));
-    allocs->dirty_region_enqueued_ns = calloc(server->total_tiles, sizeof(*allocs->dirty_region_enqueued_ns));
-    allocs->dirty_epochs         = calloc(server->total_tiles, sizeof(*allocs->dirty_epochs));
-    allocs->dirty_queue          = calloc(server->total_tiles, sizeof(*allocs->dirty_queue));
-    allocs->dirty_queued         = calloc(server->total_tiles, sizeof(*allocs->dirty_queued));
-    allocs->dirty_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*allocs->dirty_queue_enqueued_ns));
-    allocs->retransmit_queue     = calloc(server->total_tiles, sizeof(*allocs->retransmit_queue));
-    allocs->retransmit_queued    = calloc(server->total_tiles, sizeof(*allocs->retransmit_queued));
-    allocs->retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*allocs->retransmit_queue_enqueued_ns));
+    allocs->framebuffer_xrgb8888            = calloc(server->framebuffer_pixels, sizeof(*allocs->framebuffer_xrgb8888));
+    allocs->framebuffer_shadow_xrgb8888     = calloc(server->framebuffer_pixels, sizeof(*allocs->framebuffer_shadow_xrgb8888));
+    allocs->tiles                           = calloc(server->total_tiles, sizeof(*allocs->tiles));
+    allocs->damage_tiles                    = calloc(server->total_base_tiles, sizeof(*allocs->damage_tiles));
+    allocs->dirty_regions                   = calloc(server->total_tiles, sizeof(*allocs->dirty_regions));
+    allocs->dirty_region_queued             = calloc(server->total_tiles, sizeof(*allocs->dirty_region_queued));
+    allocs->dirty_region_enqueued_ns        = calloc(server->total_tiles, sizeof(*allocs->dirty_region_enqueued_ns));
+    allocs->dirty_epochs                    = calloc(server->total_tiles, sizeof(*allocs->dirty_epochs));
+    allocs->dirty_queue                     = calloc(server->total_tiles, sizeof(*allocs->dirty_queue));
+    allocs->dirty_queued                    = calloc(server->total_tiles, sizeof(*allocs->dirty_queued));
+    allocs->dirty_queue_enqueued_ns         = calloc(server->total_tiles, sizeof(*allocs->dirty_queue_enqueued_ns));
+    allocs->retransmit_queue                = calloc(server->total_tiles, sizeof(*allocs->retransmit_queue));
+    allocs->retransmit_queued               = calloc(server->total_tiles, sizeof(*allocs->retransmit_queued));
+    allocs->retransmit_queue_enqueued_ns    = calloc(server->total_tiles, sizeof(*allocs->retransmit_queue_enqueued_ns));
     allocs->retransmit_requested_generation = calloc(server->total_tiles, sizeof(*allocs->retransmit_requested_generation));
-    allocs->summary_dirty_tiles  = calloc(server->total_tiles, sizeof(*allocs->summary_dirty_tiles));
-    allocs->summary_dirty_queue  = calloc(server->total_tiles, sizeof(*allocs->summary_dirty_queue));
+    allocs->summary_dirty_tiles             = calloc(server->total_tiles, sizeof(*allocs->summary_dirty_tiles));
+    allocs->summary_dirty_queue             = calloc(server->total_tiles, sizeof(*allocs->summary_dirty_queue));
 
-    if (!allocs->framebuffer_xrgb8888 || !allocs->framebuffer_shadow_xrgb8888 || !allocs->tiles ||
-        !allocs->damage_tiles || !allocs->dirty_regions ||
-        !allocs->dirty_region_queued || !allocs->dirty_region_enqueued_ns || !allocs->dirty_epochs || !allocs->dirty_queue || !allocs->dirty_queued ||
-        !allocs->dirty_queue_enqueued_ns || !allocs->retransmit_queue || !allocs->retransmit_queued ||
-        !allocs->retransmit_queue_enqueued_ns || !allocs->retransmit_requested_generation ||
+    if (!allocs->framebuffer_xrgb8888 || !allocs->framebuffer_shadow_xrgb8888 || !allocs->tiles || !allocs->damage_tiles ||
+        !allocs->dirty_regions || !allocs->dirty_region_queued || !allocs->dirty_region_enqueued_ns || !allocs->dirty_epochs ||
+        !allocs->dirty_queue || !allocs->dirty_queued || !allocs->dirty_queue_enqueued_ns || !allocs->retransmit_queue ||
+        !allocs->retransmit_queued || !allocs->retransmit_queue_enqueued_ns || !allocs->retransmit_requested_generation ||
         !allocs->summary_dirty_tiles || !allocs->summary_dirty_queue)
     {
         wd_resize_allocations_free(allocs);
@@ -1340,29 +1322,29 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 
     wd_stream_wait_for_encoder_idle_locked(server);
 
-    uint32_t* old_framebuffer = server->framebuffer_xrgb8888;
+    uint32_t* old_framebuffer        = server->framebuffer_xrgb8888;
     uint32_t* old_framebuffer_shadow = server->framebuffer_shadow_xrgb8888;
     wd_server_free_resize_stream_state(server);
 
-    server->framebuffer_xrgb8888 = next_allocs.framebuffer_xrgb8888;
-    server->framebuffer_shadow_xrgb8888 = next_allocs.framebuffer_shadow_xrgb8888;
-    server->framebuffer_shadow_valid = false;
-    server->framebuffer_content_valid = false;
-    server->net.tiles = next_allocs.tiles;
-    server->damage_tiles = next_allocs.damage_tiles;
-    server->net.dirty_regions = next_allocs.dirty_regions;
-    server->net.dirty_region_queued = next_allocs.dirty_region_queued;
-    server->net.dirty_region_enqueued_ns = next_allocs.dirty_region_enqueued_ns;
-    server->net.dirty_epochs = next_allocs.dirty_epochs;
-    server->net.dirty_queue = next_allocs.dirty_queue;
-    server->net.dirty_queued = next_allocs.dirty_queued;
-    server->net.dirty_queue_enqueued_ns = next_allocs.dirty_queue_enqueued_ns;
-    server->net.retransmit_queue = next_allocs.retransmit_queue;
-    server->net.retransmit_queued = next_allocs.retransmit_queued;
-    server->net.retransmit_queue_enqueued_ns = next_allocs.retransmit_queue_enqueued_ns;
+    server->framebuffer_xrgb8888                = next_allocs.framebuffer_xrgb8888;
+    server->framebuffer_shadow_xrgb8888         = next_allocs.framebuffer_shadow_xrgb8888;
+    server->framebuffer_shadow_valid            = false;
+    server->framebuffer_content_valid           = false;
+    server->net.tiles                           = next_allocs.tiles;
+    server->damage_tiles                        = next_allocs.damage_tiles;
+    server->net.dirty_regions                   = next_allocs.dirty_regions;
+    server->net.dirty_region_queued             = next_allocs.dirty_region_queued;
+    server->net.dirty_region_enqueued_ns        = next_allocs.dirty_region_enqueued_ns;
+    server->net.dirty_epochs                    = next_allocs.dirty_epochs;
+    server->net.dirty_queue                     = next_allocs.dirty_queue;
+    server->net.dirty_queued                    = next_allocs.dirty_queued;
+    server->net.dirty_queue_enqueued_ns         = next_allocs.dirty_queue_enqueued_ns;
+    server->net.retransmit_queue                = next_allocs.retransmit_queue;
+    server->net.retransmit_queued               = next_allocs.retransmit_queued;
+    server->net.retransmit_queue_enqueued_ns    = next_allocs.retransmit_queue_enqueued_ns;
     server->net.retransmit_requested_generation = next_allocs.retransmit_requested_generation;
-    server->net.summary_dirty_tiles = next_allocs.summary_dirty_tiles;
-    server->net.summary_dirty_queue = next_allocs.summary_dirty_queue;
+    server->net.summary_dirty_tiles             = next_allocs.summary_dirty_tiles;
+    server->net.summary_dirty_queue             = next_allocs.summary_dirty_queue;
     memset(&next_allocs, 0, sizeof(next_allocs));
 
     free(old_framebuffer);
@@ -1410,11 +1392,9 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     return true;
 }
 
-bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr listen_address,
-                    const char* app_cmd, double output_scale, uint16_t output_refresh_hz,
-                    uint32_t display_width, uint32_t display_height,
-                    uint16_t tile_width, uint16_t tile_height, bool enable_xwayland,
-                    bool enable_xdg_dialog, const char* video_encoder_backend) {
+bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr listen_address, const char* app_cmd, double output_scale,
+                    uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height, uint16_t tile_width, uint16_t tile_height,
+                    bool enable_xwayland, bool enable_xdg_dialog, const char* video_encoder_backend) {
     memset(server, 0, sizeof(*server));
     wd_spawned_process_init(&server->startup_process);
     server->input_wakeup_fd = -1;
@@ -1433,10 +1413,10 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr 
 
     server->scene_dirty = true;
 
-    server->startup_command      = app_cmd;
+    server->startup_command       = app_cmd;
     server->video_encoder_backend = video_encoder_backend;
-    server->output_scale         = output_scale;
-    server->output_refresh_mhz = (uint32_t)(output_refresh_hz != 0 ? output_refresh_hz : WD_SERVER_DEFAULT_REFRESH_HZ) * 1000u;
+    server->output_scale          = output_scale;
+    server->output_refresh_mhz    = (uint32_t)(output_refresh_hz != 0 ? output_refresh_hz : WD_SERVER_DEFAULT_REFRESH_HZ) * 1000u;
 #if WAYDISPLAY_ENABLE_XWAYLAND
     server->enable_xwayland = enable_xwayland;
 #else
@@ -1449,12 +1429,12 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr 
         server->output_scale = WD_SERVER_DEFAULT_OUTPUT_SCALE;
     }
 
-    server->framebuffer_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(uint32_t));
+    server->framebuffer_xrgb8888        = calloc(server->framebuffer_pixels, sizeof(uint32_t));
     server->framebuffer_shadow_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(uint32_t));
     if (server->framebuffer_xrgb8888 && server->framebuffer_shadow_xrgb8888)
     {
-        server->framebuffer_generation = 1;
-        server->framebuffer_shadow_valid = false;
+        server->framebuffer_generation    = 1;
+        server->framebuffer_shadow_valid  = false;
         server->framebuffer_content_valid = false;
     }
 
@@ -1509,8 +1489,8 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr 
         return false;
     }
 
-    server->input_wakeup_source = wl_event_loop_add_fd(server->event_loop, server->input_wakeup_fd, WL_EVENT_READABLE,
-                                                        server_input_wakeup, server);
+    server->input_wakeup_source =
+        wl_event_loop_add_fd(server->event_loop, server->input_wakeup_fd, WL_EVENT_READABLE, server_input_wakeup, server);
     if (!server->input_wakeup_source)
     {
         WD_LOG_ERROR("failed to add input eventfd to Wayland event loop");
@@ -1639,8 +1619,8 @@ void wd_server_destroy(struct wd_server* server) {
     server->framebuffer_xrgb8888 = NULL;
     free(server->framebuffer_shadow_xrgb8888);
     server->framebuffer_shadow_xrgb8888 = NULL;
-    server->framebuffer_shadow_valid = false;
-    server->framebuffer_content_valid = false;
+    server->framebuffer_shadow_valid    = false;
+    server->framebuffer_content_valid   = false;
 }
 
 static void server_request_network_stop(struct wd_server* server) {

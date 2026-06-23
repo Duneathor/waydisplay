@@ -11,22 +11,21 @@ struct wd_dirty_region_heap_entry {
 };
 
 struct wd_dirty_region_scheduler {
-    uint16_t capacity;
-    uint16_t regions_x;
-    uint16_t count;
-    uint64_t starvation_ns;
-    bool* queued;
-    uint64_t* enqueued_ns;
-    uint32_t* serial;
-    uint64_t* queued_bits;
-    size_t bit_word_count;
+    uint16_t                           capacity;
+    uint16_t                           regions_x;
+    uint16_t                           count;
+    uint64_t                           starvation_ns;
+    bool*                              queued;
+    uint64_t*                          enqueued_ns;
+    uint32_t*                          serial;
+    uint64_t*                          queued_bits;
+    size_t                             bit_word_count;
     struct wd_dirty_region_heap_entry* heap;
-    size_t heap_count;
-    size_t heap_capacity;
+    size_t                             heap_count;
+    size_t                             heap_capacity;
 };
 
-static bool heap_entry_less(const struct wd_dirty_region_heap_entry* lhs,
-                            const struct wd_dirty_region_heap_entry* rhs) {
+static bool heap_entry_less(const struct wd_dirty_region_heap_entry* lhs, const struct wd_dirty_region_heap_entry* rhs) {
     if (lhs->enqueued_ns != rhs->enqueued_ns)
     {
         return lhs->enqueued_ns < rhs->enqueued_ns;
@@ -36,8 +35,8 @@ static bool heap_entry_less(const struct wd_dirty_region_heap_entry* lhs,
 
 static void heap_swap(struct wd_dirty_region_heap_entry* lhs, struct wd_dirty_region_heap_entry* rhs) {
     const struct wd_dirty_region_heap_entry tmp = *lhs;
-    *lhs = *rhs;
-    *rhs = tmp;
+    *lhs                                        = *rhs;
+    *rhs                                        = tmp;
 }
 
 static void heap_sift_up(struct wd_dirty_region_scheduler* scheduler, size_t index) {
@@ -56,9 +55,9 @@ static void heap_sift_up(struct wd_dirty_region_scheduler* scheduler, size_t ind
 static void heap_sift_down(struct wd_dirty_region_scheduler* scheduler, size_t index) {
     for (;;)
     {
-        const size_t left = index * 2u + 1u;
-        const size_t right = left + 1u;
-        size_t smallest = index;
+        const size_t left     = index * 2u + 1u;
+        const size_t right    = left + 1u;
+        size_t       smallest = index;
         if (left < scheduler->heap_count && heap_entry_less(&scheduler->heap[left], &scheduler->heap[smallest]))
         {
             smallest = left;
@@ -91,7 +90,7 @@ static bool heap_reserve(struct wd_dirty_region_scheduler* scheduler, size_t cap
     {
         return false;
     }
-    scheduler->heap = next;
+    scheduler->heap          = next;
     scheduler->heap_capacity = next_capacity;
     return true;
 }
@@ -102,9 +101,9 @@ static bool heap_push(struct wd_dirty_region_scheduler* scheduler, uint16_t regi
         return false;
     }
     struct wd_dirty_region_heap_entry* entry = &scheduler->heap[scheduler->heap_count];
-    entry->enqueued_ns = scheduler->enqueued_ns[region_id];
-    entry->serial = scheduler->serial[region_id];
-    entry->region_id = region_id;
+    entry->enqueued_ns                       = scheduler->enqueued_ns[region_id];
+    entry->serial                            = scheduler->serial[region_id];
+    entry->region_id                         = region_id;
     heap_sift_up(scheduler, scheduler->heap_count);
     scheduler->heap_count++;
     return true;
@@ -123,11 +122,9 @@ static void heap_pop(struct wd_dirty_region_scheduler* scheduler) {
     }
 }
 
-static bool heap_entry_current(const struct wd_dirty_region_scheduler* scheduler,
-                               const struct wd_dirty_region_heap_entry* entry) {
+static bool heap_entry_current(const struct wd_dirty_region_scheduler* scheduler, const struct wd_dirty_region_heap_entry* entry) {
     return entry->region_id < scheduler->capacity && scheduler->queued[entry->region_id] &&
-           scheduler->serial[entry->region_id] == entry->serial &&
-           scheduler->enqueued_ns[entry->region_id] == entry->enqueued_ns;
+           scheduler->serial[entry->region_id] == entry->serial && scheduler->enqueued_ns[entry->region_id] == entry->enqueued_ns;
 }
 
 static void heap_prune(struct wd_dirty_region_scheduler* scheduler) {
@@ -155,15 +152,15 @@ static uint16_t find_next_queued(const struct wd_dirty_region_scheduler* schedul
     for (uint32_t pass = 0; pass < 2u; ++pass)
     {
         const uint32_t begin = pass == 0 ? start : 0u;
-        const uint32_t end = pass == 0 ? scheduler->capacity : start;
+        const uint32_t end   = pass == 0 ? scheduler->capacity : start;
         if (begin >= end)
         {
             continue;
         }
 
-        size_t word = begin / 64u;
+        size_t       word      = begin / 64u;
         const size_t last_word = (end - 1u) / 64u;
-        uint64_t bits = scheduler->queued_bits[word] & (~UINT64_C(0) << (begin % 64u));
+        uint64_t     bits      = scheduler->queued_bits[word] & (~UINT64_C(0) << (begin % 64u));
         while (word <= last_word)
         {
             if (word == last_word && end % 64u != 0)
@@ -173,7 +170,7 @@ static uint16_t find_next_queued(const struct wd_dirty_region_scheduler* schedul
             if (bits != 0)
             {
                 const uint32_t bit = (uint32_t)__builtin_ctzll(bits);
-                const uint32_t id = (uint32_t)word * 64u + bit;
+                const uint32_t id  = (uint32_t)word * 64u + bit;
                 if (id < scheduler->capacity)
                 {
                     return (uint16_t)id;
@@ -190,8 +187,7 @@ static uint16_t find_next_queued(const struct wd_dirty_region_scheduler* schedul
     return UINT16_MAX;
 }
 
-struct wd_dirty_region_scheduler* wd_dirty_region_scheduler_create(uint16_t capacity, uint16_t regions_x,
-                                                                    uint64_t starvation_ns) {
+struct wd_dirty_region_scheduler* wd_dirty_region_scheduler_create(uint16_t capacity, uint16_t regions_x, uint64_t starvation_ns) {
     if (capacity == 0 || regions_x == 0)
     {
         return NULL;
@@ -201,14 +197,14 @@ struct wd_dirty_region_scheduler* wd_dirty_region_scheduler_create(uint16_t capa
     {
         return NULL;
     }
-    scheduler->capacity = capacity;
-    scheduler->regions_x = regions_x;
-    scheduler->starvation_ns = starvation_ns;
+    scheduler->capacity       = capacity;
+    scheduler->regions_x      = regions_x;
+    scheduler->starvation_ns  = starvation_ns;
     scheduler->bit_word_count = ((size_t)capacity + 63u) / 64u;
-    scheduler->queued = calloc(capacity, sizeof(*scheduler->queued));
-    scheduler->enqueued_ns = calloc(capacity, sizeof(*scheduler->enqueued_ns));
-    scheduler->serial = calloc(capacity, sizeof(*scheduler->serial));
-    scheduler->queued_bits = calloc(scheduler->bit_word_count, sizeof(*scheduler->queued_bits));
+    scheduler->queued         = calloc(capacity, sizeof(*scheduler->queued));
+    scheduler->enqueued_ns    = calloc(capacity, sizeof(*scheduler->enqueued_ns));
+    scheduler->serial         = calloc(capacity, sizeof(*scheduler->serial));
+    scheduler->queued_bits    = calloc(scheduler->bit_word_count, sizeof(*scheduler->queued_bits));
     if (!scheduler->queued || !scheduler->enqueued_ns || !scheduler->serial || !scheduler->queued_bits)
     {
         wd_dirty_region_scheduler_destroy(scheduler);
@@ -238,12 +234,11 @@ void wd_dirty_region_scheduler_reset(struct wd_dirty_region_scheduler* scheduler
     memset(scheduler->queued, 0, scheduler->capacity * sizeof(*scheduler->queued));
     memset(scheduler->enqueued_ns, 0, scheduler->capacity * sizeof(*scheduler->enqueued_ns));
     memset(scheduler->queued_bits, 0, scheduler->bit_word_count * sizeof(*scheduler->queued_bits));
-    scheduler->count = 0;
+    scheduler->count      = 0;
     scheduler->heap_count = 0;
 }
 
-bool wd_dirty_region_scheduler_enqueue(struct wd_dirty_region_scheduler* scheduler, uint16_t region_id,
-                                       uint64_t now_ns) {
+bool wd_dirty_region_scheduler_enqueue(struct wd_dirty_region_scheduler* scheduler, uint16_t region_id, uint64_t now_ns) {
     if (!scheduler || region_id >= scheduler->capacity)
     {
         return false;
@@ -274,8 +269,8 @@ bool wd_dirty_region_scheduler_enqueue(struct wd_dirty_region_scheduler* schedul
     return true;
 }
 
-bool wd_dirty_region_scheduler_take(struct wd_dirty_region_scheduler* scheduler, uint16_t cursor_region_id,
-                                    uint64_t now_ns, uint16_t* out_region_id) {
+bool wd_dirty_region_scheduler_take(struct wd_dirty_region_scheduler* scheduler, uint16_t cursor_region_id, uint64_t now_ns,
+                                    uint16_t* out_region_id) {
     if (!scheduler || !out_region_id || scheduler->count == 0)
     {
         return false;
@@ -333,7 +328,6 @@ uint16_t wd_dirty_region_scheduler_count(const struct wd_dirty_region_scheduler*
     return scheduler ? scheduler->count : 0;
 }
 
-uint64_t wd_dirty_region_scheduler_enqueued_ns(const struct wd_dirty_region_scheduler* scheduler,
-                                               uint16_t region_id) {
+uint64_t wd_dirty_region_scheduler_enqueued_ns(const struct wd_dirty_region_scheduler* scheduler, uint16_t region_id) {
     return scheduler && region_id < scheduler->capacity ? scheduler->enqueued_ns[region_id] : 0;
 }

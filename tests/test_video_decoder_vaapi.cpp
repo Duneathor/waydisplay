@@ -1,5 +1,4 @@
 #include "video_decoder.hpp"
-
 #include "waydisplay/wd_protocol.h"
 
 extern "C" {
@@ -27,24 +26,23 @@ using waydisplay::ClientVideoFrameBuffer;
 using waydisplay::ClientVideoPacket;
 using waydisplay::ClientVideoPixelFormat;
 
-#define CHECK(condition)                                                                          \
-    do                                                                                             \
-    {                                                                                              \
-        if (!(condition))                                                                          \
-        {                                                                                          \
-            std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #condition);   \
-            return false;                                                                          \
-        }                                                                                          \
+#define CHECK(condition)                                                                                                                   \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        if (!(condition))                                                                                                                  \
+        {                                                                                                                                  \
+            std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #condition);                                             \
+            return false;                                                                                                                  \
+        }                                                                                                                                  \
     } while (false)
 
-constexpr uint16_t kVaapiFixtureWidth = 128;
+constexpr uint16_t kVaapiFixtureWidth  = 128;
 constexpr uint16_t kVaapiFixtureHeight = 128;
 
 std::vector<uint8_t> read_fixture(const char* name) {
     const std::string path = std::string(WAYDISPLAY_TEST_FIXTURE_DIR) + "/" + name;
-    std::ifstream input(path, std::ios::binary);
-    return std::vector<uint8_t>(std::istreambuf_iterator<char>(input),
-                                std::istreambuf_iterator<char>());
+    std::ifstream     input(path, std::ios::binary);
+    return std::vector<uint8_t>(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
 AVCodecID av_codec_id(uint32_t codec) {
@@ -64,8 +62,7 @@ bool decoder_advertises_vaapi(uint32_t codec) {
         {
             break;
         }
-        if (config->device_type == AV_HWDEVICE_TYPE_VAAPI &&
-            (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0)
+        if (config->device_type == AV_HWDEVICE_TYPE_VAAPI && (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0)
         {
             return true;
         }
@@ -75,16 +72,16 @@ bool decoder_advertises_vaapi(uint32_t codec) {
 
 ClientVideoDecoderConfig decoder_config(uint32_t codec, uint8_t hwdecode_mode) {
     ClientVideoDecoderConfig config{};
-    config.session_id = 13;
+    config.session_id       = 13;
     config.connection_token = UINT64_C(0x131415161718191a);
-    config.content_epoch = 21;
-    config.width = kVaapiFixtureWidth;
-    config.height = kVaapiFixtureHeight;
-    config.coded_width = kVaapiFixtureWidth;
-    config.coded_height = kVaapiFixtureHeight;
-    config.target_fps = 30;
-    config.codec = codec;
-    config.hwdecode_mode = hwdecode_mode;
+    config.content_epoch    = 21;
+    config.width            = kVaapiFixtureWidth;
+    config.height           = kVaapiFixtureHeight;
+    config.coded_width      = kVaapiFixtureWidth;
+    config.coded_height     = kVaapiFixtureHeight;
+    config.target_fps       = 30;
+    config.codec            = codec;
+    config.hwdecode_mode    = hwdecode_mode;
     return config;
 }
 
@@ -107,8 +104,7 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
     {
         return VaapiDecodeResult::Failed;
     }
-    if (!waydisplay::client_video_decoder_configure(
-            decoder, decoder_config(codec, WD_CLIENT_VIDEO_HWDECODE_VAAPI)))
+    if (!waydisplay::client_video_decoder_configure(decoder, decoder_config(codec, WD_CLIENT_VIDEO_HWDECODE_VAAPI)))
     {
         waydisplay::client_video_decoder_destroy(decoder);
         return VaapiDecodeResult::Unsupported;
@@ -118,27 +114,25 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
      * returning a displayable frame. Submit a short sequence of independent
      * keyframes, as the real client does, instead of treating normal pipeline
      * latency as a decode failure. */
-    constexpr uint32_t kMaxAccessUnits = 8;
-    uint64_t produced_output_count = 0;
+    constexpr uint32_t kMaxAccessUnits       = 8;
+    uint64_t           produced_output_count = 0;
     for (uint32_t attempt = 0; attempt < kMaxAccessUnits; ++attempt)
     {
         ClientVideoPacket packet{};
-        packet.header.session_id = 13;
+        packet.header.session_id       = 13;
         packet.header.connection_token = UINT64_C(0x131415161718191a);
-        packet.header.content_epoch = 21;
-        packet.header.codec = codec;
-        packet.header.flags = WD_VIDEO_FRAME_CONFIG | WD_VIDEO_FRAME_KEYFRAME;
-        packet.header.frame_id = static_cast<uint64_t>(attempt) + 1u;
-        packet.header.pts_usec = UINT64_C(2000000) +
-                                 static_cast<uint64_t>(attempt) * UINT64_C(33333);
-        packet.header.width = kVaapiFixtureWidth;
-        packet.header.height = kVaapiFixtureHeight;
-        packet.header.coded_width = kVaapiFixtureWidth;
-        packet.header.coded_height = kVaapiFixtureHeight;
-        packet.header.data_size = static_cast<uint32_t>(fixture.size());
-        packet.data = fixture.data();
-        if (!wd_video_frame_payload_size_is_valid(
-                &packet.header, static_cast<uint32_t>(sizeof(packet.header) + fixture.size())))
+        packet.header.content_epoch    = 21;
+        packet.header.codec            = codec;
+        packet.header.flags            = WD_VIDEO_FRAME_CONFIG | WD_VIDEO_FRAME_KEYFRAME;
+        packet.header.frame_id         = static_cast<uint64_t>(attempt) + 1u;
+        packet.header.pts_usec         = UINT64_C(2000000) + static_cast<uint64_t>(attempt) * UINT64_C(33333);
+        packet.header.width            = kVaapiFixtureWidth;
+        packet.header.height           = kVaapiFixtureHeight;
+        packet.header.coded_width      = kVaapiFixtureWidth;
+        packet.header.coded_height     = kVaapiFixtureHeight;
+        packet.header.data_size        = static_cast<uint32_t>(fixture.size());
+        packet.data                    = fixture.data();
+        if (!wd_video_frame_payload_size_is_valid(&packet.header, static_cast<uint32_t>(sizeof(packet.header) + fixture.size())))
         {
             std::fprintf(stderr, "invalid VAAPI decoder fixture packet: %s\n", fixture_name);
             waydisplay::client_video_decoder_destroy(decoder);
@@ -148,9 +142,7 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
         ClientDecodedVideoFrame decoded{};
         if (!waydisplay::client_video_decoder_decode(decoder, packet, &decoded))
         {
-            std::fprintf(stderr,
-                         "VAAPI decoder rejected access unit %u for codec 0x%x\n",
-                         attempt + 1u, codec);
+            std::fprintf(stderr, "VAAPI decoder rejected access unit %u for codec 0x%x\n", attempt + 1u, codec);
             waydisplay::client_video_decoder_destroy(decoder);
             return VaapiDecodeResult::Failed;
         }
@@ -165,19 +157,15 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
             ClientVideoFrameBuffer output{};
             if (!waydisplay::client_video_decoder_swap_output_frame(decoder, output))
             {
-                std::fprintf(stderr,
-                             "VAAPI decoder exposed metadata without a frame for codec 0x%x\n",
-                             codec);
+                std::fprintf(stderr, "VAAPI decoder exposed metadata without a frame for codec 0x%x\n", codec);
                 waydisplay::client_video_decoder_destroy(decoder);
                 return VaapiDecodeResult::Failed;
             }
 
             const uint64_t expected_frame_id = produced_output_count + 1u;
-            const uint64_t expected_pts = UINT64_C(2000000) +
-                                          produced_output_count * UINT64_C(33333);
-            if (!output.valid() || decoded.format != ClientVideoPixelFormat::IYUV ||
-                decoded.width != kVaapiFixtureWidth || decoded.height != kVaapiFixtureHeight ||
-                decoded.frame_id != expected_frame_id || decoded.content_epoch != 21 ||
+            const uint64_t expected_pts      = UINT64_C(2000000) + produced_output_count * UINT64_C(33333);
+            if (!output.valid() || decoded.format != ClientVideoPixelFormat::IYUV || decoded.width != kVaapiFixtureWidth ||
+                decoded.height != kVaapiFixtureHeight || decoded.frame_id != expected_frame_id || decoded.content_epoch != 21 ||
                 decoded.pts_usec != expected_pts ||
                 std::strstr(waydisplay::client_video_decoder_backend_name(decoder), "vaapi") == nullptr ||
                 waydisplay::client_video_decoder_hwdecode_failed_auto(decoder))
@@ -185,9 +173,8 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
                 std::fprintf(stderr,
                              "VAAPI decoder produced invalid output for codec 0x%x: "
                              "backend=%s output=%s decoded=%ux%u frame=%llu pts=%llu\n",
-                             codec, waydisplay::client_video_decoder_backend_name(decoder),
-                             output.valid() ? "valid" : "invalid", decoded.width, decoded.height,
-                             static_cast<unsigned long long>(decoded.frame_id),
+                             codec, waydisplay::client_video_decoder_backend_name(decoder), output.valid() ? "valid" : "invalid",
+                             decoded.width, decoded.height, static_cast<unsigned long long>(decoded.frame_id),
                              static_cast<unsigned long long>(decoded.pts_usec));
                 waydisplay::client_video_decoder_destroy(decoder);
                 return VaapiDecodeResult::Failed;
@@ -207,8 +194,7 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
         std::fprintf(stderr,
                      "VAAPI decoder accepted %u access units but produced no frame for codec 0x%x "
                      "(backend=%s)\n",
-                     kMaxAccessUnits, codec,
-                     waydisplay::client_video_decoder_backend_name(decoder));
+                     kMaxAccessUnits, codec, waydisplay::client_video_decoder_backend_name(decoder));
     }
 
     waydisplay::client_video_decoder_destroy(decoder);
@@ -231,14 +217,12 @@ int main() {
         return 77;
     }
 
-
     bool attempted = false;
-    bool decoded = false;
+    bool decoded   = false;
     if ((supported & WD_VIDEO_CODEC_H264) != 0 && decoder_advertises_vaapi(WD_VIDEO_CODEC_H264))
     {
-        attempted = true;
-        const VaapiDecodeResult result =
-            decode_with_vaapi(WD_VIDEO_CODEC_H264, "video_keyframe_128x128.h264");
+        attempted                      = true;
+        const VaapiDecodeResult result = decode_with_vaapi(WD_VIDEO_CODEC_H264, "video_keyframe_128x128.h264");
         if (result == VaapiDecodeResult::Failed)
         {
             return 1;
@@ -247,9 +231,8 @@ int main() {
     }
     if ((supported & WD_VIDEO_CODEC_H265) != 0 && decoder_advertises_vaapi(WD_VIDEO_CODEC_H265))
     {
-        attempted = true;
-        const VaapiDecodeResult result =
-            decode_with_vaapi(WD_VIDEO_CODEC_H265, "video_keyframe_128x128.h265");
+        attempted                      = true;
+        const VaapiDecodeResult result = decode_with_vaapi(WD_VIDEO_CODEC_H265, "video_keyframe_128x128.h265");
         if (result == VaapiDecodeResult::Failed)
         {
             return 1;

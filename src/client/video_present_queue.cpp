@@ -19,23 +19,21 @@ ClientVideoFrameBuffer ClientVideoPresentQueue::take_decode_buffer(bool& dropped
     return buffer;
 }
 
-bool ClientVideoPresentQueue::push_decoded(ClientVideoFrameBuffer&& buffer, uint32_t width,
-                                           uint32_t height, uint64_t frame_id,
+bool ClientVideoPresentQueue::push_decoded(ClientVideoFrameBuffer&& buffer, uint32_t width, uint32_t height, uint64_t frame_id,
                                            uint64_t pts_usec, uint64_t epoch) {
-    if (!buffer.valid() || buffer.width != width || buffer.height != height ||
-        frames_.size() >= capacity_)
+    if (!buffer.valid() || buffer.width != width || buffer.height != height || frames_.size() >= capacity_)
     {
         recycle(std::move(buffer));
         return false;
     }
 
     ClientQueuedVideoFrame frame{};
-    frame.buffer = std::move(buffer);
-    frame.width = width;
-    frame.height = height;
+    frame.buffer   = std::move(buffer);
+    frame.width    = width;
+    frame.height   = height;
     frame.frame_id = frame_id;
     frame.pts_usec = pts_usec;
-    frame.epoch = epoch;
+    frame.epoch    = epoch;
     frames_.push_back(std::move(frame));
     return true;
 }

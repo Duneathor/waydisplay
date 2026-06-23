@@ -1,19 +1,18 @@
+#include <stdio.h>
+#include <string.h>
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_scene.h>
 
-#include <stdio.h>
-#include <string.h>
-
 static int failures = 0;
 
-#define CHECK(expr)                                                                                                    \
-    do                                                                                                                 \
-    {                                                                                                                  \
-        if (!(expr))                                                                                                   \
-        {                                                                                                              \
-            fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #expr);                                \
-            ++failures;                                                                                                \
-        }                                                                                                              \
+#define CHECK(expr)                                                                                                                        \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        if (!(expr))                                                                                                                       \
+        {                                                                                                                                  \
+            fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #expr);                                                       \
+            ++failures;                                                                                                                    \
+        }                                                                                                                                  \
     } while (0)
 
 struct destroy_probe {
@@ -50,10 +49,10 @@ static void test_reparent_enable_and_coordinates(void) {
         return;
     }
 
-    struct wlr_scene_tree* left  = wlr_scene_tree_create(&scene->tree);
-    struct wlr_scene_tree* right = wlr_scene_tree_create(&scene->tree);
+    struct wlr_scene_tree* left     = wlr_scene_tree_create(&scene->tree);
+    struct wlr_scene_tree* right    = wlr_scene_tree_create(&scene->tree);
     const float            color[4] = {0.25f, 0.5f, 0.75f, 1.0f};
-    struct wlr_scene_rect* rect = wlr_scene_rect_create(left, 20, 20, color);
+    struct wlr_scene_rect* rect     = wlr_scene_rect_create(left, 20, 20, color);
     CHECK(left != NULL && right != NULL && rect != NULL);
 
     wlr_scene_node_set_position(&left->node, 10, 20);
@@ -92,15 +91,15 @@ static void test_recursive_destruction_signals_once(void) {
         return;
     }
 
-    struct wlr_scene_tree* parent = wlr_scene_tree_create(&scene->tree);
-    struct wlr_scene_tree* child  = wlr_scene_tree_create(parent);
+    struct wlr_scene_tree* parent   = wlr_scene_tree_create(&scene->tree);
+    struct wlr_scene_tree* child    = wlr_scene_tree_create(parent);
     const float            color[4] = {0.0f, 1.0f, 0.0f, 1.0f};
-    struct wlr_scene_rect* rect = wlr_scene_rect_create(child, 8, 8, color);
+    struct wlr_scene_rect* rect     = wlr_scene_rect_create(child, 8, 8, color);
     CHECK(parent != NULL && child != NULL && rect != NULL);
 
-    int parent_destroyed = 0;
-    int child_destroyed  = 0;
-    int rect_destroyed   = 0;
+    int                  parent_destroyed = 0;
+    int                  child_destroyed  = 0;
+    int                  rect_destroyed   = 0;
     struct destroy_probe parent_probe;
     struct destroy_probe child_probe;
     struct destroy_probe rect_probe;

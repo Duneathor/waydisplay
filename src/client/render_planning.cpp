@@ -38,38 +38,36 @@ bool clamp_dirty_rect(const ClientDirtyRect& in, uint32_t frame_width, uint32_t 
     return true;
 }
 
-
-bool ClientDirtyTileGrid::reset(uint32_t frame_width, uint32_t frame_height,
-                                uint16_t tile_width, uint16_t tile_height) {
+bool ClientDirtyTileGrid::reset(uint32_t frame_width, uint32_t frame_height, uint16_t tile_width, uint16_t tile_height) {
     if (frame_width == 0 || frame_height == 0 || tile_width == 0 || tile_height == 0)
     {
         clear();
-        frame_width_ = 0;
+        frame_width_  = 0;
         frame_height_ = 0;
-        tile_width_ = 0;
-        tile_height_ = 0;
-        tiles_x_ = 0;
-        tiles_y_ = 0;
+        tile_width_   = 0;
+        tile_height_  = 0;
+        tiles_x_      = 0;
+        tiles_y_      = 0;
         dirty_tiles_.clear();
         previous_runs_.clear();
         current_runs_.clear();
         return false;
     }
 
-    const uint32_t tiles_x = (frame_width + tile_width - 1u) / tile_width;
-    const uint32_t tiles_y = (frame_height + tile_height - 1u) / tile_height;
+    const uint32_t tiles_x     = (frame_width + tile_width - 1u) / tile_width;
+    const uint32_t tiles_y     = (frame_height + tile_height - 1u) / tile_height;
     const uint64_t total_tiles = static_cast<uint64_t>(tiles_x) * tiles_y;
     if (tiles_x == 0 || tiles_y == 0 || total_tiles > static_cast<uint64_t>(SIZE_MAX))
     {
         return false;
     }
 
-    frame_width_ = frame_width;
-    frame_height_ = frame_height;
-    tile_width_ = tile_width;
-    tile_height_ = tile_height;
-    tiles_x_ = tiles_x;
-    tiles_y_ = tiles_y;
+    frame_width_      = frame_width;
+    frame_height_     = frame_height;
+    tile_width_       = tile_width;
+    tile_height_      = tile_height;
+    tiles_x_          = tiles_x;
+    tiles_y_          = tiles_y;
     dirty_tile_count_ = 0;
     dirty_tiles_.assign(static_cast<size_t>(total_tiles), 0);
     previous_runs_.clear();
@@ -123,8 +121,8 @@ void ClientDirtyTileGrid::take_rects(std::vector<ClientDirtyRect>& out_rects) {
     for (uint32_t tile_y = 0; tile_y < tiles_y_; ++tile_y)
     {
         current_runs_.clear();
-        size_t previous_index = 0;
-        uint32_t tile_x = 0;
+        size_t   previous_index = 0;
+        uint32_t tile_x         = 0;
         while (tile_x < tiles_x_)
         {
             const size_t bit_index = static_cast<size_t>(tile_y) * tiles_x_ + tile_x;
@@ -157,19 +155,19 @@ void ClientDirtyTileGrid::take_rects(std::vector<ClientDirtyRect>& out_rects) {
             if (previous_index < previous_runs_.size() && previous_runs_[previous_index].start == run_start &&
                 previous_runs_[previous_index].end == run_end)
             {
-                rect_index = previous_runs_[previous_index].rect_index;
-                ClientDirtyRect& rect = out_rects[rect_index];
-                const uint32_t bottom = std::min<uint32_t>(frame_height_, (tile_y + 1u) * tile_height_);
-                rect.h = static_cast<uint16_t>(bottom - rect.y);
+                rect_index              = previous_runs_[previous_index].rect_index;
+                ClientDirtyRect& rect   = out_rects[rect_index];
+                const uint32_t   bottom = std::min<uint32_t>(frame_height_, (tile_y + 1u) * tile_height_);
+                rect.h                  = static_cast<uint16_t>(bottom - rect.y);
             }
             else
             {
-                const uint32_t x = run_start * tile_width_;
-                const uint32_t right = std::min<uint32_t>(frame_width_, run_end * tile_width_);
-                const uint32_t y = tile_y * tile_height_;
+                const uint32_t x      = run_start * tile_width_;
+                const uint32_t right  = std::min<uint32_t>(frame_width_, run_end * tile_width_);
+                const uint32_t y      = tile_y * tile_height_;
                 const uint32_t bottom = std::min<uint32_t>(frame_height_, y + tile_height_);
-                out_rects.push_back({static_cast<uint16_t>(x), static_cast<uint16_t>(y),
-                                     static_cast<uint16_t>(right - x), static_cast<uint16_t>(bottom - y)});
+                out_rects.push_back({static_cast<uint16_t>(x), static_cast<uint16_t>(y), static_cast<uint16_t>(right - x),
+                                     static_cast<uint16_t>(bottom - y)});
             }
             current_runs_.push_back({run_start, run_end, rect_index});
         }
@@ -181,8 +179,8 @@ uint64_t ClientDirtyTileGrid::dirty_tile_count() const {
     return dirty_tile_count_;
 }
 
-bool configure_client_dirty_tile_grid(ClientDirtyTileGrid& grid, uint32_t frame_width, uint32_t frame_height,
-                                      uint16_t tile_width, uint16_t tile_height) {
+bool configure_client_dirty_tile_grid(ClientDirtyTileGrid& grid, uint32_t frame_width, uint32_t frame_height, uint16_t tile_width,
+                                      uint16_t tile_height) {
     return grid.reset(frame_width, frame_height, tile_width, tile_height);
 }
 
@@ -254,9 +252,9 @@ void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t 
     {
         if (!rects.empty())
         {
-            ClientDirtyRect& prev = rects.back();
-            const uint32_t prev_end_x = static_cast<uint32_t>(prev.x) + prev.w;
-            const uint32_t rect_end_x = static_cast<uint32_t>(rect.x) + rect.w;
+            ClientDirtyRect& prev       = rects.back();
+            const uint32_t   prev_end_x = static_cast<uint32_t>(prev.x) + prev.w;
+            const uint32_t   rect_end_x = static_cast<uint32_t>(rect.x) + rect.w;
             if (prev.y == rect.y && prev.h == rect.h && rect.x <= prev_end_x)
             {
                 prev.w = static_cast<uint16_t>(std::min<uint32_t>(std::max(prev_end_x, rect_end_x) - prev.x, UINT16_MAX));
@@ -288,13 +286,12 @@ void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t 
         {
             if (!rects.empty())
             {
-                ClientDirtyRect& prev = rects.back();
-                const uint32_t prev_end_y = static_cast<uint32_t>(prev.y) + prev.h;
-                const uint32_t rect_end_y = static_cast<uint32_t>(rect.y) + rect.h;
+                ClientDirtyRect& prev       = rects.back();
+                const uint32_t   prev_end_y = static_cast<uint32_t>(prev.y) + prev.h;
+                const uint32_t   rect_end_y = static_cast<uint32_t>(rect.y) + rect.h;
                 if (prev.x == rect.x && prev.w == rect.w && rect.y <= prev_end_y)
                 {
-                    prev.h = static_cast<uint16_t>(std::min<uint32_t>(std::max(prev_end_y, rect_end_y) - prev.y,
-                                                                     UINT16_MAX));
+                    prev.h = static_cast<uint16_t>(std::min<uint32_t>(std::max(prev_end_y, rect_end_y) - prev.y, UINT16_MAX));
                     continue;
                 }
             }
@@ -305,35 +302,32 @@ void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t 
 
 namespace {
 
-constexpr uint64_t DEFAULT_PIXEL_COST_Q16 = 1ull << 16u;
+constexpr uint64_t DEFAULT_PIXEL_COST_Q16          = 1ull << 16u;
 constexpr uint64_t DEFAULT_SNAPSHOT_PIXEL_COST_Q16 = 1ull << 16u;
 
 uint64_t scaled_pixel_cost_ns(uint64_t cost_q16, uint64_t pixels) {
     const __uint128_t scaled = static_cast<__uint128_t>(pixels) * cost_q16;
-    const __uint128_t ns = scaled >> 16u;
+    const __uint128_t ns     = scaled >> 16u;
     return ns > UINT64_MAX ? UINT64_MAX : static_cast<uint64_t>(ns);
 }
 
 uint64_t texture_pixel_cost_ns(const ClientTextureUploadCostModel& costs, uint64_t pixels) {
-    const uint64_t cost_q16 = costs.pixel_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ?
-                                  costs.pixel_cost_q16 : DEFAULT_PIXEL_COST_Q16;
+    const uint64_t cost_q16 = costs.pixel_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ? costs.pixel_cost_q16 : DEFAULT_PIXEL_COST_Q16;
     return scaled_pixel_cost_ns(cost_q16, pixels);
 }
 
 uint64_t snapshot_pixel_cost_ns(const ClientTextureUploadCostModel& costs, uint64_t pixels) {
-    const uint64_t cost_q16 = costs.snapshot_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ?
-                                  costs.snapshot_pixel_cost_q16 : DEFAULT_SNAPSHOT_PIXEL_COST_Q16;
+    const uint64_t cost_q16 =
+        costs.snapshot_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ? costs.snapshot_pixel_cost_q16 : DEFAULT_SNAPSHOT_PIXEL_COST_Q16;
     return scaled_pixel_cost_ns(cost_q16, pixels);
 }
 
 uint64_t update_call_cost_ns(const ClientTextureUploadCostModel& costs) {
-    return costs.update_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ?
-               costs.update_call_cost_ns : WD_CLIENT_TEXTURE_UPDATE_CALL_COST_NS;
+    return costs.update_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ? costs.update_call_cost_ns : WD_CLIENT_TEXTURE_UPDATE_CALL_COST_NS;
 }
 
 uint64_t lock_call_cost_ns(const ClientTextureUploadCostModel& costs) {
-    return costs.lock_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ?
-               costs.lock_call_cost_ns : WD_CLIENT_TEXTURE_LOCK_CALL_COST_NS;
+    return costs.lock_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ? costs.lock_call_cost_ns : WD_CLIENT_TEXTURE_LOCK_CALL_COST_NS;
 }
 
 uint64_t saturating_add(uint64_t a, uint64_t b) {
@@ -355,19 +349,17 @@ uint64_t bounded_ewma(uint64_t current, uint64_t sample, uint32_t samples) {
     }
     if (samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES && current != 0)
     {
-        const uint64_t low = std::max<uint64_t>(1, current / WD_CLIENT_RENDER_COST_SAMPLE_CLAMP_DIVISOR);
-        const uint64_t high = current > UINT64_MAX / WD_CLIENT_RENDER_COST_SAMPLE_CLAMP_DIVISOR ? UINT64_MAX :
-                              current * WD_CLIENT_RENDER_COST_SAMPLE_CLAMP_DIVISOR;
-        sample = std::clamp(sample, low, high);
+        const uint64_t low  = std::max<uint64_t>(1, current / WD_CLIENT_RENDER_COST_SAMPLE_CLAMP_DIVISOR);
+        const uint64_t high = current > UINT64_MAX / WD_CLIENT_RENDER_COST_SAMPLE_CLAMP_DIVISOR
+                                  ? UINT64_MAX
+                                  : current * WD_CLIENT_RENDER_COST_SAMPLE_CLAMP_DIVISOR;
+        sample              = std::clamp(sample, low, high);
     }
-    return (current * WD_CLIENT_RENDER_COST_EWMA_OLD_NUMERATOR + sample) /
-           WD_CLIENT_RENDER_COST_EWMA_DENOMINATOR;
+    return (current * WD_CLIENT_RENDER_COST_EWMA_OLD_NUMERATOR + sample) / WD_CLIENT_RENDER_COST_EWMA_DENOMINATOR;
 }
 
-uint64_t upload_path_cost(const ClientTextureUploadCostModel& costs, uint64_t pixels,
-                          uint64_t fixed_call_cost_ns, uint64_t call_count) {
-    uint64_t cost = saturating_add(texture_pixel_cost_ns(costs, pixels),
-                                   snapshot_pixel_cost_ns(costs, pixels));
+uint64_t upload_path_cost(const ClientTextureUploadCostModel& costs, uint64_t pixels, uint64_t fixed_call_cost_ns, uint64_t call_count) {
+    uint64_t cost = saturating_add(texture_pixel_cost_ns(costs, pixels), snapshot_pixel_cost_ns(costs, pixels));
     return saturating_add(cost, saturating_multiply(call_count, fixed_call_cost_ns));
 }
 
@@ -377,21 +369,20 @@ bool materially_cheaper(uint64_t candidate, uint64_t current, uint32_t required_
         return candidate == 0;
     }
     const __uint128_t candidate_scaled = static_cast<__uint128_t>(candidate) * 100u;
-    const __uint128_t threshold = static_cast<__uint128_t>(current) * (100u - required_saving_percent);
+    const __uint128_t threshold        = static_cast<__uint128_t>(current) * (100u - required_saving_percent);
     return candidate_scaled <= threshold;
 }
 
 } // namespace
 
-void observe_texture_upload_call(ClientTextureUploadCostModel& model, bool texture_lock,
-                                 uint64_t elapsed_ns, uint64_t pixels) {
-    uint64_t& call_cost = texture_lock ? model.lock_call_cost_ns : model.update_call_cost_ns;
+void observe_texture_upload_call(ClientTextureUploadCostModel& model, bool texture_lock, uint64_t elapsed_ns, uint64_t pixels) {
+    uint64_t& call_cost    = texture_lock ? model.lock_call_cost_ns : model.update_call_cost_ns;
     uint32_t& call_samples = texture_lock ? model.lock_samples : model.update_samples;
 
     const uint64_t old_call_cost = call_cost;
-    const uint64_t pixel_cost = scaled_pixel_cost_ns(model.pixel_cost_q16, pixels);
-    const uint64_t fixed_sample = elapsed_ns > pixel_cost ? elapsed_ns - pixel_cost : 0;
-    call_cost = bounded_ewma(call_cost, fixed_sample, call_samples);
+    const uint64_t pixel_cost    = scaled_pixel_cost_ns(model.pixel_cost_q16, pixels);
+    const uint64_t fixed_sample  = elapsed_ns > pixel_cost ? elapsed_ns - pixel_cost : 0;
+    call_cost                    = bounded_ewma(call_cost, fixed_sample, call_samples);
     if (call_samples != UINT32_MAX)
     {
         ++call_samples;
@@ -399,12 +390,11 @@ void observe_texture_upload_call(ClientTextureUploadCostModel& model, bool textu
 
     if (pixels >= WD_CLIENT_RENDER_COST_MIN_PIXEL_SAMPLE && elapsed_ns > old_call_cost)
     {
-        const uint64_t variable_ns = elapsed_ns - old_call_cost;
-        const __uint128_t scaled = static_cast<__uint128_t>(variable_ns) << 16u;
-        uint64_t sample_q16 = static_cast<uint64_t>(scaled / pixels);
-        sample_q16 = std::clamp<uint64_t>(sample_q16, WD_CLIENT_RENDER_COST_MIN_Q16,
-                                             WD_CLIENT_RENDER_COST_MAX_Q16);
-        model.pixel_cost_q16 = bounded_ewma(model.pixel_cost_q16, sample_q16, model.pixel_samples);
+        const uint64_t    variable_ns = elapsed_ns - old_call_cost;
+        const __uint128_t scaled      = static_cast<__uint128_t>(variable_ns) << 16u;
+        uint64_t          sample_q16  = static_cast<uint64_t>(scaled / pixels);
+        sample_q16                    = std::clamp<uint64_t>(sample_q16, WD_CLIENT_RENDER_COST_MIN_Q16, WD_CLIENT_RENDER_COST_MAX_Q16);
+        model.pixel_cost_q16          = bounded_ewma(model.pixel_cost_q16, sample_q16, model.pixel_samples);
         if (model.pixel_samples != UINT32_MAX)
         {
             ++model.pixel_samples;
@@ -417,26 +407,22 @@ void observe_framebuffer_snapshot(ClientTextureUploadCostModel& model, uint64_t 
     {
         return;
     }
-    const __uint128_t scaled = static_cast<__uint128_t>(elapsed_ns) << 16u;
-    uint64_t sample_q16 = static_cast<uint64_t>(scaled / pixels);
-    sample_q16 = std::clamp<uint64_t>(sample_q16, WD_CLIENT_RENDER_COST_MIN_Q16,
-                                             WD_CLIENT_RENDER_COST_MAX_Q16);
-    model.snapshot_pixel_cost_q16 = bounded_ewma(model.snapshot_pixel_cost_q16, sample_q16,
-                                                 model.snapshot_samples);
+    const __uint128_t scaled      = static_cast<__uint128_t>(elapsed_ns) << 16u;
+    uint64_t          sample_q16  = static_cast<uint64_t>(scaled / pixels);
+    sample_q16                    = std::clamp<uint64_t>(sample_q16, WD_CLIENT_RENDER_COST_MIN_Q16, WD_CLIENT_RENDER_COST_MAX_Q16);
+    model.snapshot_pixel_cost_q16 = bounded_ewma(model.snapshot_pixel_cost_q16, sample_q16, model.snapshot_samples);
     if (model.snapshot_samples != UINT32_MAX)
     {
         ++model.snapshot_samples;
     }
 }
 
-DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRect>& rects,
-                                                  uint32_t frame_width, uint32_t frame_height) {
+DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRect>& rects, uint32_t frame_width, uint32_t frame_height) {
     return plan_dirty_texture_upload(rects, frame_width, frame_height, ClientTextureUploadCostModel{});
 }
 
-DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRect>& rects,
-                                                  uint32_t frame_width, uint32_t frame_height,
-                                                  const ClientTextureUploadCostModel& costs) {
+DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRect>& rects, uint32_t frame_width, uint32_t frame_height,
+                                                 const ClientTextureUploadCostModel& costs) {
     DirtyTextureUploadPlan plan{};
     plan.source_pixels = dirty_rect_pixel_count(rects);
 
@@ -454,26 +440,23 @@ DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRe
         return plan;
     }
 
-    uint64_t best_cost = upload_path_cost(costs, plan.source_pixels,
-                                          update_call_cost_ns(costs), rects.size());
+    uint64_t best_cost = upload_path_cost(costs, plan.source_pixels, update_call_cost_ns(costs), rects.size());
 
     const ClientDirtyRect bounds = bounding_dirty_rect(rects);
     if (bounds.w != 0 && bounds.h != 0)
     {
         const uint64_t bounds_pixels = static_cast<uint64_t>(bounds.w) * static_cast<uint64_t>(bounds.h);
-        const uint64_t bounds_cost = upload_path_cost(costs, bounds_pixels, lock_call_cost_ns(costs), 1);
-        if (materially_cheaper(bounds_cost, best_cost,
-                               WD_CLIENT_BOUNDS_UPLOAD_MIN_SAVINGS_PERCENT))
+        const uint64_t bounds_cost   = upload_path_cost(costs, bounds_pixels, lock_call_cost_ns(costs), 1);
+        if (materially_cheaper(bounds_cost, best_cost, WD_CLIENT_BOUNDS_UPLOAD_MIN_SAVINGS_PERCENT))
         {
-            plan.mode = DirtyTextureUploadMode::Bounds;
+            plan.mode   = DirtyTextureUploadMode::Bounds;
             plan.bounds = bounds;
-            best_cost = bounds_cost;
+            best_cost   = bounds_cost;
         }
     }
 
     const uint64_t full_cost = upload_path_cost(costs, frame_pixels, lock_call_cost_ns(costs), 1);
-    if (materially_cheaper(full_cost, best_cost,
-                           WD_CLIENT_FULL_UPLOAD_MIN_SAVINGS_PERCENT))
+    if (materially_cheaper(full_cost, best_cost, WD_CLIENT_FULL_UPLOAD_MIN_SAVINGS_PERCENT))
     {
         plan.mode = DirtyTextureUploadMode::Full;
     }
@@ -481,12 +464,8 @@ DirtyTextureUploadPlan plan_dirty_texture_upload(const std::vector<ClientDirtyRe
     return plan;
 }
 
-
-
-void claim_pending_tile_generations(std::vector<uint64_t>& pending,
-                                    const std::vector<uint64_t>& presented,
-                                    const std::vector<uint16_t>& tile_ids,
-                                    std::vector<ClientTileGenerationUpdate>& out_updates) {
+void claim_pending_tile_generations(std::vector<uint64_t>& pending, const std::vector<uint64_t>& presented,
+                                    const std::vector<uint16_t>& tile_ids, std::vector<ClientTileGenerationUpdate>& out_updates) {
     out_updates.clear();
     if (pending.size() != presented.size())
     {
@@ -512,8 +491,7 @@ void claim_pending_tile_generations(std::vector<uint64_t>& pending,
     }
 }
 
-void claim_all_pending_tile_generations(std::vector<uint64_t>& pending,
-                                        const std::vector<uint64_t>& presented,
+void claim_all_pending_tile_generations(std::vector<uint64_t>& pending, const std::vector<uint64_t>& presented,
                                         std::vector<ClientTileGenerationUpdate>& out_updates) {
     out_updates.clear();
     if (pending.size() != presented.size())
@@ -536,8 +514,7 @@ void claim_all_pending_tile_generations(std::vector<uint64_t>& pending,
     }
 }
 
-void requeue_tile_generation_updates(std::vector<uint64_t>& pending,
-                                     const std::vector<ClientTileGenerationUpdate>& updates) {
+void requeue_tile_generation_updates(std::vector<uint64_t>& pending, const std::vector<ClientTileGenerationUpdate>& updates) {
     for (const ClientTileGenerationUpdate& update : updates)
     {
         if (update.tile_id < pending.size() && pending[update.tile_id] < update.generation)
@@ -547,8 +524,7 @@ void requeue_tile_generation_updates(std::vector<uint64_t>& pending,
     }
 }
 
-void commit_tile_generation_updates(std::vector<uint64_t>& presented,
-                                    const std::vector<ClientTileGenerationUpdate>& updates) {
+void commit_tile_generation_updates(std::vector<uint64_t>& presented, const std::vector<ClientTileGenerationUpdate>& updates) {
     for (const ClientTileGenerationUpdate& update : updates)
     {
         if (update.tile_id < presented.size() && presented[update.tile_id] < update.generation)
@@ -558,9 +534,7 @@ void commit_tile_generation_updates(std::vector<uint64_t>& presented,
     }
 }
 
-
-bool summary_pending_index_add(std::vector<uint16_t>& active_tiles,
-                               std::vector<uint32_t>& positions, uint16_t tile_id) {
+bool summary_pending_index_add(std::vector<uint16_t>& active_tiles, std::vector<uint32_t>& positions, uint16_t tile_id) {
     if (tile_id >= positions.size())
     {
         return false;
@@ -578,8 +552,7 @@ bool summary_pending_index_add(std::vector<uint16_t>& active_tiles,
     return true;
 }
 
-bool summary_pending_index_remove(std::vector<uint16_t>& active_tiles,
-                                  std::vector<uint32_t>& positions, uint16_t tile_id) {
+bool summary_pending_index_remove(std::vector<uint16_t>& active_tiles, std::vector<uint32_t>& positions, uint16_t tile_id) {
     if (tile_id >= positions.size())
     {
         return false;
@@ -594,8 +567,8 @@ bool summary_pending_index_remove(std::vector<uint16_t>& active_tiles,
         return false;
     }
     const uint16_t moved_tile = active_tiles.back();
-    active_tiles[position] = moved_tile;
-    positions[moved_tile] = position;
+    active_tiles[position]    = moved_tile;
+    positions[moved_tile]     = position;
     active_tiles.pop_back();
     positions[tile_id] = UINT32_MAX;
     return true;

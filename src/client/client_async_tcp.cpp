@@ -1,10 +1,8 @@
 #include "client_async_tcp.hpp"
 
 #include "waydisplay/wd_config.h"
-#include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_log.h"
-
-#include <liburing.h>
+#include "waydisplay/wd_protocol.h"
 
 #include <cerrno>
 #include <cstddef>
@@ -12,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <liburing.h>
 #include <mutex>
 #include <new>
 #include <sys/socket.h>
@@ -34,17 +33,16 @@
 namespace waydisplay {
 namespace {
 
-
-char g_cancel_cqe_tag;
+char        g_cancel_cqe_tag;
 void* const CANCEL_CQE = &g_cancel_cqe_tag;
 
 struct Message {
-    Message*             next = nullptr;
-    Message*             prev = nullptr;
-    int                  fd = -1;
+    Message*             next         = nullptr;
+    Message*             prev         = nullptr;
+    int                  fd           = -1;
     uint16_t             message_type = 0;
-    size_t               bytes_sent = 0;
-    bool                 submitted = false;
+    size_t               bytes_sent   = 0;
+    bool                 submitted    = false;
     std::vector<uint8_t> bytes;
 };
 
@@ -52,23 +50,23 @@ struct Message {
 
 struct ClientAsyncTcpSender {
     std::mutex mutex;
-    io_uring  ring{};
-    bool      ring_ready = false;
+    io_uring   ring{};
+    bool       ring_ready = false;
 
     Message* head = nullptr;
     Message* tail = nullptr;
 
-    uint64_t inflight = 0;
-    uint64_t inflight_max = 0;
-    uint64_t pending_bytes = 0;
+    uint64_t inflight          = 0;
+    uint64_t inflight_max      = 0;
+    uint64_t pending_bytes     = 0;
     uint64_t max_pending_bytes = WD_CLIENT_ASYNC_TCP_DEFAULT_PENDING_BYTES;
-    uint64_t queued = 0;
-    uint64_t completed = 0;
-    uint64_t failed = 0;
-    uint64_t overflows = 0;
+    uint64_t queued            = 0;
+    uint64_t completed         = 0;
+    uint64_t failed            = 0;
+    uint64_t overflows         = 0;
     uint64_t partial_resubmits = 0;
-    uint64_t coalesced = 0;
-    bool fatal = false;
+    uint64_t coalesced         = 0;
+    bool     fatal             = false;
 };
 
 namespace {
@@ -120,10 +118,8 @@ void pending_remove(ClientAsyncTcpSender* sender, Message* msg) {
     msg->prev = nullptr;
 }
 
-
 bool is_pointer_motion_message(const Message* msg) {
-    if (!msg || msg->message_type != WD_MSG_POINTER_EVENT ||
-        msg->bytes.size() < sizeof(wd_tcp_header) + sizeof(wd_pointer_event_payload))
+    if (!msg || msg->message_type != WD_MSG_POINTER_EVENT || msg->bytes.size() < sizeof(wd_tcp_header) + sizeof(wd_pointer_event_payload))
     {
         return false;
     }
@@ -140,7 +136,7 @@ uint64_t drop_stale_unsubmitted_pointer_motion_locked(ClientAsyncTcpSender* send
     }
 
     uint64_t dropped = 0;
-    Message* msg = sender->head;
+    Message* msg     = sender->head;
     while (msg)
     {
         Message* next = msg->next;
@@ -171,12 +167,12 @@ Message* create_message(int fd, uint16_t message_type, const void* payload, uint
     msg->bytes.resize(total_size);
 
     wd_tcp_header header{};
-    header.magic = WD_TCP_MAGIC;
+    header.magic            = WD_TCP_MAGIC;
     header.protocol_version = WD_PROTOCOL_VERSION;
-    header.message_type = message_type;
-    header.payload_size = payload_size;
+    header.message_type     = message_type;
+    header.payload_size     = payload_size;
 
-    msg->fd = fd;
+    msg->fd           = fd;
     msg->message_type = message_type;
     std::memcpy(msg->bytes.data(), &header, sizeof(header));
     if (payload_size != 0)
@@ -199,8 +195,7 @@ bool submit_message_locked(ClientAsyncTcpSender* sender, Message* msg) {
         return false;
     }
 
-    io_uring_prep_send(sqe, msg->fd, msg->bytes.data() + msg->bytes_sent, msg->bytes.size() - msg->bytes_sent,
-                       WD_CLIENT_ASYNC_SEND_FLAGS);
+    io_uring_prep_send(sqe, msg->fd, msg->bytes.data() + msg->bytes_sent, msg->bytes.size() - msg->bytes_sent, WD_CLIENT_ASYNC_SEND_FLAGS);
     io_uring_sqe_set_data(sqe, msg);
 
     msg->submitted = true;
@@ -431,15 +426,15 @@ ClientAsyncTcpSenderStats snapshot_stats_locked(const ClientAsyncTcpSender* send
     {
         return stats;
     }
-    stats.queued = sender->queued;
-    stats.completed = sender->completed;
-    stats.failed = sender->failed;
-    stats.overflows = sender->overflows;
+    stats.queued            = sender->queued;
+    stats.completed         = sender->completed;
+    stats.failed            = sender->failed;
+    stats.overflows         = sender->overflows;
     stats.partial_resubmits = sender->partial_resubmits;
-    stats.coalesced = sender->coalesced;
-    stats.inflight_max = sender->inflight_max;
-    stats.inflight = sender->inflight;
-    stats.pending_bytes = sender->pending_bytes;
+    stats.coalesced         = sender->coalesced;
+    stats.inflight_max      = sender->inflight_max;
+    stats.inflight          = sender->inflight;
+    stats.pending_bytes     = sender->pending_bytes;
     return stats;
 }
 
@@ -464,7 +459,7 @@ ClientAsyncTcpSender* client_async_tcp_sender_create(uint32_t entries, uint64_t 
         return nullptr;
     }
 
-    sender->ring_ready = true;
+    sender->ring_ready        = true;
     sender->max_pending_bytes = max_pending_bytes != 0 ? max_pending_bytes : WD_CLIENT_ASYNC_TCP_DEFAULT_PENDING_BYTES;
     return sender;
 }
@@ -530,10 +525,9 @@ bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_
         return false;
     }
 
-    const bool coalesce_pointer_motion = message_type == WD_MSG_POINTER_EVENT &&
-                                         payload_size == sizeof(wd_pointer_event_payload) && payload &&
-                                         static_cast<const wd_pointer_event_payload*>(payload)->event_type ==
-                                             WD_POINTER_EVENT_MOTION;
+    const bool coalesce_pointer_motion = message_type == WD_MSG_POINTER_EVENT && payload_size == sizeof(wd_pointer_event_payload) &&
+                                         payload &&
+                                         static_cast<const wd_pointer_event_payload*>(payload)->event_type == WD_POINTER_EVENT_MOTION;
     if (coalesce_pointer_motion)
     {
         sender->coalesced += drop_stale_unsubmitted_pointer_motion_locked(sender, fd);

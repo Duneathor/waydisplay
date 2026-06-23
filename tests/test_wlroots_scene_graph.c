@@ -6,14 +6,14 @@
 
 static int failures = 0;
 
-#define CHECK(expr)                                                                                                    \
-    do                                                                                                                 \
-    {                                                                                                                  \
-        if (!(expr))                                                                                                   \
-        {                                                                                                              \
-            fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #expr);                                \
-            ++failures;                                                                                                \
-        }                                                                                                              \
+#define CHECK(expr)                                                                                                                        \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        if (!(expr))                                                                                                                       \
+        {                                                                                                                                  \
+            fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #expr);                                                       \
+            ++failures;                                                                                                                    \
+        }                                                                                                                                  \
     } while (0)
 
 static void init_server(struct wd_server* server) {
@@ -91,12 +91,12 @@ static void test_position_raise_and_hit_order(void) {
         return;
     }
 
-    struct wlr_scene_tree* tree_a = wlr_scene_tree_create(&scene->tree);
-    struct wlr_scene_tree* tree_b = wlr_scene_tree_create(&scene->tree);
-    const float            red[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+    struct wlr_scene_tree* tree_a  = wlr_scene_tree_create(&scene->tree);
+    struct wlr_scene_tree* tree_b  = wlr_scene_tree_create(&scene->tree);
+    const float            red[4]  = {1.0f, 0.0f, 0.0f, 1.0f};
     const float            blue[4] = {0.0f, 0.0f, 1.0f, 1.0f};
-    struct wlr_scene_rect* rect_a = wlr_scene_rect_create(tree_a, 80, 80, red);
-    struct wlr_scene_rect* rect_b = wlr_scene_rect_create(tree_b, 80, 80, blue);
+    struct wlr_scene_rect* rect_a  = wlr_scene_rect_create(tree_a, 80, 80, red);
+    struct wlr_scene_rect* rect_b  = wlr_scene_rect_create(tree_b, 80, 80, blue);
     CHECK(tree_a != NULL && tree_b != NULL && rect_a != NULL && rect_b != NULL);
 
     struct wd_view a;

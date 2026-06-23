@@ -21,8 +21,8 @@ static bool wd_vaapi_render_node_path_is_valid(const char* path) {
         return false;
     }
 
-    const char* name = strrchr(path, '/');
-    name = name ? name + 1 : path;
+    const char* name           = strrchr(path, '/');
+    name                       = name ? name + 1 : path;
     static const char prefix[] = "renderD";
     if (strncmp(name, prefix, sizeof(prefix) - 1u) != 0)
     {
@@ -44,9 +44,7 @@ static bool wd_vaapi_render_node_path_is_valid(const char* path) {
     return true;
 }
 
-static int wd_vaapi_open_automatic_device(AVBufferRef** out_device,
-                                          char* selected_path,
-                                          size_t selected_path_size) {
+static int wd_vaapi_open_automatic_device(AVBufferRef** out_device, char* selected_path, size_t selected_path_size) {
     if (!out_device)
     {
         return AVERROR(EINVAL);
@@ -58,7 +56,7 @@ static int wd_vaapi_open_automatic_device(AVBufferRef** out_device,
         selected_path[0] = '\0';
     }
 
-    int last_error = AVERROR(ENODEV);
+    int    last_error = AVERROR(ENODEV);
     glob_t matches;
     memset(&matches, 0, sizeof(matches));
     const int glob_result = glob("/dev/dri/renderD*", 0, NULL, &matches);
@@ -73,8 +71,7 @@ static int wd_vaapi_open_automatic_device(AVBufferRef** out_device,
             }
 
             AVBufferRef* device = NULL;
-            const int rc = av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_VAAPI,
-                                                   candidate, NULL, 0);
+            const int    rc     = av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_VAAPI, candidate, NULL, 0);
             if (rc >= 0)
             {
                 *out_device = device;
@@ -94,8 +91,7 @@ static int wd_vaapi_open_automatic_device(AVBufferRef** out_device,
     /* Preserve FFmpeg/libva's platform-specific automatic fallback for hosts
      * that expose a VA display without a conventional DRM render-node path. */
     AVBufferRef* automatic_device = NULL;
-    const int automatic_rc = av_hwdevice_ctx_create(
-        &automatic_device, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0);
+    const int    automatic_rc     = av_hwdevice_ctx_create(&automatic_device, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0);
     if (automatic_rc >= 0)
     {
         *out_device = automatic_device;

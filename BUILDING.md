@@ -85,16 +85,13 @@ A full build needs SDL3 with Vulkan support for the client and wlroots/Wayland
 development packages for the compositor server.
 
 ## Network exposure
-
-The server binds TCP and UDP to `127.0.0.1` by default. This keeps screen,
-clipboard, and input access local unless remote exposure is requested explicitly.
 To listen on a specific IPv4 interface, pass `--listen`:
 
 ```sh
-# Local machine only (the default):
+# Local machine only:
 waydisplay_server_wlroots --listen 127.0.0.1 --port 5000 --app foot
 
-# All IPv4 interfaces; use only on a trusted or otherwise protected network:
+# All IPv4 interfaces; use only on a trusted network:
 waydisplay_server_wlroots --listen 0.0.0.0 --port 5000 --app foot
 ```
 

@@ -11,18 +11,18 @@ enum class ClientContentOwner : uint8_t {
 };
 
 struct ClientContentOwnershipSnapshot {
-    uint64_t epoch = 0;
+    uint64_t           epoch = 0;
     ClientContentOwner owner = ClientContentOwner::Tiles;
 };
 
 class ClientStreamOwnership {
   public:
     ClientContentOwnershipSnapshot snapshot() const;
-    uint64_t begin_video_stream();
-    uint64_t end_video_stream();
-    uint64_t reset_to_video();
-    uint64_t reset_to_tiles();
-    bool is_current(uint64_t epoch, ClientContentOwner owner) const;
+    uint64_t                       begin_video_stream();
+    uint64_t                       end_video_stream();
+    uint64_t                       reset_to_video();
+    uint64_t                       reset_to_tiles();
+    bool                           is_current(uint64_t epoch, ClientContentOwner owner) const;
 
   private:
     uint64_t transition_to(ClientContentOwner owner);

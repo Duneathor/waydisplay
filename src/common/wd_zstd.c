@@ -1,13 +1,11 @@
 #include "waydisplay/wd_zstd.h"
 
-#include <zstd.h>
-
 #include <stdlib.h>
+#include <zstd.h>
 
 struct wd_zstd_compressor {
     ZSTD_CCtx* context;
 };
-
 
 struct wd_zstd_compressor* wd_zstd_compressor_create(void) {
     struct wd_zstd_compressor* compressor = calloc(1, sizeof(*compressor));
@@ -33,15 +31,13 @@ void wd_zstd_compressor_destroy(struct wd_zstd_compressor* compressor) {
     free(compressor);
 }
 
-bool wd_zstd_compress_with_context(struct wd_zstd_compressor* compressor, const void* src, size_t src_size,
-                                   void* dst, size_t dst_capacity, int level,
-                                   uint32_t* out_compressed_size) {
+bool wd_zstd_compress_with_context(struct wd_zstd_compressor* compressor, const void* src, size_t src_size, void* dst, size_t dst_capacity,
+                                   int level, uint32_t* out_compressed_size) {
     if (out_compressed_size)
     {
         *out_compressed_size = 0;
     }
-    if (!compressor || !compressor->context || !src || src_size == 0 || !dst || dst_capacity == 0 ||
-        !out_compressed_size)
+    if (!compressor || !compressor->context || !src || src_size == 0 || !dst || dst_capacity == 0 || !out_compressed_size)
     {
         return false;
     }

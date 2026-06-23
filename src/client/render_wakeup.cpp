@@ -24,9 +24,8 @@ bool ClientRenderWake::wait_for_change(uint64_t observed_sequence, uint32_t time
     }
 
     std::unique_lock<std::mutex> lock(mutex_);
-    return condition_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&]() {
-        return sequence_.load(std::memory_order_acquire) != observed_sequence;
-    });
+    return condition_.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                               [&]() { return sequence_.load(std::memory_order_acquire) != observed_sequence; });
 }
 
 } // namespace waydisplay

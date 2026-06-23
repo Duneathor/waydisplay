@@ -25,11 +25,9 @@ bool parse_decimal(const char* text, uint64_t maximum, uint64_t& value) {
     }
 
     uint64_t parsed = 0;
-    for (const unsigned char* cursor = reinterpret_cast<const unsigned char*>(text);
-         *cursor != '\0'; ++cursor)
+    for (const unsigned char* cursor = reinterpret_cast<const unsigned char*>(text); *cursor != '\0'; ++cursor)
     {
-        if (*cursor < static_cast<unsigned char>('0') ||
-            *cursor > static_cast<unsigned char>('9'))
+        if (*cursor < static_cast<unsigned char>('0') || *cursor > static_cast<unsigned char>('9'))
         {
             return false;
         }
@@ -72,21 +70,19 @@ bool parse_size(const char* text, uint16_t& width, uint16_t& height) {
     }
 
     const char* separator = std::strchr(text, 'x');
-    if (!separator || separator == text || separator[1] == '\0' ||
-        std::strchr(separator + 1, 'x'))
+    if (!separator || separator == text || separator[1] == '\0' || std::strchr(separator + 1, 'x'))
     {
         return false;
     }
 
-    uint64_t parsed_width = 0;
+    uint64_t parsed_width  = 0;
     uint64_t parsed_height = 0;
-    uint64_t multiplier = 1;
-    for (const char* cursor = separator; cursor != text; )
+    uint64_t multiplier    = 1;
+    for (const char* cursor = separator; cursor != text;)
     {
         --cursor;
         const unsigned char character = static_cast<unsigned char>(*cursor);
-        if (character < static_cast<unsigned char>('0') ||
-            character > static_cast<unsigned char>('9'))
+        if (character < static_cast<unsigned char>('0') || character > static_cast<unsigned char>('9'))
         {
             return false;
         }
@@ -106,14 +102,13 @@ bool parse_size(const char* text, uint16_t& width, uint16_t& height) {
         }
     }
 
-    multiplier = 1;
+    multiplier      = 1;
     const char* end = text + std::strlen(text);
-    for (const char* cursor = end; cursor != separator + 1; )
+    for (const char* cursor = end; cursor != separator + 1;)
     {
         --cursor;
         const unsigned char character = static_cast<unsigned char>(*cursor);
-        if (character < static_cast<unsigned char>('0') ||
-            character > static_cast<unsigned char>('9'))
+        if (character < static_cast<unsigned char>('0') || character > static_cast<unsigned char>('9'))
         {
             return false;
         }
@@ -133,14 +128,13 @@ bool parse_size(const char* text, uint16_t& width, uint16_t& height) {
         }
     }
 
-    if (parsed_width == 0 || parsed_height == 0 ||
-        parsed_width > std::numeric_limits<uint16_t>::max() ||
+    if (parsed_width == 0 || parsed_height == 0 || parsed_width > std::numeric_limits<uint16_t>::max() ||
         parsed_height > std::numeric_limits<uint16_t>::max())
     {
         return false;
     }
 
-    width = static_cast<uint16_t>(parsed_width);
+    width  = static_cast<uint16_t>(parsed_width);
     height = static_cast<uint16_t>(parsed_height);
     return true;
 }
@@ -216,13 +210,11 @@ bool parse_video_hwdecode_mode(const char* text, uint8_t& value) {
 
 } // namespace
 
-ClientCliParseResult client_cli_parse(int argc, const char* const* argv,
-                                      ClientCliOptions& options,
-                                      std::string* error_message) {
-    options = ClientCliOptions{};
-    options.target_fps = WD_CLIENT_DEFAULT_TARGET_FPS;
-    options.video_mode = WD_VIDEO_MODE_AUTO;
-    options.video_codec_mask = WD_VIDEO_CODEC_H265;
+ClientCliParseResult client_cli_parse(int argc, const char* const* argv, ClientCliOptions& options, std::string* error_message) {
+    options                     = ClientCliOptions{};
+    options.target_fps          = WD_CLIENT_DEFAULT_TARGET_FPS;
+    options.video_mode          = WD_VIDEO_MODE_AUTO;
+    options.video_codec_mask    = WD_VIDEO_CODEC_H265;
     options.video_hwdecode_mode = WD_CLIENT_VIDEO_HWDECODE_AUTO;
 
     if (!argv || argc <= 0 || !argv[0])
@@ -230,8 +222,7 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv,
         set_error(error_message, "missing program name");
         return ClientCliParseResult::Error;
     }
-    if (argc == 2 && argv[1] &&
-        (std::strcmp(argv[1], "--help") == 0 || std::strcmp(argv[1], "-h") == 0))
+    if (argc == 2 && argv[1] && (std::strcmp(argv[1], "--help") == 0 || std::strcmp(argv[1], "-h") == 0))
     {
         return ClientCliParseResult::Help;
     }
@@ -242,8 +233,7 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv,
     }
 
     options.server_host = argv[1];
-    if (options.server_host.empty() ||
-        !parse_u16(argv[2], 1u, std::numeric_limits<uint16_t>::max(), options.tcp_port) ||
+    if (options.server_host.empty() || !parse_u16(argv[2], 1u, std::numeric_limits<uint16_t>::max(), options.tcp_port) ||
         !parse_u16(argv[3], 1u, std::numeric_limits<uint16_t>::max(), options.client_udp_port))
     {
         set_error(error_message, "invalid server address or port");
@@ -264,8 +254,7 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv,
         }
         if (std::strcmp(argument, "--fps") == 0)
         {
-            if (++i >= argc || !parse_u16(argv[i], 1u, WD_MAX_REASONABLE_FPS,
-                                          options.target_fps))
+            if (++i >= argc || !parse_u16(argv[i], 1u, WD_MAX_REASONABLE_FPS, options.target_fps))
             {
                 set_error(error_message, "invalid --fps value");
                 return ClientCliParseResult::Error;
@@ -273,8 +262,7 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv,
         }
         else if (std::strcmp(argument, "--size") == 0)
         {
-            if (++i >= argc || !parse_size(argv[i], options.desired_width,
-                                           options.desired_height))
+            if (++i >= argc || !parse_size(argv[i], options.desired_width, options.desired_height))
             {
                 set_error(error_message, "invalid --size value");
                 return ClientCliParseResult::Error;
@@ -282,9 +270,7 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv,
         }
         else if (std::strcmp(argument, "--rate-kib") == 0)
         {
-            if (++i >= argc || !parse_u32(argv[i], 1u,
-                                          std::numeric_limits<uint32_t>::max(),
-                                          options.limited_udp_kib_per_second))
+            if (++i >= argc || !parse_u32(argv[i], 1u, std::numeric_limits<uint32_t>::max(), options.limited_udp_kib_per_second))
             {
                 set_error(error_message, "invalid --rate-kib value");
                 return ClientCliParseResult::Error;
@@ -316,8 +302,7 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv,
         }
         else if (std::strcmp(argument, "--video-hwdecode") == 0)
         {
-            if (++i >= argc ||
-                !parse_video_hwdecode_mode(argv[i], options.video_hwdecode_mode))
+            if (++i >= argc || !parse_video_hwdecode_mode(argv[i], options.video_hwdecode_mode))
             {
                 set_error(error_message, "invalid --video-hwdecode value");
                 return ClientCliParseResult::Error;

@@ -1,5 +1,4 @@
 #include "video_decoder.hpp"
-
 #include "waydisplay/wd_protocol.h"
 
 #include <algorithm>
@@ -31,14 +30,14 @@ using waydisplay::ClientVideoFrameBuffer;
 using waydisplay::ClientVideoPacket;
 using waydisplay::ClientVideoPixelFormat;
 
-#define CHECK(condition)                                                                          \
-    do                                                                                             \
-    {                                                                                              \
-        if (!(condition))                                                                          \
-        {                                                                                          \
-            std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #condition);   \
-            return false;                                                                          \
-        }                                                                                          \
+#define CHECK(condition)                                                                                                                   \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        if (!(condition))                                                                                                                  \
+        {                                                                                                                                  \
+            std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #condition);                                             \
+            return false;                                                                                                                  \
+        }                                                                                                                                  \
     } while (false)
 
 uint32_t compiled_codec_mask() {
@@ -53,8 +52,7 @@ uint32_t compiled_codec_mask() {
 }
 
 const char* aggregate_backend_name(uint32_t codecs) {
-    if ((codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) ==
-        (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265))
+    if ((codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) == (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265))
     {
         return "h264/hevc";
     }
@@ -71,24 +69,23 @@ const char* aggregate_backend_name(uint32_t codecs) {
 
 std::vector<uint8_t> read_fixture(const char* name) {
     const std::string path = std::string(WAYDISPLAY_TEST_FIXTURE_DIR) + "/" + name;
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream     input(path, std::ios::binary);
     if (!input)
     {
         std::fprintf(stderr, "failed to open video fixture: %s\n", path.c_str());
         return {};
     }
-    return std::vector<uint8_t>(std::istreambuf_iterator<char>(input),
-                                std::istreambuf_iterator<char>());
+    return std::vector<uint8_t>(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
 struct FixtureAccessUnit {
-    size_t size = 0;
+    size_t   size     = 0;
     uint64_t pts_usec = 0;
 };
 
 std::vector<FixtureAccessUnit> read_manifest(const char* name) {
     const std::string path = std::string(WAYDISPLAY_TEST_FIXTURE_DIR) + "/" + name;
-    std::ifstream input(path);
+    std::ifstream     input(path);
     if (!input)
     {
         std::fprintf(stderr, "failed to open video fixture manifest: %s\n", path.c_str());
@@ -96,7 +93,7 @@ std::vector<FixtureAccessUnit> read_manifest(const char* name) {
     }
 
     std::vector<FixtureAccessUnit> access_units;
-    std::string line;
+    std::string                    line;
     while (std::getline(input, line))
     {
         if (line.empty() || line.front() == '#')
@@ -104,7 +101,7 @@ std::vector<FixtureAccessUnit> read_manifest(const char* name) {
             continue;
         }
         std::istringstream fields(line);
-        FixtureAccessUnit access_unit{};
+        FixtureAccessUnit  access_unit{};
         if (!(fields >> access_unit.size >> access_unit.pts_usec) || access_unit.size == 0)
         {
             std::fprintf(stderr, "invalid video fixture manifest line: %s\n", line.c_str());
@@ -136,20 +133,19 @@ bool test_invalid_api() {
     CHECK(waydisplay::client_video_decoder_create(&decoder));
     CHECK(decoder != nullptr);
     CHECK(std::strcmp(waydisplay::client_video_decoder_backend_name(nullptr),
-                      aggregate_backend_name(
-                          waydisplay::client_video_decoder_supported_codecs(decoder))) == 0);
+                      aggregate_backend_name(waydisplay::client_video_decoder_supported_codecs(decoder))) == 0);
 
     ClientVideoDecoderConfig invalid{};
     CHECK(!waydisplay::client_video_decoder_configure(decoder, invalid));
     invalid.codec = WD_VIDEO_CODEC_H264;
     invalid.width = 64;
     CHECK(!waydisplay::client_video_decoder_configure(decoder, invalid));
-    invalid.height = 48;
-    invalid.coded_width = 63;
+    invalid.height       = 48;
+    invalid.coded_width  = 63;
     invalid.coded_height = 48;
     CHECK(!waydisplay::client_video_decoder_configure(decoder, invalid));
 
-    ClientVideoPacket packet{};
+    ClientVideoPacket       packet{};
     ClientDecodedVideoFrame frame{};
     CHECK(!waydisplay::client_video_decoder_decode(decoder, packet, &frame));
     CHECK(frame.format == ClientVideoPixelFormat::None);
@@ -174,16 +170,16 @@ bool test_codec(uint32_t codec, const char* fixture_name) {
     CHECK(waydisplay::client_video_decoder_create(&decoder));
 
     ClientVideoDecoderConfig config{};
-    config.session_id = 9;
+    config.session_id       = 9;
     config.connection_token = UINT64_C(0x8899aabbccddeeff);
-    config.content_epoch = 12;
-    config.width = 63;
-    config.height = 47;
-    config.coded_width = 64;
-    config.coded_height = 48;
-    config.target_fps = 30;
-    config.codec = codec;
-    config.hwdecode_mode = WD_CLIENT_VIDEO_HWDECODE_OFF;
+    config.content_epoch    = 12;
+    config.width            = 63;
+    config.height           = 47;
+    config.coded_width      = 64;
+    config.coded_height     = 48;
+    config.target_fps       = 30;
+    config.codec            = codec;
+    config.hwdecode_mode    = WD_CLIENT_VIDEO_HWDECODE_OFF;
 
     CHECK(waydisplay::client_video_decoder_configure(decoder, config));
     CHECK(waydisplay::client_video_decoder_configure(decoder, config));
@@ -191,21 +187,20 @@ bool test_codec(uint32_t codec, const char* fixture_name) {
     CHECK(std::strcmp(waydisplay::client_video_decoder_backend_name(decoder), "none") != 0);
 
     ClientVideoPacket packet{};
-    packet.header.session_id = config.session_id;
+    packet.header.session_id       = config.session_id;
     packet.header.connection_token = config.connection_token;
-    packet.header.content_epoch = config.content_epoch;
-    packet.header.codec = codec;
-    packet.header.flags = WD_VIDEO_FRAME_CONFIG | WD_VIDEO_FRAME_KEYFRAME;
-    packet.header.frame_id = 41;
-    packet.header.pts_usec = UINT64_C(1234567);
-    packet.header.width = config.width;
-    packet.header.height = config.height;
-    packet.header.coded_width = config.coded_width;
-    packet.header.coded_height = config.coded_height;
-    packet.header.data_size = static_cast<uint32_t>(fixture.size());
-    packet.data = fixture.data();
-    CHECK(wd_video_frame_payload_size_is_valid(
-        &packet.header, static_cast<uint32_t>(sizeof(packet.header) + fixture.size())));
+    packet.header.content_epoch    = config.content_epoch;
+    packet.header.codec            = codec;
+    packet.header.flags            = WD_VIDEO_FRAME_CONFIG | WD_VIDEO_FRAME_KEYFRAME;
+    packet.header.frame_id         = 41;
+    packet.header.pts_usec         = UINT64_C(1234567);
+    packet.header.width            = config.width;
+    packet.header.height           = config.height;
+    packet.header.coded_width      = config.coded_width;
+    packet.header.coded_height     = config.coded_height;
+    packet.header.data_size        = static_cast<uint32_t>(fixture.size());
+    packet.data                    = fixture.data();
+    CHECK(wd_video_frame_payload_size_is_valid(&packet.header, static_cast<uint32_t>(sizeof(packet.header) + fixture.size())));
 
     ClientDecodedVideoFrame frame{};
     CHECK(waydisplay::client_video_decoder_decode(decoder, packet, &frame));
@@ -223,9 +218,9 @@ bool test_codec(uint32_t codec, const char* fixture_name) {
     CHECK(output.height == config.height);
     CHECK(output.format == ClientVideoPixelFormat::IYUV);
 
-    const size_t y_size = static_cast<size_t>(output.y_pitch) * output.height;
+    const size_t y_size    = static_cast<size_t>(output.y_pitch) * output.height;
     const size_t uv_height = (output.height + 1u) / 2u;
-    const size_t uv_size = static_cast<size_t>(output.uv_pitch) * uv_height;
+    const size_t uv_size   = static_cast<size_t>(output.uv_pitch) * uv_height;
     CHECK(output.u_offset == y_size);
     CHECK(output.v_offset == y_size + uv_size);
     CHECK(output.bytes.size() == y_size + uv_size * 2u);
@@ -241,9 +236,7 @@ bool test_codec(uint32_t codec, const char* fixture_name) {
     return true;
 }
 
-bool collect_decoded_frames(ClientVideoDecoder* decoder,
-                            ClientDecodedVideoFrame frame,
-                            std::vector<ClientDecodedVideoFrame>& frames) {
+bool collect_decoded_frames(ClientVideoDecoder* decoder, ClientDecodedVideoFrame frame, std::vector<ClientDecodedVideoFrame>& frames) {
     for (;;)
     {
         if (frame.format == ClientVideoPixelFormat::None)
@@ -266,9 +259,8 @@ bool collect_decoded_frames(ClientVideoDecoder* decoder,
     }
 }
 
-bool test_delayed_codec(uint32_t codec, const char* fixture_name,
-                        const char* manifest_name) {
-    const std::vector<uint8_t> fixture = read_fixture(fixture_name);
+bool test_delayed_codec(uint32_t codec, const char* fixture_name, const char* manifest_name) {
+    const std::vector<uint8_t>           fixture      = read_fixture(fixture_name);
     const std::vector<FixtureAccessUnit> access_units = read_manifest(manifest_name);
     CHECK(!fixture.empty());
     CHECK(access_units.size() >= 8);
@@ -285,41 +277,39 @@ bool test_delayed_codec(uint32_t codec, const char* fixture_name,
     CHECK(waydisplay::client_video_decoder_create(&decoder));
 
     ClientVideoDecoderConfig config{};
-    config.session_id = 17;
+    config.session_id       = 17;
     config.connection_token = UINT64_C(0x1718191a1b1c1d1e);
-    config.content_epoch = 23;
-    config.width = 64;
-    config.height = 48;
-    config.coded_width = 64;
-    config.coded_height = 48;
-    config.target_fps = 4;
-    config.codec = codec;
-    config.hwdecode_mode = WD_CLIENT_VIDEO_HWDECODE_OFF;
+    config.content_epoch    = 23;
+    config.width            = 64;
+    config.height           = 48;
+    config.coded_width      = 64;
+    config.coded_height     = 48;
+    config.target_fps       = 4;
+    config.codec            = codec;
+    config.hwdecode_mode    = WD_CLIENT_VIDEO_HWDECODE_OFF;
     CHECK(waydisplay::client_video_decoder_configure(decoder, config));
 
-    constexpr uint64_t kPtsBase = UINT64_C(4000000);
-    constexpr uint64_t kFrameDurationUsec = UINT64_C(250000);
+    constexpr uint64_t                   kPtsBase           = UINT64_C(4000000);
+    constexpr uint64_t                   kFrameDurationUsec = UINT64_C(250000);
     std::vector<ClientDecodedVideoFrame> decoded_frames;
-    size_t offset = 0;
+    size_t                               offset = 0;
     for (size_t index = 0; index < access_units.size(); ++index)
     {
         const FixtureAccessUnit& access_unit = access_units[index];
-        ClientVideoPacket packet{};
-        packet.header.session_id = config.session_id;
+        ClientVideoPacket        packet{};
+        packet.header.session_id       = config.session_id;
         packet.header.connection_token = config.connection_token;
-        packet.header.content_epoch = config.content_epoch;
-        packet.header.codec = codec;
-        packet.header.flags = index == 0
-                                  ? WD_VIDEO_FRAME_CONFIG | WD_VIDEO_FRAME_KEYFRAME
-                                  : 0;
-        packet.header.frame_id = access_unit.pts_usec / kFrameDurationUsec + 1u;
-        packet.header.pts_usec = kPtsBase + access_unit.pts_usec;
-        packet.header.width = config.width;
-        packet.header.height = config.height;
-        packet.header.coded_width = config.coded_width;
-        packet.header.coded_height = config.coded_height;
-        packet.header.data_size = static_cast<uint32_t>(access_unit.size);
-        packet.data = fixture.data() + offset;
+        packet.header.content_epoch    = config.content_epoch;
+        packet.header.codec            = codec;
+        packet.header.flags            = index == 0 ? WD_VIDEO_FRAME_CONFIG | WD_VIDEO_FRAME_KEYFRAME : 0;
+        packet.header.frame_id         = access_unit.pts_usec / kFrameDurationUsec + 1u;
+        packet.header.pts_usec         = kPtsBase + access_unit.pts_usec;
+        packet.header.width            = config.width;
+        packet.header.height           = config.height;
+        packet.header.coded_width      = config.coded_width;
+        packet.header.coded_height     = config.coded_height;
+        packet.header.data_size        = static_cast<uint32_t>(access_unit.size);
+        packet.data                    = fixture.data() + offset;
         offset += access_unit.size;
 
         ClientDecodedVideoFrame frame{};
@@ -359,7 +349,7 @@ int main() {
         return 1;
     }
     const uint32_t supported = waydisplay::client_video_decoder_supported_codecs(decoder);
-    const uint32_t compiled = compiled_codec_mask();
+    const uint32_t compiled  = compiled_codec_mask();
     if ((supported & ~compiled) != 0)
     {
         std::fprintf(stderr, "decoder reported codecs not enabled by this build: 0x%x\n", supported);
@@ -379,25 +369,21 @@ int main() {
         return 77;
     }
 
-    if ((supported & WD_VIDEO_CODEC_H264) != 0 &&
-        !test_codec(WD_VIDEO_CODEC_H264, "video_keyframe_64x48.h264"))
+    if ((supported & WD_VIDEO_CODEC_H264) != 0 && !test_codec(WD_VIDEO_CODEC_H264, "video_keyframe_64x48.h264"))
     {
         return 1;
     }
     if ((supported & WD_VIDEO_CODEC_H264) != 0 &&
-        !test_delayed_codec(WD_VIDEO_CODEC_H264, "video_delayed_64x48.h264",
-                            "video_delayed_64x48.h264.manifest"))
+        !test_delayed_codec(WD_VIDEO_CODEC_H264, "video_delayed_64x48.h264", "video_delayed_64x48.h264.manifest"))
+    {
+        return 1;
+    }
+    if ((supported & WD_VIDEO_CODEC_H265) != 0 && !test_codec(WD_VIDEO_CODEC_H265, "video_keyframe_64x48.h265"))
     {
         return 1;
     }
     if ((supported & WD_VIDEO_CODEC_H265) != 0 &&
-        !test_codec(WD_VIDEO_CODEC_H265, "video_keyframe_64x48.h265"))
-    {
-        return 1;
-    }
-    if ((supported & WD_VIDEO_CODEC_H265) != 0 &&
-        !test_delayed_codec(WD_VIDEO_CODEC_H265, "video_delayed_64x48.h265",
-                            "video_delayed_64x48.h265.manifest"))
+        !test_delayed_codec(WD_VIDEO_CODEC_H265, "video_delayed_64x48.h265", "video_delayed_64x48.h265.manifest"))
     {
         return 1;
     }

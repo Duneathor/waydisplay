@@ -22,24 +22,16 @@ struct ClientSelectionSyncState {
 
 void client_selection_sync_reset(ClientSelectionSyncState& state);
 
-bool client_selection_sync_should_send(const ClientSelectionSyncState& state,
-                                       ClientSelectionKind kind,
-                                       const std::string& text,
+bool client_selection_sync_should_send(const ClientSelectionSyncState& state, ClientSelectionKind kind, const std::string& text,
                                        bool force);
 
-void client_selection_sync_note_sent(ClientSelectionSyncState& state,
-                                     ClientSelectionKind kind,
-                                     const std::string& text);
+void client_selection_sync_note_sent(ClientSelectionSyncState& state, ClientSelectionKind kind, const std::string& text);
 
-bool client_selection_sync_should_apply(const ClientSelectionSyncState& state,
-                                        ClientSelectionKind kind,
-                                        const std::string& text);
+bool client_selection_sync_should_apply(const ClientSelectionSyncState& state, ClientSelectionKind kind, const std::string& text);
 
 /* A successful remote apply also becomes the most recently sent value. This
  * suppresses echoes on platforms which report an application-owned clipboard
  * update as external. Forced paste sends still bypass this suppression. */
-void client_selection_sync_note_applied(ClientSelectionSyncState& state,
-                                        ClientSelectionKind kind,
-                                        const std::string& text);
+void client_selection_sync_note_applied(ClientSelectionSyncState& state, ClientSelectionKind kind, const std::string& text);
 
 } // namespace waydisplay

@@ -3,7 +3,7 @@
 namespace waydisplay {
 
 ClientContentOwnershipSnapshot ClientStreamOwnership::snapshot() const {
-    const uint64_t packed = state_.load(std::memory_order_acquire);
+    const uint64_t                 packed = state_.load(std::memory_order_acquire);
     ClientContentOwnershipSnapshot result{};
     result.epoch = packed >> 1u;
     result.owner = static_cast<ClientContentOwner>(packed & 1u);
@@ -19,9 +19,8 @@ uint64_t ClientStreamOwnership::transition_to(ClientContentOwner owner) {
             return current >> 1u;
         }
         const uint64_t next_epoch = (current >> 1u) + 1u;
-        const uint64_t next = pack(next_epoch, owner);
-        if (state_.compare_exchange_weak(current, next, std::memory_order_acq_rel,
-                                         std::memory_order_acquire))
+        const uint64_t next       = pack(next_epoch, owner);
+        if (state_.compare_exchange_weak(current, next, std::memory_order_acq_rel, std::memory_order_acquire))
         {
             return next_epoch;
         }
@@ -33,7 +32,7 @@ uint64_t ClientStreamOwnership::advance(ClientContentOwner owner) {
     for (;;)
     {
         const uint64_t next_epoch = (current >> 1u) + 1u;
-        const uint64_t next = pack(next_epoch, owner);
+        const uint64_t next       = pack(next_epoch, owner);
         if (state_.compare_exchange_weak(current, next, std::memory_order_acq_rel, std::memory_order_relaxed))
         {
             return next_epoch;

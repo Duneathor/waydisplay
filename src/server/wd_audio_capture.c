@@ -1,7 +1,7 @@
 #include "wd_audio_capture.h"
-#include "waydisplay/wd_protocol.h"
 
 #include "waydisplay/wd_log.h"
+#include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_time.h"
 
 #include <sched.h>
@@ -20,19 +20,19 @@
 #include <spa/utils/defs.h>
 
 struct wd_audio_capture {
-    struct pw_thread_loop* loop;
-    struct pw_stream* stream;
+    struct pw_thread_loop*    loop;
+    struct pw_stream*         stream;
     wd_audio_capture_callback callback;
-    void* userdata;
-    uint8_t channels;
-    bool ready;
-    bool failed;
-    bool delivery_enabled;
-    bool shutting_down;
-    uint64_t delivery_generation;
-    uint32_t active_callbacks;
-    char sink_name[96];
-    char sink_target[96];
+    void*                     userdata;
+    uint8_t                   channels;
+    bool                      ready;
+    bool                      failed;
+    bool                      delivery_enabled;
+    bool                      shutting_down;
+    uint64_t                  delivery_generation;
+    uint32_t                  active_callbacks;
+    char                      sink_name[96];
+    char                      sink_target[96];
 };
 
 static void wd_audio_capture_process(void* userdata) {
@@ -48,66 +48,53 @@ static void wd_audio_capture_process(void* userdata) {
         return;
     }
 
-    const uint64_t generation = __atomic_load_n(&capture->delivery_generation,
-                                                 __ATOMIC_ACQUIRE);
+    const uint64_t generation = __atomic_load_n(&capture->delivery_generation, __ATOMIC_ACQUIRE);
     __atomic_add_fetch(&capture->active_callbacks, 1, __ATOMIC_ACQ_REL);
 
-    struct spa_buffer* buffer = pw_buffer->buffer;
-    struct spa_data* data = buffer && buffer->n_datas > 0 ? &buffer->datas[0] : NULL;
-    const struct spa_chunk* chunk = data ? data->chunk : NULL;
-    const uint32_t frame_size = (uint32_t)capture->channels * sizeof(float);
-    const float* samples = NULL;
-    uint32_t frames = 0;
+    struct spa_buffer*      buffer     = pw_buffer->buffer;
+    struct spa_data*        data       = buffer && buffer->n_datas > 0 ? &buffer->datas[0] : NULL;
+    const struct spa_chunk* chunk      = data ? data->chunk : NULL;
+    const uint32_t          frame_size = (uint32_t)capture->channels * sizeof(float);
+    const float*            samples    = NULL;
+    uint32_t                frames     = 0;
 
     if (data && data->data && chunk && frame_size != 0)
     {
         const uint32_t offset = SPA_MIN(chunk->offset, data->maxsize);
-        const uint32_t bytes = SPA_MIN(chunk->size, data->maxsize - offset);
-        samples = SPA_PTROFF(data->data, offset, const float);
-        frames = bytes / frame_size;
+        const uint32_t bytes  = SPA_MIN(chunk->size, data->maxsize - offset);
+        samples               = SPA_PTROFF(data->data, offset, const float);
+        frames                = bytes / frame_size;
     }
 
-    if (samples && frames > 0 &&
-        generation == __atomic_load_n(&capture->delivery_generation,
-                                      __ATOMIC_ACQUIRE) &&
+    if (samples && frames > 0 && generation == __atomic_load_n(&capture->delivery_generation, __ATOMIC_ACQUIRE) &&
         __atomic_load_n(&capture->delivery_enabled, __ATOMIC_ACQUIRE))
     {
-        struct pw_time time = {0};
-        const bool have_time = pw_stream_get_time_n(capture->stream, &time,
-                                                     sizeof(time)) >= 0;
-        const struct wd_audio_capture_timing timing = {
-            .cycle_start_ns = have_time && time.now > 0
-                ? (uint64_t)time.now
-                : wd_now_ns(),
-            .position = have_time ? time.ticks : 0,
-            .clock_id = 0,
-            .rate_num = have_time ? time.rate.num : 0,
-            .rate_denom = have_time ? time.rate.denom : 0,
-            .position_reliable = have_time && time.rate.num != 0 &&
-                                 time.rate.denom != 0,
-            .discontinuity = false,
+        struct pw_time                       time      = {0};
+        const bool                           have_time = pw_stream_get_time_n(capture->stream, &time, sizeof(time)) >= 0;
+        const struct wd_audio_capture_timing timing    = {
+            .cycle_start_ns    = have_time && time.now > 0 ? (uint64_t)time.now : wd_now_ns(),
+            .position          = have_time ? time.ticks : 0,
+            .clock_id          = 0,
+            .rate_num          = have_time ? time.rate.num : 0,
+            .rate_denom        = have_time ? time.rate.denom : 0,
+            .position_reliable = have_time && time.rate.num != 0 && time.rate.denom != 0,
+            .discontinuity     = false,
         };
-        capture->callback(capture->userdata, samples, frames, capture->channels,
-                          &timing);
+        capture->callback(capture->userdata, samples, frames, capture->channels, &timing);
     }
 
     __atomic_sub_fetch(&capture->active_callbacks, 1, __ATOMIC_ACQ_REL);
     pw_stream_queue_buffer(capture->stream, pw_buffer);
 }
 
-static void wd_audio_capture_state_changed(void* userdata,
-                                           enum pw_stream_state old_state,
-                                           enum pw_stream_state state,
-                                           const char* error) {
+static void wd_audio_capture_state_changed(void* userdata, enum pw_stream_state old_state, enum pw_stream_state state, const char* error) {
     struct wd_audio_capture* capture = userdata;
     if (!capture)
     {
         return;
     }
-    const bool shutting_down = __atomic_load_n(&capture->shutting_down,
-                                                __ATOMIC_ACQUIRE);
-    if (!shutting_down &&
-        (state == PW_STREAM_STATE_PAUSED || state == PW_STREAM_STATE_STREAMING))
+    const bool shutting_down = __atomic_load_n(&capture->shutting_down, __ATOMIC_ACQUIRE);
+    if (!shutting_down && (state == PW_STREAM_STATE_PAUSED || state == PW_STREAM_STATE_STREAMING))
     {
         __atomic_store_n(&capture->failed, false, __ATOMIC_RELEASE);
         __atomic_store_n(&capture->ready, true, __ATOMIC_RELEASE);
@@ -116,23 +103,17 @@ static void wd_audio_capture_state_changed(void* userdata,
     {
         __atomic_store_n(&capture->ready, false, __ATOMIC_RELEASE);
         if (!shutting_down &&
-            (state == PW_STREAM_STATE_ERROR ||
-             (state == PW_STREAM_STATE_UNCONNECTED &&
-              old_state != PW_STREAM_STATE_UNCONNECTED)))
+            (state == PW_STREAM_STATE_ERROR || (state == PW_STREAM_STATE_UNCONNECTED && old_state != PW_STREAM_STATE_UNCONNECTED)))
         {
             __atomic_store_n(&capture->failed, true, __ATOMIC_RELEASE);
-            __atomic_store_n(&capture->delivery_enabled, false,
-                             __ATOMIC_RELEASE);
-            __atomic_add_fetch(&capture->delivery_generation, 1,
-                               __ATOMIC_ACQ_REL);
+            __atomic_store_n(&capture->delivery_enabled, false, __ATOMIC_RELEASE);
+            __atomic_add_fetch(&capture->delivery_generation, 1, __ATOMIC_ACQ_REL);
         }
         if (!shutting_down && state == PW_STREAM_STATE_ERROR)
         {
-            WD_LOG_ERROR("PipeWire private audio sink error: %s",
-                         error ? error : "unknown");
+            WD_LOG_ERROR("PipeWire private audio sink error: %s", error ? error : "unknown");
         }
-        else if (!shutting_down && state == PW_STREAM_STATE_UNCONNECTED &&
-                 old_state != PW_STREAM_STATE_UNCONNECTED)
+        else if (!shutting_down && state == PW_STREAM_STATE_UNCONNECTED && old_state != PW_STREAM_STATE_UNCONNECTED)
         {
             WD_LOG_WARN("PipeWire private audio sink disconnected");
         }
@@ -143,7 +124,7 @@ static void wd_audio_capture_state_changed(void* userdata,
 static const struct pw_stream_events wd_audio_capture_events = {
     PW_VERSION_STREAM_EVENTS,
     .state_changed = wd_audio_capture_state_changed,
-    .process = wd_audio_capture_process,
+    .process       = wd_audio_capture_process,
 };
 
 static void wd_audio_capture_cleanup(struct wd_audio_capture* capture) {
@@ -168,8 +149,7 @@ static void wd_audio_capture_cleanup(struct wd_audio_capture* capture) {
     }
 }
 
-bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t channels,
-                             wd_audio_capture_callback callback, void* userdata) {
+bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t channels, wd_audio_capture_callback callback, void* userdata) {
     if (!out_capture || !callback || channels == 0 || channels > WD_AUDIO_CHANNELS_MAX)
     {
         return false;
@@ -185,10 +165,8 @@ bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t chan
     capture->callback = callback;
     capture->userdata = userdata;
     capture->channels = channels;
-    snprintf(capture->sink_name, sizeof(capture->sink_name),
-             "waydisplay.audio.sink.%ld", (long)getpid());
-    snprintf(capture->sink_target, sizeof(capture->sink_target), "%s",
-             capture->sink_name);
+    snprintf(capture->sink_name, sizeof(capture->sink_name), "waydisplay.audio.sink.%ld", (long)getpid());
+    snprintf(capture->sink_target, sizeof(capture->sink_target), "%s", capture->sink_name);
 
     capture->loop = pw_thread_loop_new("waydisplay-audio-sink", NULL);
     if (!capture->loop)
@@ -211,28 +189,13 @@ bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t chan
     snprintf(channel_count, sizeof(channel_count), "%u", channels);
     snprintf(owner_scope, sizeof(owner_scope), "waydisplay.%ld", (long)getpid());
     capture->stream = pw_stream_new_simple(
-        pw_thread_loop_get_loop(capture->loop),
-        "WayDisplay private audio sink",
-        pw_properties_new(
-            PW_KEY_MEDIA_TYPE, "Audio",
-            PW_KEY_MEDIA_CATEGORY, "Capture",
-            PW_KEY_MEDIA_ROLE, "Screen",
-            PW_KEY_MEDIA_CLASS, "Audio/Sink",
-            PW_KEY_NODE_NAME, capture->sink_name,
-            PW_KEY_NODE_DESCRIPTION, "WayDisplay private audio sink",
-            PW_KEY_NODE_VIRTUAL, "true",
-            "node.terminal", "true",
-            "node.pause-on-idle", "true",
-            "priority.session", "0",
-            "state.restore-props", "false",
-            "waydisplay.audio.private", "true",
-            "waydisplay.audio.scope", owner_scope,
-            PW_KEY_AUDIO_FORMAT, "F32",
-            PW_KEY_AUDIO_RATE, "48000",
-            PW_KEY_NODE_RATE, "1/48000",
-            PW_KEY_AUDIO_CHANNELS, channel_count,
-            SPA_KEY_AUDIO_POSITION, channels == 1 ? "[ MONO ]" : "[ FL FR ]",
-            NULL),
+        pw_thread_loop_get_loop(capture->loop), "WayDisplay private audio sink",
+        pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Capture", PW_KEY_MEDIA_ROLE, "Screen", PW_KEY_MEDIA_CLASS,
+                          "Audio/Sink", PW_KEY_NODE_NAME, capture->sink_name, PW_KEY_NODE_DESCRIPTION, "WayDisplay private audio sink",
+                          PW_KEY_NODE_VIRTUAL, "true", "node.terminal", "true", "node.pause-on-idle", "true", "priority.session", "0",
+                          "state.restore-props", "false", "waydisplay.audio.private", "true", "waydisplay.audio.scope", owner_scope,
+                          PW_KEY_AUDIO_FORMAT, "F32", PW_KEY_AUDIO_RATE, "48000", PW_KEY_NODE_RATE, "1/48000", PW_KEY_AUDIO_CHANNELS,
+                          channel_count, SPA_KEY_AUDIO_POSITION, channels == 1 ? "[ MONO ]" : "[ FL FR ]", NULL),
         &wd_audio_capture_events, capture);
     if (!capture->stream)
     {
@@ -243,28 +206,22 @@ bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t chan
     }
 
     struct spa_audio_info_raw audio_info = {0};
-    audio_info.format = SPA_AUDIO_FORMAT_F32;
-    audio_info.rate = WD_AUDIO_SAMPLE_RATE_DEFAULT;
-    audio_info.channels = channels;
-    audio_info.position[0] = channels == 1
-        ? SPA_AUDIO_CHANNEL_MONO
-        : SPA_AUDIO_CHANNEL_FL;
+    audio_info.format                    = SPA_AUDIO_FORMAT_F32;
+    audio_info.rate                      = WD_AUDIO_SAMPLE_RATE_DEFAULT;
+    audio_info.channels                  = channels;
+    audio_info.position[0]               = channels == 1 ? SPA_AUDIO_CHANNEL_MONO : SPA_AUDIO_CHANNEL_FL;
     if (channels > 1)
     {
         audio_info.position[1] = SPA_AUDIO_CHANNEL_FR;
     }
 
-    uint8_t params_buffer[1024];
-    struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(params_buffer,
-                                                           sizeof(params_buffer));
-    const struct spa_pod* params[1] = {
+    uint8_t                params_buffer[1024];
+    struct spa_pod_builder builder   = SPA_POD_BUILDER_INIT(params_buffer, sizeof(params_buffer));
+    const struct spa_pod*  params[1] = {
         spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat, &audio_info),
     };
     if (pw_stream_connect(capture->stream, PW_DIRECTION_INPUT, PW_ID_ANY,
-                          PW_STREAM_FLAG_AUTOCONNECT |
-                              PW_STREAM_FLAG_MAP_BUFFERS |
-                              PW_STREAM_FLAG_RT_PROCESS,
-                          params, 1) < 0)
+                          PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS, params, 1) < 0)
     {
         pw_thread_loop_unlock(capture->loop);
         wd_audio_capture_cleanup(capture);
@@ -272,8 +229,7 @@ bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t chan
         return false;
     }
 
-    while (!__atomic_load_n(&capture->ready, __ATOMIC_ACQUIRE) &&
-           !__atomic_load_n(&capture->failed, __ATOMIC_ACQUIRE))
+    while (!__atomic_load_n(&capture->ready, __ATOMIC_ACQUIRE) && !__atomic_load_n(&capture->failed, __ATOMIC_ACQUIRE))
     {
         const int wait_result = pw_thread_loop_timed_wait(capture->loop, 3);
         if (wait_result != 0)
@@ -292,9 +248,8 @@ bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t chan
         return false;
     }
 
-    WD_LOG_INFO("private audio sink ready: node=%s target=%s rate=%u channels=%u",
-                capture->sink_name, capture->sink_target,
-                WD_AUDIO_SAMPLE_RATE_DEFAULT, channels);
+    WD_LOG_DEBUG("private audio sink ready: node=%s target=%s rate=%u channels=%u", capture->sink_name, capture->sink_target,
+                 WD_AUDIO_SAMPLE_RATE_DEFAULT, channels);
     *out_capture = capture;
     return true;
 }
@@ -351,9 +306,7 @@ bool wd_audio_capture_available(void) {
 }
 
 bool wd_audio_capture_healthy(const struct wd_audio_capture* capture) {
-    return capture &&
-           !__atomic_load_n(&capture->shutting_down, __ATOMIC_ACQUIRE) &&
-           __atomic_load_n(&capture->ready, __ATOMIC_ACQUIRE) &&
+    return capture && !__atomic_load_n(&capture->shutting_down, __ATOMIC_ACQUIRE) && __atomic_load_n(&capture->ready, __ATOMIC_ACQUIRE) &&
            !__atomic_load_n(&capture->failed, __ATOMIC_ACQUIRE);
 }
 
@@ -378,8 +331,7 @@ struct wd_audio_capture {
     int unused;
 };
 
-bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t channels,
-                             wd_audio_capture_callback callback, void* userdata) {
+bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t channels, wd_audio_capture_callback callback, void* userdata) {
     (void)channels;
     (void)callback;
     (void)userdata;

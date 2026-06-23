@@ -1,6 +1,6 @@
 #include "waydisplay/wd_net.h"
-#include "wd_server.h"
 #include "wd_async_tcp.h"
+#include "wd_server.h"
 
 #include <string.h>
 #include <sys/socket.h>
@@ -85,9 +85,9 @@ static bool wd_cursor_send_shape_locked(struct wd_server* server, uint16_t shape
 
     struct wd_cursor_shape_payload payload;
     memset(&payload, 0, sizeof(payload));
-    payload.session_id = net->session_id;
+    payload.session_id       = net->session_id;
     payload.connection_token = net->connection_token;
-    payload.shape      = shape;
+    payload.shape            = shape;
 
     bool ok = false;
     if (net->control_tx)
@@ -109,8 +109,7 @@ static bool wd_cursor_send_shape_locked(struct wd_server* server, uint16_t shape
 
     if (ok)
     {
-        wd_stream_account_tcp_control_bytes_locked(net,
-                                                   (uint32_t)(sizeof(struct wd_tcp_header) + sizeof(payload)));
+        wd_stream_account_tcp_control_bytes_locked(net, (uint32_t)(sizeof(struct wd_tcp_header) + sizeof(payload)));
         net->stats.cursor_shape_tx++;
     }
     return ok;
@@ -143,7 +142,7 @@ bool wd_cursor_flush_pending_locked(struct wd_server* server) {
         return true;
     }
 
-    uint16_t shape = net->pending_cursor_shape;
+    uint16_t shape                  = net->pending_cursor_shape;
     net->pending_cursor_shape_dirty = false;
 
     bool ok = wd_cursor_send_shape_locked(server, shape);
@@ -228,8 +227,8 @@ static void handle_cursor_shape_request(struct wl_listener* listener, void* data
      */
     server->net.stats.cursor_shape_requests++;
 
-    uint16_t shape     = wd_shape_from_wp_shape(event->shape);
-    bool     changed   = server->cursor_shape != shape;
+    uint16_t shape   = wd_shape_from_wp_shape(event->shape);
+    bool     changed = server->cursor_shape != shape;
     wd_cursor_set_shape(server, shape);
 
     if (changed)
@@ -237,7 +236,6 @@ static void handle_cursor_shape_request(struct wl_listener* listener, void* data
         WD_LOG_DEBUG("client requested cursor-shape=%s mapped=%u", wlr_cursor_shape_v1_name(event->shape), shape);
     }
 }
-
 
 static bool wd_cursor_request_client_has_pointer_focus(struct wd_server* server, struct wlr_seat_client* seat_client) {
     if (!server || !server->seat || !seat_client)
@@ -250,8 +248,8 @@ static bool wd_cursor_request_client_has_pointer_focus(struct wd_server* server,
 }
 
 static void handle_request_set_cursor(struct wl_listener* listener, void* data) {
-    struct wd_server*                                server = wl_container_of(listener, server, request_set_cursor);
-    struct wlr_seat_pointer_request_set_cursor_event* event = data;
+    struct wd_server*                                 server = wl_container_of(listener, server, request_set_cursor);
+    struct wlr_seat_pointer_request_set_cursor_event* event  = data;
 
     if (!server || !event)
     {

@@ -1,5 +1,5 @@
-#include "waydisplay/wd_time.h"
 #include "waydisplay/wd_input.h"
+#include "waydisplay/wd_time.h"
 #include "wd_server.h"
 
 #include <string.h>
@@ -130,8 +130,7 @@ void wd_pointer_queue_event_locked(struct wd_net_state* net, const struct wd_poi
 
     if (net->pointer_queue_count >= WD_SERVER_POINTER_QUEUE_CAPACITY)
     {
-        memmove(&net->pointer_queue[0], &net->pointer_queue[1],
-                (WD_SERVER_POINTER_QUEUE_CAPACITY - 1u) * sizeof(net->pointer_queue[0]));
+        memmove(&net->pointer_queue[0], &net->pointer_queue[1], (WD_SERVER_POINTER_QUEUE_CAPACITY - 1u) * sizeof(net->pointer_queue[0]));
 
         net->pointer_queue_count = WD_SERVER_POINTER_QUEUE_CAPACITY - 1u;
         net->stats.pointer_events_dropped++;
@@ -282,7 +281,6 @@ void wd_pointer_clear_focus(struct wd_server* server) {
     wlr_seat_pointer_notify_frame(server->seat);
 }
 
-
 static bool listener_is_linked(struct wl_listener* listener) {
     return listener && listener->link.prev && listener->link.next;
 }
@@ -316,7 +314,8 @@ static void pointer_button_grab_reset(struct wd_server* server, const char* reas
         return;
     }
 
-    const bool had_grab = server->pointer_button_grab_active || server->pointer_button_grab_count > 0 || server->pointer_button_grab_surface;
+    const bool had_grab =
+        server->pointer_button_grab_active || server->pointer_button_grab_count > 0 || server->pointer_button_grab_surface;
 
     if (had_grab)
     {
@@ -392,8 +391,8 @@ static void pointer_button_grab_begin(struct wd_server* server, struct wd_view* 
 
     server->net.stats.pointer_button_grab_started++;
 
-    WD_LOG_DEBUG("pointer button grab begin surface=%p view=%p layout=%.1f %.1f sx=%.1f sy=%.1f button=0x%x",
-                 (void*)surface, (void*)view, lx, ly, sx, sy, button);
+    WD_LOG_DEBUG("pointer button grab begin surface=%p view=%p layout=%.1f %.1f sx=%.1f sy=%.1f button=0x%x", (void*)surface, (void*)view,
+                 lx, ly, sx, sy, button);
 }
 
 void wd_pointer_begin_move(struct wd_server* server, struct wd_view* view) {
@@ -416,8 +415,7 @@ void wd_pointer_begin_move(struct wd_server* server, struct wd_view* view) {
     server->move_grab.view_y = view->y;
     wd_cursor_set_shape(server, WD_CURSOR_SHAPE_MOVE);
 
-    WD_LOG_DEBUG("begin move view=%p at pointer %.1f %.1f view=%d %d", (void*)view, server->pointer_x, server->pointer_y,
-                 view->x, view->y);
+    WD_LOG_DEBUG("begin move view=%p at pointer %.1f %.1f view=%d %d", (void*)view, server->pointer_x, server->pointer_y, view->x, view->y);
 }
 
 void wd_pointer_update_move(struct wd_server* server) {
@@ -680,8 +678,8 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
         const struct wd_pointer_event_payload* event = &local[i].event;
 
         const uint64_t inject_ns = wd_now_ns();
-        const double lx = clamp_layout_x(server, event->x);
-        const double ly = clamp_layout_y(server, event->y);
+        const double   lx        = clamp_layout_x(server, event->x);
+        const double   ly        = clamp_layout_y(server, event->y);
 
         pthread_mutex_lock(&server->net.lock);
         server->net.last_input_sequence = event->input_sequence;

@@ -21,8 +21,7 @@ enum class ClientConfigValidationError : uint8_t {
     InvalidUdpPayloadTarget,
 };
 
-bool client_normalize_and_validate_server_config(wd_server_config_payload& config,
-                                                 ClientConfigValidationError* out_error = nullptr);
+bool        client_normalize_and_validate_server_config(wd_server_config_payload& config, ClientConfigValidationError* out_error = nullptr);
 const char* client_config_validation_error_name(ClientConfigValidationError error);
 
 enum ClientConfigChangeFlag : uint32_t {
@@ -37,9 +36,7 @@ enum ClientConfigChangeFlag : uint32_t {
     ClientConfigChangeAudio     = 1u << 7,
 };
 
-uint32_t client_classify_server_config_change(const wd_server_config_payload& current,
-                                              const wd_server_config_payload& next);
-bool client_config_change_requires_stream_reset(uint32_t flags);
-
+uint32_t client_classify_server_config_change(const wd_server_config_payload& current, const wd_server_config_payload& next);
+bool     client_config_change_requires_stream_reset(uint32_t flags);
 
 } // namespace waydisplay

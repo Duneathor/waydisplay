@@ -1,5 +1,5 @@
-#include "waydisplay/wd_time.h"
 #include "waydisplay/wd_input.h"
+#include "waydisplay/wd_time.h"
 #include "wd_server.h"
 
 #include <stdlib.h>
@@ -58,8 +58,7 @@ bool wd_keyboard_init(struct wd_server* server) {
     }
 
     wlr_keyboard_set_keymap(server->keyboard, keymap);
-    wlr_keyboard_set_repeat_info(server->keyboard, WD_SERVER_KEYBOARD_REPEAT_RATE_HZ,
-                                 WD_SERVER_KEYBOARD_REPEAT_DELAY_MS);
+    wlr_keyboard_set_repeat_info(server->keyboard, WD_SERVER_KEYBOARD_REPEAT_RATE_HZ, WD_SERVER_KEYBOARD_REPEAT_DELAY_MS);
     wlr_seat_set_keyboard(server->seat, server->keyboard);
 
     xkb_keymap_unref(keymap);

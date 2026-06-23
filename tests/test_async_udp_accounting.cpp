@@ -56,14 +56,10 @@ void test_shutdown_cancels_only_unsubmitted_packets() {
 }
 
 void test_pending_queue_limits_include_packet_and_byte_caps() {
-    require(wd_async_udp_pending_within_limits(10, 1000, 100, 16, 2048),
-            "queue below both limits should accept a packet");
-    require(!wd_async_udp_pending_within_limits(16, 1000, 100, 16, 2048),
-            "packet count cap should reject additional work");
-    require(!wd_async_udp_pending_within_limits(10, 2000, 100, 16, 2048),
-            "byte cap should reject additional work");
-    require(!wd_async_udp_pending_within_limits(0, 0, 4096, 16, 2048),
-            "single packet larger than byte cap should fail");
+    require(wd_async_udp_pending_within_limits(10, 1000, 100, 16, 2048), "queue below both limits should accept a packet");
+    require(!wd_async_udp_pending_within_limits(16, 1000, 100, 16, 2048), "packet count cap should reject additional work");
+    require(!wd_async_udp_pending_within_limits(10, 2000, 100, 16, 2048), "byte cap should reject additional work");
+    require(!wd_async_udp_pending_within_limits(0, 0, 4096, 16, 2048), "single packet larger than byte cap should fail");
 }
 
 void test_stream_epoch_identity_rejects_stale_work() {

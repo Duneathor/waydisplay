@@ -1,6 +1,5 @@
-#include "wd_selection_capture.h"
-
 #include "waydisplay/wd_protocol.h"
+#include "wd_selection_capture.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -8,14 +7,14 @@
 #include <cstring>
 #include <vector>
 
-#define CHECK(expr)                                                                                 \
-    do                                                                                              \
-    {                                                                                               \
-        if (!(expr))                                                                                \
-        {                                                                                           \
-            std::fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, #expr);       \
-            std::exit(1);                                                                           \
-        }                                                                                           \
+#define CHECK(expr)                                                                                                                        \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        if (!(expr))                                                                                                                       \
+        {                                                                                                                                  \
+            std::fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, #expr);                                                \
+            std::exit(1);                                                                                                                  \
+        }                                                                                                                                  \
     } while (0)
 
 static void test_chunked_capture() {
@@ -58,8 +57,7 @@ static void test_invalid_text_rejected() {
     wd_selection_capture_buffer_init(&buffer);
 
     const uint8_t embedded_nul[] = {'a', 0, 'b'};
-    CHECK(wd_selection_capture_buffer_append(&buffer, embedded_nul,
-                                             sizeof(embedded_nul)));
+    CHECK(wd_selection_capture_buffer_append(&buffer, embedded_nul, sizeof(embedded_nul)));
 
     uint8_t* text = nullptr;
     uint32_t size = 0;
@@ -69,8 +67,7 @@ static void test_invalid_text_rejected() {
 
     wd_selection_capture_buffer_init(&buffer);
     const uint8_t invalid_utf8[] = {0xc0, 0xaf};
-    CHECK(wd_selection_capture_buffer_append(&buffer, invalid_utf8,
-                                             sizeof(invalid_utf8)));
+    CHECK(wd_selection_capture_buffer_append(&buffer, invalid_utf8, sizeof(invalid_utf8)));
     CHECK(!wd_selection_capture_buffer_finish(&buffer, &text, &size));
     wd_selection_capture_buffer_destroy(&buffer);
 }

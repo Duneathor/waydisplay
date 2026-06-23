@@ -8,32 +8,28 @@
 #include <string>
 #include <vector>
 
-#define CHECK(condition)                                                                            \
-    do                                                                                              \
-    {                                                                                               \
-        if (!(condition))                                                                           \
-        {                                                                                           \
-            std::fprintf(stderr, "FAIL: %s:%d: %s\n", __FILE__, __LINE__, #condition);             \
-            std::exit(1);                                                                           \
-        }                                                                                           \
+#define CHECK(condition)                                                                                                                   \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        if (!(condition))                                                                                                                  \
+        {                                                                                                                                  \
+            std::fprintf(stderr, "FAIL: %s:%d: %s\n", __FILE__, __LINE__, #condition);                                                     \
+            std::exit(1);                                                                                                                  \
+        }                                                                                                                                  \
     } while (0)
 
 using waydisplay::ClientCliOptions;
 using waydisplay::ClientCliParseResult;
 
-static ClientCliParseResult parse(std::initializer_list<const char*> arguments,
-                                  ClientCliOptions& options,
-                                  std::string& error) {
+static ClientCliParseResult parse(std::initializer_list<const char*> arguments, ClientCliOptions& options, std::string& error) {
     std::vector<const char*> argv(arguments);
-    return waydisplay::client_cli_parse(static_cast<int>(argv.size()), argv.data(),
-                                        options, &error);
+    return waydisplay::client_cli_parse(static_cast<int>(argv.size()), argv.data(), options, &error);
 }
 
 static void test_defaults(void) {
     ClientCliOptions options;
-    std::string error;
-    CHECK(parse({"client", "192.0.2.1", "5000", "6000"}, options, error) ==
-          ClientCliParseResult::Ok);
+    std::string      error;
+    CHECK(parse({"client", "192.0.2.1", "5000", "6000"}, options, error) == ClientCliParseResult::Ok);
     CHECK(options.server_host == "192.0.2.1");
     CHECK(options.tcp_port == 5000);
     CHECK(options.client_udp_port == 6000);
@@ -48,11 +44,10 @@ static void test_defaults(void) {
 
 static void test_retained_options(void) {
     ClientCliOptions options;
-    std::string error;
-    CHECK(parse({"client", "198.51.100.8", "5500", "6500", "--fps", "75",
-                 "--size", "1920x1080", "--rate-kib", "8192", "--no-vsync",
-                 "--no-audio", "--video", "force", "--video-codec", "auto",
-                 "--video-hwdecode", "off"}, options, error) == ClientCliParseResult::Ok);
+    std::string      error;
+    CHECK(parse({"client", "198.51.100.8", "5500", "6500", "--fps", "75", "--size", "1920x1080", "--rate-kib", "8192", "--no-vsync",
+                 "--no-audio", "--video", "force", "--video-codec", "auto", "--video-hwdecode", "off"},
+                options, error) == ClientCliParseResult::Ok);
     CHECK(options.target_fps == 75);
     CHECK(options.desired_width == 1920 && options.desired_height == 1080);
     CHECK(options.limited_udp_kib_per_second == 8192);
@@ -77,16 +72,14 @@ static void test_removed_options_are_rejected(void) {
     for (const auto& option : removed)
     {
         ClientCliOptions options;
-        std::string error;
+        std::string      error;
         if (option[1])
         {
-            CHECK(parse({"client", "127.0.0.1", "5000", "6000", option[0], option[1]},
-                        options, error) == ClientCliParseResult::Error);
+            CHECK(parse({"client", "127.0.0.1", "5000", "6000", option[0], option[1]}, options, error) == ClientCliParseResult::Error);
         }
         else
         {
-            CHECK(parse({"client", "127.0.0.1", "5000", "6000", option[0]},
-                        options, error) == ClientCliParseResult::Error);
+            CHECK(parse({"client", "127.0.0.1", "5000", "6000", option[0]}, options, error) == ClientCliParseResult::Error);
         }
     }
 }
@@ -96,27 +89,22 @@ static void test_invalid_values(void) {
     for (const char* value : invalid_sizes)
     {
         ClientCliOptions options;
-        std::string error;
-        CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--size", value},
-                    options, error) == ClientCliParseResult::Error);
+        std::string      error;
+        CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--size", value}, options, error) == ClientCliParseResult::Error);
     }
 
     ClientCliOptions options;
-    std::string error;
-    CHECK(parse({"client", "127.0.0.1", "0", "6000"}, options, error) ==
-          ClientCliParseResult::Error);
-    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--fps", "121"},
-                options, error) == ClientCliParseResult::Error);
-    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--rate-kib", "+1"},
-                options, error) == ClientCliParseResult::Error);
+    std::string      error;
+    CHECK(parse({"client", "127.0.0.1", "0", "6000"}, options, error) == ClientCliParseResult::Error);
+    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--fps", "121"}, options, error) == ClientCliParseResult::Error);
+    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--rate-kib", "+1"}, options, error) == ClientCliParseResult::Error);
 }
 
 static void test_help(void) {
     ClientCliOptions options;
-    std::string error;
+    std::string      error;
     CHECK(parse({"client", "--help"}, options, error) == ClientCliParseResult::Help);
-    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "-h"}, options, error) ==
-          ClientCliParseResult::Help);
+    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "-h"}, options, error) == ClientCliParseResult::Help);
 }
 
 int main() {

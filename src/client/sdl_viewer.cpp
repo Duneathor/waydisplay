@@ -1,22 +1,21 @@
 #include "sdl_viewer.hpp"
-#include "audio_video_sync.hpp"
-#include "content_order.hpp"
-#include "render_planning.hpp"
 
-#include "client_net.hpp"
+#include "audio_video_sync.hpp"
 #include "client_async_udp.hpp"
 #include "client_config_validation.hpp"
+#include "client_net.hpp"
+#include "content_order.hpp"
+#include "render_planning.hpp"
 #include "sdl_input.hpp"
 #include "tile_reassembly.hpp"
 #include "waydisplay/wd_config.h"
-#include "waydisplay/wd_log.h"
 #include "waydisplay/wd_input.h"
+#include "waydisplay/wd_log.h"
+#include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
-#include "waydisplay/wd_media_clock.h"
 
-#include <poll.h>
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
@@ -24,10 +23,11 @@
 #include <cstdio>
 #include <cstring>
 #include <errno.h>
-#include <thread>
 #include <iterator>
+#include <poll.h>
 #include <string>
 #include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -35,13 +35,12 @@
 namespace waydisplay {
 namespace {
 
-const wd_server_config_payload*     g_client_config = nullptr;
-int                                 g_window_width  = 1;
-int                                 g_window_height = 1;
-SDL_FRect                           g_content_rect{0.0f, 0.0f, 1.0f, 1.0f};
+const wd_server_config_payload*      g_client_config = nullptr;
+int                                  g_window_width  = 1;
+int                                  g_window_height = 1;
+SDL_FRect                            g_content_rect{0.0f, 0.0f, 1.0f, 1.0f};
 std::array<bool, SDL_SCANCODE_COUNT> g_forwarded_keys{};
-bool                                g_suppress_paste_v_keyup = false;
-
+bool                                 g_suppress_paste_v_keyup = false;
 
 constexpr uint16_t WD_POINTER_MOD_ALT   = 1u << 0;
 constexpr uint16_t WD_POINTER_MOD_SHIFT = 1u << 1;
@@ -208,16 +207,16 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.video_data_frames_rx += src.video_data_frames_rx;
     dst.video_invalid_frames_rx += src.video_invalid_frames_rx;
     dst.video_stale_frames_dropped += src.video_stale_frames_dropped;
-    dst.video_last_frame_id_rx = std::max(dst.video_last_frame_id_rx, src.video_last_frame_id_rx);
+    dst.video_last_frame_id_rx        = std::max(dst.video_last_frame_id_rx, src.video_last_frame_id_rx);
     dst.video_last_frame_id_presented = std::max(dst.video_last_frame_id_presented, src.video_last_frame_id_presented);
     dst.video_present_latency_samples += src.video_present_latency_samples;
     dst.video_present_latency_sum_ns += src.video_present_latency_sum_ns;
     dst.video_audio_sync_holds += src.video_audio_sync_holds;
     dst.video_audio_sync_drops += src.video_audio_sync_drops;
     dst.video_queue_overflow_drops += src.video_queue_overflow_drops;
-    dst.video_queue_depth = src.video_queue_depth;
-    dst.video_queue_depth_max = std::max(dst.video_queue_depth_max, src.video_queue_depth_max);
-    dst.video_oldest_pts_usec = src.video_oldest_pts_usec;
+    dst.video_queue_depth         = src.video_queue_depth;
+    dst.video_queue_depth_max     = std::max(dst.video_queue_depth_max, src.video_queue_depth_max);
+    dst.video_oldest_pts_usec     = src.video_oldest_pts_usec;
     dst.video_audio_delta_samples = src.video_audio_delta_samples;
     dst.tile_frames_presented += src.tile_frames_presented;
     dst.audio_messages_rx += src.audio_messages_rx;
@@ -235,7 +234,7 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.udp_async_cancels += src.udp_async_cancels;
     dst.udp_async_inflight_current = src.udp_async_inflight_current;
     dst.udp_async_prepared_current = src.udp_async_prepared_current;
-    dst.udp_async_inflight_max = std::max(dst.udp_async_inflight_max, src.udp_async_inflight_max);
+    dst.udp_async_inflight_max     = std::max(dst.udp_async_inflight_max, src.udp_async_inflight_max);
     dst.udp_async_drained_on_reconfigure += src.udp_async_drained_on_reconfigure;
     dst.udp_async_cancelled_on_reconfigure += src.udp_async_cancelled_on_reconfigure;
     dst.udp_async_receiver_generations += src.udp_async_receiver_generations;
@@ -261,7 +260,7 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.sdl_texture_lock_calls += src.sdl_texture_lock_calls;
     dst.sdl_texture_update_calls += src.sdl_texture_update_calls;
     dst.sdl_texture_model_update_call_ns = src.sdl_texture_model_update_call_ns;
-    dst.sdl_texture_model_lock_call_ns = src.sdl_texture_model_lock_call_ns;
+    dst.sdl_texture_model_lock_call_ns   = src.sdl_texture_model_lock_call_ns;
     dst.sdl_texture_model_pixel_cost_q16 = src.sdl_texture_model_pixel_cost_q16;
     dst.sdl_texture_source_pixels += src.sdl_texture_source_pixels;
     dst.sdl_texture_upload_pixels += src.sdl_texture_upload_pixels;
@@ -608,8 +607,8 @@ void draw_text(SDL_Renderer* renderer, const char* text, int x, int y, int scale
                     continue;
                 }
 
-                SDL_FRect px{static_cast<float>(cursor_x + col * scale), static_cast<float>(y + row * scale),
-                             static_cast<float>(scale), static_cast<float>(scale)};
+                SDL_FRect px{static_cast<float>(cursor_x + col * scale), static_cast<float>(y + row * scale), static_cast<float>(scale),
+                             static_cast<float>(scale)};
                 SDL_RenderFillRect(renderer, &px);
             }
         }
@@ -626,21 +625,21 @@ void render_context_menu(SDL_Renderer* renderer, const ContextMenu& menu) {
 
     const int height = context_menu_height();
 
-    SDL_FRect shadow{static_cast<float>(menu.x + 5), static_cast<float>(menu.y + 5),
-                     static_cast<float>(WD_CLIENT_CONTEXT_MENU_WIDTH), static_cast<float>(height)};
+    SDL_FRect shadow{static_cast<float>(menu.x + 5), static_cast<float>(menu.y + 5), static_cast<float>(WD_CLIENT_CONTEXT_MENU_WIDTH),
+                     static_cast<float>(height)};
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 150);
     SDL_RenderFillRect(renderer, &shadow);
 
-    SDL_FRect bg{static_cast<float>(menu.x), static_cast<float>(menu.y),
-                 static_cast<float>(WD_CLIENT_CONTEXT_MENU_WIDTH), static_cast<float>(height)};
+    SDL_FRect bg{static_cast<float>(menu.x), static_cast<float>(menu.y), static_cast<float>(WD_CLIENT_CONTEXT_MENU_WIDTH),
+                 static_cast<float>(height)};
     SDL_SetRenderDrawColor(renderer, 26, 29, 33, 248);
     SDL_RenderFillRect(renderer, &bg);
 
     SDL_SetRenderDrawColor(renderer, 72, 78, 86, 255);
     SDL_RenderRect(renderer, &bg);
 
-    SDL_FRect inner{static_cast<float>(menu.x + 1), static_cast<float>(menu.y + 1),
-                    static_cast<float>(WD_CLIENT_CONTEXT_MENU_WIDTH - 2), static_cast<float>(height - 2)};
+    SDL_FRect inner{static_cast<float>(menu.x + 1), static_cast<float>(menu.y + 1), static_cast<float>(WD_CLIENT_CONTEXT_MENU_WIDTH - 2),
+                    static_cast<float>(height - 2)};
     SDL_SetRenderDrawColor(renderer, 43, 47, 53, 255);
     SDL_RenderRect(renderer, &inner);
 
@@ -823,9 +822,8 @@ bool send_host_clipboard_to_server(ClientState& state, bool primary, bool force)
         return false;
     }
 
-    const ClientSelectionKind kind = primary ? ClientSelectionKind::Primary
-                                             : ClientSelectionKind::Clipboard;
-    const std::string value(text);
+    const ClientSelectionKind kind = primary ? ClientSelectionKind::Primary : ClientSelectionKind::Clipboard;
+    const std::string         value(text);
     SDL_free(text);
 
     if (!client_selection_sync_should_send(state.selection_sync, kind, value, force))
@@ -833,8 +831,7 @@ bool send_host_clipboard_to_server(ClientState& state, bool primary, bool force)
         return true;
     }
 
-    const bool ok = primary ? client_send_primary_text(state, value.c_str())
-                            : client_send_clipboard_text(state, value.c_str());
+    const bool ok = primary ? client_send_primary_text(state, value.c_str()) : client_send_clipboard_text(state, value.c_str());
     if (ok)
     {
         client_selection_sync_note_sent(state.selection_sync, kind, value);
@@ -868,10 +865,7 @@ void drain_remote_selection_updates(ClientState& state) {
         }
     }
 
-    if (have_clipboard &&
-        client_selection_sync_should_apply(state.selection_sync,
-                                           ClientSelectionKind::Clipboard,
-                                           clipboard))
+    if (have_clipboard && client_selection_sync_should_apply(state.selection_sync, ClientSelectionKind::Clipboard, clipboard))
     {
         if (!SDL_SetClipboardText(clipboard.c_str()))
         {
@@ -879,16 +873,11 @@ void drain_remote_selection_updates(ClientState& state) {
         }
         else
         {
-            client_selection_sync_note_applied(state.selection_sync,
-                                               ClientSelectionKind::Clipboard,
-                                               clipboard);
+            client_selection_sync_note_applied(state.selection_sync, ClientSelectionKind::Clipboard, clipboard);
         }
     }
 
-    if (have_primary &&
-        client_selection_sync_should_apply(state.selection_sync,
-                                           ClientSelectionKind::Primary,
-                                           primary))
+    if (have_primary && client_selection_sync_should_apply(state.selection_sync, ClientSelectionKind::Primary, primary))
     {
         if (!SDL_SetPrimarySelectionText(primary.c_str()))
         {
@@ -896,9 +885,7 @@ void drain_remote_selection_updates(ClientState& state) {
         }
         else
         {
-            client_selection_sync_note_applied(state.selection_sync,
-                                               ClientSelectionKind::Primary,
-                                               primary);
+            client_selection_sync_note_applied(state.selection_sync, ClientSelectionKind::Primary, primary);
         }
     }
 }
@@ -993,13 +980,12 @@ uint64_t take_stat(std::atomic<uint64_t>& value) {
     return value.exchange(0, std::memory_order_relaxed);
 }
 
-
 void update_udp_gap_pressure(ClientState& state, uint64_t max_gap_ns, uint64_t interarrival_samples, uint64_t udp_packets) {
     uint64_t current = state.udp_gap_pressure_ns.load(std::memory_order_relaxed);
     uint64_t target  = 0;
 
-    if (udp_packets >= WD_CLIENT_RUNTIME_GAP_MIN_SAMPLES &&
-        interarrival_samples >= WD_CLIENT_RUNTIME_GAP_MIN_SAMPLES && max_gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
+    if (udp_packets >= WD_CLIENT_RUNTIME_GAP_MIN_SAMPLES && interarrival_samples >= WD_CLIENT_RUNTIME_GAP_MIN_SAMPLES &&
+        max_gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
     {
         target = max_gap_ns;
     }
@@ -1062,184 +1048,177 @@ bool take_input_timestamp(ClientState& state, uint64_t sequence, uint64_t& times
 }
 
 void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& logged) {
-    const uint64_t udp_packets = logged.udp_packets;
-    const uint64_t udp_bytes = logged.udp_bytes;
-    const uint64_t udp_interarrival_samples = logged.udp_interarrival_samples;
-    const uint64_t udp_interarrival_sum_ns = logged.udp_interarrival_sum_ns;
-    const uint64_t udp_jitter_samples = logged.udp_jitter_samples;
-    const uint64_t udp_jitter_sum_ns = logged.udp_jitter_sum_ns;
-    const uint64_t udp_interarrival_max_ns = logged.udp_interarrival_max_ns;
-    const uint64_t invalid = logged.invalid;
-    const uint64_t ignored_probe = logged.ignored_probe;
-    const uint64_t stale_session = logged.stale_session;
-    const uint64_t old_gen = logged.old_gen;
-    const uint64_t completed = logged.completed;
-    const uint64_t completed_compressed = logged.completed_compressed;
-    const uint64_t completed_packets = logged.completed_packets;
-    const uint64_t partial_timeouts = logged.partial_timeouts;
-    const uint64_t partial_missing_packets = logged.partial_missing_packets;
-    const uint64_t partial_retx_queued = logged.partial_retx_queued;
-    const uint64_t retx_response_samples = logged.retx_response_samples;
-    const uint64_t retx_response_sum_ns = logged.retx_response_sum_ns;
-    const uint64_t timeout_updates = logged.timeout_updates;
-    const uint64_t summaries = logged.summaries;
-    const uint64_t retx = logged.retx;
-    const uint64_t summary_retx_queued = logged.summary_retx_queued;
-    const uint64_t summary_retx_deferred = logged.summary_retx_deferred;
-    const uint64_t summary_retx_throttled = logged.summary_retx_throttled;
-    const uint64_t summary_retx_stale_dropped = logged.summary_retx_stale_dropped;
-    const uint64_t summary_retx_pressure_dropped = logged.summary_retx_pressure_dropped;
-    const uint64_t summary_promote_passes = logged.summary_promote_passes;
-    const uint64_t summary_promote_scanned = logged.summary_promote_scanned;
-    const uint64_t summary_promote_candidates = logged.summary_promote_candidates;
-    const uint64_t summary_to_retx_samples = logged.summary_to_retx_samples;
-    const uint64_t summary_to_retx_sum_ns = logged.summary_to_retx_sum_ns;
-    const uint64_t keys = logged.keys;
-    const uint64_t pointer = logged.pointer;
-    const uint64_t input_events = logged.input_events;
-    const uint64_t input_channel_events = logged.input_channel_events;
-    const uint64_t input_fallback_events = logged.input_fallback_events;
-    const uint64_t selection_channel_events = logged.selection_channel_events;
-    const uint64_t selection_fallback_events = logged.selection_fallback_events;
-    const uint64_t tcp_async_queued = logged.tcp_async_queued;
-    const uint64_t tcp_async_completed = logged.tcp_async_completed;
-    const uint64_t tcp_async_failed = logged.tcp_async_failed;
-    const uint64_t tcp_async_overflow = logged.tcp_async_overflow;
-    const uint64_t tcp_async_partial = logged.tcp_async_partial;
-    const uint64_t tcp_async_coalesced = logged.tcp_async_coalesced;
-    const uint64_t tcp_async_inflight_max = logged.tcp_async_inflight_max;
-    const uint64_t video_frames_rx = logged.video_frames_rx;
-    const uint64_t video_bytes_rx = logged.video_bytes_rx;
-    const uint64_t video_frames_decoded = logged.video_frames_decoded;
-    const uint64_t video_frames_presented = logged.video_frames_presented;
-    const uint64_t video_decode_failed = logged.video_decode_failed;
-    const uint64_t video_publish_failed = logged.video_publish_failed;
-    const uint64_t video_control_frames_rx = logged.video_control_frames_rx;
-    const uint64_t video_need_keyframe_drops = logged.video_need_keyframe_drops;
-    const uint64_t video_decoder_resets = logged.video_decoder_resets;
-    const uint64_t video_decode_samples = logged.video_decode_samples;
-    const uint64_t video_decode_sum_ns = logged.video_decode_sum_ns;
-    const uint64_t video_messages_rx = logged.video_messages_rx;
-    const uint64_t video_data_frames_rx = logged.video_data_frames_rx;
-    const uint64_t video_invalid_frames_rx = logged.video_invalid_frames_rx;
-    const uint64_t video_stale_frames_dropped = logged.video_stale_frames_dropped;
-    const uint64_t video_last_frame_id_rx = logged.video_last_frame_id_rx;
-    const uint64_t video_last_frame_id_presented = logged.video_last_frame_id_presented;
-    const uint64_t video_present_latency_samples = logged.video_present_latency_samples;
-    const uint64_t video_present_latency_sum_ns = logged.video_present_latency_sum_ns;
-    const uint64_t video_audio_sync_holds = logged.video_audio_sync_holds;
-    const uint64_t video_audio_sync_drops = logged.video_audio_sync_drops;
-    const uint64_t video_queue_overflow_drops = logged.video_queue_overflow_drops;
-    const uint32_t video_queue_depth = logged.video_queue_depth;
-    const uint32_t video_queue_depth_max = logged.video_queue_depth_max;
-    const uint64_t video_oldest_pts_usec = logged.video_oldest_pts_usec;
-    const int64_t video_audio_delta_samples = logged.video_audio_delta_samples;
-    const uint64_t tile_frames_presented = logged.tile_frames_presented;
-    const uint64_t audio_messages_rx = logged.audio_messages_rx;
-    const uint64_t audio_packets_rx = logged.audio_packets_rx;
-    const uint64_t audio_bytes_rx = logged.audio_bytes_rx;
-    const uint64_t audio_decode_failed = logged.audio_decode_failed;
-    const uint64_t audio_discontinuities = logged.audio_discontinuities;
-    const uint64_t audio_late_drops = logged.audio_late_drops;
-    const uint64_t audio_underflows = logged.audio_underflows;
-    const uint64_t udp_async_posted = logged.udp_async_posted;
-    const uint64_t udp_async_retired = logged.udp_async_retired;
-    const uint64_t udp_async_completed = logged.udp_async_completed;
-    const uint64_t udp_async_failed = logged.udp_async_failed;
-    const uint64_t udp_async_submit_failed = logged.udp_async_submit_failed;
-    const uint64_t udp_async_cancels = logged.udp_async_cancels;
-    const uint64_t udp_async_inflight_current = logged.udp_async_inflight_current;
-    const uint64_t udp_async_prepared_current = logged.udp_async_prepared_current;
-    const uint64_t udp_async_inflight_max = logged.udp_async_inflight_max;
-    const uint64_t udp_async_drained_on_reconfigure = logged.udp_async_drained_on_reconfigure;
+    const uint64_t udp_packets                        = logged.udp_packets;
+    const uint64_t udp_bytes                          = logged.udp_bytes;
+    const uint64_t udp_interarrival_samples           = logged.udp_interarrival_samples;
+    const uint64_t udp_interarrival_sum_ns            = logged.udp_interarrival_sum_ns;
+    const uint64_t udp_jitter_samples                 = logged.udp_jitter_samples;
+    const uint64_t udp_jitter_sum_ns                  = logged.udp_jitter_sum_ns;
+    const uint64_t udp_interarrival_max_ns            = logged.udp_interarrival_max_ns;
+    const uint64_t invalid                            = logged.invalid;
+    const uint64_t ignored_probe                      = logged.ignored_probe;
+    const uint64_t stale_session                      = logged.stale_session;
+    const uint64_t old_gen                            = logged.old_gen;
+    const uint64_t completed                          = logged.completed;
+    const uint64_t completed_compressed               = logged.completed_compressed;
+    const uint64_t completed_packets                  = logged.completed_packets;
+    const uint64_t partial_timeouts                   = logged.partial_timeouts;
+    const uint64_t partial_missing_packets            = logged.partial_missing_packets;
+    const uint64_t partial_retx_queued                = logged.partial_retx_queued;
+    const uint64_t retx_response_samples              = logged.retx_response_samples;
+    const uint64_t retx_response_sum_ns               = logged.retx_response_sum_ns;
+    const uint64_t timeout_updates                    = logged.timeout_updates;
+    const uint64_t summaries                          = logged.summaries;
+    const uint64_t retx                               = logged.retx;
+    const uint64_t summary_retx_queued                = logged.summary_retx_queued;
+    const uint64_t summary_retx_deferred              = logged.summary_retx_deferred;
+    const uint64_t summary_retx_throttled             = logged.summary_retx_throttled;
+    const uint64_t summary_retx_stale_dropped         = logged.summary_retx_stale_dropped;
+    const uint64_t summary_retx_pressure_dropped      = logged.summary_retx_pressure_dropped;
+    const uint64_t summary_promote_passes             = logged.summary_promote_passes;
+    const uint64_t summary_promote_scanned            = logged.summary_promote_scanned;
+    const uint64_t summary_promote_candidates         = logged.summary_promote_candidates;
+    const uint64_t summary_to_retx_samples            = logged.summary_to_retx_samples;
+    const uint64_t summary_to_retx_sum_ns             = logged.summary_to_retx_sum_ns;
+    const uint64_t keys                               = logged.keys;
+    const uint64_t pointer                            = logged.pointer;
+    const uint64_t input_events                       = logged.input_events;
+    const uint64_t input_channel_events               = logged.input_channel_events;
+    const uint64_t input_fallback_events              = logged.input_fallback_events;
+    const uint64_t selection_channel_events           = logged.selection_channel_events;
+    const uint64_t selection_fallback_events          = logged.selection_fallback_events;
+    const uint64_t tcp_async_queued                   = logged.tcp_async_queued;
+    const uint64_t tcp_async_completed                = logged.tcp_async_completed;
+    const uint64_t tcp_async_failed                   = logged.tcp_async_failed;
+    const uint64_t tcp_async_overflow                 = logged.tcp_async_overflow;
+    const uint64_t tcp_async_partial                  = logged.tcp_async_partial;
+    const uint64_t tcp_async_coalesced                = logged.tcp_async_coalesced;
+    const uint64_t tcp_async_inflight_max             = logged.tcp_async_inflight_max;
+    const uint64_t video_frames_rx                    = logged.video_frames_rx;
+    const uint64_t video_bytes_rx                     = logged.video_bytes_rx;
+    const uint64_t video_frames_decoded               = logged.video_frames_decoded;
+    const uint64_t video_frames_presented             = logged.video_frames_presented;
+    const uint64_t video_decode_failed                = logged.video_decode_failed;
+    const uint64_t video_publish_failed               = logged.video_publish_failed;
+    const uint64_t video_control_frames_rx            = logged.video_control_frames_rx;
+    const uint64_t video_need_keyframe_drops          = logged.video_need_keyframe_drops;
+    const uint64_t video_decoder_resets               = logged.video_decoder_resets;
+    const uint64_t video_decode_samples               = logged.video_decode_samples;
+    const uint64_t video_decode_sum_ns                = logged.video_decode_sum_ns;
+    const uint64_t video_messages_rx                  = logged.video_messages_rx;
+    const uint64_t video_data_frames_rx               = logged.video_data_frames_rx;
+    const uint64_t video_invalid_frames_rx            = logged.video_invalid_frames_rx;
+    const uint64_t video_stale_frames_dropped         = logged.video_stale_frames_dropped;
+    const uint64_t video_last_frame_id_rx             = logged.video_last_frame_id_rx;
+    const uint64_t video_last_frame_id_presented      = logged.video_last_frame_id_presented;
+    const uint64_t video_present_latency_samples      = logged.video_present_latency_samples;
+    const uint64_t video_present_latency_sum_ns       = logged.video_present_latency_sum_ns;
+    const uint64_t video_audio_sync_holds             = logged.video_audio_sync_holds;
+    const uint64_t video_audio_sync_drops             = logged.video_audio_sync_drops;
+    const uint64_t video_queue_overflow_drops         = logged.video_queue_overflow_drops;
+    const uint32_t video_queue_depth                  = logged.video_queue_depth;
+    const uint32_t video_queue_depth_max              = logged.video_queue_depth_max;
+    const uint64_t video_oldest_pts_usec              = logged.video_oldest_pts_usec;
+    const int64_t  video_audio_delta_samples          = logged.video_audio_delta_samples;
+    const uint64_t tile_frames_presented              = logged.tile_frames_presented;
+    const uint64_t audio_messages_rx                  = logged.audio_messages_rx;
+    const uint64_t audio_packets_rx                   = logged.audio_packets_rx;
+    const uint64_t audio_bytes_rx                     = logged.audio_bytes_rx;
+    const uint64_t audio_decode_failed                = logged.audio_decode_failed;
+    const uint64_t audio_discontinuities              = logged.audio_discontinuities;
+    const uint64_t audio_late_drops                   = logged.audio_late_drops;
+    const uint64_t audio_underflows                   = logged.audio_underflows;
+    const uint64_t udp_async_posted                   = logged.udp_async_posted;
+    const uint64_t udp_async_retired                  = logged.udp_async_retired;
+    const uint64_t udp_async_completed                = logged.udp_async_completed;
+    const uint64_t udp_async_failed                   = logged.udp_async_failed;
+    const uint64_t udp_async_submit_failed            = logged.udp_async_submit_failed;
+    const uint64_t udp_async_cancels                  = logged.udp_async_cancels;
+    const uint64_t udp_async_inflight_current         = logged.udp_async_inflight_current;
+    const uint64_t udp_async_prepared_current         = logged.udp_async_prepared_current;
+    const uint64_t udp_async_inflight_max             = logged.udp_async_inflight_max;
+    const uint64_t udp_async_drained_on_reconfigure   = logged.udp_async_drained_on_reconfigure;
     const uint64_t udp_async_cancelled_on_reconfigure = logged.udp_async_cancelled_on_reconfigure;
-    const uint64_t udp_async_receiver_generations = logged.udp_async_receiver_generations;
-    const uint64_t udp_async_accounting_errors = logged.udp_async_accounting_errors;
-    const uint64_t tile_assembly_samples = logged.tile_assembly_samples;
-    const uint64_t tile_assembly_sum_ns = logged.tile_assembly_sum_ns;
-    const uint64_t tile_present_samples = logged.tile_present_samples;
-    const uint64_t tile_present_sum_ns = logged.tile_present_sum_ns;
-    const uint64_t input_to_present_samples = logged.input_to_present_samples;
-    const uint64_t input_to_present_sum_ns = logged.input_to_present_sum_ns;
-    const uint64_t input_seq_present_samples = logged.input_seq_present_samples;
-    const uint64_t input_seq_present_sum_ns = logged.input_seq_present_sum_ns;
-    const uint64_t sdl_render_frames = logged.sdl_render_frames;
-    const uint64_t sdl_remote_frames = logged.sdl_remote_frames;
-    const uint64_t sdl_empty_remote_wakeups = logged.sdl_empty_remote_wakeups;
-    const uint64_t sdl_texture_full_uploads = logged.sdl_texture_full_uploads;
-    const uint64_t sdl_texture_partial_uploads = logged.sdl_texture_partial_uploads;
-    const uint64_t sdl_texture_dirty_rects = logged.sdl_texture_dirty_rects;
-    const uint64_t sdl_texture_source_dirty_rects = logged.sdl_texture_source_dirty_rects;
-    const uint64_t sdl_texture_coalesced_dirty_rects = logged.sdl_texture_coalesced_dirty_rects;
-    const uint64_t sdl_texture_bounds_uploads = logged.sdl_texture_bounds_uploads;
-    const uint64_t sdl_texture_cost_full_uploads = logged.sdl_texture_cost_full_uploads;
-    const uint64_t sdl_texture_lock_calls = logged.sdl_texture_lock_calls;
-    const uint64_t sdl_texture_update_calls = logged.sdl_texture_update_calls;
-    const uint64_t sdl_texture_model_update_call_ns = logged.sdl_texture_model_update_call_ns;
-    const uint64_t sdl_texture_model_lock_call_ns = logged.sdl_texture_model_lock_call_ns;
-    const uint64_t sdl_texture_model_pixel_cost_q16 = logged.sdl_texture_model_pixel_cost_q16;
-    const uint64_t sdl_texture_source_pixels = logged.sdl_texture_source_pixels;
-    const uint64_t sdl_texture_upload_pixels = logged.sdl_texture_upload_pixels;
-    const uint64_t sdl_texture_upload_samples = logged.sdl_texture_upload_samples;
-    const uint64_t sdl_texture_upload_sum_ns = logged.sdl_texture_upload_sum_ns;
-    const uint64_t sdl_texture_upload_max_ns = logged.sdl_texture_upload_max_ns;
-    const uint64_t framebuffer_snapshot_pixels = logged.framebuffer_snapshot_pixels;
-    const uint64_t framebuffer_snapshot_samples = logged.framebuffer_snapshot_samples;
-    const uint64_t framebuffer_snapshot_sum_ns = logged.framebuffer_snapshot_sum_ns;
-    const uint64_t framebuffer_snapshot_max_ns = logged.framebuffer_snapshot_max_ns;
-    const uint64_t framebuffer_direct_uploads = logged.framebuffer_direct_uploads;
-    const uint64_t framebuffer_staged_uploads = logged.framebuffer_staged_uploads;
-    const uint64_t framebuffer_lock_wait_samples = logged.framebuffer_lock_wait_samples;
-    const uint64_t framebuffer_lock_wait_sum_ns = logged.framebuffer_lock_wait_sum_ns;
-    const uint64_t framebuffer_lock_wait_max_ns = logged.framebuffer_lock_wait_max_ns;
-    const uint64_t framebuffer_lock_hold_samples = logged.framebuffer_lock_hold_samples;
-    const uint64_t framebuffer_lock_hold_sum_ns = logged.framebuffer_lock_hold_sum_ns;
-    const uint64_t framebuffer_lock_hold_max_ns = logged.framebuffer_lock_hold_max_ns;
-    const uint64_t sdl_video_texture_uploads = logged.sdl_video_texture_uploads;
-    const uint64_t sdl_video_texture_upload_pixels = logged.sdl_video_texture_upload_pixels;
-    const uint64_t sdl_present_samples = logged.sdl_present_samples;
-    const uint64_t sdl_present_sum_ns = logged.sdl_present_sum_ns;
-    const uint64_t sdl_present_max_ns = logged.sdl_present_max_ns;
-    const uint64_t udp_gap_pressure_ms = state.udp_gap_pressure_ns.load(std::memory_order_relaxed) / 1000000ull;
+    const uint64_t udp_async_receiver_generations     = logged.udp_async_receiver_generations;
+    const uint64_t udp_async_accounting_errors        = logged.udp_async_accounting_errors;
+    const uint64_t tile_assembly_samples              = logged.tile_assembly_samples;
+    const uint64_t tile_assembly_sum_ns               = logged.tile_assembly_sum_ns;
+    const uint64_t tile_present_samples               = logged.tile_present_samples;
+    const uint64_t tile_present_sum_ns                = logged.tile_present_sum_ns;
+    const uint64_t input_to_present_samples           = logged.input_to_present_samples;
+    const uint64_t input_to_present_sum_ns            = logged.input_to_present_sum_ns;
+    const uint64_t input_seq_present_samples          = logged.input_seq_present_samples;
+    const uint64_t input_seq_present_sum_ns           = logged.input_seq_present_sum_ns;
+    const uint64_t sdl_render_frames                  = logged.sdl_render_frames;
+    const uint64_t sdl_remote_frames                  = logged.sdl_remote_frames;
+    const uint64_t sdl_empty_remote_wakeups           = logged.sdl_empty_remote_wakeups;
+    const uint64_t sdl_texture_full_uploads           = logged.sdl_texture_full_uploads;
+    const uint64_t sdl_texture_partial_uploads        = logged.sdl_texture_partial_uploads;
+    const uint64_t sdl_texture_dirty_rects            = logged.sdl_texture_dirty_rects;
+    const uint64_t sdl_texture_source_dirty_rects     = logged.sdl_texture_source_dirty_rects;
+    const uint64_t sdl_texture_coalesced_dirty_rects  = logged.sdl_texture_coalesced_dirty_rects;
+    const uint64_t sdl_texture_bounds_uploads         = logged.sdl_texture_bounds_uploads;
+    const uint64_t sdl_texture_cost_full_uploads      = logged.sdl_texture_cost_full_uploads;
+    const uint64_t sdl_texture_lock_calls             = logged.sdl_texture_lock_calls;
+    const uint64_t sdl_texture_update_calls           = logged.sdl_texture_update_calls;
+    const uint64_t sdl_texture_model_update_call_ns   = logged.sdl_texture_model_update_call_ns;
+    const uint64_t sdl_texture_model_lock_call_ns     = logged.sdl_texture_model_lock_call_ns;
+    const uint64_t sdl_texture_model_pixel_cost_q16   = logged.sdl_texture_model_pixel_cost_q16;
+    const uint64_t sdl_texture_source_pixels          = logged.sdl_texture_source_pixels;
+    const uint64_t sdl_texture_upload_pixels          = logged.sdl_texture_upload_pixels;
+    const uint64_t sdl_texture_upload_samples         = logged.sdl_texture_upload_samples;
+    const uint64_t sdl_texture_upload_sum_ns          = logged.sdl_texture_upload_sum_ns;
+    const uint64_t sdl_texture_upload_max_ns          = logged.sdl_texture_upload_max_ns;
+    const uint64_t framebuffer_snapshot_pixels        = logged.framebuffer_snapshot_pixels;
+    const uint64_t framebuffer_snapshot_samples       = logged.framebuffer_snapshot_samples;
+    const uint64_t framebuffer_snapshot_sum_ns        = logged.framebuffer_snapshot_sum_ns;
+    const uint64_t framebuffer_snapshot_max_ns        = logged.framebuffer_snapshot_max_ns;
+    const uint64_t framebuffer_direct_uploads         = logged.framebuffer_direct_uploads;
+    const uint64_t framebuffer_staged_uploads         = logged.framebuffer_staged_uploads;
+    const uint64_t framebuffer_lock_wait_samples      = logged.framebuffer_lock_wait_samples;
+    const uint64_t framebuffer_lock_wait_sum_ns       = logged.framebuffer_lock_wait_sum_ns;
+    const uint64_t framebuffer_lock_wait_max_ns       = logged.framebuffer_lock_wait_max_ns;
+    const uint64_t framebuffer_lock_hold_samples      = logged.framebuffer_lock_hold_samples;
+    const uint64_t framebuffer_lock_hold_sum_ns       = logged.framebuffer_lock_hold_sum_ns;
+    const uint64_t framebuffer_lock_hold_max_ns       = logged.framebuffer_lock_hold_max_ns;
+    const uint64_t sdl_video_texture_uploads          = logged.sdl_video_texture_uploads;
+    const uint64_t sdl_video_texture_upload_pixels    = logged.sdl_video_texture_upload_pixels;
+    const uint64_t sdl_present_samples                = logged.sdl_present_samples;
+    const uint64_t sdl_present_sum_ns                 = logged.sdl_present_sum_ns;
+    const uint64_t sdl_present_max_ns                 = logged.sdl_present_max_ns;
+    const uint64_t udp_gap_pressure_ms                = state.udp_gap_pressure_ns.load(std::memory_order_relaxed) / 1000000ull;
 
     if (audio_messages_rx != 0 || state.audio_stream_negotiated)
     {
-        WD_LOG_DEBUG("[client audio/min] messages=%llu packets=%llu kib=%.1f decode_failed=%llu discontinuities=%llu late_drops=%llu underflows=%llu av_holds=%llu av_drops=%llu video_q=%u/%u q_overflow=%llu oldest_pts_us=%llu av_delta_samples=%lld playing=%s",
-                     static_cast<unsigned long long>(audio_messages_rx),
-                     static_cast<unsigned long long>(audio_packets_rx),
-                     static_cast<double>(audio_bytes_rx) / 1024.0,
-                     static_cast<unsigned long long>(audio_decode_failed),
-                     static_cast<unsigned long long>(audio_discontinuities),
-                     static_cast<unsigned long long>(audio_late_drops),
-                     static_cast<unsigned long long>(audio_underflows),
-                     static_cast<unsigned long long>(video_audio_sync_holds),
-                     static_cast<unsigned long long>(video_audio_sync_drops),
-                     static_cast<unsigned>(video_queue_depth),
-                     static_cast<unsigned>(video_queue_depth_max),
-                     static_cast<unsigned long long>(video_queue_overflow_drops),
-                     static_cast<unsigned long long>(video_oldest_pts_usec),
-                     static_cast<long long>(video_audio_delta_samples),
-                     client_audio_playback_is_playing(state.audio_playback) ? "yes" : "no");
+        WD_LOG_DEBUG(
+            "[client audio/min] messages=%llu packets=%llu kib=%.1f decode_failed=%llu discontinuities=%llu late_drops=%llu "
+            "underflows=%llu av_holds=%llu av_drops=%llu video_q=%u/%u q_overflow=%llu oldest_pts_us=%llu av_delta_samples=%lld playing=%s",
+            static_cast<unsigned long long>(audio_messages_rx), static_cast<unsigned long long>(audio_packets_rx),
+            static_cast<double>(audio_bytes_rx) / 1024.0, static_cast<unsigned long long>(audio_decode_failed),
+            static_cast<unsigned long long>(audio_discontinuities), static_cast<unsigned long long>(audio_late_drops),
+            static_cast<unsigned long long>(audio_underflows), static_cast<unsigned long long>(video_audio_sync_holds),
+            static_cast<unsigned long long>(video_audio_sync_drops), static_cast<unsigned>(video_queue_depth),
+            static_cast<unsigned>(video_queue_depth_max), static_cast<unsigned long long>(video_queue_overflow_drops),
+            static_cast<unsigned long long>(video_oldest_pts_usec), static_cast<long long>(video_audio_delta_samples),
+            client_audio_playback_is_playing(state.audio_playback) ? "yes" : "no");
     }
 
-    const bool udp_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 ||
-                              ignored_probe != 0 || stale_session != 0 || udp_async_posted != 0 ||
-                              udp_async_completed != 0 || udp_async_failed != 0 || udp_async_submit_failed != 0 ||
-                              udp_async_cancels != 0 || udp_async_inflight_max != 0;
+    const bool udp_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 || ignored_probe != 0 ||
+                              stale_session != 0 || udp_async_posted != 0 || udp_async_completed != 0 || udp_async_failed != 0 ||
+                              udp_async_submit_failed != 0 || udp_async_cancels != 0 || udp_async_inflight_max != 0;
     if (udp_activity)
     {
-        WD_LOG_DEBUG("[client udp/min] pkts=%llu kib=%.1f completed=%llu invalid=%llu probe=%llu stale_session=%llu old_gen=%llu async_recv_submitted=%llu async_recv_completed=%llu async_recv_failed=%llu async_recv_submit_failed=%llu async_recv_cancels=%llu async_recv_inflight_max=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f kib_per_tile=%.2f compressed_kib_per_tile=%.2f pkts_per_tile=%.2f",
+        WD_LOG_DEBUG("[client udp/min] pkts=%llu kib=%.1f completed=%llu invalid=%llu probe=%llu stale_session=%llu old_gen=%llu "
+                     "async_recv_submitted=%llu async_recv_completed=%llu async_recv_failed=%llu async_recv_submit_failed=%llu "
+                     "async_recv_cancels=%llu async_recv_inflight_max=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f "
+                     "kib_per_tile=%.2f compressed_kib_per_tile=%.2f pkts_per_tile=%.2f",
                      static_cast<unsigned long long>(udp_packets), static_cast<double>(udp_bytes) / 1024.0,
                      static_cast<unsigned long long>(completed), static_cast<unsigned long long>(invalid),
                      static_cast<unsigned long long>(ignored_probe), static_cast<unsigned long long>(stale_session),
-                     static_cast<unsigned long long>(old_gen),
-                     static_cast<unsigned long long>(udp_async_posted),
-                     static_cast<unsigned long long>(udp_async_completed),
-                     static_cast<unsigned long long>(udp_async_failed),
-                     static_cast<unsigned long long>(udp_async_submit_failed),
-                     static_cast<unsigned long long>(udp_async_cancels),
-                     static_cast<unsigned long long>(udp_async_inflight_max),
-                     avg_ms(udp_interarrival_sum_ns, udp_interarrival_samples),
+                     static_cast<unsigned long long>(old_gen), static_cast<unsigned long long>(udp_async_posted),
+                     static_cast<unsigned long long>(udp_async_completed), static_cast<unsigned long long>(udp_async_failed),
+                     static_cast<unsigned long long>(udp_async_submit_failed), static_cast<unsigned long long>(udp_async_cancels),
+                     static_cast<unsigned long long>(udp_async_inflight_max), avg_ms(udp_interarrival_sum_ns, udp_interarrival_samples),
                      avg_ms(udp_jitter_sum_ns, udp_jitter_samples), static_cast<double>(udp_interarrival_max_ns) / 1000000.0,
                      completed ? (static_cast<double>(udp_bytes) / 1024.0) / static_cast<double>(completed) : 0.0,
                      completed ? (static_cast<double>(completed_compressed) / 1024.0) / static_cast<double>(completed) : 0.0,
@@ -1248,22 +1227,19 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
 
     if (invalid != 0 || logged.stale_epoch != 0)
     {
-        WD_LOG_DEBUG("[client udp-invalid/min] short=%llu header=%llu geometry=%llu fragment=%llu blit=%llu dirty_grid=%llu stale_epoch=%llu",
-                     static_cast<unsigned long long>(logged.invalid_short),
-                     static_cast<unsigned long long>(logged.invalid_header),
-                     static_cast<unsigned long long>(logged.invalid_geometry),
-                     static_cast<unsigned long long>(logged.invalid_fragment),
-                     static_cast<unsigned long long>(logged.invalid_blit),
-                     static_cast<unsigned long long>(logged.invalid_dirty_grid),
-                     static_cast<unsigned long long>(logged.stale_epoch));
+        WD_LOG_DEBUG(
+            "[client udp-invalid/min] short=%llu header=%llu geometry=%llu fragment=%llu blit=%llu dirty_grid=%llu stale_epoch=%llu",
+            static_cast<unsigned long long>(logged.invalid_short), static_cast<unsigned long long>(logged.invalid_header),
+            static_cast<unsigned long long>(logged.invalid_geometry), static_cast<unsigned long long>(logged.invalid_fragment),
+            static_cast<unsigned long long>(logged.invalid_blit), static_cast<unsigned long long>(logged.invalid_dirty_grid),
+            static_cast<unsigned long long>(logged.stale_epoch));
     }
 
-    if (udp_async_posted != 0 || udp_async_retired != 0 || udp_async_receiver_generations != 0 ||
-        udp_async_accounting_errors != 0)
+    if (udp_async_posted != 0 || udp_async_retired != 0 || udp_async_receiver_generations != 0 || udp_async_accounting_errors != 0)
     {
-        WD_LOG_DEBUG("[client udp-async/min] submitted=%llu retired=%llu inflight=%llu prepared=%llu accounted=%llu generations=%llu drained_reconfig=%llu cancelled_reconfig=%llu accounting_errors=%llu",
-                     static_cast<unsigned long long>(udp_async_posted),
-                     static_cast<unsigned long long>(udp_async_retired),
+        WD_LOG_DEBUG("[client udp-async/min] submitted=%llu retired=%llu inflight=%llu prepared=%llu accounted=%llu generations=%llu "
+                     "drained_reconfig=%llu cancelled_reconfig=%llu accounting_errors=%llu",
+                     static_cast<unsigned long long>(udp_async_posted), static_cast<unsigned long long>(udp_async_retired),
                      static_cast<unsigned long long>(udp_async_inflight_current),
                      static_cast<unsigned long long>(udp_async_prepared_current),
                      static_cast<unsigned long long>(udp_async_retired + udp_async_inflight_current),
@@ -1273,34 +1249,32 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                      static_cast<unsigned long long>(udp_async_accounting_errors));
     }
 
-    const bool repair_activity = partial_timeouts != 0 || partial_missing_packets != 0 || partial_retx_queued != 0 ||
-                                 summaries != 0 || retx != 0 || summary_retx_queued != 0 || summary_retx_deferred != 0 ||
-                                 summary_retx_throttled != 0 || summary_retx_stale_dropped != 0 ||
-                                 summary_retx_pressure_dropped != 0 || summary_promote_passes != 0 ||
+    const bool repair_activity = partial_timeouts != 0 || partial_missing_packets != 0 || partial_retx_queued != 0 || summaries != 0 ||
+                                 retx != 0 || summary_retx_queued != 0 || summary_retx_deferred != 0 || summary_retx_throttled != 0 ||
+                                 summary_retx_stale_dropped != 0 || summary_retx_pressure_dropped != 0 || summary_promote_passes != 0 ||
                                  summary_to_retx_samples != 0 || retx_response_samples != 0;
     if (repair_activity)
     {
-        WD_LOG_DEBUG("[client repair/min] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu summary_throttled=%llu stale_drop=%llu pressure_deferred=%llu summary_promote=%llu summary_scan=%llu summary_candidates=%llu partial_timeouts=%llu missing_pkts=%llu partial_retx=%llu summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
-                     static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
-                     static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(summary_retx_deferred),
-                     static_cast<unsigned long long>(summary_retx_throttled),
-                     static_cast<unsigned long long>(summary_retx_stale_dropped),
-                     static_cast<unsigned long long>(summary_retx_pressure_dropped),
-                     static_cast<unsigned long long>(summary_promote_passes),
-                     static_cast<unsigned long long>(summary_promote_scanned),
-                     static_cast<unsigned long long>(summary_promote_candidates),
-                     static_cast<unsigned long long>(partial_timeouts),
-                     static_cast<unsigned long long>(partial_missing_packets), static_cast<unsigned long long>(partial_retx_queued),
-                     avg_ms(summary_to_retx_sum_ns, summary_to_retx_samples),
-                     avg_ms(retx_response_sum_ns, retx_response_samples));
+        WD_LOG_DEBUG(
+            "[client repair/min] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu summary_throttled=%llu "
+            "stale_drop=%llu pressure_deferred=%llu summary_promote=%llu summary_scan=%llu summary_candidates=%llu partial_timeouts=%llu "
+            "missing_pkts=%llu partial_retx=%llu summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
+            static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
+            static_cast<unsigned long long>(summary_retx_queued), static_cast<unsigned long long>(summary_retx_deferred),
+            static_cast<unsigned long long>(summary_retx_throttled), static_cast<unsigned long long>(summary_retx_stale_dropped),
+            static_cast<unsigned long long>(summary_retx_pressure_dropped), static_cast<unsigned long long>(summary_promote_passes),
+            static_cast<unsigned long long>(summary_promote_scanned), static_cast<unsigned long long>(summary_promote_candidates),
+            static_cast<unsigned long long>(partial_timeouts), static_cast<unsigned long long>(partial_missing_packets),
+            static_cast<unsigned long long>(partial_retx_queued), avg_ms(summary_to_retx_sum_ns, summary_to_retx_samples),
+            avg_ms(retx_response_sum_ns, retx_response_samples));
     }
 
-    const bool input_activity = keys != 0 || pointer != 0 || input_events != 0 || input_channel_events != 0 ||
-                                input_fallback_events != 0 || selection_channel_events != 0 || selection_fallback_events != 0 ||
-                                tcp_async_coalesced != 0;
+    const bool input_activity = keys != 0 || pointer != 0 || input_events != 0 || input_channel_events != 0 || input_fallback_events != 0 ||
+                                selection_channel_events != 0 || selection_fallback_events != 0 || tcp_async_coalesced != 0;
     if (input_activity)
     {
-        WD_LOG_DEBUG("[client input/min] keys=%llu pointer_queued=%llu pointer_coalesced=%llu input_events_queued=%llu input_channel=%llu input_fallback=%llu selection_channel=%llu selection_fallback=%llu",
+        WD_LOG_DEBUG("[client input/min] keys=%llu pointer_queued=%llu pointer_coalesced=%llu input_events_queued=%llu input_channel=%llu "
+                     "input_fallback=%llu selection_channel=%llu selection_fallback=%llu",
                      static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
                      static_cast<unsigned long long>(tcp_async_coalesced), static_cast<unsigned long long>(input_events),
                      static_cast<unsigned long long>(input_channel_events), static_cast<unsigned long long>(input_fallback_events),
@@ -1308,489 +1282,466 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     }
 
     const bool client_video_activity = video_messages_rx != 0 || video_data_frames_rx != 0 || video_frames_decoded != 0 ||
-                                       video_frames_presented != 0 || video_decode_failed != 0 ||
-                                       video_publish_failed != 0 || video_control_frames_rx != 0 ||
-                                       video_invalid_frames_rx != 0 || video_stale_frames_dropped != 0 ||
-                                       video_need_keyframe_drops != 0 || video_decoder_resets != 0 ||
-                                       tile_frames_presented != 0;
+                                       video_frames_presented != 0 || video_decode_failed != 0 || video_publish_failed != 0 ||
+                                       video_control_frames_rx != 0 || video_invalid_frames_rx != 0 || video_stale_frames_dropped != 0 ||
+                                       video_need_keyframe_drops != 0 || video_decoder_resets != 0 || tile_frames_presented != 0;
     if (client_video_activity)
     {
-        WD_LOG_DEBUG("[client video/min] messages=%llu data=%llu legacy_rx=%llu decoded=%llu presented=%llu tile_presented=%llu control=%llu invalid=%llu stale_drop=%llu kib=%.1f decode_avg_ms=%.2f present_age_avg_ms=%.2f decode_failed=%llu publish_failed=%llu need_keyframe_drops=%llu resets=%llu last_rx=%llu last_presented=%llu",
-                     static_cast<unsigned long long>(video_messages_rx),
-                     static_cast<unsigned long long>(video_data_frames_rx),
-                     static_cast<unsigned long long>(video_frames_rx),
-                     static_cast<unsigned long long>(video_frames_decoded),
-                     static_cast<unsigned long long>(video_frames_presented),
-                     static_cast<unsigned long long>(tile_frames_presented),
-                     static_cast<unsigned long long>(video_control_frames_rx),
-                     static_cast<unsigned long long>(video_invalid_frames_rx),
-                     static_cast<unsigned long long>(video_stale_frames_dropped),
-                     static_cast<double>(video_bytes_rx) / 1024.0,
-                     avg_ms(video_decode_sum_ns, video_decode_samples),
-                     avg_ms(video_present_latency_sum_ns, video_present_latency_samples),
-                     static_cast<unsigned long long>(video_decode_failed),
-                     static_cast<unsigned long long>(video_publish_failed),
-                     static_cast<unsigned long long>(video_need_keyframe_drops),
-                     static_cast<unsigned long long>(video_decoder_resets),
+        WD_LOG_DEBUG("[client video/min] messages=%llu data=%llu legacy_rx=%llu decoded=%llu presented=%llu tile_presented=%llu "
+                     "control=%llu invalid=%llu stale_drop=%llu kib=%.1f decode_avg_ms=%.2f present_age_avg_ms=%.2f decode_failed=%llu "
+                     "publish_failed=%llu need_keyframe_drops=%llu resets=%llu last_rx=%llu last_presented=%llu",
+                     static_cast<unsigned long long>(video_messages_rx), static_cast<unsigned long long>(video_data_frames_rx),
+                     static_cast<unsigned long long>(video_frames_rx), static_cast<unsigned long long>(video_frames_decoded),
+                     static_cast<unsigned long long>(video_frames_presented), static_cast<unsigned long long>(tile_frames_presented),
+                     static_cast<unsigned long long>(video_control_frames_rx), static_cast<unsigned long long>(video_invalid_frames_rx),
+                     static_cast<unsigned long long>(video_stale_frames_dropped), static_cast<double>(video_bytes_rx) / 1024.0,
+                     avg_ms(video_decode_sum_ns, video_decode_samples), avg_ms(video_present_latency_sum_ns, video_present_latency_samples),
+                     static_cast<unsigned long long>(video_decode_failed), static_cast<unsigned long long>(video_publish_failed),
+                     static_cast<unsigned long long>(video_need_keyframe_drops), static_cast<unsigned long long>(video_decoder_resets),
                      static_cast<unsigned long long>(video_last_frame_id_rx),
                      static_cast<unsigned long long>(video_last_frame_id_presented));
     }
 
-    const bool tcp_async_activity = tcp_async_queued != 0 || tcp_async_completed != 0 || tcp_async_failed != 0 ||
-                                    tcp_async_overflow != 0 || tcp_async_partial != 0 || tcp_async_coalesced != 0 || tcp_async_inflight_max != 0;
+    const bool tcp_async_activity = tcp_async_queued != 0 || tcp_async_completed != 0 || tcp_async_failed != 0 || tcp_async_overflow != 0 ||
+                                    tcp_async_partial != 0 || tcp_async_coalesced != 0 || tcp_async_inflight_max != 0;
     if (tcp_async_activity)
     {
-        WD_LOG_DEBUG("[client tcp_async/min] queued=%llu completed=%llu failed=%llu overflow=%llu partial=%llu coalesced=%llu inflight_max=%llu",
-                     static_cast<unsigned long long>(tcp_async_queued), static_cast<unsigned long long>(tcp_async_completed),
-                     static_cast<unsigned long long>(tcp_async_failed), static_cast<unsigned long long>(tcp_async_overflow),
-                     static_cast<unsigned long long>(tcp_async_partial), static_cast<unsigned long long>(tcp_async_coalesced),
-                     static_cast<unsigned long long>(tcp_async_inflight_max));
+        WD_LOG_DEBUG(
+            "[client tcp_async/min] queued=%llu completed=%llu failed=%llu overflow=%llu partial=%llu coalesced=%llu inflight_max=%llu",
+            static_cast<unsigned long long>(tcp_async_queued), static_cast<unsigned long long>(tcp_async_completed),
+            static_cast<unsigned long long>(tcp_async_failed), static_cast<unsigned long long>(tcp_async_overflow),
+            static_cast<unsigned long long>(tcp_async_partial), static_cast<unsigned long long>(tcp_async_coalesced),
+            static_cast<unsigned long long>(tcp_async_inflight_max));
     }
 
-    uint64_t timeout_ms = state.tile_reassembly_timeout_ns.load(std::memory_order_relaxed) / 1000000ull;
+    uint64_t   timeout_ms       = state.tile_reassembly_timeout_ns.load(std::memory_order_relaxed) / 1000000ull;
     const bool latency_activity = timeout_updates != 0 || timeout_ms != state.stats_log.prev_timeout_ms ||
                                   udp_gap_pressure_ms != state.stats_log.prev_udp_gap_pressure_ms || tile_assembly_samples != 0 ||
                                   tile_present_samples != 0 || input_to_present_samples != 0 || input_seq_present_samples != 0;
     if (latency_activity)
     {
-        WD_LOG_DEBUG("[client latency/min] tile_assembly_avg_ms=%.2f reassembly_timeout_ms=%llu udp_gap_pressure_ms=%llu timeout_updates=%llu tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f input_seq_to_present_avg_ms=%.2f",
+        WD_LOG_DEBUG("[client latency/min] tile_assembly_avg_ms=%.2f reassembly_timeout_ms=%llu udp_gap_pressure_ms=%llu "
+                     "timeout_updates=%llu tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f input_seq_to_present_avg_ms=%.2f",
                      avg_ms(tile_assembly_sum_ns, tile_assembly_samples), static_cast<unsigned long long>(timeout_ms),
-                     static_cast<unsigned long long>(udp_gap_pressure_ms),
-                     static_cast<unsigned long long>(timeout_updates), avg_ms(tile_present_sum_ns, tile_present_samples),
-                     avg_ms(input_to_present_sum_ns, input_to_present_samples), avg_ms(input_seq_present_sum_ns, input_seq_present_samples));
-        state.stats_log.prev_timeout_ms = timeout_ms;
+                     static_cast<unsigned long long>(udp_gap_pressure_ms), static_cast<unsigned long long>(timeout_updates),
+                     avg_ms(tile_present_sum_ns, tile_present_samples), avg_ms(input_to_present_sum_ns, input_to_present_samples),
+                     avg_ms(input_seq_present_sum_ns, input_seq_present_samples));
+        state.stats_log.prev_timeout_ms          = timeout_ms;
         state.stats_log.prev_udp_gap_pressure_ms = udp_gap_pressure_ms;
     }
 
     if (sdl_render_frames != 0 || sdl_texture_upload_samples != 0 || sdl_present_samples != 0)
     {
-        WD_LOG_DEBUG("[client render/min] frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu video_full=%llu texture_locks=%llu texture_updates=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu cost_full=%llu model_update_us=%.2f model_lock_us=%.2f model_pixel_ns=%.3f source_mpix=%.2f upload_mpix=%.2f video_upload_mpix=%.2f snapshot_mpix=%.2f snapshot_avg_ms=%.2f snapshot_max_ms=%.2f fb_direct=%llu fb_staged=%llu fb_lock_wait_avg_ms=%.3f fb_lock_wait_max_ms=%.3f fb_lock_hold_avg_ms=%.3f fb_lock_hold_max_ms=%.3f upload_avg_ms=%.2f upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
-                     static_cast<unsigned long long>(sdl_render_frames),
-                     static_cast<unsigned long long>(sdl_remote_frames),
-                     static_cast<unsigned long long>(sdl_empty_remote_wakeups),
-                     static_cast<unsigned long long>(sdl_texture_full_uploads),
-                     static_cast<unsigned long long>(sdl_texture_partial_uploads),
-                     static_cast<unsigned long long>(sdl_video_texture_uploads),
-                     static_cast<unsigned long long>(sdl_texture_lock_calls),
-                     static_cast<unsigned long long>(sdl_texture_update_calls),
-                     static_cast<unsigned long long>(sdl_texture_dirty_rects),
-                     static_cast<unsigned long long>(sdl_texture_source_dirty_rects),
-                     static_cast<unsigned long long>(sdl_texture_coalesced_dirty_rects),
-                     static_cast<unsigned long long>(sdl_texture_bounds_uploads),
-                     static_cast<unsigned long long>(sdl_texture_cost_full_uploads),
-                     static_cast<double>(sdl_texture_model_update_call_ns) / 1000.0,
-                     static_cast<double>(sdl_texture_model_lock_call_ns) / 1000.0,
-                     static_cast<double>(sdl_texture_model_pixel_cost_q16) / 65536.0,
-                     static_cast<double>(sdl_texture_source_pixels) / 1000000.0,
-                     static_cast<double>(sdl_texture_upload_pixels) / 1000000.0,
-                     static_cast<double>(sdl_video_texture_upload_pixels) / 1000000.0,
-                     static_cast<double>(framebuffer_snapshot_pixels) / 1000000.0,
-                     avg_ms(framebuffer_snapshot_sum_ns, framebuffer_snapshot_samples),
-                     static_cast<double>(framebuffer_snapshot_max_ns) / 1000000.0,
-                     static_cast<unsigned long long>(framebuffer_direct_uploads),
-                     static_cast<unsigned long long>(framebuffer_staged_uploads),
-                     avg_ms(framebuffer_lock_wait_sum_ns, framebuffer_lock_wait_samples),
-                     static_cast<double>(framebuffer_lock_wait_max_ns) / 1000000.0,
-                     avg_ms(framebuffer_lock_hold_sum_ns, framebuffer_lock_hold_samples),
-                     static_cast<double>(framebuffer_lock_hold_max_ns) / 1000000.0,
-                     avg_ms(sdl_texture_upload_sum_ns, sdl_texture_upload_samples),
-                     static_cast<double>(sdl_texture_upload_max_ns) / 1000000.0,
-                     avg_ms(sdl_present_sum_ns, sdl_present_samples),
-                     static_cast<double>(sdl_present_max_ns) / 1000000.0);
+        WD_LOG_DEBUG(
+            "[client render/min] frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu video_full=%llu "
+            "texture_locks=%llu texture_updates=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu "
+            "cost_full=%llu model_update_us=%.2f model_lock_us=%.2f model_pixel_ns=%.3f source_mpix=%.2f upload_mpix=%.2f "
+            "video_upload_mpix=%.2f snapshot_mpix=%.2f snapshot_avg_ms=%.2f snapshot_max_ms=%.2f fb_direct=%llu fb_staged=%llu "
+            "fb_lock_wait_avg_ms=%.3f fb_lock_wait_max_ms=%.3f fb_lock_hold_avg_ms=%.3f fb_lock_hold_max_ms=%.3f upload_avg_ms=%.2f "
+            "upload_max_ms=%.2f present_avg_ms=%.2f present_max_ms=%.2f",
+            static_cast<unsigned long long>(sdl_render_frames), static_cast<unsigned long long>(sdl_remote_frames),
+            static_cast<unsigned long long>(sdl_empty_remote_wakeups), static_cast<unsigned long long>(sdl_texture_full_uploads),
+            static_cast<unsigned long long>(sdl_texture_partial_uploads), static_cast<unsigned long long>(sdl_video_texture_uploads),
+            static_cast<unsigned long long>(sdl_texture_lock_calls), static_cast<unsigned long long>(sdl_texture_update_calls),
+            static_cast<unsigned long long>(sdl_texture_dirty_rects), static_cast<unsigned long long>(sdl_texture_source_dirty_rects),
+            static_cast<unsigned long long>(sdl_texture_coalesced_dirty_rects), static_cast<unsigned long long>(sdl_texture_bounds_uploads),
+            static_cast<unsigned long long>(sdl_texture_cost_full_uploads), static_cast<double>(sdl_texture_model_update_call_ns) / 1000.0,
+            static_cast<double>(sdl_texture_model_lock_call_ns) / 1000.0, static_cast<double>(sdl_texture_model_pixel_cost_q16) / 65536.0,
+            static_cast<double>(sdl_texture_source_pixels) / 1000000.0, static_cast<double>(sdl_texture_upload_pixels) / 1000000.0,
+            static_cast<double>(sdl_video_texture_upload_pixels) / 1000000.0, static_cast<double>(framebuffer_snapshot_pixels) / 1000000.0,
+            avg_ms(framebuffer_snapshot_sum_ns, framebuffer_snapshot_samples), static_cast<double>(framebuffer_snapshot_max_ns) / 1000000.0,
+            static_cast<unsigned long long>(framebuffer_direct_uploads), static_cast<unsigned long long>(framebuffer_staged_uploads),
+            avg_ms(framebuffer_lock_wait_sum_ns, framebuffer_lock_wait_samples),
+            static_cast<double>(framebuffer_lock_wait_max_ns) / 1000000.0,
+            avg_ms(framebuffer_lock_hold_sum_ns, framebuffer_lock_hold_samples),
+            static_cast<double>(framebuffer_lock_hold_max_ns) / 1000000.0, avg_ms(sdl_texture_upload_sum_ns, sdl_texture_upload_samples),
+            static_cast<double>(sdl_texture_upload_max_ns) / 1000000.0, avg_ms(sdl_present_sum_ns, sdl_present_samples),
+            static_cast<double>(sdl_present_max_ns) / 1000000.0);
     }
 }
 
 void sample_client_stats(ClientState& state, bool log_stats) {
     client_reap_async_sends(state);
 
-    const uint64_t udp_packets              = take_stat(state.stats.udp_packets_rx);
-    const uint64_t udp_bytes                = take_stat(state.stats.udp_bytes_rx);
-    const uint64_t udp_interarrival_samples = take_stat(state.stats.udp_interarrival_samples);
-    const uint64_t udp_interarrival_sum_ns  = take_stat(state.stats.udp_interarrival_sum_ns);
-    const uint64_t udp_jitter_samples       = take_stat(state.stats.udp_interarrival_jitter_samples);
-    const uint64_t udp_jitter_sum_ns        = take_stat(state.stats.udp_interarrival_jitter_sum_ns);
-    const uint64_t udp_interarrival_max_ns  = take_stat(state.stats.udp_interarrival_max_ns);
-    const uint64_t invalid                  = take_stat(state.stats.udp_ignored_invalid);
-    const uint64_t invalid_short            = take_stat(state.stats.udp_invalid_short);
-    const uint64_t invalid_header           = take_stat(state.stats.udp_invalid_header);
-    const uint64_t invalid_geometry         = take_stat(state.stats.udp_invalid_geometry);
-    const uint64_t invalid_fragment         = take_stat(state.stats.udp_invalid_fragment);
-    const uint64_t invalid_blit             = take_stat(state.stats.udp_invalid_blit);
-    const uint64_t invalid_dirty_grid       = take_stat(state.stats.udp_invalid_dirty_grid);
-    const uint64_t ignored_probe            = take_stat(state.stats.udp_ignored_probe);
-    const uint64_t stale_session            = take_stat(state.stats.udp_ignored_stale_session);
-    const uint64_t stale_epoch              = take_stat(state.stats.udp_ignored_stale_epoch);
-    const uint64_t old_gen                  = take_stat(state.stats.udp_ignored_old_generation);
-    const uint64_t completed                = take_stat(state.stats.udp_tiles_completed);
-    const uint64_t completed_compressed     = take_stat(state.stats.udp_completed_compressed_bytes);
-    const uint64_t completed_packets        = take_stat(state.stats.udp_completed_packets);
-    const uint64_t partial_timeouts         = take_stat(state.stats.partial_tiles_timed_out);
-    const uint64_t partial_missing_packets  = take_stat(state.stats.partial_tile_missing_packets);
-    const uint64_t partial_retx_queued      = take_stat(state.stats.partial_tile_retx_queued);
-    const uint64_t retx_response_samples    = take_stat(state.stats.retx_response_samples);
-    const uint64_t retx_response_sum_ns     = take_stat(state.stats.retx_response_sum_ns);
-    const uint64_t timeout_updates          = take_stat(state.stats.tile_reassembly_timeout_updates);
-    const uint64_t summaries                = take_stat(state.stats.tcp_summaries_rx);
-    const uint64_t retx                     = take_stat(state.stats.tcp_retx_requests_tx);
-    const uint64_t summary_retx_queued      = take_stat(state.stats.summary_retx_tiles_queued);
-    const uint64_t summary_retx_deferred    = take_stat(state.stats.summary_retx_tiles_deferred);
-    const uint64_t summary_retx_throttled   = take_stat(state.stats.summary_retx_tiles_throttled);
-    const uint64_t summary_retx_stale_dropped = take_stat(state.stats.summary_retx_tiles_stale_dropped);
+    const uint64_t udp_packets                   = take_stat(state.stats.udp_packets_rx);
+    const uint64_t udp_bytes                     = take_stat(state.stats.udp_bytes_rx);
+    const uint64_t udp_interarrival_samples      = take_stat(state.stats.udp_interarrival_samples);
+    const uint64_t udp_interarrival_sum_ns       = take_stat(state.stats.udp_interarrival_sum_ns);
+    const uint64_t udp_jitter_samples            = take_stat(state.stats.udp_interarrival_jitter_samples);
+    const uint64_t udp_jitter_sum_ns             = take_stat(state.stats.udp_interarrival_jitter_sum_ns);
+    const uint64_t udp_interarrival_max_ns       = take_stat(state.stats.udp_interarrival_max_ns);
+    const uint64_t invalid                       = take_stat(state.stats.udp_ignored_invalid);
+    const uint64_t invalid_short                 = take_stat(state.stats.udp_invalid_short);
+    const uint64_t invalid_header                = take_stat(state.stats.udp_invalid_header);
+    const uint64_t invalid_geometry              = take_stat(state.stats.udp_invalid_geometry);
+    const uint64_t invalid_fragment              = take_stat(state.stats.udp_invalid_fragment);
+    const uint64_t invalid_blit                  = take_stat(state.stats.udp_invalid_blit);
+    const uint64_t invalid_dirty_grid            = take_stat(state.stats.udp_invalid_dirty_grid);
+    const uint64_t ignored_probe                 = take_stat(state.stats.udp_ignored_probe);
+    const uint64_t stale_session                 = take_stat(state.stats.udp_ignored_stale_session);
+    const uint64_t stale_epoch                   = take_stat(state.stats.udp_ignored_stale_epoch);
+    const uint64_t old_gen                       = take_stat(state.stats.udp_ignored_old_generation);
+    const uint64_t completed                     = take_stat(state.stats.udp_tiles_completed);
+    const uint64_t completed_compressed          = take_stat(state.stats.udp_completed_compressed_bytes);
+    const uint64_t completed_packets             = take_stat(state.stats.udp_completed_packets);
+    const uint64_t partial_timeouts              = take_stat(state.stats.partial_tiles_timed_out);
+    const uint64_t partial_missing_packets       = take_stat(state.stats.partial_tile_missing_packets);
+    const uint64_t partial_retx_queued           = take_stat(state.stats.partial_tile_retx_queued);
+    const uint64_t retx_response_samples         = take_stat(state.stats.retx_response_samples);
+    const uint64_t retx_response_sum_ns          = take_stat(state.stats.retx_response_sum_ns);
+    const uint64_t timeout_updates               = take_stat(state.stats.tile_reassembly_timeout_updates);
+    const uint64_t summaries                     = take_stat(state.stats.tcp_summaries_rx);
+    const uint64_t retx                          = take_stat(state.stats.tcp_retx_requests_tx);
+    const uint64_t summary_retx_queued           = take_stat(state.stats.summary_retx_tiles_queued);
+    const uint64_t summary_retx_deferred         = take_stat(state.stats.summary_retx_tiles_deferred);
+    const uint64_t summary_retx_throttled        = take_stat(state.stats.summary_retx_tiles_throttled);
+    const uint64_t summary_retx_stale_dropped    = take_stat(state.stats.summary_retx_tiles_stale_dropped);
     const uint64_t summary_retx_pressure_dropped = take_stat(state.stats.summary_retx_pressure_dropped);
-    const uint64_t summary_promote_passes   = take_stat(state.stats.summary_promote_passes);
-    const uint64_t summary_promote_scanned  = take_stat(state.stats.summary_promote_scanned);
-    const uint64_t summary_promote_candidates = take_stat(state.stats.summary_promote_candidates);
-    const uint64_t summary_to_retx_samples  = take_stat(state.stats.summary_to_retx_samples);
-    const uint64_t summary_to_retx_sum_ns   = take_stat(state.stats.summary_to_retx_sum_ns);
-    const uint64_t keys                     = take_stat(state.stats.tcp_keyboard_tx);
-    const uint64_t pointer                  = take_stat(state.stats.tcp_pointer_tx);
-    const uint64_t input_events             = take_stat(state.stats.tcp_input_events_tx);
-    const uint64_t input_channel_events     = take_stat(state.stats.tcp_input_channel_tx);
-    const uint64_t input_fallback_events    = take_stat(state.stats.tcp_input_channel_fallback_tx);
-    const uint64_t selection_channel_events = take_stat(state.stats.tcp_selection_channel_tx);
-    const uint64_t selection_fallback_events = take_stat(state.stats.tcp_selection_channel_fallback_tx);
-    const uint64_t tcp_async_queued         = take_stat(state.stats.tcp_async_queued);
-    const uint64_t tcp_async_completed      = take_stat(state.stats.tcp_async_completed);
-    const uint64_t tcp_async_failed         = take_stat(state.stats.tcp_async_failed);
-    const uint64_t tcp_async_overflow       = take_stat(state.stats.tcp_async_overflow);
-    const uint64_t tcp_async_partial        = take_stat(state.stats.tcp_async_partial);
-    const uint64_t tcp_async_coalesced      = take_stat(state.stats.tcp_async_coalesced);
-    const uint64_t tcp_async_inflight_max   = take_stat(state.stats.tcp_async_inflight_max);
-    const uint64_t video_frames_rx          = take_stat(state.stats.video_frames_rx);
-    const uint64_t video_bytes_rx           = take_stat(state.stats.video_bytes_rx);
-    const uint64_t video_frames_decoded     = take_stat(state.stats.video_frames_decoded);
-    const uint64_t video_frames_presented   = take_stat(state.stats.video_frames_presented);
-    const uint64_t video_decode_failed      = take_stat(state.stats.video_decode_failed);
-    const uint64_t video_publish_failed     = take_stat(state.stats.video_publish_failed);
-    const uint64_t video_control_frames_rx  = take_stat(state.stats.video_control_frames_rx);
-    const uint64_t video_need_keyframe_drops = take_stat(state.stats.video_need_keyframe_drops);
-    const uint64_t video_decoder_resets     = take_stat(state.stats.video_decoder_resets);
-    const uint64_t video_decode_samples     = take_stat(state.stats.video_decode_samples);
-    const uint64_t video_decode_sum_ns      = take_stat(state.stats.video_decode_sum_ns);
-    const uint64_t video_messages_rx        = take_stat(state.stats.video_messages_rx);
-    const uint64_t video_data_frames_rx     = take_stat(state.stats.video_data_frames_rx);
-    const uint64_t video_invalid_frames_rx  = take_stat(state.stats.video_invalid_frames_rx);
-    const uint64_t video_stale_frames_dropped = take_stat(state.stats.video_stale_frames_dropped);
-    const uint64_t video_last_frame_id_rx   = state.stats.video_last_frame_id_rx.load(std::memory_order_relaxed);
+    const uint64_t summary_promote_passes        = take_stat(state.stats.summary_promote_passes);
+    const uint64_t summary_promote_scanned       = take_stat(state.stats.summary_promote_scanned);
+    const uint64_t summary_promote_candidates    = take_stat(state.stats.summary_promote_candidates);
+    const uint64_t summary_to_retx_samples       = take_stat(state.stats.summary_to_retx_samples);
+    const uint64_t summary_to_retx_sum_ns        = take_stat(state.stats.summary_to_retx_sum_ns);
+    const uint64_t keys                          = take_stat(state.stats.tcp_keyboard_tx);
+    const uint64_t pointer                       = take_stat(state.stats.tcp_pointer_tx);
+    const uint64_t input_events                  = take_stat(state.stats.tcp_input_events_tx);
+    const uint64_t input_channel_events          = take_stat(state.stats.tcp_input_channel_tx);
+    const uint64_t input_fallback_events         = take_stat(state.stats.tcp_input_channel_fallback_tx);
+    const uint64_t selection_channel_events      = take_stat(state.stats.tcp_selection_channel_tx);
+    const uint64_t selection_fallback_events     = take_stat(state.stats.tcp_selection_channel_fallback_tx);
+    const uint64_t tcp_async_queued              = take_stat(state.stats.tcp_async_queued);
+    const uint64_t tcp_async_completed           = take_stat(state.stats.tcp_async_completed);
+    const uint64_t tcp_async_failed              = take_stat(state.stats.tcp_async_failed);
+    const uint64_t tcp_async_overflow            = take_stat(state.stats.tcp_async_overflow);
+    const uint64_t tcp_async_partial             = take_stat(state.stats.tcp_async_partial);
+    const uint64_t tcp_async_coalesced           = take_stat(state.stats.tcp_async_coalesced);
+    const uint64_t tcp_async_inflight_max        = take_stat(state.stats.tcp_async_inflight_max);
+    const uint64_t video_frames_rx               = take_stat(state.stats.video_frames_rx);
+    const uint64_t video_bytes_rx                = take_stat(state.stats.video_bytes_rx);
+    const uint64_t video_frames_decoded          = take_stat(state.stats.video_frames_decoded);
+    const uint64_t video_frames_presented        = take_stat(state.stats.video_frames_presented);
+    const uint64_t video_decode_failed           = take_stat(state.stats.video_decode_failed);
+    const uint64_t video_publish_failed          = take_stat(state.stats.video_publish_failed);
+    const uint64_t video_control_frames_rx       = take_stat(state.stats.video_control_frames_rx);
+    const uint64_t video_need_keyframe_drops     = take_stat(state.stats.video_need_keyframe_drops);
+    const uint64_t video_decoder_resets          = take_stat(state.stats.video_decoder_resets);
+    const uint64_t video_decode_samples          = take_stat(state.stats.video_decode_samples);
+    const uint64_t video_decode_sum_ns           = take_stat(state.stats.video_decode_sum_ns);
+    const uint64_t video_messages_rx             = take_stat(state.stats.video_messages_rx);
+    const uint64_t video_data_frames_rx          = take_stat(state.stats.video_data_frames_rx);
+    const uint64_t video_invalid_frames_rx       = take_stat(state.stats.video_invalid_frames_rx);
+    const uint64_t video_stale_frames_dropped    = take_stat(state.stats.video_stale_frames_dropped);
+    const uint64_t video_last_frame_id_rx        = state.stats.video_last_frame_id_rx.load(std::memory_order_relaxed);
     const uint64_t video_last_frame_id_presented = state.stats.video_last_frame_id_presented.load(std::memory_order_relaxed);
     const uint64_t video_present_latency_samples = take_stat(state.stats.video_present_latency_samples);
     const uint64_t video_present_latency_sum_ns  = take_stat(state.stats.video_present_latency_sum_ns);
-    const uint64_t video_audio_sync_holds = take_stat(state.stats.video_audio_sync_holds);
-    const uint64_t video_audio_sync_drops = take_stat(state.stats.video_audio_sync_drops);
-    const uint64_t video_queue_overflow_drops = take_stat(state.stats.video_queue_overflow_drops);
-    const uint32_t video_queue_depth_max = static_cast<uint32_t>(
-        std::min<uint64_t>(take_stat(state.stats.video_queue_depth_max), UINT32_MAX));
-    uint32_t video_queue_depth = 0;
+    const uint64_t video_audio_sync_holds        = take_stat(state.stats.video_audio_sync_holds);
+    const uint64_t video_audio_sync_drops        = take_stat(state.stats.video_audio_sync_drops);
+    const uint64_t video_queue_overflow_drops    = take_stat(state.stats.video_queue_overflow_drops);
+    const uint32_t video_queue_depth_max =
+        static_cast<uint32_t>(std::min<uint64_t>(take_stat(state.stats.video_queue_depth_max), UINT32_MAX));
+    uint32_t video_queue_depth     = 0;
     uint64_t video_oldest_pts_usec = 0;
     {
         std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
-        video_queue_depth = static_cast<uint32_t>(std::min<size_t>(
-            state.video_present_queue.size(), UINT32_MAX));
+        video_queue_depth                    = static_cast<uint32_t>(std::min<size_t>(state.video_present_queue.size(), UINT32_MAX));
         const ClientQueuedVideoFrame* oldest = state.video_present_queue.front();
-        video_oldest_pts_usec = oldest ? oldest->pts_usec : 0;
+        video_oldest_pts_usec                = oldest ? oldest->pts_usec : 0;
     }
-    const int64_t video_audio_delta_samples =
-        state.stats.video_audio_delta_samples.load(std::memory_order_relaxed);
-    const uint64_t tile_frames_presented = take_stat(state.stats.tile_frames_presented);
-    const uint64_t audio_messages_rx = take_stat(state.stats.audio_messages_rx);
-    const uint64_t audio_packets_rx = take_stat(state.stats.audio_packets_rx);
-    const uint64_t audio_bytes_rx = take_stat(state.stats.audio_bytes_rx);
-    const uint64_t audio_decode_failed = take_stat(state.stats.audio_decode_failed);
-    const uint64_t audio_discontinuities = take_stat(state.stats.audio_discontinuities);
-    const uint64_t audio_late_drops = take_stat(state.stats.audio_late_drops);
-    const uint64_t audio_underflows = take_stat(state.stats.audio_underflows);
+    const int64_t  video_audio_delta_samples = state.stats.video_audio_delta_samples.load(std::memory_order_relaxed);
+    const uint64_t tile_frames_presented     = take_stat(state.stats.tile_frames_presented);
+    const uint64_t audio_messages_rx         = take_stat(state.stats.audio_messages_rx);
+    const uint64_t audio_packets_rx          = take_stat(state.stats.audio_packets_rx);
+    const uint64_t audio_bytes_rx            = take_stat(state.stats.audio_bytes_rx);
+    const uint64_t audio_decode_failed       = take_stat(state.stats.audio_decode_failed);
+    const uint64_t audio_discontinuities     = take_stat(state.stats.audio_discontinuities);
+    const uint64_t audio_late_drops          = take_stat(state.stats.audio_late_drops);
+    const uint64_t audio_underflows          = take_stat(state.stats.audio_underflows);
     client_reap_async_udp_receives(state);
-    const uint64_t udp_async_posted         = take_stat(state.stats.udp_async_posted);
-    const uint64_t udp_async_retired        = take_stat(state.stats.udp_async_retired);
-    const uint64_t udp_async_completed      = take_stat(state.stats.udp_async_completed);
-    const uint64_t udp_async_failed         = take_stat(state.stats.udp_async_failed);
-    const uint64_t udp_async_submit_failed  = take_stat(state.stats.udp_async_submit_failed);
-    const uint64_t udp_async_cancels        = take_stat(state.stats.udp_async_cancels);
-    const uint64_t udp_async_inflight_current = state.stats.udp_async_inflight_current.load(std::memory_order_relaxed);
-    const uint64_t udp_async_prepared_current = state.stats.udp_async_prepared_current.load(std::memory_order_relaxed);
-    const uint64_t udp_async_inflight_max   = take_stat(state.stats.udp_async_inflight_max);
-    const uint64_t udp_async_drained_on_reconfigure = take_stat(state.stats.udp_async_drained_on_reconfigure);
+    const uint64_t udp_async_posted                   = take_stat(state.stats.udp_async_posted);
+    const uint64_t udp_async_retired                  = take_stat(state.stats.udp_async_retired);
+    const uint64_t udp_async_completed                = take_stat(state.stats.udp_async_completed);
+    const uint64_t udp_async_failed                   = take_stat(state.stats.udp_async_failed);
+    const uint64_t udp_async_submit_failed            = take_stat(state.stats.udp_async_submit_failed);
+    const uint64_t udp_async_cancels                  = take_stat(state.stats.udp_async_cancels);
+    const uint64_t udp_async_inflight_current         = state.stats.udp_async_inflight_current.load(std::memory_order_relaxed);
+    const uint64_t udp_async_prepared_current         = state.stats.udp_async_prepared_current.load(std::memory_order_relaxed);
+    const uint64_t udp_async_inflight_max             = take_stat(state.stats.udp_async_inflight_max);
+    const uint64_t udp_async_drained_on_reconfigure   = take_stat(state.stats.udp_async_drained_on_reconfigure);
     const uint64_t udp_async_cancelled_on_reconfigure = take_stat(state.stats.udp_async_cancelled_on_reconfigure);
-    const uint64_t udp_async_receiver_generations = take_stat(state.stats.udp_async_receiver_generations);
-    const uint64_t udp_async_accounting_errors = take_stat(state.stats.udp_async_accounting_errors);
-    const uint64_t tile_assembly_samples    = take_stat(state.stats.tile_assembly_samples);
-    const uint64_t tile_assembly_sum_ns     = take_stat(state.stats.tile_assembly_sum_ns);
-    const uint64_t tile_present_samples     = take_stat(state.stats.tile_present_latency_samples);
-    const uint64_t tile_present_sum_ns      = take_stat(state.stats.tile_present_latency_sum_ns);
-    const uint64_t input_to_present_samples = take_stat(state.stats.input_to_present_latency_samples);
-    const uint64_t input_to_present_sum_ns  = take_stat(state.stats.input_to_present_latency_sum_ns);
-    const uint64_t input_seq_present_samples = take_stat(state.stats.input_sequence_present_latency_samples);
-    const uint64_t input_seq_present_sum_ns  = take_stat(state.stats.input_sequence_present_latency_sum_ns);
-    const uint64_t sdl_render_frames          = take_stat(state.stats.sdl_render_frames);
-    const uint64_t sdl_remote_frames          = take_stat(state.stats.sdl_remote_frames);
-    const uint64_t sdl_empty_remote_wakeups   = take_stat(state.stats.sdl_empty_remote_wakeups);
-    const uint64_t sdl_texture_full_uploads   = take_stat(state.stats.sdl_texture_full_uploads);
-    const uint64_t sdl_texture_partial_uploads = take_stat(state.stats.sdl_texture_partial_uploads);
-    const uint64_t sdl_texture_dirty_rects    = take_stat(state.stats.sdl_texture_dirty_rects);
-    const uint64_t sdl_texture_source_dirty_rects = take_stat(state.stats.sdl_texture_source_dirty_rects);
-    const uint64_t sdl_texture_coalesced_dirty_rects = take_stat(state.stats.sdl_texture_coalesced_dirty_rects);
-    const uint64_t sdl_texture_bounds_uploads = take_stat(state.stats.sdl_texture_bounds_uploads);
-    const uint64_t sdl_texture_cost_full_uploads = take_stat(state.stats.sdl_texture_cost_full_uploads);
-    const uint64_t sdl_texture_lock_calls      = take_stat(state.stats.sdl_texture_lock_calls);
-    const uint64_t sdl_texture_update_calls    = take_stat(state.stats.sdl_texture_update_calls);
-    const uint64_t sdl_texture_model_update_call_ns = state.stats.sdl_texture_model_update_call_ns.load(std::memory_order_relaxed);
-    const uint64_t sdl_texture_model_lock_call_ns = state.stats.sdl_texture_model_lock_call_ns.load(std::memory_order_relaxed);
-    const uint64_t sdl_texture_model_pixel_cost_q16 = state.stats.sdl_texture_model_pixel_cost_q16.load(std::memory_order_relaxed);
-    const uint64_t sdl_texture_source_pixels   = take_stat(state.stats.sdl_texture_source_pixels);
-    const uint64_t sdl_texture_upload_pixels  = take_stat(state.stats.sdl_texture_upload_pixels);
-    const uint64_t sdl_texture_upload_samples = take_stat(state.stats.sdl_texture_upload_samples);
-    const uint64_t sdl_texture_upload_sum_ns  = take_stat(state.stats.sdl_texture_upload_sum_ns);
-    const uint64_t sdl_texture_upload_max_ns  = take_stat(state.stats.sdl_texture_upload_max_ns);
-    const uint64_t framebuffer_snapshot_pixels = take_stat(state.stats.framebuffer_snapshot_pixels);
-    const uint64_t framebuffer_snapshot_samples = take_stat(state.stats.framebuffer_snapshot_samples);
-    const uint64_t framebuffer_snapshot_sum_ns = take_stat(state.stats.framebuffer_snapshot_sum_ns);
-    const uint64_t framebuffer_snapshot_max_ns = take_stat(state.stats.framebuffer_snapshot_max_ns);
-    const uint64_t framebuffer_direct_uploads = take_stat(state.stats.framebuffer_direct_uploads);
-    const uint64_t framebuffer_staged_uploads = take_stat(state.stats.framebuffer_staged_uploads);
-    const uint64_t framebuffer_lock_wait_samples = take_stat(state.stats.framebuffer_lock_wait_samples);
-    const uint64_t framebuffer_lock_wait_sum_ns = take_stat(state.stats.framebuffer_lock_wait_sum_ns);
-    const uint64_t framebuffer_lock_wait_max_ns = take_stat(state.stats.framebuffer_lock_wait_max_ns);
-    const uint64_t framebuffer_lock_hold_samples = take_stat(state.stats.framebuffer_lock_hold_samples);
-    const uint64_t framebuffer_lock_hold_sum_ns = take_stat(state.stats.framebuffer_lock_hold_sum_ns);
-    const uint64_t framebuffer_lock_hold_max_ns = take_stat(state.stats.framebuffer_lock_hold_max_ns);
-    const uint64_t sdl_video_texture_uploads  = take_stat(state.stats.sdl_video_texture_uploads);
-    const uint64_t sdl_video_texture_upload_pixels = take_stat(state.stats.sdl_video_texture_upload_pixels);
-    const uint64_t sdl_present_samples        = take_stat(state.stats.sdl_present_samples);
-    const uint64_t sdl_present_sum_ns         = take_stat(state.stats.sdl_present_sum_ns);
-    const uint64_t sdl_present_max_ns         = take_stat(state.stats.sdl_present_max_ns);
+    const uint64_t udp_async_receiver_generations     = take_stat(state.stats.udp_async_receiver_generations);
+    const uint64_t udp_async_accounting_errors        = take_stat(state.stats.udp_async_accounting_errors);
+    const uint64_t tile_assembly_samples              = take_stat(state.stats.tile_assembly_samples);
+    const uint64_t tile_assembly_sum_ns               = take_stat(state.stats.tile_assembly_sum_ns);
+    const uint64_t tile_present_samples               = take_stat(state.stats.tile_present_latency_samples);
+    const uint64_t tile_present_sum_ns                = take_stat(state.stats.tile_present_latency_sum_ns);
+    const uint64_t input_to_present_samples           = take_stat(state.stats.input_to_present_latency_samples);
+    const uint64_t input_to_present_sum_ns            = take_stat(state.stats.input_to_present_latency_sum_ns);
+    const uint64_t input_seq_present_samples          = take_stat(state.stats.input_sequence_present_latency_samples);
+    const uint64_t input_seq_present_sum_ns           = take_stat(state.stats.input_sequence_present_latency_sum_ns);
+    const uint64_t sdl_render_frames                  = take_stat(state.stats.sdl_render_frames);
+    const uint64_t sdl_remote_frames                  = take_stat(state.stats.sdl_remote_frames);
+    const uint64_t sdl_empty_remote_wakeups           = take_stat(state.stats.sdl_empty_remote_wakeups);
+    const uint64_t sdl_texture_full_uploads           = take_stat(state.stats.sdl_texture_full_uploads);
+    const uint64_t sdl_texture_partial_uploads        = take_stat(state.stats.sdl_texture_partial_uploads);
+    const uint64_t sdl_texture_dirty_rects            = take_stat(state.stats.sdl_texture_dirty_rects);
+    const uint64_t sdl_texture_source_dirty_rects     = take_stat(state.stats.sdl_texture_source_dirty_rects);
+    const uint64_t sdl_texture_coalesced_dirty_rects  = take_stat(state.stats.sdl_texture_coalesced_dirty_rects);
+    const uint64_t sdl_texture_bounds_uploads         = take_stat(state.stats.sdl_texture_bounds_uploads);
+    const uint64_t sdl_texture_cost_full_uploads      = take_stat(state.stats.sdl_texture_cost_full_uploads);
+    const uint64_t sdl_texture_lock_calls             = take_stat(state.stats.sdl_texture_lock_calls);
+    const uint64_t sdl_texture_update_calls           = take_stat(state.stats.sdl_texture_update_calls);
+    const uint64_t sdl_texture_model_update_call_ns   = state.stats.sdl_texture_model_update_call_ns.load(std::memory_order_relaxed);
+    const uint64_t sdl_texture_model_lock_call_ns     = state.stats.sdl_texture_model_lock_call_ns.load(std::memory_order_relaxed);
+    const uint64_t sdl_texture_model_pixel_cost_q16   = state.stats.sdl_texture_model_pixel_cost_q16.load(std::memory_order_relaxed);
+    const uint64_t sdl_texture_source_pixels          = take_stat(state.stats.sdl_texture_source_pixels);
+    const uint64_t sdl_texture_upload_pixels          = take_stat(state.stats.sdl_texture_upload_pixels);
+    const uint64_t sdl_texture_upload_samples         = take_stat(state.stats.sdl_texture_upload_samples);
+    const uint64_t sdl_texture_upload_sum_ns          = take_stat(state.stats.sdl_texture_upload_sum_ns);
+    const uint64_t sdl_texture_upload_max_ns          = take_stat(state.stats.sdl_texture_upload_max_ns);
+    const uint64_t framebuffer_snapshot_pixels        = take_stat(state.stats.framebuffer_snapshot_pixels);
+    const uint64_t framebuffer_snapshot_samples       = take_stat(state.stats.framebuffer_snapshot_samples);
+    const uint64_t framebuffer_snapshot_sum_ns        = take_stat(state.stats.framebuffer_snapshot_sum_ns);
+    const uint64_t framebuffer_snapshot_max_ns        = take_stat(state.stats.framebuffer_snapshot_max_ns);
+    const uint64_t framebuffer_direct_uploads         = take_stat(state.stats.framebuffer_direct_uploads);
+    const uint64_t framebuffer_staged_uploads         = take_stat(state.stats.framebuffer_staged_uploads);
+    const uint64_t framebuffer_lock_wait_samples      = take_stat(state.stats.framebuffer_lock_wait_samples);
+    const uint64_t framebuffer_lock_wait_sum_ns       = take_stat(state.stats.framebuffer_lock_wait_sum_ns);
+    const uint64_t framebuffer_lock_wait_max_ns       = take_stat(state.stats.framebuffer_lock_wait_max_ns);
+    const uint64_t framebuffer_lock_hold_samples      = take_stat(state.stats.framebuffer_lock_hold_samples);
+    const uint64_t framebuffer_lock_hold_sum_ns       = take_stat(state.stats.framebuffer_lock_hold_sum_ns);
+    const uint64_t framebuffer_lock_hold_max_ns       = take_stat(state.stats.framebuffer_lock_hold_max_ns);
+    const uint64_t sdl_video_texture_uploads          = take_stat(state.stats.sdl_video_texture_uploads);
+    const uint64_t sdl_video_texture_upload_pixels    = take_stat(state.stats.sdl_video_texture_upload_pixels);
+    const uint64_t sdl_present_samples                = take_stat(state.stats.sdl_present_samples);
+    const uint64_t sdl_present_sum_ns                 = take_stat(state.stats.sdl_present_sum_ns);
+    const uint64_t sdl_present_max_ns                 = take_stat(state.stats.sdl_present_max_ns);
 
     ClientStatsSnapshot sample{};
-    sample.udp_packets = udp_packets;
-    sample.udp_bytes = udp_bytes;
-    sample.udp_interarrival_samples = udp_interarrival_samples;
-    sample.udp_interarrival_sum_ns = udp_interarrival_sum_ns;
-    sample.udp_jitter_samples = udp_jitter_samples;
-    sample.udp_jitter_sum_ns = udp_jitter_sum_ns;
-    sample.udp_interarrival_max_ns = udp_interarrival_max_ns;
-    sample.invalid = invalid;
-    sample.invalid_short = invalid_short;
-    sample.invalid_header = invalid_header;
-    sample.invalid_geometry = invalid_geometry;
-    sample.invalid_fragment = invalid_fragment;
-    sample.invalid_blit = invalid_blit;
-    sample.invalid_dirty_grid = invalid_dirty_grid;
-    sample.ignored_probe = ignored_probe;
-    sample.stale_session = stale_session;
-    sample.stale_epoch = stale_epoch;
-    sample.old_gen = old_gen;
-    sample.completed = completed;
-    sample.completed_compressed = completed_compressed;
-    sample.completed_packets = completed_packets;
-    sample.partial_timeouts = partial_timeouts;
-    sample.partial_missing_packets = partial_missing_packets;
-    sample.partial_retx_queued = partial_retx_queued;
-    sample.retx_response_samples = retx_response_samples;
-    sample.retx_response_sum_ns = retx_response_sum_ns;
-    sample.timeout_updates = timeout_updates;
-    sample.summaries = summaries;
-    sample.retx = retx;
-    sample.summary_retx_queued = summary_retx_queued;
-    sample.summary_retx_deferred = summary_retx_deferred;
-    sample.summary_retx_throttled = summary_retx_throttled;
-    sample.summary_retx_stale_dropped = summary_retx_stale_dropped;
-    sample.summary_retx_pressure_dropped = summary_retx_pressure_dropped;
-    sample.summary_promote_passes = summary_promote_passes;
-    sample.summary_promote_scanned = summary_promote_scanned;
-    sample.summary_promote_candidates = summary_promote_candidates;
-    sample.summary_to_retx_samples = summary_to_retx_samples;
-    sample.summary_to_retx_sum_ns = summary_to_retx_sum_ns;
-    sample.keys = keys;
-    sample.pointer = pointer;
-    sample.input_events = input_events;
-    sample.input_channel_events = input_channel_events;
-    sample.input_fallback_events = input_fallback_events;
-    sample.selection_channel_events = selection_channel_events;
-    sample.selection_fallback_events = selection_fallback_events;
-    sample.tcp_async_queued = tcp_async_queued;
-    sample.tcp_async_completed = tcp_async_completed;
-    sample.tcp_async_failed = tcp_async_failed;
-    sample.tcp_async_overflow = tcp_async_overflow;
-    sample.tcp_async_partial = tcp_async_partial;
-    sample.tcp_async_coalesced = tcp_async_coalesced;
-    sample.tcp_async_inflight_max = tcp_async_inflight_max;
-    sample.video_frames_rx = video_frames_rx;
-    sample.video_bytes_rx = video_bytes_rx;
-    sample.video_frames_decoded = video_frames_decoded;
-    sample.video_frames_presented = video_frames_presented;
-    sample.video_decode_failed = video_decode_failed;
-    sample.video_publish_failed = video_publish_failed;
-    sample.video_control_frames_rx = video_control_frames_rx;
-    sample.video_need_keyframe_drops = video_need_keyframe_drops;
-    sample.video_decoder_resets = video_decoder_resets;
-    sample.video_decode_samples = video_decode_samples;
-    sample.video_decode_sum_ns = video_decode_sum_ns;
-    sample.video_messages_rx = video_messages_rx;
-    sample.video_data_frames_rx = video_data_frames_rx;
-    sample.video_invalid_frames_rx = video_invalid_frames_rx;
-    sample.video_stale_frames_dropped = video_stale_frames_dropped;
-    sample.video_last_frame_id_rx = video_last_frame_id_rx;
-    sample.video_last_frame_id_presented = video_last_frame_id_presented;
-    sample.video_present_latency_samples = video_present_latency_samples;
-    sample.video_present_latency_sum_ns = video_present_latency_sum_ns;
-    sample.video_audio_sync_holds = video_audio_sync_holds;
-    sample.video_audio_sync_drops = video_audio_sync_drops;
-    sample.video_queue_overflow_drops = video_queue_overflow_drops;
-    sample.video_queue_depth = video_queue_depth;
-    sample.video_queue_depth_max = video_queue_depth_max;
-    sample.video_oldest_pts_usec = video_oldest_pts_usec;
-    sample.video_audio_delta_samples = video_audio_delta_samples;
-    sample.tile_frames_presented = tile_frames_presented;
-    sample.audio_messages_rx = audio_messages_rx;
-    sample.audio_packets_rx = audio_packets_rx;
-    sample.audio_bytes_rx = audio_bytes_rx;
-    sample.audio_decode_failed = audio_decode_failed;
-    sample.audio_discontinuities = audio_discontinuities;
-    sample.audio_late_drops = audio_late_drops;
-    sample.audio_underflows = audio_underflows;
-    sample.udp_async_posted = udp_async_posted;
-    sample.udp_async_retired = udp_async_retired;
-    sample.udp_async_completed = udp_async_completed;
-    sample.udp_async_failed = udp_async_failed;
-    sample.udp_async_submit_failed = udp_async_submit_failed;
-    sample.udp_async_cancels = udp_async_cancels;
-    sample.udp_async_inflight_current = udp_async_inflight_current;
-    sample.udp_async_prepared_current = udp_async_prepared_current;
-    sample.udp_async_inflight_max = udp_async_inflight_max;
-    sample.udp_async_drained_on_reconfigure = udp_async_drained_on_reconfigure;
+    sample.udp_packets                        = udp_packets;
+    sample.udp_bytes                          = udp_bytes;
+    sample.udp_interarrival_samples           = udp_interarrival_samples;
+    sample.udp_interarrival_sum_ns            = udp_interarrival_sum_ns;
+    sample.udp_jitter_samples                 = udp_jitter_samples;
+    sample.udp_jitter_sum_ns                  = udp_jitter_sum_ns;
+    sample.udp_interarrival_max_ns            = udp_interarrival_max_ns;
+    sample.invalid                            = invalid;
+    sample.invalid_short                      = invalid_short;
+    sample.invalid_header                     = invalid_header;
+    sample.invalid_geometry                   = invalid_geometry;
+    sample.invalid_fragment                   = invalid_fragment;
+    sample.invalid_blit                       = invalid_blit;
+    sample.invalid_dirty_grid                 = invalid_dirty_grid;
+    sample.ignored_probe                      = ignored_probe;
+    sample.stale_session                      = stale_session;
+    sample.stale_epoch                        = stale_epoch;
+    sample.old_gen                            = old_gen;
+    sample.completed                          = completed;
+    sample.completed_compressed               = completed_compressed;
+    sample.completed_packets                  = completed_packets;
+    sample.partial_timeouts                   = partial_timeouts;
+    sample.partial_missing_packets            = partial_missing_packets;
+    sample.partial_retx_queued                = partial_retx_queued;
+    sample.retx_response_samples              = retx_response_samples;
+    sample.retx_response_sum_ns               = retx_response_sum_ns;
+    sample.timeout_updates                    = timeout_updates;
+    sample.summaries                          = summaries;
+    sample.retx                               = retx;
+    sample.summary_retx_queued                = summary_retx_queued;
+    sample.summary_retx_deferred              = summary_retx_deferred;
+    sample.summary_retx_throttled             = summary_retx_throttled;
+    sample.summary_retx_stale_dropped         = summary_retx_stale_dropped;
+    sample.summary_retx_pressure_dropped      = summary_retx_pressure_dropped;
+    sample.summary_promote_passes             = summary_promote_passes;
+    sample.summary_promote_scanned            = summary_promote_scanned;
+    sample.summary_promote_candidates         = summary_promote_candidates;
+    sample.summary_to_retx_samples            = summary_to_retx_samples;
+    sample.summary_to_retx_sum_ns             = summary_to_retx_sum_ns;
+    sample.keys                               = keys;
+    sample.pointer                            = pointer;
+    sample.input_events                       = input_events;
+    sample.input_channel_events               = input_channel_events;
+    sample.input_fallback_events              = input_fallback_events;
+    sample.selection_channel_events           = selection_channel_events;
+    sample.selection_fallback_events          = selection_fallback_events;
+    sample.tcp_async_queued                   = tcp_async_queued;
+    sample.tcp_async_completed                = tcp_async_completed;
+    sample.tcp_async_failed                   = tcp_async_failed;
+    sample.tcp_async_overflow                 = tcp_async_overflow;
+    sample.tcp_async_partial                  = tcp_async_partial;
+    sample.tcp_async_coalesced                = tcp_async_coalesced;
+    sample.tcp_async_inflight_max             = tcp_async_inflight_max;
+    sample.video_frames_rx                    = video_frames_rx;
+    sample.video_bytes_rx                     = video_bytes_rx;
+    sample.video_frames_decoded               = video_frames_decoded;
+    sample.video_frames_presented             = video_frames_presented;
+    sample.video_decode_failed                = video_decode_failed;
+    sample.video_publish_failed               = video_publish_failed;
+    sample.video_control_frames_rx            = video_control_frames_rx;
+    sample.video_need_keyframe_drops          = video_need_keyframe_drops;
+    sample.video_decoder_resets               = video_decoder_resets;
+    sample.video_decode_samples               = video_decode_samples;
+    sample.video_decode_sum_ns                = video_decode_sum_ns;
+    sample.video_messages_rx                  = video_messages_rx;
+    sample.video_data_frames_rx               = video_data_frames_rx;
+    sample.video_invalid_frames_rx            = video_invalid_frames_rx;
+    sample.video_stale_frames_dropped         = video_stale_frames_dropped;
+    sample.video_last_frame_id_rx             = video_last_frame_id_rx;
+    sample.video_last_frame_id_presented      = video_last_frame_id_presented;
+    sample.video_present_latency_samples      = video_present_latency_samples;
+    sample.video_present_latency_sum_ns       = video_present_latency_sum_ns;
+    sample.video_audio_sync_holds             = video_audio_sync_holds;
+    sample.video_audio_sync_drops             = video_audio_sync_drops;
+    sample.video_queue_overflow_drops         = video_queue_overflow_drops;
+    sample.video_queue_depth                  = video_queue_depth;
+    sample.video_queue_depth_max              = video_queue_depth_max;
+    sample.video_oldest_pts_usec              = video_oldest_pts_usec;
+    sample.video_audio_delta_samples          = video_audio_delta_samples;
+    sample.tile_frames_presented              = tile_frames_presented;
+    sample.audio_messages_rx                  = audio_messages_rx;
+    sample.audio_packets_rx                   = audio_packets_rx;
+    sample.audio_bytes_rx                     = audio_bytes_rx;
+    sample.audio_decode_failed                = audio_decode_failed;
+    sample.audio_discontinuities              = audio_discontinuities;
+    sample.audio_late_drops                   = audio_late_drops;
+    sample.audio_underflows                   = audio_underflows;
+    sample.udp_async_posted                   = udp_async_posted;
+    sample.udp_async_retired                  = udp_async_retired;
+    sample.udp_async_completed                = udp_async_completed;
+    sample.udp_async_failed                   = udp_async_failed;
+    sample.udp_async_submit_failed            = udp_async_submit_failed;
+    sample.udp_async_cancels                  = udp_async_cancels;
+    sample.udp_async_inflight_current         = udp_async_inflight_current;
+    sample.udp_async_prepared_current         = udp_async_prepared_current;
+    sample.udp_async_inflight_max             = udp_async_inflight_max;
+    sample.udp_async_drained_on_reconfigure   = udp_async_drained_on_reconfigure;
     sample.udp_async_cancelled_on_reconfigure = udp_async_cancelled_on_reconfigure;
-    sample.udp_async_receiver_generations = udp_async_receiver_generations;
-    sample.udp_async_accounting_errors = udp_async_accounting_errors;
-    sample.tile_assembly_samples = tile_assembly_samples;
-    sample.tile_assembly_sum_ns = tile_assembly_sum_ns;
-    sample.tile_present_samples = tile_present_samples;
-    sample.tile_present_sum_ns = tile_present_sum_ns;
-    sample.input_to_present_samples = input_to_present_samples;
-    sample.input_to_present_sum_ns = input_to_present_sum_ns;
-    sample.input_seq_present_samples = input_seq_present_samples;
-    sample.input_seq_present_sum_ns = input_seq_present_sum_ns;
-    sample.sdl_render_frames = sdl_render_frames;
-    sample.sdl_remote_frames = sdl_remote_frames;
-    sample.sdl_empty_remote_wakeups = sdl_empty_remote_wakeups;
-    sample.sdl_texture_full_uploads = sdl_texture_full_uploads;
-    sample.sdl_texture_partial_uploads = sdl_texture_partial_uploads;
-    sample.sdl_texture_dirty_rects = sdl_texture_dirty_rects;
-    sample.sdl_texture_source_dirty_rects = sdl_texture_source_dirty_rects;
-    sample.sdl_texture_coalesced_dirty_rects = sdl_texture_coalesced_dirty_rects;
-    sample.sdl_texture_bounds_uploads = sdl_texture_bounds_uploads;
-    sample.sdl_texture_cost_full_uploads = sdl_texture_cost_full_uploads;
-    sample.sdl_texture_lock_calls = sdl_texture_lock_calls;
-    sample.sdl_texture_update_calls = sdl_texture_update_calls;
-    sample.sdl_texture_model_update_call_ns = sdl_texture_model_update_call_ns;
-    sample.sdl_texture_model_lock_call_ns = sdl_texture_model_lock_call_ns;
-    sample.sdl_texture_model_pixel_cost_q16 = sdl_texture_model_pixel_cost_q16;
-    sample.sdl_texture_source_pixels = sdl_texture_source_pixels;
-    sample.sdl_texture_upload_pixels = sdl_texture_upload_pixels;
-    sample.sdl_texture_upload_samples = sdl_texture_upload_samples;
-    sample.sdl_texture_upload_sum_ns = sdl_texture_upload_sum_ns;
-    sample.sdl_texture_upload_max_ns = sdl_texture_upload_max_ns;
-    sample.framebuffer_snapshot_pixels = framebuffer_snapshot_pixels;
-    sample.framebuffer_snapshot_samples = framebuffer_snapshot_samples;
-    sample.framebuffer_snapshot_sum_ns = framebuffer_snapshot_sum_ns;
-    sample.framebuffer_snapshot_max_ns = framebuffer_snapshot_max_ns;
-    sample.framebuffer_direct_uploads = framebuffer_direct_uploads;
-    sample.framebuffer_staged_uploads = framebuffer_staged_uploads;
-    sample.framebuffer_lock_wait_samples = framebuffer_lock_wait_samples;
-    sample.framebuffer_lock_wait_sum_ns = framebuffer_lock_wait_sum_ns;
-    sample.framebuffer_lock_wait_max_ns = framebuffer_lock_wait_max_ns;
-    sample.framebuffer_lock_hold_samples = framebuffer_lock_hold_samples;
-    sample.framebuffer_lock_hold_sum_ns = framebuffer_lock_hold_sum_ns;
-    sample.framebuffer_lock_hold_max_ns = framebuffer_lock_hold_max_ns;
-    sample.sdl_video_texture_uploads = sdl_video_texture_uploads;
-    sample.sdl_video_texture_upload_pixels = sdl_video_texture_upload_pixels;
-    sample.sdl_present_samples = sdl_present_samples;
-    sample.sdl_present_sum_ns = sdl_present_sum_ns;
-    sample.sdl_present_max_ns = sdl_present_max_ns;
+    sample.udp_async_receiver_generations     = udp_async_receiver_generations;
+    sample.udp_async_accounting_errors        = udp_async_accounting_errors;
+    sample.tile_assembly_samples              = tile_assembly_samples;
+    sample.tile_assembly_sum_ns               = tile_assembly_sum_ns;
+    sample.tile_present_samples               = tile_present_samples;
+    sample.tile_present_sum_ns                = tile_present_sum_ns;
+    sample.input_to_present_samples           = input_to_present_samples;
+    sample.input_to_present_sum_ns            = input_to_present_sum_ns;
+    sample.input_seq_present_samples          = input_seq_present_samples;
+    sample.input_seq_present_sum_ns           = input_seq_present_sum_ns;
+    sample.sdl_render_frames                  = sdl_render_frames;
+    sample.sdl_remote_frames                  = sdl_remote_frames;
+    sample.sdl_empty_remote_wakeups           = sdl_empty_remote_wakeups;
+    sample.sdl_texture_full_uploads           = sdl_texture_full_uploads;
+    sample.sdl_texture_partial_uploads        = sdl_texture_partial_uploads;
+    sample.sdl_texture_dirty_rects            = sdl_texture_dirty_rects;
+    sample.sdl_texture_source_dirty_rects     = sdl_texture_source_dirty_rects;
+    sample.sdl_texture_coalesced_dirty_rects  = sdl_texture_coalesced_dirty_rects;
+    sample.sdl_texture_bounds_uploads         = sdl_texture_bounds_uploads;
+    sample.sdl_texture_cost_full_uploads      = sdl_texture_cost_full_uploads;
+    sample.sdl_texture_lock_calls             = sdl_texture_lock_calls;
+    sample.sdl_texture_update_calls           = sdl_texture_update_calls;
+    sample.sdl_texture_model_update_call_ns   = sdl_texture_model_update_call_ns;
+    sample.sdl_texture_model_lock_call_ns     = sdl_texture_model_lock_call_ns;
+    sample.sdl_texture_model_pixel_cost_q16   = sdl_texture_model_pixel_cost_q16;
+    sample.sdl_texture_source_pixels          = sdl_texture_source_pixels;
+    sample.sdl_texture_upload_pixels          = sdl_texture_upload_pixels;
+    sample.sdl_texture_upload_samples         = sdl_texture_upload_samples;
+    sample.sdl_texture_upload_sum_ns          = sdl_texture_upload_sum_ns;
+    sample.sdl_texture_upload_max_ns          = sdl_texture_upload_max_ns;
+    sample.framebuffer_snapshot_pixels        = framebuffer_snapshot_pixels;
+    sample.framebuffer_snapshot_samples       = framebuffer_snapshot_samples;
+    sample.framebuffer_snapshot_sum_ns        = framebuffer_snapshot_sum_ns;
+    sample.framebuffer_snapshot_max_ns        = framebuffer_snapshot_max_ns;
+    sample.framebuffer_direct_uploads         = framebuffer_direct_uploads;
+    sample.framebuffer_staged_uploads         = framebuffer_staged_uploads;
+    sample.framebuffer_lock_wait_samples      = framebuffer_lock_wait_samples;
+    sample.framebuffer_lock_wait_sum_ns       = framebuffer_lock_wait_sum_ns;
+    sample.framebuffer_lock_wait_max_ns       = framebuffer_lock_wait_max_ns;
+    sample.framebuffer_lock_hold_samples      = framebuffer_lock_hold_samples;
+    sample.framebuffer_lock_hold_sum_ns       = framebuffer_lock_hold_sum_ns;
+    sample.framebuffer_lock_hold_max_ns       = framebuffer_lock_hold_max_ns;
+    sample.sdl_video_texture_uploads          = sdl_video_texture_uploads;
+    sample.sdl_video_texture_upload_pixels    = sdl_video_texture_upload_pixels;
+    sample.sdl_present_samples                = sdl_present_samples;
+    sample.sdl_present_sum_ns                 = sdl_present_sum_ns;
+    sample.sdl_present_max_ns                 = sdl_present_max_ns;
     client_stats_accumulate(state.stats_log.totals, sample);
 
-    const bool video_feedback_heartbeat = state.video_stream_negotiated ||
-                                          state.video_tcp_connected.load(std::memory_order_acquire);
-    const bool feedback_activity = video_feedback_heartbeat || udp_packets != 0 || udp_bytes != 0 || completed != 0 ||
-                                   partial_timeouts != 0 || invalid != 0 || old_gen != 0 || retx != 0 ||
-                                   udp_interarrival_samples != 0 || video_messages_rx != 0 ||
-                                   video_data_frames_rx != 0 || video_frames_rx != 0 ||
-                                   video_frames_decoded != 0 || video_frames_presented != 0 ||
-                                   video_decode_failed != 0 || video_publish_failed != 0 ||
-                                   video_control_frames_rx != 0 || video_invalid_frames_rx != 0 ||
-                                   video_stale_frames_dropped != 0 || video_need_keyframe_drops != 0 ||
-                                   video_decoder_resets != 0 || audio_messages_rx != 0 ||
-                                   audio_packets_rx != 0 || audio_decode_failed != 0 ||
-                                   audio_discontinuities != 0 || audio_late_drops != 0 ||
-                                   video_audio_sync_holds != 0 || video_audio_sync_drops != 0 ||
-                                   video_queue_depth != 0 || video_queue_overflow_drops != 0 ||
-                                   tile_frames_presented != 0;
+    const bool video_feedback_heartbeat = state.video_stream_negotiated || state.video_tcp_connected.load(std::memory_order_acquire);
+    const bool feedback_activity =
+        video_feedback_heartbeat || udp_packets != 0 || udp_bytes != 0 || completed != 0 || partial_timeouts != 0 || invalid != 0 ||
+        old_gen != 0 || retx != 0 || udp_interarrival_samples != 0 || video_messages_rx != 0 || video_data_frames_rx != 0 ||
+        video_frames_rx != 0 || video_frames_decoded != 0 || video_frames_presented != 0 || video_decode_failed != 0 ||
+        video_publish_failed != 0 || video_control_frames_rx != 0 || video_invalid_frames_rx != 0 || video_stale_frames_dropped != 0 ||
+        video_need_keyframe_drops != 0 || video_decoder_resets != 0 || audio_messages_rx != 0 || audio_packets_rx != 0 ||
+        audio_decode_failed != 0 || audio_discontinuities != 0 || audio_late_drops != 0 || video_audio_sync_holds != 0 ||
+        video_audio_sync_drops != 0 || video_queue_depth != 0 || video_queue_overflow_drops != 0 || tile_frames_presented != 0;
 
     if (feedback_activity)
     {
         wd_client_stats_payload feedback{};
         {
             std::lock_guard<std::mutex> lock(state.config_mutex);
-            feedback.session_id = state.config.session_id;
+            feedback.session_id       = state.config.session_id;
             feedback.connection_token = state.config.connection_token;
         }
         if (state.render_feedback_visible.load(std::memory_order_relaxed))
         {
             feedback.flags |= WD_CLIENT_STATS_RENDER_VISIBLE;
         }
-        feedback.udp_packets_rx             = udp_packets;
-        feedback.udp_bytes_rx               = udp_bytes;
-        feedback.udp_tiles_completed        = completed;
-        feedback.udp_completed_packets      = completed_packets;
-        feedback.partial_tiles_timed_out    = partial_timeouts;
-        feedback.udp_ignored_old_generation = old_gen;
-        feedback.retx_requests_tx           = retx;
-        feedback.udp_interarrival_samples   = udp_interarrival_samples;
-        feedback.udp_interarrival_sum_ns    = udp_interarrival_sum_ns;
+        feedback.udp_packets_rx                  = udp_packets;
+        feedback.udp_bytes_rx                    = udp_bytes;
+        feedback.udp_tiles_completed             = completed;
+        feedback.udp_completed_packets           = completed_packets;
+        feedback.partial_tiles_timed_out         = partial_timeouts;
+        feedback.udp_ignored_old_generation      = old_gen;
+        feedback.retx_requests_tx                = retx;
+        feedback.udp_interarrival_samples        = udp_interarrival_samples;
+        feedback.udp_interarrival_sum_ns         = udp_interarrival_sum_ns;
         feedback.udp_interarrival_jitter_samples = udp_jitter_samples;
         feedback.udp_interarrival_jitter_sum_ns  = udp_jitter_sum_ns;
-        feedback.udp_interarrival_max_ns    = udp_interarrival_max_ns;
+        feedback.udp_interarrival_max_ns         = udp_interarrival_max_ns;
         /* Render-pressure feedback must count presentations caused by remote
          * texture updates only. Local exposes, menus, and window-system redraws
          * do not represent capacity consumed by the tile stream. */
-        feedback.render_frames              = sdl_remote_frames;
-        feedback.present_samples            = sdl_present_samples;
-        feedback.present_sum_ns             = sdl_present_sum_ns;
-        feedback.present_max_ns             = sdl_present_max_ns;
-        feedback.input_present_samples      = input_seq_present_samples;
-        feedback.input_present_sum_ns       = input_seq_present_sum_ns;
-        feedback.video_frames_rx            = video_frames_rx;
-        feedback.video_bytes_rx             = video_bytes_rx;
-        feedback.video_frames_decoded       = video_frames_decoded;
-        feedback.video_frames_presented     = video_frames_presented;
-        feedback.video_decode_failed        = video_decode_failed;
-        feedback.video_publish_failed       = video_publish_failed;
-        feedback.video_control_frames_rx    = video_control_frames_rx;
-        feedback.video_need_keyframe_drops  = video_need_keyframe_drops;
-        feedback.video_decoder_resets       = video_decoder_resets;
-        feedback.video_decode_samples       = video_decode_samples;
-        feedback.video_decode_sum_ns        = video_decode_sum_ns;
-        feedback.video_messages_rx          = video_messages_rx;
-        feedback.video_data_frames_rx       = video_data_frames_rx;
-        feedback.video_invalid_frames_rx    = video_invalid_frames_rx;
-        feedback.video_stale_frames_dropped = video_stale_frames_dropped;
-        feedback.video_last_frame_id_rx     = video_last_frame_id_rx;
+        feedback.render_frames                 = sdl_remote_frames;
+        feedback.present_samples               = sdl_present_samples;
+        feedback.present_sum_ns                = sdl_present_sum_ns;
+        feedback.present_max_ns                = sdl_present_max_ns;
+        feedback.input_present_samples         = input_seq_present_samples;
+        feedback.input_present_sum_ns          = input_seq_present_sum_ns;
+        feedback.video_frames_rx               = video_frames_rx;
+        feedback.video_bytes_rx                = video_bytes_rx;
+        feedback.video_frames_decoded          = video_frames_decoded;
+        feedback.video_frames_presented        = video_frames_presented;
+        feedback.video_decode_failed           = video_decode_failed;
+        feedback.video_publish_failed          = video_publish_failed;
+        feedback.video_control_frames_rx       = video_control_frames_rx;
+        feedback.video_need_keyframe_drops     = video_need_keyframe_drops;
+        feedback.video_decoder_resets          = video_decoder_resets;
+        feedback.video_decode_samples          = video_decode_samples;
+        feedback.video_decode_sum_ns           = video_decode_sum_ns;
+        feedback.video_messages_rx             = video_messages_rx;
+        feedback.video_data_frames_rx          = video_data_frames_rx;
+        feedback.video_invalid_frames_rx       = video_invalid_frames_rx;
+        feedback.video_stale_frames_dropped    = video_stale_frames_dropped;
+        feedback.video_last_frame_id_rx        = video_last_frame_id_rx;
         feedback.video_last_frame_id_presented = video_last_frame_id_presented;
         feedback.video_present_latency_samples = video_present_latency_samples;
         feedback.video_present_latency_sum_ns  = video_present_latency_sum_ns;
-        feedback.audio_messages_rx = audio_messages_rx;
-        feedback.audio_packets_rx = audio_packets_rx;
-        feedback.audio_bytes_rx = audio_bytes_rx;
-        feedback.audio_decode_failed = audio_decode_failed;
-        feedback.audio_discontinuities = audio_discontinuities;
-        feedback.audio_late_drops = audio_late_drops;
-        feedback.audio_underflows = audio_underflows;
-        feedback.video_audio_sync_holds = video_audio_sync_holds;
-        feedback.video_audio_sync_drops = video_audio_sync_drops;
-        feedback.video_queue_overflow_drops = video_queue_overflow_drops;
-        feedback.video_queue_depth = video_queue_depth;
-        feedback.video_queue_depth_max = video_queue_depth_max;
-        feedback.video_oldest_pts_usec = video_oldest_pts_usec;
-        feedback.video_audio_delta_samples = video_audio_delta_samples;
-        feedback.tile_frames_presented = tile_frames_presented;
+        feedback.audio_messages_rx             = audio_messages_rx;
+        feedback.audio_packets_rx              = audio_packets_rx;
+        feedback.audio_bytes_rx                = audio_bytes_rx;
+        feedback.audio_decode_failed           = audio_decode_failed;
+        feedback.audio_discontinuities         = audio_discontinuities;
+        feedback.audio_late_drops              = audio_late_drops;
+        feedback.audio_underflows              = audio_underflows;
+        feedback.video_audio_sync_holds        = video_audio_sync_holds;
+        feedback.video_audio_sync_drops        = video_audio_sync_drops;
+        feedback.video_queue_overflow_drops    = video_queue_overflow_drops;
+        feedback.video_queue_depth             = video_queue_depth;
+        feedback.video_queue_depth_max         = video_queue_depth_max;
+        feedback.video_oldest_pts_usec         = video_oldest_pts_usec;
+        feedback.video_audio_delta_samples     = video_audio_delta_samples;
+        feedback.tile_frames_presented         = tile_frames_presented;
         if (feedback.session_id != 0)
         {
             client_send_stats(state, feedback);
@@ -1804,24 +1755,24 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     }
 
     const ClientStatsSnapshot logged = state.stats_log.totals;
-    state.stats_log.totals = {};
+    state.stats_log.totals           = {};
     log_client_stats_snapshot(state, logged);
 }
 
 bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
-                      const std::vector<uint8_t>& tile_bytes, ClientDirtyRect& dirty_rect) {
-    const uint16_t tiles_x = wd_tiles_for_width_with_tile(state.config.width, tile_width);
-    const uint16_t tiles_y = wd_tiles_for_height_with_tile(state.config.height, tile_height);
+                        const std::vector<uint8_t>& tile_bytes, ClientDirtyRect& dirty_rect) {
+    const uint16_t tiles_x     = wd_tiles_for_width_with_tile(state.config.width, tile_width);
+    const uint16_t tiles_y     = wd_tiles_for_height_with_tile(state.config.height, tile_height);
     const uint32_t total_tiles = static_cast<uint32_t>(tiles_x) * static_cast<uint32_t>(tiles_y);
     if (tile_width == 0 || tile_height == 0 || tiles_x == 0 || tiles_y == 0 || tile_id >= total_tiles)
     {
         return false;
     }
 
-    const uint32_t tile_x = tile_id % tiles_x;
-    const uint32_t tile_y = tile_id / tiles_x;
-    const uint32_t dst_x  = tile_x * tile_width;
-    const uint32_t dst_y  = tile_y * tile_height;
+    const uint32_t tile_x        = tile_id % tiles_x;
+    const uint32_t tile_y        = tile_id / tiles_x;
+    const uint32_t dst_x         = tile_x * tile_width;
+    const uint32_t dst_y         = tile_y * tile_height;
     const size_t   expected_size = static_cast<size_t>(tile_width) * static_cast<size_t>(tile_height) * WD_BYTES_PER_PIXEL;
 
     if (tile_bytes.size() < expected_size || dst_x >= state.config.width || dst_y >= state.config.height)
@@ -1881,8 +1832,7 @@ void clear_completed_repair_tracking_locked(ClientState& state, uint32_t base_id
     if (base_id < state.retx_summary_pending_generation.size() && state.retx_summary_pending_generation[base_id] != 0 &&
         state.retx_summary_pending_generation[base_id] <= received)
     {
-        (void)summary_pending_index_remove(state.retx_summary_pending_tiles,
-                                           state.retx_summary_pending_position,
+        (void)summary_pending_index_remove(state.retx_summary_pending_tiles, state.retx_summary_pending_position,
                                            static_cast<uint16_t>(base_id));
         state.retx_summary_pending_generation[base_id] = 0;
         if (base_id < state.retx_summary_pending_since_ns.size())
@@ -1894,10 +1844,8 @@ void clear_completed_repair_tracking_locked(ClientState& state, uint32_t base_id
     }
 }
 
-template <typename Fn>
-void for_each_completed_base_tile(const ClientState& state, const CompletedTile& completed, Fn&& fn) {
-    if (state.config.tile_width == 0 || state.config.tile_height == 0 ||
-        completed.tile_width == 0 || completed.tile_height == 0)
+template <typename Fn> void for_each_completed_base_tile(const ClientState& state, const CompletedTile& completed, Fn&& fn) {
+    if (state.config.tile_width == 0 || state.config.tile_height == 0 || completed.tile_width == 0 || completed.tile_height == 0)
     {
         return;
     }
@@ -1910,10 +1858,8 @@ void for_each_completed_base_tile(const ClientState& state, const CompletedTile&
 
     const uint32_t x = wd_tile_start_x_for_tile(completed.tile_id, tiles_x, completed.tile_width);
     const uint32_t y = wd_tile_start_y_for_tile(completed.tile_id, tiles_x, completed.tile_height);
-    const uint32_t w = wd_tile_visible_width_for_tile(state.config.width, completed.tile_id, tiles_x,
-                                                       completed.tile_width);
-    const uint32_t h = wd_tile_visible_height_for_tile(state.config.height, completed.tile_id, tiles_x,
-                                                        completed.tile_height);
+    const uint32_t w = wd_tile_visible_width_for_tile(state.config.width, completed.tile_id, tiles_x, completed.tile_width);
+    const uint32_t h = wd_tile_visible_height_for_tile(state.config.height, completed.tile_id, tiles_x, completed.tile_height);
     if (w == 0 || h == 0)
     {
         return;
@@ -1921,10 +1867,8 @@ void for_each_completed_base_tile(const ClientState& state, const CompletedTile&
 
     const uint32_t bx0 = x / state.config.tile_width;
     const uint32_t by0 = y / state.config.tile_height;
-    const uint32_t bx1 = std::min<uint32_t>((x + w - 1u) / state.config.tile_width,
-                                             static_cast<uint32_t>(state.config.tiles_x) - 1u);
-    const uint32_t by1 = std::min<uint32_t>((y + h - 1u) / state.config.tile_height,
-                                             static_cast<uint32_t>(state.config.tiles_y) - 1u);
+    const uint32_t bx1 = std::min<uint32_t>((x + w - 1u) / state.config.tile_width, static_cast<uint32_t>(state.config.tiles_x) - 1u);
+    const uint32_t by1 = std::min<uint32_t>((y + h - 1u) / state.config.tile_height, static_cast<uint32_t>(state.config.tiles_y) - 1u);
 
     for (uint32_t by = by0; by <= by1; ++by)
     {
@@ -1945,8 +1889,7 @@ void mark_completed_base_generations(ClientState& state, const CompletedTile& co
         {
             state.received_generation[base_id] = completed.generation;
         }
-        if (base_id < state.pending_present_generation.size() &&
-            completed.generation > state.pending_present_generation[base_id])
+        if (base_id < state.pending_present_generation.size() && completed.generation > state.pending_present_generation[base_id])
         {
             state.pending_present_generation[base_id] = completed.generation;
         }
@@ -1954,8 +1897,7 @@ void mark_completed_base_generations(ClientState& state, const CompletedTile& co
     });
 }
 
-void collect_base_tile_ids_for_rects(const wd_server_config_payload& config,
-                                     const std::vector<ClientDirtyRect>& rects,
+void collect_base_tile_ids_for_rects(const wd_server_config_payload& config, const std::vector<ClientDirtyRect>& rects,
                                      std::vector<uint16_t>& out_tile_ids) {
     out_tile_ids.clear();
     if (config.tile_width == 0 || config.tile_height == 0 || config.total_tiles == 0)
@@ -1969,12 +1911,12 @@ void collect_base_tile_ids_for_rects(const wd_server_config_payload& config,
         {
             continue;
         }
-        const uint32_t right = std::min<uint32_t>(config.width, static_cast<uint32_t>(rect.x) + rect.w);
+        const uint32_t right  = std::min<uint32_t>(config.width, static_cast<uint32_t>(rect.x) + rect.w);
         const uint32_t bottom = std::min<uint32_t>(config.height, static_cast<uint32_t>(rect.y) + rect.h);
-        const uint32_t bx0 = rect.x / config.tile_width;
-        const uint32_t by0 = rect.y / config.tile_height;
-        const uint32_t bx1 = (right - 1u) / config.tile_width;
-        const uint32_t by1 = (bottom - 1u) / config.tile_height;
+        const uint32_t bx0    = rect.x / config.tile_width;
+        const uint32_t by0    = rect.y / config.tile_height;
+        const uint32_t bx1    = (right - 1u) / config.tile_width;
+        const uint32_t by1    = (bottom - 1u) / config.tile_height;
         for (uint32_t by = by0; by <= by1 && by < config.tiles_y; ++by)
         {
             for (uint32_t bx = bx0; bx <= bx1 && bx < config.tiles_x; ++bx)
@@ -2016,11 +1958,11 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
         return true;
     }
 
-    uint8_t session_id = 0;
+    uint8_t  session_id       = 0;
     uint64_t connection_token = 0;
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
-        session_id = state.config.session_id;
+        session_id       = state.config.session_id;
         connection_token = state.config.connection_token;
     }
 
@@ -2043,7 +1985,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
     }
 
     const uint64_t packet_rx_ns = wd_now_ns();
-    const uint64_t prev_rx_ns = state.stats.last_udp_packet_rx_ns.exchange(packet_rx_ns, std::memory_order_relaxed);
+    const uint64_t prev_rx_ns   = state.stats.last_udp_packet_rx_ns.exchange(packet_rx_ns, std::memory_order_relaxed);
     if (prev_rx_ns != 0 && packet_rx_ns >= prev_rx_ns)
     {
         const uint64_t interarrival_ns = packet_rx_ns - prev_rx_ns;
@@ -2051,12 +1993,11 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
         state.stats.udp_interarrival_sum_ns.fetch_add(interarrival_ns, std::memory_order_relaxed);
         record_atomic_max(state.stats.udp_interarrival_max_ns, interarrival_ns);
 
-        const uint64_t prev_interarrival_ns =
-            state.stats.last_udp_interarrival_ns.exchange(interarrival_ns, std::memory_order_relaxed);
+        const uint64_t prev_interarrival_ns = state.stats.last_udp_interarrival_ns.exchange(interarrival_ns, std::memory_order_relaxed);
         if (prev_interarrival_ns != 0)
         {
-            const uint64_t jitter_ns = interarrival_ns > prev_interarrival_ns ? interarrival_ns - prev_interarrival_ns
-                                                                              : prev_interarrival_ns - interarrival_ns;
+            const uint64_t jitter_ns =
+                interarrival_ns > prev_interarrival_ns ? interarrival_ns - prev_interarrival_ns : prev_interarrival_ns - interarrival_ns;
             state.stats.udp_interarrival_jitter_samples.fetch_add(1, std::memory_order_relaxed);
             state.stats.udp_interarrival_jitter_sum_ns.fetch_add(jitter_ns, std::memory_order_relaxed);
         }
@@ -2073,11 +2014,10 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
     }
 
     ClientDirtyRect dirty_rect{};
-    bool wake_render = false;
+    bool            wake_render = false;
     {
         std::lock_guard<std::mutex> content_lock(state.remote_content_mutex);
-        if (completed.content_epoch != state.remote_content_epoch ||
-            state.remote_content_owner != ClientContentOwner::Tiles)
+        if (completed.content_epoch != state.remote_content_epoch || state.remote_content_owner != ClientContentOwner::Tiles)
         {
             reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
             state.stats.udp_ignored_stale_session.fetch_add(1, std::memory_order_relaxed);
@@ -2086,8 +2026,8 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
 
         {
             std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
-            if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_width, completed.tile_height,
-                                    completed.tile_bytes, dirty_rect))
+            if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_width, completed.tile_height, completed.tile_bytes,
+                                    dirty_rect))
             {
                 reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
                 state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
@@ -2099,7 +2039,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
 
         {
             std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
-            const bool dirty_was_empty = state.pending_dirty_tiles.dirty_tile_count() == 0;
+            const bool                  dirty_was_empty = state.pending_dirty_tiles.dirty_tile_count() == 0;
             if (!state.pending_dirty_tiles.mark_rect(dirty_rect))
             {
                 state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
@@ -2108,7 +2048,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
             }
             state.pending_dirty_rect_count.store(state.pending_dirty_tiles.dirty_tile_count(), std::memory_order_release);
             state.pending_dirty_epoch = state.stream_ownership.snapshot().epoch;
-            wake_render = dirty_was_empty;
+            wake_render               = dirty_was_empty;
         }
 
         {
@@ -2120,7 +2060,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
         if (completed.completed_timestamp_ns != 0)
         {
             std::lock_guard<std::mutex> present_lock(state.present_mutex);
-            uint64_t completion_id = state.next_tile_completion_id++;
+            uint64_t                    completion_id = state.next_tile_completion_id++;
             if (completion_id == 0)
             {
                 completion_id = state.next_tile_completion_id++;
@@ -2133,10 +2073,10 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
                 ClientPendingTileTelemetry& telemetry = state.pending_tile_telemetry[base_id];
                 if (completed.generation >= telemetry.generation)
                 {
-                    telemetry.completion_id = completion_id;
-                    telemetry.content_epoch = completed.content_epoch;
-                    telemetry.generation = completed.generation;
-                    telemetry.completed_ns = completed.completed_timestamp_ns;
+                    telemetry.completion_id  = completion_id;
+                    telemetry.content_epoch  = completed.content_epoch;
+                    telemetry.generation     = completed.generation;
+                    telemetry.completed_ns   = completed.completed_timestamp_ns;
                     telemetry.input_sequence = completed.input_sequence;
                 }
             });
@@ -2146,8 +2086,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
     if (completed.first_packet_ns != 0 && completed.completed_timestamp_ns >= completed.first_packet_ns)
     {
         state.stats.tile_assembly_samples.fetch_add(1, std::memory_order_relaxed);
-        state.stats.tile_assembly_sum_ns.fetch_add(completed.completed_timestamp_ns - completed.first_packet_ns,
-                                                   std::memory_order_relaxed);
+        state.stats.tile_assembly_sum_ns.fetch_add(completed.completed_timestamp_ns - completed.first_packet_ns, std::memory_order_relaxed);
     }
 
     state.stats.udp_completed_compressed_bytes.fetch_add(completed.compressed_size, std::memory_order_relaxed);
@@ -2161,7 +2100,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
 }
 
 struct AsyncUdpDrainContext {
-    ClientState*      state       = nullptr;
+    ClientState*     state       = nullptr;
     TileReassembler* reassembler = nullptr;
 };
 
@@ -2251,7 +2190,6 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler) {
     return drain_udp_sync_locked(state, reassembler);
 }
 
-
 uint64_t client_udp_next_deadline_ns(ClientState& state, const TileReassembler& reassembler, uint64_t now_ns) {
     uint64_t deadline_ns = now_ns + WD_CLIENT_MAX_IDLE_WAIT_NS;
 
@@ -2297,11 +2235,11 @@ bool client_wait_for_udp_activity(ClientState& state, uint64_t timeout_ns) {
         return false;
     }
     const uint64_t timeout_ms64 = (timeout_ns + WD_NSEC_PER_MSEC - 1ull) / WD_NSEC_PER_MSEC;
-    const int timeout_ms = static_cast<int>(std::min<uint64_t>(timeout_ms64, static_cast<uint64_t>(INT_MAX)));
-    pollfd descriptor{};
-    descriptor.fd = state.udp_fd;
+    const int      timeout_ms   = static_cast<int>(std::min<uint64_t>(timeout_ms64, static_cast<uint64_t>(INT_MAX)));
+    pollfd         descriptor{};
+    descriptor.fd     = state.udp_fd;
     descriptor.events = POLLIN;
-    int rc = 0;
+    int rc            = 0;
     do
     {
         rc = ::poll(&descriptor, 1, timeout_ms);
@@ -2311,7 +2249,7 @@ bool client_wait_for_udp_activity(ClientState& state, uint64_t timeout_ns) {
 
 void udp_reader_main(ClientState* state) {
     TileReassembler reassembler;
-    uint64_t observed_config_generation = state->client_config_generation.load(std::memory_order_acquire);
+    uint64_t        observed_config_generation = state->client_config_generation.load(std::memory_order_acquire);
 
     while (state->running.load(std::memory_order_relaxed))
     {
@@ -2358,7 +2296,7 @@ void udp_reader_main(ClientState* state) {
 
         const uint64_t wait_now_ns = wd_now_ns();
         const uint64_t deadline_ns = client_udp_next_deadline_ns(*state, reassembler, wait_now_ns);
-        const uint64_t timeout_ns = deadline_ns > wait_now_ns ? deadline_ns - wait_now_ns : 0;
+        const uint64_t timeout_ns  = deadline_ns > wait_now_ns ? deadline_ns - wait_now_ns : 0;
         if (!client_wait_for_udp_activity(*state, timeout_ns))
         {
             state->running.store(false, std::memory_order_relaxed);
@@ -2402,8 +2340,7 @@ uint16_t map_mouse_coord_x(float x) {
     }
 
     const float    local_x = x - g_content_rect.x;
-    const uint32_t mapped =
-        static_cast<uint32_t>((static_cast<double>(local_x) * g_client_config->width) / g_content_rect.w);
+    const uint32_t mapped  = static_cast<uint32_t>((static_cast<double>(local_x) * g_client_config->width) / g_content_rect.w);
 
     if (mapped >= g_client_config->width)
     {
@@ -2430,8 +2367,7 @@ uint16_t map_mouse_coord_y(float y) {
     }
 
     const float    local_y = y - g_content_rect.y;
-    const uint32_t mapped =
-        static_cast<uint32_t>((static_cast<double>(local_y) * g_client_config->height) / g_content_rect.h);
+    const uint32_t mapped  = static_cast<uint32_t>((static_cast<double>(local_y) * g_client_config->height) / g_content_rect.h);
 
     if (mapped >= g_client_config->height)
     {
@@ -2502,8 +2438,8 @@ void update_window_size(SDL_Window* window) {
 }
 
 SDL_Texture* create_frame_texture(SDL_Renderer* renderer, uint32_t width, uint32_t height) {
-    SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-                                             static_cast<int>(width), static_cast<int>(height));
+    SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, static_cast<int>(width),
+                                             static_cast<int>(height));
 
     if (texture)
     {
@@ -2517,8 +2453,8 @@ SDL_Texture* create_frame_texture(SDL_Renderer* renderer, uint32_t width, uint32
 }
 
 SDL_Texture* create_video_texture(SDL_Renderer* renderer, uint32_t width, uint32_t height) {
-    SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING,
-                                             static_cast<int>(width), static_cast<int>(height));
+    SDL_Texture* texture =
+        SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, static_cast<int>(width), static_cast<int>(height));
     if (texture && !SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_LINEAR))
     {
         log_sdl_warning("SDL_SetTextureScaleMode(video)");
@@ -2526,9 +2462,8 @@ SDL_Texture* create_video_texture(SDL_Renderer* renderer, uint32_t width, uint32
     return texture;
 }
 
-bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Renderer* renderer,
-                                 SDL_Texture*& texture, SDL_Texture*& video_texture,
-                                 SDL_Texture*& active_texture) {
+bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Renderer* renderer, SDL_Texture*& texture,
+                                 SDL_Texture*& video_texture, SDL_Texture*& active_texture) {
     wd_server_config_payload config{};
 
     {
@@ -2547,15 +2482,14 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     if (!client_normalize_and_validate_server_config(config, &config_error))
     {
         WD_LOG_ERROR("refusing invalid server config update: reason=%s display=%ux%u tile=%ux%u grid=%ux%u total=%u udp=%u",
-                     client_config_validation_error_name(config_error), config.width, config.height,
-                     config.tile_width, config.tile_height, config.tiles_x, config.tiles_y,
-                     config.total_tiles, config.udp_payload_target);
+                     client_config_validation_error_name(config_error), config.width, config.height, config.tile_width, config.tile_height,
+                     config.tiles_x, config.tiles_y, config.total_tiles, config.udp_payload_target);
         return false;
     }
 
-    const uint32_t change_flags = client_classify_server_config_change(state.config, config);
-    const bool transport_changed = (change_flags & ClientConfigChangeTransport) != 0;
-    const bool stream_reset_required = client_config_change_requires_stream_reset(change_flags);
+    const uint32_t change_flags          = client_classify_server_config_change(state.config, config);
+    const bool     transport_changed     = (change_flags & ClientConfigChangeTransport) != 0;
+    const bool     stream_reset_required = client_config_change_requires_stream_reset(change_flags);
 
     if (!stream_reset_required)
     {
@@ -2563,7 +2497,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
             std::lock_guard<std::mutex> lock(state.config_mutex);
             if (state.media_clock_id != config.media_clock_id)
             {
-                state.media_clock_id = config.media_clock_id;
+                state.media_clock_id              = config.media_clock_id;
                 state.media_clock_local_origin_ns = wd_now_ns();
             }
             state.config = config;
@@ -2574,8 +2508,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
             state.running.store(false, std::memory_order_relaxed);
             return false;
         }
-        WD_LOG_DEBUG("acknowledged lightweight server config session=%u changes=0x%x",
-                     config.session_id, change_flags);
+        WD_LOG_DEBUG("acknowledged lightweight server config session=%u changes=0x%x", config.session_id, change_flags);
         return false;
     }
 
@@ -2583,30 +2516,29 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
                 config.width, config.height, config.tile_width, config.tile_height, config.tiles_x, config.tiles_y, config.total_tiles,
                 change_flags);
 
-    std::vector<uint32_t> new_framebuffer(static_cast<size_t>(config.width) * config.height, 0xff202020u);
-    std::vector<uint64_t> new_received_generation(config.total_tiles, 0);
-    std::vector<uint64_t> new_presented_generation(config.total_tiles, 0);
-    std::vector<uint64_t> new_pending_present_generation(config.total_tiles, 0);
+    std::vector<uint32_t>                   new_framebuffer(static_cast<size_t>(config.width) * config.height, 0xff202020u);
+    std::vector<uint64_t>                   new_received_generation(config.total_tiles, 0);
+    std::vector<uint64_t>                   new_presented_generation(config.total_tiles, 0);
+    std::vector<uint64_t>                   new_pending_present_generation(config.total_tiles, 0);
     std::vector<ClientPendingTileTelemetry> new_pending_tile_telemetry(config.total_tiles);
-    std::vector<uint64_t> new_retx_queued_generation(config.total_tiles, 0);
-    std::vector<uint64_t> new_retx_last_requested_generation(config.total_tiles, 0);
-    std::vector<uint64_t> new_retx_last_request_ns(config.total_tiles, 0);
-    std::vector<uint64_t> new_retx_inflight_generation(config.total_tiles, 0);
-    std::vector<uint64_t> new_retx_inflight_since_ns(config.total_tiles, 0);
-    std::vector<uint64_t> new_retx_summary_pending_generation(config.total_tiles, 0);
-    std::vector<uint64_t> new_retx_summary_pending_since_ns(config.total_tiles, 0);
-    std::vector<uint32_t> new_retx_summary_pending_position(config.total_tiles, UINT32_MAX);
-    std::vector<uint8_t>  new_udp_recv_buffer(WD_UDP_TILE_HEADER_MAX_SIZE + config.udp_payload_target + 512, 0);
-    ClientDirtyTileGrid      new_dirty_tiles;
-    if (!configure_client_dirty_tile_grid(new_dirty_tiles, config.width, config.height,
-                                          config.tile_width, config.tile_height))
+    std::vector<uint64_t>                   new_retx_queued_generation(config.total_tiles, 0);
+    std::vector<uint64_t>                   new_retx_last_requested_generation(config.total_tiles, 0);
+    std::vector<uint64_t>                   new_retx_last_request_ns(config.total_tiles, 0);
+    std::vector<uint64_t>                   new_retx_inflight_generation(config.total_tiles, 0);
+    std::vector<uint64_t>                   new_retx_inflight_since_ns(config.total_tiles, 0);
+    std::vector<uint64_t>                   new_retx_summary_pending_generation(config.total_tiles, 0);
+    std::vector<uint64_t>                   new_retx_summary_pending_since_ns(config.total_tiles, 0);
+    std::vector<uint32_t>                   new_retx_summary_pending_position(config.total_tiles, UINT32_MAX);
+    std::vector<uint8_t>                    new_udp_recv_buffer(WD_UDP_TILE_HEADER_MAX_SIZE + config.udp_payload_target + 512, 0);
+    ClientDirtyTileGrid                     new_dirty_tiles;
+    if (!configure_client_dirty_tile_grid(new_dirty_tiles, config.width, config.height, config.tile_width, config.tile_height))
     {
         WD_LOG_ERROR("failed to configure client dirty tile grid");
         state.running.store(false, std::memory_order_relaxed);
         return false;
     }
 
-    SDL_Texture* new_texture = create_frame_texture(renderer, config.width, config.height);
+    SDL_Texture* new_texture       = create_frame_texture(renderer, config.width, config.height);
     SDL_Texture* new_video_texture = create_video_texture(renderer, config.width, config.height);
 
     if (!new_texture || !new_video_texture)
@@ -2636,11 +2568,11 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
 
         if (state.media_clock_id != config.media_clock_id)
         {
-            state.media_clock_id = config.media_clock_id;
+            state.media_clock_id              = config.media_clock_id;
             state.media_clock_local_origin_ns = wd_now_ns();
         }
-        state.config               = config;
-        state.framebuffer          = std::move(new_framebuffer);
+        state.config      = config;
+        state.framebuffer = std::move(new_framebuffer);
         {
             std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
             state.video_present_queue.clear();
@@ -2649,9 +2581,9 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         const uint64_t tile_epoch = state.stream_ownership.reset_to_tiles();
         state.pending_dirty_tiles = std::move(new_dirty_tiles);
         state.pending_dirty_rect_count.store(0, std::memory_order_release);
-        state.pending_dirty_epoch = tile_epoch;
-        state.received_generation = std::move(new_received_generation);
-        state.presented_generation = std::move(new_presented_generation);
+        state.pending_dirty_epoch        = tile_epoch;
+        state.received_generation        = std::move(new_received_generation);
+        state.presented_generation       = std::move(new_presented_generation);
         state.pending_present_generation = std::move(new_pending_present_generation);
         {
             std::lock_guard<std::mutex> present_lock(state.present_mutex);
@@ -2659,19 +2591,19 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         }
         state.retx_queue.clear();
         state.retx_queued_generation          = std::move(new_retx_queued_generation);
-        state.retx_last_requested_generation = std::move(new_retx_last_requested_generation);
-        state.retx_last_request_ns           = std::move(new_retx_last_request_ns);
-        state.retx_inflight_generation       = std::move(new_retx_inflight_generation);
-        state.retx_inflight_since_ns         = std::move(new_retx_inflight_since_ns);
+        state.retx_last_requested_generation  = std::move(new_retx_last_requested_generation);
+        state.retx_last_request_ns            = std::move(new_retx_last_request_ns);
+        state.retx_inflight_generation        = std::move(new_retx_inflight_generation);
+        state.retx_inflight_since_ns          = std::move(new_retx_inflight_since_ns);
         state.retx_summary_pending_generation = std::move(new_retx_summary_pending_generation);
         state.retx_summary_pending_since_ns   = std::move(new_retx_summary_pending_since_ns);
         state.retx_summary_pending_tiles.clear();
-        state.retx_summary_pending_position = std::move(new_retx_summary_pending_position);
-        state.retx_summary_pending_count = 0;
-        state.next_summary_promote_ns = 0;
+        state.retx_summary_pending_position      = std::move(new_retx_summary_pending_position);
+        state.retx_summary_pending_count         = 0;
+        state.next_summary_promote_ns            = 0;
         state.summary_large_repair_not_before_ns = 0;
         state.summary_repair_loss_signal_until_ns.store(0, std::memory_order_relaxed);
-        state.udp_recv_buffer                = std::move(new_udp_recv_buffer);
+        state.udp_recv_buffer = std::move(new_udp_recv_buffer);
         state.client_config_generation.fetch_add(1, std::memory_order_release);
     }
 
@@ -2679,8 +2611,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
 
     SDL_DestroyTexture(texture);
     SDL_DestroyTexture(video_texture);
-    texture = new_texture;
-    video_texture = new_video_texture;
+    texture        = new_texture;
+    video_texture  = new_video_texture;
     active_texture = texture;
 
     g_client_config = &state.config;
@@ -2701,42 +2633,40 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     return true;
 }
 
-bool upload_argb_texture_locked(SDL_Texture* texture, const SDL_Rect* rect, const uint32_t* source,
-                                int source_pitch, uint32_t width, uint32_t height) {
+bool upload_argb_texture_locked(SDL_Texture* texture, const SDL_Rect* rect, const uint32_t* source, int source_pitch, uint32_t width,
+                                uint32_t height) {
     if (!texture || !source || width == 0 || height == 0 || source_pitch <= 0)
     {
         return false;
     }
 
     void* locked_pixels = nullptr;
-    int locked_pitch = 0;
+    int   locked_pitch  = 0;
     if (!SDL_LockTexture(texture, rect, &locked_pixels, &locked_pitch))
     {
         return false;
     }
 
     const size_t row_bytes = static_cast<size_t>(width) * WD_BYTES_PER_PIXEL;
-    if (locked_pitch < 0 || static_cast<size_t>(locked_pitch) < row_bytes ||
-        static_cast<size_t>(source_pitch) < row_bytes)
+    if (locked_pitch < 0 || static_cast<size_t>(locked_pitch) < row_bytes || static_cast<size_t>(source_pitch) < row_bytes)
     {
         SDL_UnlockTexture(texture);
         return false;
     }
 
     const auto* src = reinterpret_cast<const uint8_t*>(source);
-    auto* dst = static_cast<uint8_t*>(locked_pixels);
+    auto*       dst = static_cast<uint8_t*>(locked_pixels);
     for (uint32_t y = 0; y < height; ++y)
     {
-        std::memcpy(dst + static_cast<size_t>(y) * locked_pitch,
-                    src + static_cast<size_t>(y) * source_pitch, row_bytes);
+        std::memcpy(dst + static_cast<size_t>(y) * locked_pitch, src + static_cast<size_t>(y) * source_pitch, row_bytes);
     }
 
     SDL_UnlockTexture(texture);
     return true;
 }
 
-bool update_argb_texture(SDL_Texture* texture, const SDL_Rect& rect, const uint32_t* source,
-                         int source_pitch, uint32_t width, uint32_t height) {
+bool update_argb_texture(SDL_Texture* texture, const SDL_Rect& rect, const uint32_t* source, int source_pitch, uint32_t width,
+                         uint32_t height) {
     if (!texture || !source || width == 0 || height == 0 || source_pitch <= 0)
     {
         return false;
@@ -2759,16 +2689,15 @@ void record_texture_upload_stats(ClientState& state, uint64_t started_ns, uint64
     record_atomic_max(state.stats.sdl_texture_upload_max_ns, elapsed_ns);
 }
 
-void record_texture_call_cost(ClientState& state, ClientTextureUploadCostModel& costs,
-                              bool texture_lock, uint64_t started_ns, uint64_t pixels) {
+void record_texture_call_cost(ClientState& state, ClientTextureUploadCostModel& costs, bool texture_lock, uint64_t started_ns,
+                              uint64_t pixels) {
     observe_texture_upload_call(costs, texture_lock, wd_now_ns() - started_ns, pixels);
     state.stats.sdl_texture_model_update_call_ns.store(costs.update_call_cost_ns, std::memory_order_relaxed);
     state.stats.sdl_texture_model_lock_call_ns.store(costs.lock_call_cost_ns, std::memory_order_relaxed);
     state.stats.sdl_texture_model_pixel_cost_q16.store(costs.pixel_cost_q16, std::memory_order_relaxed);
 }
 
-void record_framebuffer_snapshot_stats(ClientState& state, ClientTextureUploadCostModel& costs,
-                                         uint64_t started_ns, uint64_t pixels) {
+void record_framebuffer_snapshot_stats(ClientState& state, ClientTextureUploadCostModel& costs, uint64_t started_ns, uint64_t pixels) {
     const uint64_t elapsed_ns = wd_now_ns() - started_ns;
     observe_framebuffer_snapshot(costs, elapsed_ns, pixels);
     state.stats.framebuffer_snapshot_samples.fetch_add(1, std::memory_order_relaxed);
@@ -2785,23 +2714,24 @@ void record_framebuffer_lock_stats(ClientState& state, uint64_t wait_ns, uint64_
     state.stats.framebuffer_lock_hold_sum_ns.fetch_add(hold_ns, std::memory_order_relaxed);
     record_atomic_max(state.stats.framebuffer_lock_hold_max_ns, hold_ns);
     const uint64_t old_ewma = state.framebuffer_lock_wait_ewma_ns.load(std::memory_order_relaxed);
-    const uint64_t next_ewma = old_ewma == 0 ? wait_ns : (old_ewma * WD_CLIENT_FRAMEBUFFER_LOCK_EWMA_OLD_NUMERATOR + wait_ns) /
-                                                    WD_CLIENT_FRAMEBUFFER_LOCK_EWMA_DENOMINATOR;
+    const uint64_t next_ewma =
+        old_ewma == 0 ? wait_ns
+                      : (old_ewma * WD_CLIENT_FRAMEBUFFER_LOCK_EWMA_OLD_NUMERATOR + wait_ns) / WD_CLIENT_FRAMEBUFFER_LOCK_EWMA_DENOMINATOR;
     state.framebuffer_lock_wait_ewma_ns.store(next_ewma, std::memory_order_relaxed);
 }
 
-bool snapshot_full_framebuffer(ClientState& state, uint32_t frame_width, uint32_t frame_height,
-                               std::vector<uint32_t>& staging, ClientTextureUploadCostModel& costs) {
+bool snapshot_full_framebuffer(ClientState& state, uint32_t frame_width, uint32_t frame_height, std::vector<uint32_t>& staging,
+                               ClientTextureUploadCostModel& costs) {
     const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
     if (frame_width == 0 || frame_height == 0 || expected_pixels == 0)
     {
         return false;
     }
     staging.resize(expected_pixels);
-    const uint64_t started_ns = wd_now_ns();
-    const uint64_t lock_started_ns = wd_now_ns();
+    const uint64_t               started_ns      = wd_now_ns();
+    const uint64_t               lock_started_ns = wd_now_ns();
     std::unique_lock<std::mutex> framebuffer_lock(state.framebuffer_mutex);
-    const uint64_t lock_acquired_ns = wd_now_ns();
+    const uint64_t               lock_acquired_ns = wd_now_ns();
     if (state.framebuffer.size() < expected_pixels)
     {
         return false;
@@ -2822,11 +2752,9 @@ bool upload_full_texture(ClientState& state, SDL_Texture* texture, uint32_t fram
         return false;
     }
     const uint64_t call_started_ns = wd_now_ns();
-    const bool ok = upload_argb_texture_locked(texture, nullptr, staging.data(),
-                                                static_cast<int>(frame_width * WD_BYTES_PER_PIXEL),
-                                                frame_width, frame_height);
-    record_texture_call_cost(state, costs, true, call_started_ns,
-                             static_cast<uint64_t>(frame_width) * frame_height);
+    const bool     ok = upload_argb_texture_locked(texture, nullptr, staging.data(), static_cast<int>(frame_width * WD_BYTES_PER_PIXEL),
+                                                   frame_width, frame_height);
+    record_texture_call_cost(state, costs, true, call_started_ns, static_cast<uint64_t>(frame_width) * frame_height);
     if (ok)
     {
         state.stats.framebuffer_staged_uploads.fetch_add(1, std::memory_order_relaxed);
@@ -2838,10 +2766,10 @@ bool upload_full_texture(ClientState& state, SDL_Texture* texture, uint32_t fram
 }
 
 struct VideoPresentInfo {
-    bool     valid = false;
-    uint64_t frame_id = 0;
-    uint64_t pts_usec = 0;
-    uint64_t epoch = 0;
+    bool     valid          = false;
+    uint64_t frame_id       = 0;
+    uint64_t pts_usec       = 0;
+    uint64_t epoch          = 0;
     uint32_t retry_after_ms = 0;
 };
 
@@ -2855,13 +2783,11 @@ enum class VideoTextureUploadResult : uint8_t {
     Failed,
 };
 
-VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Texture* texture,
-                                                      uint32_t frame_width, uint32_t frame_height,
-                                                      ClientVideoFrameBuffer& frame,
-                                                      VideoPresentInfo& present_info) {
-    const uint64_t started_ns = wd_now_ns();
-    uint64_t frame_epoch = 0;
-    bool dropped_for_audio = false;
+VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Texture* texture, uint32_t frame_width, uint32_t frame_height,
+                                                      ClientVideoFrameBuffer& frame, VideoPresentInfo& present_info) {
+    const uint64_t started_ns        = wd_now_ns();
+    uint64_t       frame_epoch       = 0;
+    bool           dropped_for_audio = false;
     {
         std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
         std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
@@ -2877,41 +2803,32 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
             {
                 state.pending_video_frame_dirty.store(false, std::memory_order_release);
                 state.stats.video_audio_delta_samples.store(0, std::memory_order_relaxed);
-                return dropped_for_audio ? VideoTextureUploadResult::AudioDropped
-                                         : VideoTextureUploadResult::NoFrame;
+                return dropped_for_audio ? VideoTextureUploadResult::AudioDropped : VideoTextureUploadResult::NoFrame;
             }
             if (queued->width != frame_width || queued->height != frame_height)
             {
                 return VideoTextureUploadResult::Failed;
             }
 
-            uint64_t audio_playhead_samples = 0;
-            const bool audio_waiting =
-                client_audio_playback_should_hold_video(state.audio_playback);
-            if (client_audio_playback_playhead_samples(state.audio_playback,
-                                                       &audio_playhead_samples))
+            uint64_t   audio_playhead_samples = 0;
+            const bool audio_waiting          = client_audio_playback_should_hold_video(state.audio_playback);
+            if (client_audio_playback_playhead_samples(state.audio_playback, &audio_playhead_samples))
             {
-                const ClientVideoAudioSyncPlan sync =
-                    client_video_audio_sync_plan(queued->pts_usec,
-                                                 audio_playhead_samples);
-                state.stats.video_audio_delta_samples.store(sync.delta_samples,
-                                                             std::memory_order_relaxed);
+                const ClientVideoAudioSyncPlan sync = client_video_audio_sync_plan(queued->pts_usec, audio_playhead_samples);
+                state.stats.video_audio_delta_samples.store(sync.delta_samples, std::memory_order_relaxed);
                 if (sync.decision == ClientVideoAudioSyncDecision::Hold)
                 {
                     present_info.retry_after_ms = sync.retry_after_ms;
-                    state.stats.video_audio_sync_holds.fetch_add(1,
-                                                                 std::memory_order_relaxed);
+                    state.stats.video_audio_sync_holds.fetch_add(1, std::memory_order_relaxed);
                     return VideoTextureUploadResult::Held;
                 }
                 if (sync.decision == ClientVideoAudioSyncDecision::Drop)
                 {
                     ClientQueuedVideoFrame dropped = state.video_present_queue.pop_front();
                     state.video_present_queue.recycle(std::move(dropped.buffer));
-                    state.stats.video_audio_sync_drops.fetch_add(1,
-                                                                 std::memory_order_relaxed);
+                    state.stats.video_audio_sync_drops.fetch_add(1, std::memory_order_relaxed);
                     dropped_for_audio = true;
-                    state.pending_video_frame_dirty.store(
-                        !state.video_present_queue.empty(), std::memory_order_release);
+                    state.pending_video_frame_dirty.store(!state.video_present_queue.empty(), std::memory_order_release);
                     continue;
                 }
             }
@@ -2921,8 +2838,7 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                  * jitter buffer. After starvation, audio relinquishes the
                  * master clock until playback has rebuffered. */
                 present_info.retry_after_ms = WD_CLIENT_FRAME_DELAY_MS;
-                state.stats.video_audio_sync_holds.fetch_add(1,
-                                                             std::memory_order_relaxed);
+                state.stats.video_audio_sync_holds.fetch_add(1, std::memory_order_relaxed);
                 return VideoTextureUploadResult::Held;
             }
 
@@ -2931,10 +2847,9 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
             state.video_present_queue.recycle(std::move(selected.buffer));
             present_info.frame_id = selected.frame_id;
             present_info.pts_usec = selected.pts_usec;
-            frame_epoch = selected.epoch;
-            present_info.epoch = frame_epoch;
-            state.pending_video_frame_dirty.store(
-                !state.video_present_queue.empty(), std::memory_order_release);
+            frame_epoch           = selected.epoch;
+            present_info.epoch    = frame_epoch;
+            state.pending_video_frame_dirty.store(!state.video_present_queue.empty(), std::memory_order_release);
             break;
         }
     }
@@ -2944,10 +2859,8 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
         return VideoTextureUploadResult::Stale;
     }
 
-    const size_t expected_pixels =
-        static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
-    if (frame_width == 0 || frame_height == 0 || !frame.valid() ||
-        frame.width != frame_width || frame.height != frame_height ||
+    const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
+    if (frame_width == 0 || frame_height == 0 || !frame.valid() || frame.width != frame_width || frame.height != frame_height ||
         frame.u_offset >= frame.bytes.size() || frame.v_offset >= frame.bytes.size())
     {
         return VideoTextureUploadResult::Failed;
@@ -2956,17 +2869,15 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
     const uint8_t* y = frame.bytes.data();
     const uint8_t* u = frame.bytes.data() + frame.u_offset;
     const uint8_t* v = frame.bytes.data() + frame.v_offset;
-    if (!SDL_UpdateYUVTexture(texture, nullptr, y, static_cast<int>(frame.y_pitch),
-                              u, static_cast<int>(frame.uv_pitch),
-                              v, static_cast<int>(frame.uv_pitch)))
+    if (!SDL_UpdateYUVTexture(texture, nullptr, y, static_cast<int>(frame.y_pitch), u, static_cast<int>(frame.uv_pitch), v,
+                              static_cast<int>(frame.uv_pitch)))
     {
         return VideoTextureUploadResult::Failed;
     }
 
     state.stats.sdl_texture_full_uploads.fetch_add(1, std::memory_order_relaxed);
     state.stats.sdl_video_texture_uploads.fetch_add(1, std::memory_order_relaxed);
-    state.stats.sdl_video_texture_upload_pixels.fetch_add(expected_pixels,
-                                                           std::memory_order_relaxed);
+    state.stats.sdl_video_texture_upload_pixels.fetch_add(expected_pixels, std::memory_order_relaxed);
     record_texture_upload_stats(state, started_ns, expected_pixels);
 
     if (!state.stream_ownership.is_current(frame_epoch, ClientContentOwner::Video))
@@ -2980,16 +2891,16 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
 
 struct StagedTextureRect {
     SDL_Rect rect{};
-    size_t pixel_offset = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    bool use_texture_lock = false;
+    size_t   pixel_offset     = 0;
+    uint32_t width            = 0;
+    uint32_t height           = 0;
+    bool     use_texture_lock = false;
 };
 
 bool upload_dirty_texture_rects_staged(ClientState& state, SDL_Texture* texture, const std::vector<ClientDirtyRect>& rects,
-                                const DirtyTextureUploadPlan& plan, uint32_t frame_width, uint32_t frame_height,
-                                std::vector<uint32_t>& staging, std::vector<StagedTextureRect>& staged_rects,
-                                ClientTextureUploadCostModel& costs) {
+                                       const DirtyTextureUploadPlan& plan, uint32_t frame_width, uint32_t frame_height,
+                                       std::vector<uint32_t>& staging, std::vector<StagedTextureRect>& staged_rects,
+                                       ClientTextureUploadCostModel& costs) {
     const uint64_t started_ns = wd_now_ns();
     staged_rects.clear();
     uint64_t total_pixels = 0;
@@ -2999,7 +2910,7 @@ bool upload_dirty_texture_rects_staged(ClientState& state, SDL_Texture* texture,
         {
             return true;
         }
-        const uint32_t width = std::min<uint32_t>(rect.w, frame_width - rect.x);
+        const uint32_t width  = std::min<uint32_t>(rect.w, frame_width - rect.x);
         const uint32_t height = std::min<uint32_t>(rect.h, frame_height - rect.y);
         if (width == 0 || height == 0)
         {
@@ -3011,10 +2922,10 @@ bool upload_dirty_texture_rects_staged(ClientState& state, SDL_Texture* texture,
             return false;
         }
         StagedTextureRect staged{};
-        staged.rect = {static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(width), static_cast<int>(height)};
-        staged.pixel_offset = static_cast<size_t>(total_pixels);
-        staged.width = width;
-        staged.height = height;
+        staged.rect             = {static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(width), static_cast<int>(height)};
+        staged.pixel_offset     = static_cast<size_t>(total_pixels);
+        staged.width            = width;
+        staged.height           = height;
         staged.use_texture_lock = use_texture_lock;
         staged_rects.push_back(staged);
         total_pixels += pixels;
@@ -3041,11 +2952,11 @@ bool upload_dirty_texture_rects_staged(ClientState& state, SDL_Texture* texture,
     }
     staging.resize(static_cast<size_t>(total_pixels));
 
-    const uint64_t snapshot_started_ns = wd_now_ns();
-    const uint64_t lock_started_ns = wd_now_ns();
+    const uint64_t               snapshot_started_ns = wd_now_ns();
+    const uint64_t               lock_started_ns     = wd_now_ns();
     std::unique_lock<std::mutex> framebuffer_lock(state.framebuffer_mutex);
-    const uint64_t lock_acquired_ns = wd_now_ns();
-    const size_t expected_pixels = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
+    const uint64_t               lock_acquired_ns = wd_now_ns();
+    const size_t                 expected_pixels  = static_cast<size_t>(frame_width) * static_cast<size_t>(frame_height);
     if (frame_width == 0 || frame_height == 0 || state.framebuffer.size() < expected_pixels)
     {
         return false;
@@ -3055,9 +2966,8 @@ bool upload_dirty_texture_rects_staged(ClientState& state, SDL_Texture* texture,
         uint32_t* destination = staging.data() + staged.pixel_offset;
         for (uint32_t row = 0; row < staged.height; ++row)
         {
-            const uint32_t* source = state.framebuffer.data() +
-                static_cast<size_t>(staged.rect.y + static_cast<int>(row)) * frame_width +
-                static_cast<size_t>(staged.rect.x);
+            const uint32_t* source = state.framebuffer.data() + static_cast<size_t>(staged.rect.y + static_cast<int>(row)) * frame_width +
+                                     static_cast<size_t>(staged.rect.x);
             std::memcpy(destination + static_cast<size_t>(row) * staged.width, source,
                         static_cast<size_t>(staged.width) * sizeof(uint32_t));
         }
@@ -3067,18 +2977,16 @@ bool upload_dirty_texture_rects_staged(ClientState& state, SDL_Texture* texture,
     record_framebuffer_lock_stats(state, lock_acquired_ns - lock_started_ns, lock_released_ns - lock_acquired_ns);
     record_framebuffer_snapshot_stats(state, costs, snapshot_started_ns, total_pixels);
 
-    uint64_t texture_lock_calls = 0;
+    uint64_t texture_lock_calls   = 0;
     uint64_t texture_update_calls = 0;
     for (const StagedTextureRect& staged : staged_rects)
     {
-        const uint32_t* source = staging.data() + staged.pixel_offset;
-        const int source_pitch = static_cast<int>(staged.width * WD_BYTES_PER_PIXEL);
-        const uint64_t call_started_ns = wd_now_ns();
+        const uint32_t* source          = staging.data() + staged.pixel_offset;
+        const int       source_pitch    = static_cast<int>(staged.width * WD_BYTES_PER_PIXEL);
+        const uint64_t  call_started_ns = wd_now_ns();
         const bool uploaded = staged.use_texture_lock
-                                  ? upload_argb_texture_locked(texture, &staged.rect, source, source_pitch,
-                                                               staged.width, staged.height)
-                                  : update_argb_texture(texture, staged.rect, source, source_pitch,
-                                                        staged.width, staged.height);
+                                  ? upload_argb_texture_locked(texture, &staged.rect, source, source_pitch, staged.width, staged.height)
+                                  : update_argb_texture(texture, staged.rect, source, source_pitch, staged.width, staged.height);
         record_texture_call_cost(state, costs, staged.use_texture_lock, call_started_ns,
                                  static_cast<uint64_t>(staged.width) * staged.height);
         if (!uploaded)
@@ -3103,7 +3011,6 @@ bool upload_dirty_texture_rects_staged(ClientState& state, SDL_Texture* texture,
     record_texture_upload_stats(state, started_ns, total_pixels);
     return true;
 }
-
 
 bool upload_dirty_texture_rects(ClientState& state, SDL_Texture* texture, const std::vector<ClientDirtyRect>& rects,
                                 const DirtyTextureUploadPlan& plan, uint32_t frame_width, uint32_t frame_height,
@@ -3149,7 +3056,6 @@ void release_forwarded_keyboard_keys(ClientState& state) {
     g_suppress_paste_v_keyup = false;
 }
 
-
 bool window_render_feedback_visible(SDL_Window* window) {
     if (!window)
     {
@@ -3173,8 +3079,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
 
     if (event.type == SDL_EVENT_CLIPBOARD_UPDATE)
     {
-        if (!event.clipboard.owner &&
-            !send_host_clipboard_to_server(state, false, false))
+        if (!event.clipboard.owner && !send_host_clipboard_to_server(state, false, false))
         {
             WD_LOG_WARN("failed to synchronize host clipboard update");
         }
@@ -3304,7 +3209,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
         {
             wd_pointer_event_payload pointer{};
             pointer.session_id          = state.config.session_id;
-        pointer.connection_token    = state.config.connection_token;
+            pointer.connection_token    = state.config.connection_token;
             pointer.client_timestamp_ns = wd_now_ns();
             pointer.event_type          = WD_POINTER_EVENT_AXIS;
             pointer.x                   = map_mouse_coord_x(mouse_x);
@@ -3329,7 +3234,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
         {
             wd_pointer_event_payload pointer{};
             pointer.session_id          = state.config.session_id;
-        pointer.connection_token    = state.config.connection_token;
+            pointer.connection_token    = state.config.connection_token;
             pointer.client_timestamp_ns = wd_now_ns();
             pointer.event_type          = WD_POINTER_EVENT_AXIS;
             pointer.x                   = map_mouse_coord_x(mouse_x);
@@ -3390,14 +3295,13 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
     record_atomic_max(state.stats.sdl_present_max_ns, present_elapsed_ns);
 
     const uint64_t present_ns = wd_now_ns();
-    last_present_ns          = present_ns;
+    last_present_ns           = present_ns;
 
     if (video_present.valid)
     {
         state.stats.video_frames_presented.fetch_add(1, std::memory_order_relaxed);
         state.stats.video_last_frame_id_presented.store(video_present.frame_id, std::memory_order_relaxed);
-        const uint64_t pts_ns = wd_media_local_deadline_ns(state.media_clock_local_origin_ns,
-                                                               video_present.pts_usec);
+        const uint64_t pts_ns = wd_media_local_deadline_ns(state.media_clock_local_origin_ns, video_present.pts_usec);
         if (state.media_clock_local_origin_ns != 0 && present_ns >= pts_ns)
         {
             state.stats.video_present_latency_samples.fetch_add(1, std::memory_order_relaxed);
@@ -3409,14 +3313,13 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
     {
         state.stats.tile_present_latency_samples.fetch_add(tile_telemetry.completion_count, std::memory_order_relaxed);
         const uint64_t present_after_claim_ns = present_ns - tile_telemetry.claimed_ns;
-        const uint64_t latency_sum = tile_telemetry.completion_age_sum_ns +
-                                     present_after_claim_ns * tile_telemetry.completion_count;
+        const uint64_t latency_sum = tile_telemetry.completion_age_sum_ns + present_after_claim_ns * tile_telemetry.completion_count;
         state.stats.tile_present_latency_sum_ns.fetch_add(latency_sum, std::memory_order_relaxed);
     }
     for (uint8_t i = 0; i < tile_telemetry.input_sequence_count; ++i)
     {
-        const uint64_t sequence = tile_telemetry.input_sequences[i];
-        uint64_t input_timestamp_ns = 0;
+        const uint64_t sequence           = tile_telemetry.input_sequences[i];
+        uint64_t       input_timestamp_ns = 0;
         if (take_input_timestamp(state, sequence, input_timestamp_ns) && present_ns >= input_timestamp_ns)
         {
             state.stats.input_sequence_present_latency_samples.fetch_add(1, std::memory_order_relaxed);
@@ -3424,9 +3327,8 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
         }
     }
 
-    const uint64_t input_timestamp_ns = remote_texture_updated
-                                            ? state.stats.latest_input_event_timestamp_ns.exchange(0, std::memory_order_relaxed)
-                                            : 0;
+    const uint64_t input_timestamp_ns =
+        remote_texture_updated ? state.stats.latest_input_event_timestamp_ns.exchange(0, std::memory_order_relaxed) : 0;
     if (input_timestamp_ns != 0 && present_ns >= input_timestamp_ns)
     {
         state.stats.input_to_present_latency_samples.fetch_add(1, std::memory_order_relaxed);
@@ -3441,8 +3343,8 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
 int run_sdl_viewer(ClientState& state) {
     g_client_config = &state.config;
 
-    SDL_Window* window = SDL_CreateWindow("WayDisplay Client", state.config.width, state.config.height,
-                                          SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN);
+    SDL_Window* window =
+        SDL_CreateWindow("WayDisplay Client", state.config.width, state.config.height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN);
 
     if (!window)
     {
@@ -3489,8 +3391,8 @@ int run_sdl_viewer(ClientState& state) {
         return 1;
     }
 
-    SDL_Texture* texture = create_frame_texture(renderer, state.config.width, state.config.height);
-    SDL_Texture* video_texture = create_video_texture(renderer, state.config.width, state.config.height);
+    SDL_Texture* texture        = create_frame_texture(renderer, state.config.width, state.config.height);
+    SDL_Texture* video_texture  = create_video_texture(renderer, state.config.width, state.config.height);
     SDL_Texture* active_texture = texture;
 
     if (!texture || !video_texture)
@@ -3505,25 +3407,25 @@ int run_sdl_viewer(ClientState& state) {
 
     std::thread udp_thread(udp_reader_main, &state);
 
-    uint64_t              last_stats_ns           = wd_now_ns();
-    uint64_t              last_stats_log_ns       = last_stats_ns;
-    bool                  frame_dirty             = true;
-    bool                  texture_needs_full_upload = true;
-    uint16_t              last_requested_width    = state.config.width;
-    uint16_t              last_requested_height   = state.config.height;
-    uint16_t              pending_resize_width    = 0;
-    uint16_t              pending_resize_height   = 0;
-    uint64_t              pending_resize_since_ns = 0;
-    uint64_t              last_present_ns         = 0;
-    ContextMenu           context_menu;
-    ClientPresentTelemetryBatch tile_telemetry_batch;
-    std::vector<ClientDirtyRect> dirty_rects;
-    std::vector<uint16_t> dirty_tile_ids;
+    uint64_t                                last_stats_ns             = wd_now_ns();
+    uint64_t                                last_stats_log_ns         = last_stats_ns;
+    bool                                    frame_dirty               = true;
+    bool                                    texture_needs_full_upload = true;
+    uint16_t                                last_requested_width      = state.config.width;
+    uint16_t                                last_requested_height     = state.config.height;
+    uint16_t                                pending_resize_width      = 0;
+    uint16_t                                pending_resize_height     = 0;
+    uint64_t                                pending_resize_since_ns   = 0;
+    uint64_t                                last_present_ns           = 0;
+    ContextMenu                             context_menu;
+    ClientPresentTelemetryBatch             tile_telemetry_batch;
+    std::vector<ClientDirtyRect>            dirty_rects;
+    std::vector<uint16_t>                   dirty_tile_ids;
     std::vector<ClientTileGenerationUpdate> tile_generation_updates;
-    ClientVideoFrameBuffer video_upload_frame;
-    std::vector<uint32_t> tile_upload_pixels;
-    std::vector<StagedTextureRect> staged_texture_rects;
-    ClientTextureUploadCostModel texture_upload_costs;
+    ClientVideoFrameBuffer                  video_upload_frame;
+    std::vector<uint32_t>                   tile_upload_pixels;
+    std::vector<StagedTextureRect>          staged_texture_rects;
+    ClientTextureUploadCostModel            texture_upload_costs;
 
     while (state.running.load(std::memory_order_relaxed))
     {
@@ -3533,12 +3435,12 @@ int run_sdl_viewer(ClientState& state) {
 
         if (apply_pending_server_config(state, window, renderer, texture, video_texture, active_texture))
         {
-            last_requested_width    = state.config.width;
-            last_requested_height   = state.config.height;
-            pending_resize_width    = 0;
-            pending_resize_height   = 0;
-            pending_resize_since_ns = 0;
-            frame_dirty = true;
+            last_requested_width      = state.config.width;
+            last_requested_height     = state.config.height;
+            pending_resize_width      = 0;
+            pending_resize_height     = 0;
+            pending_resize_since_ns   = 0;
+            frame_dirty               = true;
             texture_needs_full_upload = true;
         }
 
@@ -3606,18 +3508,18 @@ int run_sdl_viewer(ClientState& state) {
             }
         }
 
-        const bool local_frame_dirty = frame_dirty || texture_needs_full_upload;
-        bool       remote_frame_dirty = false;
+        const bool local_frame_dirty      = frame_dirty || texture_needs_full_upload;
+        bool       remote_frame_dirty     = false;
         bool       remote_texture_updated = false;
-        uint32_t   video_hold_wait_ms = 0;
+        uint32_t   video_hold_wait_ms     = 0;
 
-        const bool video_frame_pending = state.pending_video_frame_dirty.load(std::memory_order_acquire);
+        const bool video_frame_pending  = state.pending_video_frame_dirty.load(std::memory_order_acquire);
         const bool remote_dirty_pending = video_frame_pending || state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0;
         if (local_frame_dirty || remote_dirty_pending)
         {
             const uint64_t present_check_ns = wd_now_ns();
-            remote_frame_dirty = remote_dirty_pending &&
-                                 (local_frame_dirty || client_local_present_due(state, last_present_ns, present_check_ns));
+            remote_frame_dirty =
+                remote_dirty_pending && (local_frame_dirty || client_local_present_due(state, last_present_ns, present_check_ns));
         }
 
         if (local_frame_dirty || remote_frame_dirty)
@@ -3628,16 +3530,16 @@ int run_sdl_viewer(ClientState& state) {
             VideoPresentInfo video_present;
             tile_generation_updates.clear();
             ClientContentOwnershipSnapshot uploaded_ownership{};
-            bool content_texture_updated = false;
-            bool upload_has_ownership = false;
+            bool                           content_texture_updated = false;
+            bool                           upload_has_ownership    = false;
             if (texture_needs_full_upload || remote_frame_dirty)
             {
                 dirty_rects.clear();
                 VideoTextureUploadResult video_result = VideoTextureUploadResult::NoFrame;
                 if (state.pending_video_frame_dirty.load(std::memory_order_acquire))
                 {
-                    video_result = upload_pending_video_texture(state, video_texture, frame_width, frame_height,
-                                                                video_upload_frame, video_present);
+                    video_result =
+                        upload_pending_video_texture(state, video_texture, frame_width, frame_height, video_upload_frame, video_present);
                     if (video_result == VideoTextureUploadResult::Failed)
                     {
                         WD_LOG_ERROR("failed to update SDL video texture: %s", SDL_GetError());
@@ -3646,53 +3548,48 @@ int run_sdl_viewer(ClientState& state) {
                     }
                 }
 
-                if (video_result == VideoTextureUploadResult::Held ||
-                    video_result == VideoTextureUploadResult::AudioDropped)
+                if (video_result == VideoTextureUploadResult::Held || video_result == VideoTextureUploadResult::AudioDropped)
                 {
                     remote_frame_dirty = false;
                     if (video_result == VideoTextureUploadResult::Held)
                     {
-                        video_hold_wait_ms = video_present.retry_after_ms != 0
-                                                 ? video_present.retry_after_ms
-                                                 : WD_CLIENT_FRAME_DELAY_MS;
+                        video_hold_wait_ms = video_present.retry_after_ms != 0 ? video_present.retry_after_ms : WD_CLIENT_FRAME_DELAY_MS;
                     }
                 }
                 else if (video_result == VideoTextureUploadResult::Uploaded)
                 {
-                    active_texture = video_texture;
-                    uploaded_ownership = {video_present.epoch, ClientContentOwner::Video};
-                    upload_has_ownership = true;
+                    active_texture          = video_texture;
+                    uploaded_ownership      = {video_present.epoch, ClientContentOwner::Video};
+                    upload_has_ownership    = true;
                     content_texture_updated = true;
-                    remote_texture_updated = true;
+                    remote_texture_updated  = true;
                 }
                 else
                 {
-                    const bool video_result_stale = video_result == VideoTextureUploadResult::Stale ||
-                                                    video_result == VideoTextureUploadResult::UploadedStale;
+                    const bool video_result_stale =
+                        video_result == VideoTextureUploadResult::Stale || video_result == VideoTextureUploadResult::UploadedStale;
                     if (video_result == VideoTextureUploadResult::UploadedStale)
                     {
-                        uploaded_ownership = {video_present.epoch, ClientContentOwner::Video};
-                        upload_has_ownership = true;
+                        uploaded_ownership      = {video_present.epoch, ClientContentOwner::Video};
+                        upload_has_ownership    = true;
                         content_texture_updated = true;
                     }
                     const ClientContentOwnershipSnapshot ownership = state.stream_ownership.snapshot();
-                    const bool stale_video_needs_tile_restore =
-                        video_result_stale && ownership.owner == ClientContentOwner::Tiles;
-                    const bool allow_tile_upload = !video_result_stale || ownership.owner == ClientContentOwner::Tiles;
+                    const bool stale_video_needs_tile_restore      = video_result_stale && ownership.owner == ClientContentOwner::Tiles;
+                    const bool allow_tile_upload                   = !video_result_stale || ownership.owner == ClientContentOwner::Tiles;
 
                     if (allow_tile_upload && !texture_needs_full_upload && !stale_video_needs_tile_restore)
                     {
                         std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
                         state.pending_dirty_tiles.take_rects(dirty_rects);
                         state.pending_dirty_rect_count.store(0, std::memory_order_release);
-                        uploaded_ownership = state.stream_ownership.snapshot();
+                        uploaded_ownership       = state.stream_ownership.snapshot();
                         uploaded_ownership.epoch = state.pending_dirty_epoch;
-                        upload_has_ownership = true;
+                        upload_has_ownership     = true;
                     }
 
                     const uint64_t source_dirty_rect_count = dirty_rects.size();
-                    if (remote_frame_dirty && !texture_needs_full_upload && !stale_video_needs_tile_restore &&
-                        source_dirty_rect_count == 0)
+                    if (remote_frame_dirty && !texture_needs_full_upload && !stale_video_needs_tile_restore && source_dirty_rect_count == 0)
                     {
                         state.stats.sdl_empty_remote_wakeups.fetch_add(1, std::memory_order_relaxed);
                         remote_frame_dirty = false;
@@ -3705,10 +3602,9 @@ int run_sdl_viewer(ClientState& state) {
                     }
 
                     const bool cost_selected_full = !texture_needs_full_upload && !stale_video_needs_tile_restore &&
-                                                    source_dirty_rect_count != 0 &&
-                                                    upload_plan.mode == DirtyTextureUploadMode::Full;
-                    const bool upload_full = allow_tile_upload &&
-                                             (texture_needs_full_upload || stale_video_needs_tile_restore || cost_selected_full);
+                                                    source_dirty_rect_count != 0 && upload_plan.mode == DirtyTextureUploadMode::Full;
+                    const bool upload_full =
+                        allow_tile_upload && (texture_needs_full_upload || stale_video_needs_tile_restore || cost_selected_full);
                     if (source_dirty_rect_count != 0)
                     {
                         state.stats.sdl_texture_source_dirty_rects.fetch_add(source_dirty_rect_count, std::memory_order_relaxed);
@@ -3726,7 +3622,7 @@ int run_sdl_viewer(ClientState& state) {
 
                     if (upload_full)
                     {
-                        uploaded_ownership = state.stream_ownership.snapshot();
+                        uploaded_ownership   = state.stream_ownership.snapshot();
                         upload_has_ownership = true;
                     }
 
@@ -3735,16 +3631,14 @@ int run_sdl_viewer(ClientState& state) {
                         std::lock_guard<std::mutex> generation_lock(state.generation_mutex);
                         if (upload_full)
                         {
-                            claim_all_pending_tile_generations(state.pending_present_generation,
-                                                               state.presented_generation,
+                            claim_all_pending_tile_generations(state.pending_present_generation, state.presented_generation,
                                                                tile_generation_updates);
                         }
                         else
                         {
                             collect_base_tile_ids_for_rects(state.config, dirty_rects, dirty_tile_ids);
-                            claim_pending_tile_generations(state.pending_present_generation,
-                                                           state.presented_generation,
-                                                           dirty_tile_ids, tile_generation_updates);
+                            claim_pending_tile_generations(state.pending_present_generation, state.presented_generation, dirty_tile_ids,
+                                                           tile_generation_updates);
                         }
                     }
 
@@ -3756,14 +3650,14 @@ int run_sdl_viewer(ClientState& state) {
                             state.pending_dirty_tiles.clear();
                             state.pending_dirty_rect_count.store(0, std::memory_order_release);
                         }
-                        tile_texture_updated = upload_full_texture(state, texture, frame_width, frame_height, tile_upload_pixels, texture_upload_costs);
+                        tile_texture_updated =
+                            upload_full_texture(state, texture, frame_width, frame_height, tile_upload_pixels, texture_upload_costs);
                     }
                     else if (allow_tile_upload && source_dirty_rect_count != 0)
                     {
-                        tile_texture_updated = upload_dirty_texture_rects(state, texture, dirty_rects, upload_plan,
-                                                                          frame_width, frame_height,
-                                                                          tile_upload_pixels, staged_texture_rects,
-                                                                          texture_upload_costs);
+                        tile_texture_updated =
+                            upload_dirty_texture_rects(state, texture, dirty_rects, upload_plan, frame_width, frame_height,
+                                                       tile_upload_pixels, staged_texture_rects, texture_upload_costs);
                     }
 
                     if ((upload_full || source_dirty_rect_count != 0) && !tile_texture_updated)
@@ -3776,11 +3670,10 @@ int run_sdl_viewer(ClientState& state) {
                     }
                     if (tile_texture_updated)
                     {
-                        active_texture = texture;
+                        active_texture          = texture;
                         content_texture_updated = true;
                     }
-                    remote_texture_updated = tile_texture_updated &&
-                                             (remote_frame_dirty || stale_video_needs_tile_restore);
+                    remote_texture_updated = tile_texture_updated && (remote_frame_dirty || stale_video_needs_tile_restore);
                 }
             }
 
@@ -3788,7 +3681,7 @@ int run_sdl_viewer(ClientState& state) {
             if (content_texture_updated && upload_has_ownership &&
                 !state.stream_ownership.is_current(uploaded_ownership.epoch, uploaded_ownership.owner))
             {
-                upload_stale = true;
+                upload_stale                                 = true;
                 const ClientContentOwnershipSnapshot current = state.stream_ownership.snapshot();
                 if (!tile_generation_updates.empty() && current.owner == ClientContentOwner::Tiles)
                 {
@@ -3797,11 +3690,11 @@ int run_sdl_viewer(ClientState& state) {
                 }
                 tile_generation_updates.clear();
                 remote_texture_updated = false;
-                video_present.valid = false;
+                video_present.valid    = false;
                 if (current.owner == ClientContentOwner::Tiles)
                 {
                     texture_needs_full_upload = true;
-                    frame_dirty = true;
+                    frame_dirty               = true;
                 }
             }
 
@@ -3817,8 +3710,8 @@ int run_sdl_viewer(ClientState& state) {
                         content_epoch = state.remote_content_epoch;
                     }
                     std::lock_guard<std::mutex> present_lock(state.present_mutex);
-                    claim_tile_present_telemetry(state.pending_tile_telemetry, tile_generation_updates,
-                                                 content_epoch, wd_now_ns(), tile_telemetry_batch);
+                    claim_tile_present_telemetry(state.pending_tile_telemetry, tile_generation_updates, content_epoch, wd_now_ns(),
+                                                 tile_telemetry_batch);
                 }
                 if (!present_sdl_frame(state, renderer, active_texture, context_menu, remote_texture_updated, video_present,
                                        tile_telemetry_batch, last_present_ns))
@@ -3864,16 +3757,14 @@ int run_sdl_viewer(ClientState& state) {
 
         const bool pending_remote_dirty = state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0 ||
                                           state.pending_video_frame_dirty.load(std::memory_order_acquire);
-        uint32_t wait_ms = 0;
+        uint32_t   wait_ms              = 0;
         if (!frame_dirty && !pending_remote_dirty)
         {
             wait_ms = WD_CLIENT_FRAME_DELAY_MS;
         }
         else if (!frame_dirty)
         {
-            wait_ms = video_hold_wait_ms != 0
-                          ? video_hold_wait_ms
-                          : client_present_delay_ms(state, last_present_ns, wd_now_ns());
+            wait_ms = video_hold_wait_ms != 0 ? video_hold_wait_ms : client_present_delay_ms(state, last_present_ns, wd_now_ns());
         }
         if (wait_ms != 0)
         {

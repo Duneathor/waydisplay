@@ -8,14 +8,14 @@
 #include <time.h>
 #include <unistd.h>
 
-#define CHECK(condition)                                                                            \
-    do                                                                                              \
-    {                                                                                               \
-        if (!(condition))                                                                           \
-        {                                                                                           \
-            fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, #condition);       \
-            exit(1);                                                                                \
-        }                                                                                           \
+#define CHECK(condition)                                                                                                                   \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        if (!(condition))                                                                                                                  \
+        {                                                                                                                                  \
+            fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, #condition);                                                \
+            exit(1);                                                                                                                       \
+        }                                                                                                                                  \
     } while (0)
 
 static void sleep_milliseconds(unsigned int milliseconds) {
@@ -31,10 +31,9 @@ static void sleep_milliseconds(unsigned int milliseconds) {
 static int reap_with_timeout(struct wd_spawned_process* process) {
     for (unsigned int attempt = 0; attempt < 200u; ++attempt)
     {
-        int status = 0;
-        int error_code = 0;
-        enum wd_process_reap_result result =
-            wd_spawned_process_reap_nonblocking(process, &status, &error_code);
+        int                         status     = 0;
+        int                         error_code = 0;
+        enum wd_process_reap_result result     = wd_spawned_process_reap_nonblocking(process, &status, &error_code);
         CHECK(result != WD_PROCESS_REAP_ERROR);
         CHECK(error_code == 0);
         if (result == WD_PROCESS_REAP_EXITED)
@@ -61,14 +60,13 @@ int main(void) {
     };
 
     struct wd_spawned_process process;
-    int error_code = 0;
-    CHECK(wd_spawn_shell_command(
-        &process,
-        "test \"$WD_TEST_SET\" = new && "
-        "test -z \"${WD_TEST_UNSET+x}\" && "
-        "test \"$WD_TEST_KEEP\" = original && "
-        "test \"$WD_TEST_ADD\" = added && sleep 0.1",
-        changes, sizeof(changes) / sizeof(changes[0]), &error_code));
+    int                       error_code = 0;
+    CHECK(wd_spawn_shell_command(&process,
+                                 "test \"$WD_TEST_SET\" = new && "
+                                 "test -z \"${WD_TEST_UNSET+x}\" && "
+                                 "test \"$WD_TEST_KEEP\" = original && "
+                                 "test \"$WD_TEST_ADD\" = added && sleep 0.1",
+                                 changes, sizeof(changes) / sizeof(changes[0]), &error_code));
     CHECK(process.pid > 0);
     CHECK(process.process_group == process.pid);
     CHECK(getpgid(process.pid) == process.process_group);
@@ -89,8 +87,7 @@ int main(void) {
 
     struct wd_spawned_process descendants;
     error_code = 0;
-    CHECK(wd_spawn_shell_command(&descendants, "trap '' HUP; sleep 30 & exit 7", NULL, 0,
-                                 &error_code));
+    CHECK(wd_spawn_shell_command(&descendants, "trap '' HUP; sleep 30 & exit 7", NULL, 0, &error_code));
     status = reap_with_timeout(&descendants);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 7);
     CHECK(descendants.pid == -1);
@@ -110,10 +107,10 @@ int main(void) {
     CHECK(WIFSIGNALED(status));
     CHECK(WTERMSIG(status) == SIGKILL);
 
-    struct wd_spawned_process invalid;
+    struct wd_spawned_process          invalid;
     const struct wd_process_env_change invalid_change = {
-        .name = "INVALID=NAME",
-        .value = "value",
+        .name   = "INVALID=NAME",
+        .value  = "value",
         .action = WD_PROCESS_ENV_SET,
     };
     error_code = 0;

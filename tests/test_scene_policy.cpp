@@ -38,16 +38,11 @@ void test_popup_constraint_box() {
 }
 
 void test_focus_candidate() {
-    require(wd_scene_policy_focus_candidate(true, false, false, false),
-            "a mapped focusable view should be a focus candidate");
-    require(!wd_scene_policy_focus_candidate(false, false, false, false),
-            "an unmapped view should not be a focus candidate");
-    require(!wd_scene_policy_focus_candidate(true, true, false, false),
-            "an override-redirect view should not be a focus candidate");
-    require(!wd_scene_policy_focus_candidate(true, false, true, false),
-            "a minimized view should not be a focus candidate");
-    require(!wd_scene_policy_focus_candidate(true, false, false, true),
-            "a destroyed view should not be a focus candidate");
+    require(wd_scene_policy_focus_candidate(true, false, false, false), "a mapped focusable view should be a focus candidate");
+    require(!wd_scene_policy_focus_candidate(false, false, false, false), "an unmapped view should not be a focus candidate");
+    require(!wd_scene_policy_focus_candidate(true, true, false, false), "an override-redirect view should not be a focus candidate");
+    require(!wd_scene_policy_focus_candidate(true, false, true, false), "a minimized view should not be a focus candidate");
+    require(!wd_scene_policy_focus_candidate(true, false, false, true), "a destroyed view should not be a focus candidate");
 }
 
 } // namespace

@@ -9,11 +9,9 @@ static bool wd_audio_routing_identifier_valid(const char* value) {
     {
         return false;
     }
-    for (const unsigned char* cursor = (const unsigned char*)value;
-         *cursor != '\0'; ++cursor)
+    for (const unsigned char* cursor = (const unsigned char*)value; *cursor != '\0'; ++cursor)
     {
-        if (!(isalnum(*cursor) || *cursor == '.' || *cursor == '_' ||
-              *cursor == '-' || *cursor == ':'))
+        if (!(isalnum(*cursor) || *cursor == '.' || *cursor == '_' || *cursor == '-' || *cursor == ':'))
         {
             return false;
         }
@@ -21,16 +19,11 @@ static bool wd_audio_routing_identifier_valid(const char* value) {
     return true;
 }
 
-static bool wd_audio_routing_copy(char* destination, size_t capacity,
-                                  const char* source) {
-    return snprintf(destination, capacity, "%s", source) >= 0 &&
-           strlen(source) < capacity;
+static bool wd_audio_routing_copy(char* destination, size_t capacity, const char* source) {
+    return snprintf(destination, capacity, "%s", source) >= 0 && strlen(source) < capacity;
 }
 
-bool wd_audio_routing_env_build(struct wd_audio_routing_env* env,
-                                const char* sink_name,
-                                const char* target,
-                                pid_t server_pid) {
+bool wd_audio_routing_env_build(struct wd_audio_routing_env* env, const char* sink_name, const char* target, pid_t server_pid) {
     if (!env || server_pid <= 0)
     {
         return false;
@@ -41,20 +34,17 @@ bool wd_audio_routing_env_build(struct wd_audio_routing_env* env,
     {
         return true;
     }
-    if (!wd_audio_routing_identifier_valid(sink_name) ||
-        !wd_audio_routing_identifier_valid(target))
+    if (!wd_audio_routing_identifier_valid(sink_name) || !wd_audio_routing_identifier_valid(target))
     {
         return false;
     }
     if (!wd_audio_routing_copy(env->pulse_sink, sizeof(env->pulse_sink), sink_name) ||
-        !wd_audio_routing_copy(env->pipewire_target,
-                               sizeof(env->pipewire_target), target))
+        !wd_audio_routing_copy(env->pipewire_target, sizeof(env->pipewire_target), target))
     {
         return false;
     }
 
-    int written = snprintf(env->scope, sizeof(env->scope),
-                           "waydisplay.%ld", (long)server_pid);
+    int written = snprintf(env->scope, sizeof(env->scope), "waydisplay.%ld", (long)server_pid);
     if (written < 0 || (size_t)written >= sizeof(env->scope))
     {
         return false;

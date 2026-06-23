@@ -37,20 +37,18 @@ struct wd_video_encoder_packet {
     const uint8_t* data;
 };
 
-bool wd_video_encoder_create(struct wd_video_encoder** out_encoder,
-                             const char* video_encoder_backend);
+bool wd_video_encoder_create(struct wd_video_encoder** out_encoder, const char* video_encoder_backend);
 void wd_video_encoder_destroy(struct wd_video_encoder* encoder);
 void wd_video_encoder_reset(struct wd_video_encoder* encoder);
 
-bool wd_video_encoder_available(const struct wd_video_encoder* encoder);
-uint32_t wd_video_encoder_supported_codecs(const struct wd_video_encoder* encoder);
-uint32_t wd_video_encoder_choose_codec(struct wd_video_encoder* encoder, uint32_t client_codecs);
+bool        wd_video_encoder_available(const struct wd_video_encoder* encoder);
+uint32_t    wd_video_encoder_supported_codecs(const struct wd_video_encoder* encoder);
+uint32_t    wd_video_encoder_choose_codec(struct wd_video_encoder* encoder, uint32_t client_codecs);
 const char* wd_video_encoder_backend_name(const struct wd_video_encoder* encoder);
 
 bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config);
 bool wd_video_encoder_request_keyframe(struct wd_video_encoder* encoder);
-bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder,
-                                      const struct wd_video_encoder_input_xrgb8888* input,
+bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const struct wd_video_encoder_input_xrgb8888* input,
                                       struct wd_video_encoder_packet* packet);
 
 #ifdef __cplusplus

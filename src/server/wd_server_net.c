@@ -1,30 +1,29 @@
+#include "waydisplay/wd_audio_transport.h"
+#include "waydisplay/wd_input.h"
+#include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_time.h"
-#include "waydisplay/wd_media_clock.h"
-#include "waydisplay/wd_input.h"
-#include "waydisplay/wd_audio_transport.h"
-#include "wd_server.h"
-#include "wd_connection_identity.h"
 #include "wd_async_tcp.h"
 #include "wd_async_udp.h"
-#include "wd_dirty_region_scheduler.h"
-#include "wd_video_encoder.h"
 #include "wd_audio_stream.h"
+#include "wd_connection_identity.h"
+#include "wd_dirty_region_scheduler.h"
+#include "wd_server.h"
+#include "wd_video_encoder.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <stdint.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
+#include <poll.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
-#include <poll.h>
 #include <unistd.h>
-
 
 static const char* wd_video_mode_name(uint8_t mode) {
     switch (mode)
@@ -138,16 +137,15 @@ static void wd_net_set_link_profile_defaults(struct wd_net_state* net) {
         return;
     }
 
-    net->link_rtt_ns                   = WD_LINK_RTT_DEFAULT_NS;
-    net->link_jitter_ns                = 0;
-    net->summary_retransmit_grace_ns   = WD_LINK_SUMMARY_GRACE_DEFAULT_NS;
-    net->retransmit_rerequest_ns       = WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS;
-    net->retransmit_inflight_grace_ns  = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
-    net->tile_reassembly_timeout_ns    = WD_LINK_TILE_REASSEMBLY_DEFAULT_NS;
-    net->active_summary_interval_ns    = WD_LINK_ACTIVE_SUMMARY_INTERVAL_DEFAULT_NS;
-    net->clean_summary_interval_ns     = WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
+    net->link_rtt_ns                  = WD_LINK_RTT_DEFAULT_NS;
+    net->link_jitter_ns               = 0;
+    net->summary_retransmit_grace_ns  = WD_LINK_SUMMARY_GRACE_DEFAULT_NS;
+    net->retransmit_rerequest_ns      = WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS;
+    net->retransmit_inflight_grace_ns = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
+    net->tile_reassembly_timeout_ns   = WD_LINK_TILE_REASSEMBLY_DEFAULT_NS;
+    net->active_summary_interval_ns   = WD_LINK_ACTIVE_SUMMARY_INTERVAL_DEFAULT_NS;
+    net->clean_summary_interval_ns    = WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
 }
-
 
 static uint64_t wd_net_estimate_summary_frame_bytes(const struct wd_server* server) {
     if (!server || server->total_tiles == 0)
@@ -155,8 +153,7 @@ static uint64_t wd_net_estimate_summary_frame_bytes(const struct wd_server* serv
         return sizeof(struct wd_tcp_header) + sizeof(struct wd_tile_summary_payload_header);
     }
 
-    return (uint64_t)sizeof(struct wd_tcp_header) +
-           (uint64_t)sizeof(struct wd_tile_summary_payload_header) +
+    return (uint64_t)sizeof(struct wd_tcp_header) + (uint64_t)sizeof(struct wd_tile_summary_payload_header) +
            (uint64_t)server->total_tiles * (uint64_t)sizeof(struct wd_tile_generation_entry);
 }
 
@@ -166,8 +163,8 @@ static uint64_t wd_net_summary_budget_interval_ns(const struct wd_server* server
         return base_interval_ns;
     }
 
-    const struct wd_net_state* net = &server->net;
-    uint64_t rate = net->stream_policy.limited_udp_bytes_per_second;
+    const struct wd_net_state* net  = &server->net;
+    uint64_t                   rate = net->stream_policy.limited_udp_bytes_per_second;
     if (rate == 0)
     {
         return base_interval_ns;
@@ -180,16 +177,15 @@ static uint64_t wd_net_summary_budget_interval_ns(const struct wd_server* server
     }
 
     uint64_t summary_frame_bytes = wd_net_estimate_summary_frame_bytes(server);
-    uint64_t interval_ns = (summary_frame_bytes * WD_NSEC_PER_SEC + summary_budget_bytes_per_second - 1ull) /
-                           summary_budget_bytes_per_second;
+    uint64_t interval_ns =
+        (summary_frame_bytes * WD_NSEC_PER_SEC + summary_budget_bytes_per_second - 1ull) / summary_budget_bytes_per_second;
 
     if (interval_ns < base_interval_ns)
     {
         interval_ns = base_interval_ns;
     }
 
-    return wd_clamp_u64(interval_ns, WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS,
-                        WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
+    return wd_clamp_u64(interval_ns, WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS, WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
 }
 
 static void wd_net_update_summary_cadence_for_budget(struct wd_server* server) {
@@ -198,26 +194,20 @@ static void wd_net_update_summary_cadence_for_budget(struct wd_server* server) {
         return;
     }
 
-    struct wd_net_state* net = &server->net;
-    uint64_t base_active = wd_clamp_u64(net->link_rtt_ns / WD_LINK_PROFILE_ACTIVE_SUMMARY_RTT_DIVISOR,
-                                        WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS,
-                                        WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
-    uint64_t active = wd_net_summary_budget_interval_ns(server, base_active);
-    uint64_t base_clean = wd_clamp_u64(net->link_rtt_ns / WD_LINK_PROFILE_CLEAN_SUMMARY_RTT_DIVISOR,
-                                       WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS,
+    struct wd_net_state* net         = &server->net;
+    uint64_t             base_active = wd_clamp_u64(net->link_rtt_ns / WD_LINK_PROFILE_ACTIVE_SUMMARY_RTT_DIVISOR,
+                                                    WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS, WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
+    uint64_t             active      = wd_net_summary_budget_interval_ns(server, base_active);
+    uint64_t base_clean = wd_clamp_u64(net->link_rtt_ns / WD_LINK_PROFILE_CLEAN_SUMMARY_RTT_DIVISOR, WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS,
                                        WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS);
-    uint64_t clean = base_clean;
+    uint64_t clean      = base_clean;
     if (active > clean / WD_LINK_PROFILE_CLEAN_TO_ACTIVE_MULTIPLIER)
     {
         clean = active * WD_LINK_PROFILE_CLEAN_TO_ACTIVE_MULTIPLIER;
     }
 
-    net->active_summary_interval_ns = wd_clamp_u64(active,
-                                                   WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS,
-                                                   WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
-    net->clean_summary_interval_ns = wd_clamp_u64(clean,
-                                                  WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS,
-                                                  WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS);
+    net->active_summary_interval_ns = wd_clamp_u64(active, WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS, WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
+    net->clean_summary_interval_ns  = wd_clamp_u64(clean, WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS, WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS);
 }
 
 static void wd_net_derive_link_profile(struct wd_net_state* net, uint64_t measured_rtt_ns, uint64_t measured_jitter_ns) {
@@ -226,30 +216,28 @@ static void wd_net_derive_link_profile(struct wd_net_state* net, uint64_t measur
         return;
     }
 
-    const uint64_t rtt_ns    = wd_clamp_u64(measured_rtt_ns ? measured_rtt_ns : WD_LINK_RTT_DEFAULT_NS,
-                                         WD_LINK_RTT_MIN_NS, WD_LINK_RTT_MAX_NS);
+    const uint64_t rtt_ns =
+        wd_clamp_u64(measured_rtt_ns ? measured_rtt_ns : WD_LINK_RTT_DEFAULT_NS, WD_LINK_RTT_MIN_NS, WD_LINK_RTT_MAX_NS);
     const uint64_t jitter_ns = wd_clamp_u64(measured_jitter_ns, 0, WD_LINK_RTT_MAX_NS / 2ull);
 
     net->link_rtt_ns    = rtt_ns;
     net->link_jitter_ns = jitter_ns;
 
-    net->summary_retransmit_grace_ns = wd_clamp_u64(rtt_ns + WD_LINK_PROFILE_JITTER_MULTIPLIER * jitter_ns + WD_LINK_PROFILE_SUMMARY_MARGIN_NS,
-                                                    WD_LINK_SUMMARY_GRACE_MIN_NS,
-                                                    WD_LINK_SUMMARY_GRACE_MAX_NS);
-    net->retransmit_rerequest_ns = wd_clamp_u64(rtt_ns + WD_LINK_PROFILE_JITTER_MULTIPLIER * jitter_ns + WD_LINK_PROFILE_RETRANSMIT_MARGIN_NS,
-                                                WD_LINK_RETRANSMIT_REREQUEST_MIN_NS,
-                                                WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
-    net->retransmit_inflight_grace_ns = wd_clamp_u64(rtt_ns + WD_LINK_PROFILE_JITTER_MULTIPLIER * jitter_ns + WD_LINK_PROFILE_RETRANSMIT_MARGIN_NS,
-                                                     WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS,
-                                                     WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS);
-    net->tile_reassembly_timeout_ns = wd_clamp_u64(rtt_ns / WD_LINK_PROFILE_REASSEMBLY_RTT_DIVISOR + WD_LINK_PROFILE_JITTER_MULTIPLIER * jitter_ns + WD_LINK_PROFILE_REASSEMBLY_MARGIN_NS,
-                                                   WD_LINK_TILE_REASSEMBLY_DEFAULT_NS,
-                                                   WD_LINK_TILE_REASSEMBLY_MAX_NS);
+    net->summary_retransmit_grace_ns =
+        wd_clamp_u64(rtt_ns + WD_LINK_PROFILE_JITTER_MULTIPLIER * jitter_ns + WD_LINK_PROFILE_SUMMARY_MARGIN_NS,
+                     WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS);
+    net->retransmit_rerequest_ns =
+        wd_clamp_u64(rtt_ns + WD_LINK_PROFILE_JITTER_MULTIPLIER * jitter_ns + WD_LINK_PROFILE_RETRANSMIT_MARGIN_NS,
+                     WD_LINK_RETRANSMIT_REREQUEST_MIN_NS, WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
+    net->retransmit_inflight_grace_ns =
+        wd_clamp_u64(rtt_ns + WD_LINK_PROFILE_JITTER_MULTIPLIER * jitter_ns + WD_LINK_PROFILE_RETRANSMIT_MARGIN_NS,
+                     WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS, WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS);
+    net->tile_reassembly_timeout_ns = wd_clamp_u64(rtt_ns / WD_LINK_PROFILE_REASSEMBLY_RTT_DIVISOR +
+                                                       WD_LINK_PROFILE_JITTER_MULTIPLIER * jitter_ns + WD_LINK_PROFILE_REASSEMBLY_MARGIN_NS,
+                                                   WD_LINK_TILE_REASSEMBLY_DEFAULT_NS, WD_LINK_TILE_REASSEMBLY_MAX_NS);
     net->active_summary_interval_ns = wd_clamp_u64(rtt_ns / WD_LINK_PROFILE_ACTIVE_SUMMARY_RTT_DIVISOR,
-                                                   WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS,
-                                                   WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
-    net->clean_summary_interval_ns = wd_clamp_u64(rtt_ns / WD_LINK_PROFILE_CLEAN_SUMMARY_RTT_DIVISOR,
-                                                  WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS,
+                                                   WD_LINK_ACTIVE_SUMMARY_INTERVAL_MIN_NS, WD_LINK_ACTIVE_SUMMARY_INTERVAL_MAX_NS);
+    net->clean_summary_interval_ns = wd_clamp_u64(rtt_ns / WD_LINK_PROFILE_CLEAN_SUMMARY_RTT_DIVISOR, WD_LINK_CLEAN_SUMMARY_INTERVAL_MIN_NS,
                                                   WD_LINK_CLEAN_SUMMARY_INTERVAL_MAX_NS);
 }
 
@@ -289,10 +277,8 @@ static void wd_clear_tcp_receive_timeout(int tcp_fd) {
     wd_set_socket_timeout_ms(tcp_fd, SO_RCVTIMEO, 0);
 }
 
-static void wd_net_publish_startup_result(struct wd_net_state* net,
-                                          enum wd_net_startup_state state,
-                                          enum wd_net_listener_stage failed_stage,
-                                          int error_code) {
+static void wd_net_publish_startup_result(struct wd_net_state* net, enum wd_net_startup_state state,
+                                          enum wd_net_listener_stage failed_stage, int error_code) {
     pthread_mutex_lock(&net->lock);
     net->startup_state        = state;
     net->startup_failed_stage = failed_stage;
@@ -321,16 +307,14 @@ bool wd_net_wait_until_ready(struct wd_server* server) {
     const bool ready = net->startup_state == WD_NET_STARTUP_READY;
     if (!ready)
     {
-        WD_LOG_ERROR("network startup failed during %s: %s",
-                     wd_net_listener_stage_name(net->startup_failed_stage),
+        WD_LOG_ERROR("network startup failed during %s: %s", wd_net_listener_stage_name(net->startup_failed_stage),
                      strerror(net->startup_error));
     }
     pthread_mutex_unlock(&net->lock);
     return ready;
 }
 
-bool wd_net_init(struct wd_server* server, uint16_t tcp_port,
-                 struct in_addr listen_address) {
+bool wd_net_init(struct wd_server* server, uint16_t tcp_port, struct in_addr listen_address) {
     struct wd_net_state* net = &server->net;
 
     memset(net, 0, sizeof(*net));
@@ -371,49 +355,48 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port,
     }
 
     wd_net_run_state_init(&net->run_state, true);
-    net->startup_state        = WD_NET_STARTUP_PENDING;
-    net->startup_failed_stage = WD_NET_LISTENER_STAGE_NONE;
-    net->startup_error        = 0;
-    net->listen_address       = listen_address;
-    net->tcp_port             = tcp_port;
-    net->tcp_fd               = -1;
-    net->input_tcp_fd         = -1;
-    net->selection_tcp_fd     = -1;
-    net->video_tcp_fd         = -1;
-    net->audio_tcp_fd         = -1;
-    net->listen_fd            = -1;
-    net->control_tx           = NULL;
-    net->video_tx             = NULL;
-    net->udp_tx               = NULL;
-    net->video_encoder        = NULL;
-    net->audio_stream         = NULL;
-    net->udp_fd               = -1;
-    net->session_id           = 0;
-    net->connection_token     = 0;
-    net->udp_port             = 0;
-    net->dirty_region_cursor = 0;
-    net->dirty_regions               = calloc(server->total_tiles, sizeof(*net->dirty_regions));
-    net->dirty_region_queued         = calloc(server->total_tiles, sizeof(*net->dirty_region_queued));
-    net->dirty_region_enqueued_ns    = calloc(server->total_tiles, sizeof(*net->dirty_region_enqueued_ns));
-    net->dirty_region_count          = 0;
-    net->dirty_epochs                = calloc(server->total_tiles, sizeof(*net->dirty_epochs));
-    net->dirty_queue                 = calloc(server->total_tiles, sizeof(*net->dirty_queue));
-    net->dirty_queued                = calloc(server->total_tiles, sizeof(*net->dirty_queued));
-    net->dirty_queue_enqueued_ns     = calloc(server->total_tiles, sizeof(*net->dirty_queue_enqueued_ns));
-    net->retransmit_queue            = calloc(server->total_tiles, sizeof(*net->retransmit_queue));
-    net->retransmit_queued           = calloc(server->total_tiles, sizeof(*net->retransmit_queued));
-    net->retransmit_queue_enqueued_ns = calloc(server->total_tiles, sizeof(*net->retransmit_queue_enqueued_ns));
+    net->startup_state                   = WD_NET_STARTUP_PENDING;
+    net->startup_failed_stage            = WD_NET_LISTENER_STAGE_NONE;
+    net->startup_error                   = 0;
+    net->listen_address                  = listen_address;
+    net->tcp_port                        = tcp_port;
+    net->tcp_fd                          = -1;
+    net->input_tcp_fd                    = -1;
+    net->selection_tcp_fd                = -1;
+    net->video_tcp_fd                    = -1;
+    net->audio_tcp_fd                    = -1;
+    net->listen_fd                       = -1;
+    net->control_tx                      = NULL;
+    net->video_tx                        = NULL;
+    net->udp_tx                          = NULL;
+    net->video_encoder                   = NULL;
+    net->audio_stream                    = NULL;
+    net->udp_fd                          = -1;
+    net->session_id                      = 0;
+    net->connection_token                = 0;
+    net->udp_port                        = 0;
+    net->dirty_region_cursor             = 0;
+    net->dirty_regions                   = calloc(server->total_tiles, sizeof(*net->dirty_regions));
+    net->dirty_region_queued             = calloc(server->total_tiles, sizeof(*net->dirty_region_queued));
+    net->dirty_region_enqueued_ns        = calloc(server->total_tiles, sizeof(*net->dirty_region_enqueued_ns));
+    net->dirty_region_count              = 0;
+    net->dirty_epochs                    = calloc(server->total_tiles, sizeof(*net->dirty_epochs));
+    net->dirty_queue                     = calloc(server->total_tiles, sizeof(*net->dirty_queue));
+    net->dirty_queued                    = calloc(server->total_tiles, sizeof(*net->dirty_queued));
+    net->dirty_queue_enqueued_ns         = calloc(server->total_tiles, sizeof(*net->dirty_queue_enqueued_ns));
+    net->retransmit_queue                = calloc(server->total_tiles, sizeof(*net->retransmit_queue));
+    net->retransmit_queued               = calloc(server->total_tiles, sizeof(*net->retransmit_queued));
+    net->retransmit_queue_enqueued_ns    = calloc(server->total_tiles, sizeof(*net->retransmit_queue_enqueued_ns));
     net->retransmit_requested_generation = calloc(server->total_tiles, sizeof(*net->retransmit_requested_generation));
-    net->summary_dirty_tiles         = calloc(server->total_tiles, sizeof(*net->summary_dirty_tiles));
-    net->summary_dirty_queue         = calloc(server->total_tiles, sizeof(*net->summary_dirty_queue));
+    net->summary_dirty_tiles             = calloc(server->total_tiles, sizeof(*net->summary_dirty_tiles));
+    net->summary_dirty_queue             = calloc(server->total_tiles, sizeof(*net->summary_dirty_queue));
     if (!wd_async_tcp_sender_create(&net->control_tx, WD_SERVER_CONTROL_TX_RING_ENTRIES))
     {
         net->control_tx = NULL;
     }
     else
     {
-        wd_async_tcp_sender_set_max_pending_bytes(net->control_tx,
-                                                  WD_SERVER_CONTROL_TX_PENDING_BYTES);
+        wd_async_tcp_sender_set_max_pending_bytes(net->control_tx, WD_SERVER_CONTROL_TX_PENDING_BYTES);
     }
     if (!wd_async_tcp_sender_create(&net->video_tx, WD_SERVER_VIDEO_TX_RING_ENTRIES))
     {
@@ -421,8 +404,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port,
     }
     else
     {
-        wd_async_tcp_sender_set_max_pending_bytes(net->video_tx,
-                                                  WD_SERVER_VIDEO_TX_PENDING_BYTES);
+        wd_async_tcp_sender_set_max_pending_bytes(net->video_tx, WD_SERVER_VIDEO_TX_PENDING_BYTES);
     }
     if (!wd_async_udp_sender_create(&net->udp_tx, WD_SERVER_UDP_TX_RING_ENTRIES))
     {
@@ -436,10 +418,10 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port,
     {
         net->audio_stream = NULL;
     }
-    if (!net->dirty_regions || !net->dirty_region_queued || !net->dirty_region_enqueued_ns || !net->dirty_epochs || !net->dirty_queue || !net->dirty_queued ||
-        !net->dirty_queue_enqueued_ns || !net->retransmit_queue ||
-        !net->retransmit_queued || !net->retransmit_queue_enqueued_ns || !net->retransmit_requested_generation ||
-        !net->summary_dirty_tiles || !net->summary_dirty_queue)
+    if (!net->dirty_regions || !net->dirty_region_queued || !net->dirty_region_enqueued_ns || !net->dirty_epochs || !net->dirty_queue ||
+        !net->dirty_queued || !net->dirty_queue_enqueued_ns || !net->retransmit_queue || !net->retransmit_queued ||
+        !net->retransmit_queue_enqueued_ns || !net->retransmit_requested_generation || !net->summary_dirty_tiles ||
+        !net->summary_dirty_queue)
     {
         free(net->dirty_regions);
         free(net->dirty_region_queued);
@@ -460,25 +442,25 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port,
         wd_video_encoder_destroy(net->video_encoder);
         wd_audio_stream_destroy(net->audio_stream);
         pthread_mutex_destroy(&net->video_encoder_lock);
-        net->control_tx                  = NULL;
-        net->video_tx                    = NULL;
-        net->udp_tx                      = NULL;
-        net->video_encoder               = NULL;
-        net->audio_stream                 = NULL;
-        net->dirty_regions               = NULL;
-        net->dirty_region_queued         = NULL;
-        net->dirty_region_enqueued_ns    = NULL;
-        net->dirty_region_count          = 0;
-        net->dirty_epochs                = NULL;
-        net->dirty_queue                 = NULL;
-        net->dirty_queued                = NULL;
-        net->dirty_queue_enqueued_ns     = NULL;
-        net->retransmit_queue            = NULL;
-        net->retransmit_queued           = NULL;
-        net->retransmit_queue_enqueued_ns = NULL;
+        net->control_tx                      = NULL;
+        net->video_tx                        = NULL;
+        net->udp_tx                          = NULL;
+        net->video_encoder                   = NULL;
+        net->audio_stream                    = NULL;
+        net->dirty_regions                   = NULL;
+        net->dirty_region_queued             = NULL;
+        net->dirty_region_enqueued_ns        = NULL;
+        net->dirty_region_count              = 0;
+        net->dirty_epochs                    = NULL;
+        net->dirty_queue                     = NULL;
+        net->dirty_queued                    = NULL;
+        net->dirty_queue_enqueued_ns         = NULL;
+        net->retransmit_queue                = NULL;
+        net->retransmit_queued               = NULL;
+        net->retransmit_queue_enqueued_ns    = NULL;
         net->retransmit_requested_generation = NULL;
-        net->summary_dirty_tiles         = NULL;
-        net->summary_dirty_queue         = NULL;
+        net->summary_dirty_tiles             = NULL;
+        net->summary_dirty_queue             = NULL;
         pthread_cond_destroy(&net->encoder_idle_cond);
         pthread_cond_destroy(&net->startup_cond);
         pthread_cond_destroy(&net->display_resize_cond);
@@ -491,7 +473,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port,
     net->dirty_queue_count      = 0;
     net->retransmit_queue_count = 0;
     net->summary_dirty_count    = 0;
-    net->udp_payload_target            = WD_UDP_PAYLOAD_TARGET;
+    net->udp_payload_target     = WD_UDP_PAYLOAD_TARGET;
     wd_net_set_link_profile_defaults(net);
 
     wd_stream_policy_set_defaults(&net->stream_policy);
@@ -553,11 +535,11 @@ void wd_net_destroy(struct wd_server* server) {
     wd_video_encoder_destroy(net->video_encoder);
     wd_audio_stream_destroy(net->audio_stream);
     pthread_mutex_destroy(&net->video_encoder_lock);
-    net->control_tx = NULL;
-    net->video_tx = NULL;
-    net->udp_tx = NULL;
+    net->control_tx    = NULL;
+    net->video_tx      = NULL;
+    net->udp_tx        = NULL;
     net->video_encoder = NULL;
-    net->audio_stream = NULL;
+    net->audio_stream  = NULL;
 
     wd_dirty_region_scheduler_destroy(net->dirty_region_scheduler);
     net->dirty_region_scheduler = NULL;
@@ -569,7 +551,7 @@ void wd_net_destroy(struct wd_server* server) {
     free(net->dirty_region_enqueued_ns);
     net->dirty_region_enqueued_ns = NULL;
     free(net->dirty_epochs);
-    net->dirty_epochs = NULL;
+    net->dirty_epochs       = NULL;
     net->dirty_region_count = 0;
     free(net->dirty_queue);
     net->dirty_queue = NULL;
@@ -606,9 +588,9 @@ void wd_net_destroy(struct wd_server* server) {
     net->clipboard_text_pending = false;
 
     free(net->primary_text);
-    net->primary_text         = NULL;
-    net->primary_text_size    = 0;
-    net->primary_text_pending = false;
+    net->primary_text              = NULL;
+    net->primary_text_size         = 0;
+    net->primary_text_pending      = false;
     net->clipboard_request_pending = false;
     net->primary_request_pending   = false;
 
@@ -651,13 +633,13 @@ static int wd_create_udp_mtu_probe_socket(void) {
     }
 
 #if defined(IP_MTU_DISCOVER)
-#    if defined(IP_PMTUDISC_PROBE)
+#if defined(IP_PMTUDISC_PROBE)
     const int mode = IP_PMTUDISC_PROBE;
-#    elif defined(IP_PMTUDISC_DO)
+#elif defined(IP_PMTUDISC_DO)
     const int mode = IP_PMTUDISC_DO;
-#    else
+#else
     const int mode = -1;
-#    endif
+#endif
 
     if (mode < 0 || !wd_udp_socket_set_pmtu_mode(fd, mode))
     {
@@ -673,14 +655,13 @@ static int wd_create_udp_mtu_probe_socket(void) {
 }
 
 static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const struct sockaddr_in* client_udp_addr) {
-    struct wd_net_state* net = &server->net;
-    uint8_t tile_size = 0;
+    struct wd_net_state* net       = &server->net;
+    uint8_t              tile_size = 0;
     if (!wd_tile_size_code_for_dimensions(server->tile_width, server->tile_height, &tile_size))
     {
         WD_LOG_ERROR("cannot probe UDP with unsupported tile geometry %ux%u", server->tile_width, server->tile_height);
         return WD_UDP_PAYLOAD_TARGET;
     }
-
 
     /*
      * Payload size excluding wd_udp_tile_packet_header.
@@ -708,9 +689,9 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
 
     struct wd_mtu_probe_start_payload start;
     memset(&start, 0, sizeof(start));
-    start.session_id  = net->session_id;
+    start.session_id       = net->session_id;
     start.connection_token = net->connection_token;
-    start.probe_count = probe_count;
+    start.probe_count      = probe_count;
 
     if (!wd_send_tcp_message(tcp_fd, WD_MSG_MTU_PROBE_START, &start, sizeof(start)))
     {
@@ -737,23 +718,23 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
 
     for (uint16_t i = 0; i < probe_count; ++i)
     {
-        uint16_t payload_size = probe_sizes[i];
-        const size_t packet_size = WD_UDP_TILE_HEADER_MIN_SIZE + payload_size;
+        uint16_t     payload_size = probe_sizes[i];
+        const size_t packet_size  = WD_UDP_TILE_HEADER_MIN_SIZE + payload_size;
 
         memset(packet, 0, sizeof(packet));
         struct wd_udp_tile_packet_decoded h;
         memset(&h, 0, sizeof(h));
-        h.session_id = net->session_id;
-        h.connection_token = net->connection_token;
-        h.content_epoch = net->content_epoch;
-        h.flags = WD_UDP_TILE_FLAG_COMPRESSED;
-        h.tile_size = tile_size;
-        h.tile_id = WD_UDP_TILE_ID_MTU_PROBE;
-        h.tile_pkt_count = probe_count > UINT8_MAX ? UINT8_MAX : (uint8_t)probe_count;
-        h.tile_pkt_id = i > UINT8_MAX ? UINT8_MAX : (uint8_t)i;
-        h.payload_size = payload_size;
+        h.session_id        = net->session_id;
+        h.connection_token  = net->connection_token;
+        h.content_epoch     = net->content_epoch;
+        h.flags             = WD_UDP_TILE_FLAG_COMPRESSED;
+        h.tile_size         = tile_size;
+        h.tile_id           = WD_UDP_TILE_ID_MTU_PROBE;
+        h.tile_pkt_count    = probe_count > UINT8_MAX ? UINT8_MAX : (uint8_t)probe_count;
+        h.tile_pkt_id       = i > UINT8_MAX ? UINT8_MAX : (uint8_t)i;
+        h.payload_size      = payload_size;
         h.tile_payload_size = payload_size;
-        h.tile_generation = net->session_id;
+        h.tile_generation   = net->session_id;
         if (!wd_udp_tile_packet_encode_header(packet, sizeof(packet), &h))
         {
             continue;
@@ -794,7 +775,8 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
         struct wd_mtu_probe_result_payload probe_result;
         memcpy(&probe_result, payload, sizeof(probe_result));
 
-        if (probe_result.session_id == net->session_id && probe_result.connection_token == net->connection_token && probe_result.max_udp_payload_received >= WD_MIN_PROBED_UDP_PAYLOAD)
+        if (probe_result.session_id == net->session_id && probe_result.connection_token == net->connection_token &&
+            probe_result.max_udp_payload_received >= WD_MIN_PROBED_UDP_PAYLOAD)
         {
             result = probe_result.max_udp_payload_received;
         }
@@ -819,14 +801,13 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
 
 static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, const struct sockaddr_in* client_udp_addr,
                                          uint16_t udp_payload_target) {
-    struct wd_net_state* net = &server->net;
-    uint8_t tile_size = 0;
+    struct wd_net_state* net       = &server->net;
+    uint8_t              tile_size = 0;
     if (!wd_tile_size_code_for_dimensions(server->tile_width, server->tile_height, &tile_size))
     {
         WD_LOG_ERROR("cannot probe throughput with unsupported tile geometry %ux%u", server->tile_width, server->tile_height);
         return WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
     }
-
 
     if (udp_payload_target == 0 || udp_payload_target > WD_UDP_TILE_PAYLOAD_MAX)
     {
@@ -842,7 +823,7 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
 
     struct wd_throughput_probe_start_payload start;
     memset(&start, 0, sizeof(start));
-    start.session_id  = net->session_id;
+    start.session_id       = net->session_id;
     start.connection_token = net->connection_token;
     /*
      * UINT8_MAX means the probe is duration-limited. Earlier code sent a
@@ -852,9 +833,9 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
      * its normal uint8_t packet-count shape, but repeat packet ids and let the
      * client count every received probe datagram until the deadline.
      */
-    start.probe_count = UINT8_MAX;
+    start.probe_count  = UINT8_MAX;
     start.payload_size = udp_payload_target;
-    start.duration_ms = WD_THROUGHPUT_PROBE_DURATION_MS;
+    start.duration_ms  = WD_THROUGHPUT_PROBE_DURATION_MS;
 
     if (!wd_send_tcp_message(tcp_fd, WD_MSG_THROUGHPUT_PROBE_START, &start, sizeof(start)))
     {
@@ -875,16 +856,16 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
     memset(packet, 0, packet_size);
     struct wd_udp_tile_packet_decoded h;
     memset(&h, 0, sizeof(h));
-    h.session_id = net->session_id;
-    h.connection_token = net->connection_token;
-    h.content_epoch = net->content_epoch;
-    h.flags = WD_UDP_TILE_FLAG_COMPRESSED;
-    h.tile_size = tile_size;
-    h.tile_id = WD_UDP_TILE_ID_THROUGHPUT_PROBE;
-    h.tile_pkt_count = (uint8_t)start.probe_count;
-    h.payload_size = udp_payload_target;
+    h.session_id        = net->session_id;
+    h.connection_token  = net->connection_token;
+    h.content_epoch     = net->content_epoch;
+    h.flags             = WD_UDP_TILE_FLAG_COMPRESSED;
+    h.tile_size         = tile_size;
+    h.tile_id           = WD_UDP_TILE_ID_THROUGHPUT_PROBE;
+    h.tile_pkt_count    = (uint8_t)start.probe_count;
+    h.payload_size      = udp_payload_target;
     h.tile_payload_size = udp_payload_target;
-    h.tile_generation = net->session_id;
+    h.tile_generation   = net->session_id;
     memset(packet + WD_UDP_TILE_HEADER_MIN_SIZE, 0x5a, udp_payload_target);
 
     const uint64_t start_ns    = wd_now_ns();
@@ -925,8 +906,8 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
 
     free(packet);
 
-    uint16_t type         = 0;
-    uint8_t* payload      = NULL;
+    uint16_t type            = 0;
+    uint8_t* payload         = NULL;
     uint32_t payload_size_rx = 0;
 
     if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size_rx))
@@ -935,7 +916,7 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
         return WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
     }
 
-    uint64_t limited_rate = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
+    uint64_t limited_rate     = WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND;
     uint32_t packets_received = 0;
 
     if (type == WD_MSG_THROUGHPUT_PROBE_RESULT && payload_size_rx == sizeof(struct wd_throughput_probe_result_payload))
@@ -944,10 +925,11 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
         memcpy(&result, payload, sizeof(result));
         packets_received = result.packets_received;
 
-        if (result.session_id == net->session_id && result.connection_token == net->connection_token && result.bytes_received > 0 && result.duration_ms > 0)
+        if (result.session_id == net->session_id && result.connection_token == net->connection_token && result.bytes_received > 0 &&
+            result.duration_ms > 0)
         {
             uint64_t bytes_per_second = ((uint64_t)result.bytes_received * 1000ull) / result.duration_ms;
-            bytes_per_second = (bytes_per_second * WD_LIMITED_MODE_THROUGHPUT_SAFETY_PERCENT) / 100ull;
+            bytes_per_second          = (bytes_per_second * WD_LIMITED_MODE_THROUGHPUT_SAFETY_PERCENT) / 100ull;
 
             if (bytes_per_second < WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND)
             {
@@ -983,8 +965,8 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
         memset(&ping, 0, sizeof(ping));
         ping.session_id       = net->session_id;
         ping.connection_token = net->connection_token;
-        ping.sequence     = i + 1u;
-        ping.timestamp_ns = wd_now_ns();
+        ping.sequence         = i + 1u;
+        ping.timestamp_ns     = wd_now_ns();
 
         if (!wd_send_tcp_message(tcp_fd, WD_MSG_LINK_PROBE_PING, &ping, sizeof(ping)))
         {
@@ -1028,8 +1010,7 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
         wd_net_derive_link_profile(net, WD_LINK_RTT_DEFAULT_NS, 0);
         wd_net_update_summary_cadence_for_budget(server);
         WD_LOG_INFO("TCP link RTT probe unavailable; using conservative defaults rtt=%u ms summary_delta=%llu/%llu ms",
-                    (unsigned)(WD_LINK_RTT_DEFAULT_NS / 1000000ull),
-                    (unsigned long long)(net->active_summary_interval_ns / 1000000ull),
+                    (unsigned)(WD_LINK_RTT_DEFAULT_NS / 1000000ull), (unsigned long long)(net->active_summary_interval_ns / 1000000ull),
                     (unsigned long long)(net->clean_summary_interval_ns / 1000000ull));
         return;
     }
@@ -1058,9 +1039,9 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
     wd_net_derive_link_profile(net, avg_ns, jitter_ns);
     wd_net_update_summary_cadence_for_budget(server);
 
-    WD_LOG_INFO("TCP link profile rtt=%llu ms jitter=%llu ms summary_grace=%llu ms rerequest=%llu ms reassembly=%llu ms summary_delta=%llu/%llu ms samples=%u",
-                (unsigned long long)(net->link_rtt_ns / 1000000ull),
-                (unsigned long long)(net->link_jitter_ns / 1000000ull),
+    WD_LOG_INFO("TCP link profile rtt=%llu ms jitter=%llu ms summary_grace=%llu ms rerequest=%llu ms reassembly=%llu ms "
+                "summary_delta=%llu/%llu ms samples=%u",
+                (unsigned long long)(net->link_rtt_ns / 1000000ull), (unsigned long long)(net->link_jitter_ns / 1000000ull),
                 (unsigned long long)(net->summary_retransmit_grace_ns / 1000000ull),
                 (unsigned long long)(net->retransmit_rerequest_ns / 1000000ull),
                 (unsigned long long)(net->tile_reassembly_timeout_ns / 1000000ull),
@@ -1101,15 +1082,15 @@ static void wd_server_fill_config(struct wd_server* server, uint8_t session_id, 
     if (server->net.audio_stream_negotiated)
     {
         cfg->capabilities |= WD_SERVER_CAP_AUDIO_STREAM;
-        cfg->audio_codec = server->net.audio_codec;
-        cfg->audio_transport = server->net.audio_transport;
-        cfg->audio_sample_rate = WD_AUDIO_SAMPLE_RATE_DEFAULT;
-        cfg->audio_channels = server->net.audio_channels;
-        cfg->audio_frame_samples = WD_AUDIO_FRAME_SAMPLES_DEFAULT;
+        cfg->audio_codec             = server->net.audio_codec;
+        cfg->audio_transport         = server->net.audio_transport;
+        cfg->audio_sample_rate       = WD_AUDIO_SAMPLE_RATE_DEFAULT;
+        cfg->audio_channels          = server->net.audio_channels;
+        cfg->audio_frame_samples     = WD_AUDIO_FRAME_SAMPLES_DEFAULT;
         cfg->audio_target_latency_ms = server->net.audio_target_latency_ms;
-        cfg->audio_bitrate = server->net.audio_bitrate;
+        cfg->audio_bitrate           = server->net.audio_bitrate;
     }
-    cfg->link_rtt_ms        = wd_ns_to_ms_ceil_u16(server->net.link_rtt_ns);
+    cfg->link_rtt_ms                  = wd_ns_to_ms_ceil_u16(server->net.link_rtt_ns);
     cfg->summary_retransmit_grace_ms  = wd_ns_to_ms_ceil_u16(server->net.summary_retransmit_grace_ns);
     cfg->retransmit_rerequest_ms      = wd_ns_to_ms_ceil_u16(server->net.retransmit_rerequest_ns);
     cfg->retransmit_inflight_grace_ms = wd_ns_to_ms_ceil_u16(server->net.retransmit_inflight_grace_ns);
@@ -1117,7 +1098,6 @@ static void wd_server_fill_config(struct wd_server* server, uint8_t session_id, 
     cfg->active_summary_interval_ms   = wd_ns_to_ms_ceil_u16(server->net.active_summary_interval_ns);
     cfg->clean_summary_interval_ms    = wd_ns_to_ms_ceil_u16(server->net.clean_summary_interval_ns);
 }
-
 
 bool wd_server_send_current_config_locked(struct wd_server* server) {
     if (!server)
@@ -1159,8 +1139,7 @@ bool wd_server_send_current_config_locked(struct wd_server* server) {
 
     if (ok)
     {
-        wd_stream_account_tcp_control_bytes_locked(net,
-                                                   (uint32_t)(sizeof(struct wd_tcp_header) + sizeof(cfg)));
+        wd_stream_account_tcp_control_bytes_locked(net, (uint32_t)(sizeof(struct wd_tcp_header) + sizeof(cfg)));
         net->stats.tcp_config_tx++;
 
         /* Do not release the new-session tile stream merely because the
@@ -1175,8 +1154,8 @@ bool wd_server_send_current_config_locked(struct wd_server* server) {
     return ok;
 }
 
-static void wd_server_handle_keyboard_message(struct wd_server* server, const struct wd_server_config_payload* cfg,
-                                             const uint8_t* payload, uint32_t payload_size) {
+static void wd_server_handle_keyboard_message(struct wd_server* server, const struct wd_server_config_payload* cfg, const uint8_t* payload,
+                                              uint32_t payload_size) {
     struct wd_net_state* net = &server->net;
 
     if (payload_size != sizeof(struct wd_keyboard_event_payload))
@@ -1187,8 +1166,8 @@ static void wd_server_handle_keyboard_message(struct wd_server* server, const st
     struct wd_keyboard_event_payload key;
     memcpy(&key, payload, sizeof(key));
 
-    if (wd_keyboard_event_payload_is_valid(&key, payload_size) &&
-        key.session_id == cfg->session_id && key.connection_token == cfg->connection_token)
+    if (wd_keyboard_event_payload_is_valid(&key, payload_size) && key.session_id == cfg->session_id &&
+        key.connection_token == cfg->connection_token)
     {
         pthread_mutex_lock(&net->lock);
         wd_keyboard_queue_event_locked(net, &key, wd_now_ns());
@@ -1197,8 +1176,8 @@ static void wd_server_handle_keyboard_message(struct wd_server* server, const st
     }
 }
 
-static void wd_server_handle_pointer_message(struct wd_server* server, const struct wd_server_config_payload* cfg,
-                                            const uint8_t* payload, uint32_t payload_size) {
+static void wd_server_handle_pointer_message(struct wd_server* server, const struct wd_server_config_payload* cfg, const uint8_t* payload,
+                                             uint32_t payload_size) {
     struct wd_net_state* net = &server->net;
 
     if (payload_size != sizeof(struct wd_pointer_event_payload))
@@ -1209,15 +1188,15 @@ static void wd_server_handle_pointer_message(struct wd_server* server, const str
     struct wd_pointer_event_payload pointer;
     memcpy(&pointer, payload, sizeof(pointer));
 
-    if (wd_pointer_event_payload_is_valid(&pointer, payload_size) &&
-        pointer.session_id == cfg->session_id && pointer.connection_token == cfg->connection_token)
+    if (wd_pointer_event_payload_is_valid(&pointer, payload_size) && pointer.session_id == cfg->session_id &&
+        pointer.connection_token == cfg->connection_token)
     {
         if (pointer.event_type == WD_POINTER_EVENT_BUTTON && pointer.button == WD_INPUT_BUTTON_RIGHT)
         {
             WD_LOG_DEBUG("received right click %s from client "
                          "x=%u y=%u mods=0x%x timestamp=%" PRIu64,
-                         pointer.button_state == WD_POINTER_BUTTON_PRESSED ? "press" : "release", pointer.x, pointer.y,
-                         pointer.modifiers, pointer.client_timestamp_ns);
+                         pointer.button_state == WD_POINTER_BUTTON_PRESSED ? "press" : "release", pointer.x, pointer.y, pointer.modifiers,
+                         pointer.client_timestamp_ns);
         }
         pthread_mutex_lock(&net->lock);
         wd_pointer_queue_event_locked(net, &pointer, wd_now_ns());
@@ -1226,8 +1205,8 @@ static void wd_server_handle_pointer_message(struct wd_server* server, const str
     }
 }
 
-static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_id, uint64_t connection_token, int* input_tcp_fd, int* selection_tcp_fd,
-                                     int* video_tcp_fd, int* audio_tcp_fd) {
+static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_id, uint64_t connection_token, int* input_tcp_fd,
+                                     int* selection_tcp_fd, int* video_tcp_fd, int* audio_tcp_fd) {
     struct wd_net_state* net = &server->net;
 
     struct sockaddr_in peer_addr;
@@ -1279,8 +1258,8 @@ static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_i
             accepted          = true;
         }
     }
-    else if (type == WD_MSG_VIDEO_CHANNEL_HELLO && payload_size == sizeof(struct wd_video_channel_hello_payload) &&
-             video_tcp_fd && *video_tcp_fd < 0)
+    else if (type == WD_MSG_VIDEO_CHANNEL_HELLO && payload_size == sizeof(struct wd_video_channel_hello_payload) && video_tcp_fd &&
+             *video_tcp_fd < 0)
     {
         struct wd_video_channel_hello_payload hello;
         memset(&hello, 0, sizeof(hello));
@@ -1288,23 +1267,21 @@ static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_i
 
         if (hello.session_id == session_id && hello.connection_token == connection_token &&
             (hello.video_codecs & ~WD_VIDEO_CODEC_MASK) == 0 && net->video_stream_negotiated &&
-            (hello.video_codecs & net->video_codecs & WD_VIDEO_CODEC_MASK) != 0 &&
-            hello.video_transport == net->video_transport)
+            (hello.video_codecs & net->video_codecs & WD_VIDEO_CODEC_MASK) != 0 && hello.video_transport == net->video_transport)
         {
             *video_tcp_fd = fd;
             accepted      = true;
         }
     }
-    else if (type == WD_MSG_AUDIO_CHANNEL_HELLO && payload_size == sizeof(struct wd_audio_channel_hello_payload) &&
-             audio_tcp_fd && *audio_tcp_fd < 0)
+    else if (type == WD_MSG_AUDIO_CHANNEL_HELLO && payload_size == sizeof(struct wd_audio_channel_hello_payload) && audio_tcp_fd &&
+             *audio_tcp_fd < 0)
     {
         struct wd_audio_channel_hello_payload hello;
         memset(&hello, 0, sizeof(hello));
         memcpy(&hello, payload, sizeof(hello));
 
-        if (hello.session_id == session_id && hello.connection_token == connection_token &&
-            net->audio_stream_negotiated && hello.audio_codecs == net->audio_codec &&
-            hello.audio_transport == net->audio_transport)
+        if (hello.session_id == session_id && hello.connection_token == connection_token && net->audio_stream_negotiated &&
+            hello.audio_codecs == net->audio_codec && hello.audio_transport == net->audio_transport)
         {
             *audio_tcp_fd = fd;
             accepted      = true;
@@ -1323,9 +1300,9 @@ static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_i
     return true;
 }
 
-static void wd_accept_optional_aux_channels(struct wd_server* server, uint8_t session_id, uint64_t connection_token, int* input_tcp_fd, int* selection_tcp_fd,
-                                            int* video_tcp_fd, int* audio_tcp_fd) {
-    struct wd_net_state* net = &server->net;
+static void wd_accept_optional_aux_channels(struct wd_server* server, uint8_t session_id, uint64_t connection_token, int* input_tcp_fd,
+                                            int* selection_tcp_fd, int* video_tcp_fd, int* audio_tcp_fd) {
+    struct wd_net_state* net         = &server->net;
     const uint64_t       deadline_ns = wd_now_ns() + WD_NET_AUX_CHANNEL_ACCEPT_TIMEOUT_NS;
 
     *input_tcp_fd     = -1;
@@ -1339,9 +1316,9 @@ static void wd_accept_optional_aux_channels(struct wd_server* server, uint8_t se
         *audio_tcp_fd = -1;
     }
 
-    while ((*input_tcp_fd < 0 || *selection_tcp_fd < 0 ||
-            (video_tcp_fd && net->video_stream_negotiated && *video_tcp_fd < 0) ||
-            (audio_tcp_fd && net->audio_stream_negotiated && *audio_tcp_fd < 0)) && wd_now_ns() < deadline_ns)
+    while ((*input_tcp_fd < 0 || *selection_tcp_fd < 0 || (video_tcp_fd && net->video_stream_negotiated && *video_tcp_fd < 0) ||
+            (audio_tcp_fd && net->audio_stream_negotiated && *audio_tcp_fd < 0)) &&
+           wd_now_ns() < deadline_ns)
     {
         uint64_t now_ns = wd_now_ns();
         if (now_ns >= deadline_ns)
@@ -1380,12 +1357,11 @@ void* wd_net_thread_main(void* arg) {
     struct wd_server*    server = arg;
     struct wd_net_state* net    = &server->net;
 
-    struct wd_net_listener listener;
-    enum wd_net_listener_stage failed_stage = WD_NET_LISTENER_STAGE_NONE;
-    int startup_error = 0;
+    struct wd_net_listener     listener;
+    enum wd_net_listener_stage failed_stage  = WD_NET_LISTENER_STAGE_NONE;
+    int                        startup_error = 0;
 
-    if (!wd_net_listener_open(&listener, net->tcp_port, &net->listen_address,
-                              &failed_stage, &startup_error))
+    if (!wd_net_listener_open(&listener, net->tcp_port, &net->listen_address, &failed_stage, &startup_error))
     {
         wd_net_publish_startup_result(net, WD_NET_STARTUP_FAILED, failed_stage, startup_error);
         return NULL;
@@ -1404,8 +1380,7 @@ void* wd_net_thread_main(void* arg) {
 
         wd_format_socket_endpoint(net->listen_fd, false, tcp_local, sizeof(tcp_local));
         wd_format_socket_endpoint(net->udp_fd, false, udp_local, sizeof(udp_local));
-        WD_LOG_INFO("network listening tcp=%s udp_sender=%s tcp_fd=%d udp_fd=%d", tcp_local, udp_local,
-                    net->listen_fd, net->udp_fd);
+        WD_LOG_INFO("network listening tcp=%s udp_sender=%s tcp_fd=%d udp_fd=%d", tcp_local, udp_local, net->listen_fd, net->udp_fd);
     }
 
     int sndbuf = WD_UDP_SOCKET_BUFFER_BYTES;
@@ -1424,8 +1399,7 @@ void* wd_net_thread_main(void* arg) {
         }
     }
 
-    wd_net_publish_startup_result(net, WD_NET_STARTUP_READY,
-                                  WD_NET_LISTENER_STAGE_NONE, 0);
+    wd_net_publish_startup_result(net, WD_NET_STARTUP_READY, WD_NET_LISTENER_STAGE_NONE, 0);
 
     while (wd_net_run_state_is_running(&net->run_state))
     {
@@ -1494,24 +1468,18 @@ void* wd_net_thread_main(void* arg) {
                 ? wd_video_encoder_choose_codec(net->video_encoder, hello.video_codecs)
                 : 0;
         const bool client_video_tcp = selected_video_codec != 0;
-        const bool client_audio_tcp =
-            (hello.capabilities & WD_CLIENT_CAP_AUDIO_STREAM) != 0 &&
-            (hello.audio_codecs & WD_AUDIO_CODEC_OPUS) != 0 &&
-            hello.audio_transport == WD_AUDIO_TRANSPORT_TCP &&
-            hello.audio_max_channels >= 1 && net->audio_stream &&
-            wd_audio_stream_ready(net->audio_stream);
-        const uint8_t selected_audio_channels =
-            client_audio_tcp && hello.audio_max_channels >= 2 ? 2 : (client_audio_tcp ? 1 : 0);
+        const bool client_audio_tcp = (hello.capabilities & WD_CLIENT_CAP_AUDIO_STREAM) != 0 &&
+                                      (hello.audio_codecs & WD_AUDIO_CODEC_OPUS) != 0 && hello.audio_transport == WD_AUDIO_TRANSPORT_TCP &&
+                                      hello.audio_max_channels >= 1 && net->audio_stream && wd_audio_stream_ready(net->audio_stream);
+        const uint8_t  selected_audio_channels = client_audio_tcp && hello.audio_max_channels >= 2 ? 2 : (client_audio_tcp ? 1 : 0);
         const uint16_t selected_audio_latency_ms =
-            client_audio_tcp && hello.audio_target_latency_ms != 0
-                ? hello.audio_target_latency_ms
-                : WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
+            client_audio_tcp && hello.audio_target_latency_ms != 0 ? hello.audio_target_latency_ms : WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
 
         struct wd_server_config_payload cfg;
         uint8_t                         session_id = 0;
 
         uint64_t connection_token = 0;
-        uint64_t media_clock_id = 0;
+        uint64_t media_clock_id   = 0;
         if (!wd_connection_identity_generate(&connection_token, &media_clock_id))
         {
             WD_LOG_ERROR("failed to obtain secure randomness for connection identity");
@@ -1521,8 +1489,8 @@ void* wd_net_thread_main(void* arg) {
 
         pthread_mutex_lock(&net->lock);
 
-        net->connection_token = connection_token;
-        net->media_clock_id = media_clock_id;
+        net->connection_token     = connection_token;
+        net->media_clock_id       = media_clock_id;
         net->media_clock_start_ns = wd_now_ns();
         net->connection_epoch++;
         if (net->connection_epoch == 0)
@@ -1542,7 +1510,7 @@ void* wd_net_thread_main(void* arg) {
         }
 
         net->session_id = wd_connection_next_session_id(net->session_id);
-        session_id = net->session_id;
+        session_id      = net->session_id;
 
         pthread_mutex_unlock(&net->lock);
 
@@ -1553,20 +1521,20 @@ void* wd_net_thread_main(void* arg) {
         client_udp_addr.sin_addr   = peer_addr.sin_addr;
         client_udp_addr.sin_port   = htons(hello.client_udp_port);
 
-        uint16_t selected_udp_payload = run_udp_mtu_probe(server, tcp_fd, &client_udp_addr);
+        uint16_t selected_udp_payload      = run_udp_mtu_probe(server, tcp_fd, &client_udp_addr);
         uint64_t selected_limited_udp_rate = run_udp_throughput_probe(server, tcp_fd, &client_udp_addr, selected_udp_payload);
 
         pthread_mutex_lock(&net->lock);
-        net->udp_payload_target = selected_udp_payload;
+        net->udp_payload_target      = selected_udp_payload;
         net->video_stream_negotiated = client_video_tcp;
-        net->video_codecs = client_video_tcp ? selected_video_codec : 0;
-        net->video_transport = client_video_tcp ? WD_VIDEO_TRANSPORT_TCP : 0;
+        net->video_codecs            = client_video_tcp ? selected_video_codec : 0;
+        net->video_transport         = client_video_tcp ? WD_VIDEO_TRANSPORT_TCP : 0;
         net->audio_stream_negotiated = client_audio_tcp;
-        net->audio_codec = client_audio_tcp ? WD_AUDIO_CODEC_OPUS : 0;
-        net->audio_transport = client_audio_tcp ? WD_AUDIO_TRANSPORT_TCP : 0;
-        net->audio_channels = selected_audio_channels;
+        net->audio_codec             = client_audio_tcp ? WD_AUDIO_CODEC_OPUS : 0;
+        net->audio_transport         = client_audio_tcp ? WD_AUDIO_TRANSPORT_TCP : 0;
+        net->audio_channels          = selected_audio_channels;
         net->audio_target_latency_ms = client_audio_tcp ? selected_audio_latency_ms : 0;
-        net->audio_bitrate = client_audio_tcp ? WD_AUDIO_BITRATE_DEFAULT : 0;
+        net->audio_bitrate           = client_audio_tcp ? WD_AUDIO_BITRATE_DEFAULT : 0;
         if (client_audio_tcp)
         {
             net->audio_epoch++;
@@ -1576,8 +1544,8 @@ void* wd_net_thread_main(void* arg) {
             }
         }
         const uint64_t tile_udp_rate = client_audio_tcp
-            ? wd_audio_reserve_from_tile_budget(selected_limited_udp_rate, WD_AUDIO_BITRATE_DEFAULT)
-            : selected_limited_udp_rate;
+                                           ? wd_audio_reserve_from_tile_budget(selected_limited_udp_rate, WD_AUDIO_BITRATE_DEFAULT)
+                                           : selected_limited_udp_rate;
         wd_stream_policy_set_limited_udp_byte_rate(&net->stream_policy, tile_udp_rate);
         if (client_audio_tcp)
         {
@@ -1587,27 +1555,22 @@ void* wd_net_thread_main(void* arg) {
                         (unsigned long long)(tile_udp_rate / 1024ull));
         }
         wd_stream_policy_apply_client_hello(&net->stream_policy, &hello);
-        WD_LOG_INFO("video mode control: mode=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u negotiated=%s",
-                    wd_video_mode_name(net->stream_policy.video_mode),
-                    net->stream_policy.video_bitrate_kib_per_second,
-                    net->stream_policy.video_min_dirty_percent,
-                    net->stream_policy.video_enter_seconds,
-                    net->stream_policy.video_exit_dirty_percent,
-                    net->stream_policy.video_exit_seconds,
-                    client_video_tcp ? "yes" : "no");
+        WD_LOG_INFO(
+            "video mode control: mode=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u negotiated=%s",
+            wd_video_mode_name(net->stream_policy.video_mode), net->stream_policy.video_bitrate_kib_per_second,
+            net->stream_policy.video_min_dirty_percent, net->stream_policy.video_enter_seconds, net->stream_policy.video_exit_dirty_percent,
+            net->stream_policy.video_exit_seconds, client_video_tcp ? "yes" : "no");
         pthread_mutex_unlock(&net->lock);
 
         if ((hello.capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0 && hello.video_transport == WD_VIDEO_TRANSPORT_TCP && !client_video_tcp)
         {
-            WD_LOG_INFO("video stream unavailable for requested codecs=0x%x; server codecs=0x%x backend=%s",
-                        hello.video_codecs, wd_video_encoder_supported_codecs(net->video_encoder),
-                        wd_video_encoder_backend_name(net->video_encoder));
+            WD_LOG_INFO("video stream unavailable for requested codecs=0x%x; server codecs=0x%x backend=%s", hello.video_codecs,
+                        wd_video_encoder_supported_codecs(net->video_encoder), wd_video_encoder_backend_name(net->video_encoder));
         }
         if ((hello.capabilities & WD_CLIENT_CAP_AUDIO_STREAM) != 0 && !client_audio_tcp)
         {
             WD_LOG_INFO("audio stream unavailable: capture=%s encoder=%s requested_codecs=0x%x transport=%u",
-                        wd_audio_stream_capture_backend_name(),
-                        wd_audio_stream_encoder_backend_name(), hello.audio_codecs,
+                        wd_audio_stream_capture_backend_name(), wd_audio_stream_encoder_backend_name(), hello.audio_codecs,
                         hello.audio_transport);
         }
 
@@ -1626,7 +1589,8 @@ void* wd_net_thread_main(void* arg) {
         int selection_tcp_fd = -1;
         int video_tcp_fd     = -1;
         int audio_tcp_fd     = -1;
-        wd_accept_optional_aux_channels(server, cfg.session_id, cfg.connection_token, &input_tcp_fd, &selection_tcp_fd, &video_tcp_fd, &audio_tcp_fd);
+        wd_accept_optional_aux_channels(server, cfg.session_id, cfg.connection_token, &input_tcp_fd, &selection_tcp_fd, &video_tcp_fd,
+                                        &audio_tcp_fd);
 
         wd_clear_tcp_receive_timeout(tcp_fd);
 
@@ -1649,7 +1613,7 @@ void* wd_net_thread_main(void* arg) {
         {
             net->stats.tcp_video_channel_accepted++;
         }
-        net->client_udp_addr      = client_udp_addr;
+        net->client_udp_addr       = client_udp_addr;
         net->client_connected      = true;
         net->config_update_pending = false;
         net->config_update_sent_ns = 0;
@@ -1703,18 +1667,17 @@ void* wd_net_thread_main(void* arg) {
         net->retransmit_queue_count = 0;
         net->summary_dirty_count    = 0;
         wd_stream_invalidate_all_tiles_locked(server);
-        const uint16_t cached_refresh_tiles = wd_stream_queue_cached_full_refresh_locked(server);
+        const uint16_t cached_refresh_tiles   = wd_stream_queue_cached_full_refresh_locked(server);
         net->stream_policy.last_frame_send_ns = 0;
-        server->last_summary_ns       = 0;
-        server->last_delta_summary_ns = 0;
+        server->last_summary_ns               = 0;
+        server->last_delta_summary_ns         = 0;
 
         if (cached_refresh_tiles != 0)
         {
             net->stream_policy.video_auto_bootstrap_suppressed = true;
-            net->stream_policy.video_auto_bootstrap_seconds = 0;
-            WD_LOG_INFO("queued cached framebuffer refresh for new client: session=%u tiles=%u content_epoch=%llu",
-                        net->session_id, cached_refresh_tiles,
-                        (unsigned long long)net->content_epoch);
+            net->stream_policy.video_auto_bootstrap_seconds    = 0;
+            WD_LOG_INFO("queued cached framebuffer refresh for new client: session=%u tiles=%u content_epoch=%llu", net->session_id,
+                        cached_refresh_tiles, (unsigned long long)net->content_epoch);
         }
         else
         {
@@ -1724,8 +1687,8 @@ void* wd_net_thread_main(void* arg) {
         net->stats.tcp_hello_rx++;
         net->stats.tcp_config_tx++;
 
-        net->key_queue_count     = 0;
-        net->pointer_queue_count = 0;
+        net->key_queue_count         = 0;
+        net->pointer_queue_count     = 0;
         net->key_state_reset_pending = true;
 
         free(net->clipboard_text);
@@ -1734,9 +1697,9 @@ void* wd_net_thread_main(void* arg) {
         net->clipboard_text_pending = false;
 
         free(net->primary_text);
-        net->primary_text         = NULL;
-        net->primary_text_size    = 0;
-        net->primary_text_pending = false;
+        net->primary_text              = NULL;
+        net->primary_text_size         = 0;
+        net->primary_text_pending      = false;
         net->clipboard_request_pending = false;
         net->primary_request_pending   = false;
         wd_cursor_queue_current_locked(server);
@@ -1744,12 +1707,9 @@ void* wd_net_thread_main(void* arg) {
         pthread_mutex_unlock(&net->lock);
         wd_server_wake_input(server);
 
-        if (audio_tcp_fd >= 0 &&
-            !wd_audio_stream_start(net->audio_stream, audio_tcp_fd, cfg.session_id,
-                                   cfg.connection_token, net->audio_epoch,
-                                   cfg.media_clock_id, net->media_clock_start_ns,
-                                   selected_audio_channels, WD_AUDIO_BITRATE_DEFAULT,
-                                   selected_audio_latency_ms))
+        if (audio_tcp_fd >= 0 && !wd_audio_stream_start(net->audio_stream, audio_tcp_fd, cfg.session_id, cfg.connection_token,
+                                                        net->audio_epoch, cfg.media_clock_id, net->media_clock_start_ns,
+                                                        selected_audio_channels, WD_AUDIO_BITRATE_DEFAULT, selected_audio_latency_ms))
         {
             WD_LOG_ERROR("failed to start negotiated audio stream");
             close(audio_tcp_fd);
@@ -1770,14 +1730,15 @@ void* wd_net_thread_main(void* arg) {
             wd_format_socket_endpoint(net->udp_fd, false, udp_local, sizeof(udp_local));
             wd_format_sockaddr_in(&client_udp_addr, udp_remote, sizeof(udp_remote));
 
-            WD_LOG_INFO("client connected; control_tcp=%s<->%s udp=%s->%s input_channel=%s selection_channel=%s video_channel=%s video_stream=%s video_codec=%s video_transport=%s audio_channel=%s audio_stream=%s audio_codec=%s display=%ux%u tile=%ux%u requested_capture_fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
+            WD_LOG_INFO("client connected; control_tcp=%s<->%s udp=%s->%s input_channel=%s selection_channel=%s video_channel=%s "
+                        "video_stream=%s video_codec=%s video_transport=%s audio_channel=%s audio_stream=%s audio_codec=%s display=%ux%u "
+                        "tile=%ux%u requested_capture_fps=%u requested_udp_kib_per_sec=%u adaptive_udp_kib_per_sec=%llu",
                         control_local, control_remote, udp_local, udp_remote, input_tcp_fd >= 0 ? "yes" : "no",
                         selection_tcp_fd >= 0 ? "yes" : "no", video_tcp_fd >= 0 ? "yes" : "no", client_video_tcp ? "yes" : "no",
                         client_video_tcp ? wd_video_codec_name(selected_video_codec) : "none", client_video_tcp ? "tcp" : "none",
                         audio_tcp_fd >= 0 ? "yes" : "no", client_audio_tcp ? "yes" : "no", client_audio_tcp ? "opus" : "none",
-                        server->display_width, server->display_height,
-                        server->tile_width, server->tile_height, hello.requested_capture_fps, hello.limited_udp_kib_per_second,
-                        (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
+                        server->display_width, server->display_height, server->tile_width, server->tile_height, hello.requested_capture_fps,
+                        hello.limited_udp_kib_per_second, (unsigned long long)(net->stream_policy.limited_udp_bytes_per_second / 1024ull));
 
             if (input_tcp_fd >= 0)
             {
@@ -1797,7 +1758,6 @@ void* wd_net_thread_main(void* arg) {
             }
         }
 
-
         while (wd_net_run_state_is_running(&net->run_state))
         {
             struct pollfd pfds[6];
@@ -1815,54 +1775,53 @@ void* wd_net_thread_main(void* arg) {
             bool          have_listen_pfd = false;
 
             memset(pfds, 0, sizeof(pfds));
-            control_pfd_idx       = nfds;
-            pfds[nfds].fd         = tcp_fd;
-            pfds[nfds].events     = POLLIN;
+            control_pfd_idx   = nfds;
+            pfds[nfds].fd     = tcp_fd;
+            pfds[nfds].events = POLLIN;
             nfds++;
 
             if (input_tcp_fd >= 0)
             {
-                input_pfd_idx         = nfds;
-                have_input_pfd        = true;
-                pfds[nfds].fd         = input_tcp_fd;
-                pfds[nfds].events     = POLLIN;
+                input_pfd_idx     = nfds;
+                have_input_pfd    = true;
+                pfds[nfds].fd     = input_tcp_fd;
+                pfds[nfds].events = POLLIN;
                 nfds++;
             }
 
             if (selection_tcp_fd >= 0)
             {
-                select_pfd_idx        = nfds;
-                have_select_pfd       = true;
-                pfds[nfds].fd         = selection_tcp_fd;
-                pfds[nfds].events     = POLLIN;
+                select_pfd_idx    = nfds;
+                have_select_pfd   = true;
+                pfds[nfds].fd     = selection_tcp_fd;
+                pfds[nfds].events = POLLIN;
                 nfds++;
             }
 
             if (video_tcp_fd >= 0)
             {
-                video_pfd_idx         = nfds;
-                have_video_pfd        = true;
-                pfds[nfds].fd         = video_tcp_fd;
-                pfds[nfds].events     = POLLIN;
+                video_pfd_idx     = nfds;
+                have_video_pfd    = true;
+                pfds[nfds].fd     = video_tcp_fd;
+                pfds[nfds].events = POLLIN;
                 nfds++;
             }
             if (audio_tcp_fd >= 0)
             {
-                audio_pfd_idx         = nfds;
-                have_audio_pfd        = true;
-                pfds[nfds].fd         = audio_tcp_fd;
-                pfds[nfds].events     = POLLIN;
+                audio_pfd_idx     = nfds;
+                have_audio_pfd    = true;
+                pfds[nfds].fd     = audio_tcp_fd;
+                pfds[nfds].events = POLLIN;
                 nfds++;
             }
 
-            if (input_tcp_fd < 0 || selection_tcp_fd < 0 ||
-                (client_video_tcp && video_tcp_fd < 0) ||
+            if (input_tcp_fd < 0 || selection_tcp_fd < 0 || (client_video_tcp && video_tcp_fd < 0) ||
                 (client_audio_tcp && audio_tcp_fd < 0))
             {
-                listen_pfd_idx        = nfds;
-                have_listen_pfd       = true;
-                pfds[nfds].fd         = net->listen_fd;
-                pfds[nfds].events     = POLLIN;
+                listen_pfd_idx    = nfds;
+                have_listen_pfd   = true;
+                pfds[nfds].fd     = net->listen_fd;
+                pfds[nfds].events = POLLIN;
                 nfds++;
             }
 
@@ -1877,7 +1836,6 @@ void* wd_net_thread_main(void* arg) {
                 break;
             }
 
-
             if (have_listen_pfd && (pfds[listen_pfd_idx].revents & POLLIN))
             {
                 int old_input_fd     = input_tcp_fd;
@@ -1885,7 +1843,8 @@ void* wd_net_thread_main(void* arg) {
                 int old_video_fd     = video_tcp_fd;
                 int old_audio_fd     = audio_tcp_fd;
 
-                (void)wd_accept_aux_channel_fd(server, cfg.session_id, cfg.connection_token, &input_tcp_fd, &selection_tcp_fd, &video_tcp_fd, &audio_tcp_fd);
+                (void)wd_accept_aux_channel_fd(server, cfg.session_id, cfg.connection_token, &input_tcp_fd, &selection_tcp_fd,
+                                               &video_tcp_fd, &audio_tcp_fd);
 
                 if (input_tcp_fd >= 0 && old_input_fd < 0)
                 {
@@ -1919,11 +1878,9 @@ void* wd_net_thread_main(void* arg) {
                     pthread_mutex_lock(&net->lock);
                     net->audio_tcp_fd = audio_tcp_fd;
                     pthread_mutex_unlock(&net->lock);
-                    if (!wd_audio_stream_start(net->audio_stream, audio_tcp_fd, cfg.session_id,
-                                               cfg.connection_token, net->audio_epoch,
-                                               cfg.media_clock_id, net->media_clock_start_ns,
-                                               selected_audio_channels, WD_AUDIO_BITRATE_DEFAULT,
-                                               selected_audio_latency_ms))
+                    if (!wd_audio_stream_start(net->audio_stream, audio_tcp_fd, cfg.session_id, cfg.connection_token, net->audio_epoch,
+                                               cfg.media_clock_id, net->media_clock_start_ns, selected_audio_channels,
+                                               WD_AUDIO_BITRATE_DEFAULT, selected_audio_latency_ms))
                     {
                         WD_LOG_ERROR("failed to start late audio channel");
                         close(audio_tcp_fd);
@@ -2003,19 +1960,17 @@ void* wd_net_thread_main(void* arg) {
                     {
                         pthread_mutex_lock(&net->lock);
                         net->stats.tcp_selection_channel_rx++;
-                        wd_clipboard_queue_client_set_locked(net, cfg.session_id, cfg.connection_token, selection_payload, selection_payload_size,
-                                                             selection_type == WD_MSG_PRIMARY_SET);
+                        wd_clipboard_queue_client_set_locked(net, cfg.session_id, cfg.connection_token, selection_payload,
+                                                             selection_payload_size, selection_type == WD_MSG_PRIMARY_SET);
                         pthread_mutex_unlock(&net->lock);
                         wd_server_wake_input(server);
                     }
-                    else if ((selection_type == WD_MSG_CLIPBOARD_REQUEST ||
-                              selection_type == WD_MSG_PRIMARY_REQUEST) &&
+                    else if ((selection_type == WD_MSG_CLIPBOARD_REQUEST || selection_type == WD_MSG_PRIMARY_REQUEST) &&
                              selection_payload_size == 0)
                     {
                         pthread_mutex_lock(&net->lock);
                         net->stats.tcp_selection_channel_rx++;
-                        wd_clipboard_queue_client_request_locked(
-                            net, selection_type == WD_MSG_PRIMARY_REQUEST);
+                        wd_clipboard_queue_client_request_locked(net, selection_type == WD_MSG_PRIMARY_REQUEST);
                         pthread_mutex_unlock(&net->lock);
                         wd_server_wake_input(server);
                     }
@@ -2079,16 +2034,15 @@ void* wd_net_thread_main(void* arg) {
                     struct wd_tile_repair_request_payload_header rh;
                     memcpy(&rh, payload, sizeof(rh));
 
-                    const bool exact_size = wd_counted_payload_size_is_valid(
-                        payload_size, sizeof(rh), rh.request_count, sizeof(struct wd_tile_repair_entry));
+                    const bool exact_size =
+                        wd_counted_payload_size_is_valid(payload_size, sizeof(rh), rh.request_count, sizeof(struct wd_tile_repair_entry));
 
                     if (rh.session_id == cfg.session_id && rh.connection_token == cfg.connection_token && exact_size)
                     {
                         struct wd_tile_repair_entry* entries = (struct wd_tile_repair_entry*)(payload + sizeof(rh));
 
                         pthread_mutex_lock(&net->lock);
-                        if (rh.content_epoch != net->content_epoch ||
-                            !wd_tile_repair_count_is_valid(rh.request_count, server->total_tiles))
+                        if (rh.content_epoch != net->content_epoch || !wd_tile_repair_count_is_valid(rh.request_count, server->total_tiles))
                         {
                             pthread_mutex_unlock(&net->lock);
                             free(payload);
@@ -2106,9 +2060,8 @@ void* wd_net_thread_main(void* arg) {
                                 continue;
                             }
 
-                            struct wd_tile_state* tile = &net->tiles[entries[i].tile_id];
-                            uint64_t requested_generation = entries[i].requested_generation;
-
+                            struct wd_tile_state* tile                 = &net->tiles[entries[i].tile_id];
+                            uint64_t              requested_generation = entries[i].requested_generation;
 
                             if (requested_generation != 0 && tile->generation < requested_generation)
                             {
@@ -2145,10 +2098,9 @@ void* wd_net_thread_main(void* arg) {
 
                     pthread_mutex_lock(&net->lock);
                     if (net->config_update_pending &&
-                        wd_config_applied_matches(&applied, net->session_id,
-                                                  net->connection_token, net->config_epoch))
+                        wd_config_applied_matches(&applied, net->session_id, net->connection_token, net->config_epoch))
                     {
-                        const uint64_t now_ns = wd_now_ns();
+                        const uint64_t now_ns      = wd_now_ns();
                         net->config_update_pending = false;
                         net->stats.tcp_config_applied_ack_rx++;
                         if (net->config_update_sent_ns != 0 && now_ns >= net->config_update_sent_ns)
@@ -2167,9 +2119,9 @@ void* wd_net_thread_main(void* arg) {
                          * contents only after the client has installed the
                          * matching geometry/session. Reset pacing so the
                          * first refresh is not delayed by the old FPS slot. */
-                        net->stream_policy.last_frame_send_ns = 0;
+                        net->stream_policy.last_frame_send_ns             = 0;
                         net->stream_policy.client_render_pressure_seconds = 0;
-                        net->stream_policy.frame_rate_good_seconds = 0;
+                        net->stream_policy.frame_rate_good_seconds        = 0;
                         wd_stream_invalidate_all_tiles_locked(server);
                     }
                     pthread_mutex_unlock(&net->lock);
@@ -2256,7 +2208,7 @@ void* wd_net_thread_main(void* arg) {
                         {
                             net->stats.client_video_queue_depth_max = cs.video_queue_depth_max;
                         }
-                        net->stats.client_video_oldest_pts_usec = cs.video_oldest_pts_usec;
+                        net->stats.client_video_oldest_pts_usec     = cs.video_oldest_pts_usec;
                         net->stats.client_video_audio_delta_samples = cs.video_audio_delta_samples;
                         net->stats.client_tile_frames_presented += cs.tile_frames_presented;
                         pthread_mutex_unlock(&net->lock);
@@ -2266,16 +2218,15 @@ void* wd_net_thread_main(void* arg) {
                          payload_size >= sizeof(struct wd_selection_payload_header))
                 {
                     pthread_mutex_lock(&net->lock);
-                    wd_clipboard_queue_client_set_locked(net, cfg.session_id, cfg.connection_token, payload, payload_size, type == WD_MSG_PRIMARY_SET);
+                    wd_clipboard_queue_client_set_locked(net, cfg.session_id, cfg.connection_token, payload, payload_size,
+                                                         type == WD_MSG_PRIMARY_SET);
                     pthread_mutex_unlock(&net->lock);
                     wd_server_wake_input(server);
                 }
-                else if ((type == WD_MSG_CLIPBOARD_REQUEST ||
-                          type == WD_MSG_PRIMARY_REQUEST) && payload_size == 0)
+                else if ((type == WD_MSG_CLIPBOARD_REQUEST || type == WD_MSG_PRIMARY_REQUEST) && payload_size == 0)
                 {
                     pthread_mutex_lock(&net->lock);
-                    wd_clipboard_queue_client_request_locked(
-                        net, type == WD_MSG_PRIMARY_REQUEST);
+                    wd_clipboard_queue_client_request_locked(net, type == WD_MSG_PRIMARY_REQUEST);
                     pthread_mutex_unlock(&net->lock);
                     wd_server_wake_input(server);
                 }
@@ -2284,7 +2235,8 @@ void* wd_net_thread_main(void* arg) {
                     struct wd_display_resize_payload resize;
                     memcpy(&resize, payload, sizeof(resize));
 
-                    if (resize.session_id == cfg.session_id && resize.connection_token == cfg.connection_token && resize.width != 0 && resize.height != 0)
+                    if (resize.session_id == cfg.session_id && resize.connection_token == cfg.connection_token && resize.width != 0 &&
+                        resize.height != 0)
                     {
                         if (wd_server_request_display_size(server, resize.width, resize.height))
                         {
@@ -2345,7 +2297,7 @@ void* wd_net_thread_main(void* arg) {
             net->audio_tcp_fd = -1;
         }
 
-        net->client_connected      = false;
+        net->client_connected = false;
         net->connection_epoch++;
         if (net->connection_epoch == 0)
         {
@@ -2360,16 +2312,16 @@ void* wd_net_thread_main(void* arg) {
         net->config_update_sent_ns = 0;
         wd_stream_video_reset_locked(server, "client disconnected", false, false);
         net->video_stream_negotiated = false;
-        net->video_codecs = 0;
-        net->video_transport = 0;
+        net->video_codecs            = 0;
+        net->video_transport         = 0;
         net->audio_stream_negotiated = false;
-        net->audio_codec = 0;
-        net->audio_transport = 0;
-        net->audio_channels = 0;
+        net->audio_codec             = 0;
+        net->audio_transport         = 0;
+        net->audio_channels          = 0;
         net->audio_target_latency_ms = 0;
-        net->audio_bitrate = 0;
-        net->key_queue_count     = 0;
-        net->pointer_queue_count = 0;
+        net->audio_bitrate           = 0;
+        net->key_queue_count         = 0;
+        net->pointer_queue_count     = 0;
         net->key_state_reset_pending = true;
 
         free(net->clipboard_text);
@@ -2378,9 +2330,9 @@ void* wd_net_thread_main(void* arg) {
         net->clipboard_text_pending = false;
 
         free(net->primary_text);
-        net->primary_text         = NULL;
-        net->primary_text_size    = 0;
-        net->primary_text_pending = false;
+        net->primary_text              = NULL;
+        net->primary_text_size         = 0;
+        net->primary_text_pending      = false;
         net->clipboard_request_pending = false;
         net->primary_request_pending   = false;
 

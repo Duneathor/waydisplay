@@ -22,8 +22,7 @@ bool wd_send_tcp_message(int fd, uint16_t message_type, const void* payload, uin
  *   - *out_payload is NULL
  *   - *out_payload_size is 0
  */
-bool wd_recv_tcp_message_limited(int fd, uint32_t max_payload_size,
-                                 uint16_t* out_message_type, uint8_t** out_payload,
+bool wd_recv_tcp_message_limited(int fd, uint32_t max_payload_size, uint16_t* out_message_type, uint8_t** out_payload,
                                  uint32_t* out_payload_size);
 bool wd_recv_tcp_message(int fd, uint16_t* out_message_type, uint8_t** out_payload, uint32_t* out_payload_size);
 

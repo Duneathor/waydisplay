@@ -1,15 +1,15 @@
 #include "wd_async_tcp.h"
 
 #include "waydisplay/wd_config.h"
-#include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_log.h"
+#include "waydisplay/wd_protocol.h"
 
 #include <errno.h>
 #include <liburing.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -127,8 +127,7 @@ static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, stru
         return false;
     }
 
-    io_uring_prep_send(sqe, msg->fd, msg->bytes + msg->bytes_sent, msg->total_size - msg->bytes_sent,
-                       WD_ASYNC_SEND_FLAGS);
+    io_uring_prep_send(sqe, msg->fd, msg->bytes + msg->bytes_sent, msg->total_size - msg->bytes_sent, WD_ASYNC_SEND_FLAGS);
     io_uring_sqe_set_data(sqe, msg);
 
     msg->submitted = true;
@@ -152,8 +151,7 @@ static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, stru
     return true;
 }
 
-static bool wd_async_tcp_try_start_head(struct wd_async_tcp_sender* sender,
-                                        struct wd_async_tcp_message* suppress_completion,
+static bool wd_async_tcp_try_start_head(struct wd_async_tcp_sender* sender, struct wd_async_tcp_message* suppress_completion,
                                         bool* suppressed_message_failed) {
     if (suppressed_message_failed)
     {
@@ -168,7 +166,7 @@ static bool wd_async_tcp_try_start_head(struct wd_async_tcp_sender* sender,
     if (!wd_async_tcp_submit_message(sender, sender->pending_head))
     {
         struct wd_async_tcp_message* failed_msg = sender->pending_head;
-        bool suppressed = failed_msg == suppress_completion;
+        bool                         suppressed = failed_msg == suppress_completion;
         sender->failed++;
         wd_async_tcp_pending_remove(sender, failed_msg);
         if (!suppressed)
@@ -186,16 +184,15 @@ static bool wd_async_tcp_try_start_head(struct wd_async_tcp_sender* sender,
     return true;
 }
 
-static struct wd_async_tcp_message* wd_async_tcp_message_create(int fd, uint16_t message_type, const void* payload,
-                                                                uint32_t payload_size,
+static struct wd_async_tcp_message* wd_async_tcp_message_create(int fd, uint16_t message_type, const void* payload, uint32_t payload_size,
                                                                 wd_async_tcp_complete_fn complete, void* user_data) {
     if (payload_size != 0 && !payload)
     {
         return NULL;
     }
 
-    const size_t total_size = sizeof(struct wd_tcp_header) + (size_t)payload_size;
-    struct wd_async_tcp_message* msg = calloc(1, sizeof(*msg) + total_size);
+    const size_t                 total_size = sizeof(struct wd_tcp_header) + (size_t)payload_size;
+    struct wd_async_tcp_message* msg        = calloc(1, sizeof(*msg) + total_size);
     if (!msg)
     {
         return NULL;
@@ -250,7 +247,7 @@ bool wd_async_tcp_sender_create(struct wd_async_tcp_sender** out_sender, uint32_
 
     sender->ring_ready        = true;
     sender->max_pending_bytes = WD_ASYNC_TCP_DEFAULT_MAX_PENDING_BYTES;
-    *out_sender = sender;
+    *out_sender               = sender;
     return true;
 }
 
@@ -370,10 +367,8 @@ bool wd_async_tcp_sender_can_queue(const struct wd_async_tcp_sender* sender, uin
         return false;
     }
 
-    const uint64_t total_size = (uint64_t)sizeof(struct wd_tcp_header) +
-                                (uint64_t)payload_size;
-    return sender->max_pending_bytes == 0 ||
-           sender->pending_bytes + total_size <= sender->max_pending_bytes;
+    const uint64_t total_size = (uint64_t)sizeof(struct wd_tcp_header) + (uint64_t)payload_size;
+    return sender->max_pending_bytes == 0 || sender->pending_bytes + total_size <= sender->max_pending_bytes;
 }
 
 bool wd_async_tcp_sender_has_message_type(const struct wd_async_tcp_sender* sender, uint16_t message_type) {
@@ -397,8 +392,8 @@ uint32_t wd_async_tcp_sender_drop_message_type(struct wd_async_tcp_sender* sende
         return 0;
     }
 
-    uint32_t dropped = 0;
-    struct wd_async_tcp_message* msg = sender->pending_head;
+    uint32_t                     dropped = 0;
+    struct wd_async_tcp_message* msg     = sender->pending_head;
     while (msg)
     {
         struct wd_async_tcp_message* next = msg->next;

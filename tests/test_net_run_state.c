@@ -6,14 +6,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define CHECK(condition)                                                                            \
-    do                                                                                              \
-    {                                                                                               \
-        if (!(condition))                                                                           \
-        {                                                                                           \
-            fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, #condition);       \
-            exit(1);                                                                                \
-        }                                                                                           \
+#define CHECK(condition)                                                                                                                   \
+    do                                                                                                                                     \
+    {                                                                                                                                      \
+        if (!(condition))                                                                                                                  \
+        {                                                                                                                                  \
+            fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, #condition);                                                \
+            exit(1);                                                                                                                       \
+        }                                                                                                                                  \
     } while (0)
 
 struct reader_context {
@@ -39,7 +39,7 @@ int main(void) {
     CHECK(wd_net_run_state_is_running(&state));
 
     enum { READER_COUNT = 4 };
-    pthread_t threads[READER_COUNT];
+    pthread_t   threads[READER_COUNT];
     atomic_uint ready_count;
     atomic_init(&ready_count, 0u);
 

@@ -30,14 +30,14 @@ struct ClientAsyncUdpReceiverStats {
 
 using ClientAsyncUdpPacketHandler = bool (*)(void* userdata, const uint8_t* data, size_t size);
 
-ClientAsyncUdpReceiver* client_async_udp_receiver_create(int fd, uint32_t entries, size_t packet_size);
-ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpReceiver* receiver,
-                                                               ClientAsyncUdpReceiverStats* final_stats = nullptr);
-bool client_async_udp_receiver_ready(ClientAsyncUdpReceiver* receiver);
-ClientAsyncUdpWaitResult client_async_udp_receiver_wait(ClientAsyncUdpReceiver* receiver, uint64_t timeout_ns);
+ClientAsyncUdpReceiver*    client_async_udp_receiver_create(int fd, uint32_t entries, size_t packet_size);
+ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpReceiver*      receiver,
+                                                             ClientAsyncUdpReceiverStats* final_stats = nullptr);
+bool                       client_async_udp_receiver_ready(ClientAsyncUdpReceiver* receiver);
+ClientAsyncUdpWaitResult   client_async_udp_receiver_wait(ClientAsyncUdpReceiver* receiver, uint64_t timeout_ns);
 
-bool client_async_udp_receiver_drain(ClientAsyncUdpReceiver* receiver, void* userdata,
-                                     ClientAsyncUdpPacketHandler handler, uint32_t max_packets);
+bool client_async_udp_receiver_drain(ClientAsyncUdpReceiver* receiver, void* userdata, ClientAsyncUdpPacketHandler handler,
+                                     uint32_t max_packets);
 
 ClientAsyncUdpReceiverStats client_async_udp_receiver_stats(ClientAsyncUdpReceiver* receiver);
 

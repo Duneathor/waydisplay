@@ -28,8 +28,8 @@
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_protocol.h"
-#include "wd_net_run_state.h"
 #include "wd_net_listener.h"
+#include "wd_net_run_state.h"
 #include "wd_process.h"
 #include "wd_selection_delivery.h"
 
@@ -204,7 +204,6 @@ struct wd_tile_state {
     uint64_t generation;
     uint64_t timestamp_ns;
     uint64_t input_sequence;
-
 };
 
 struct wd_udp_tile_send_result {
@@ -490,36 +489,36 @@ struct wd_stats {
 };
 
 enum wd_stream_mode {
-    WD_STREAM_MODE_TILES = 0,
+    WD_STREAM_MODE_TILES           = 0,
     WD_STREAM_MODE_VIDEO_CANDIDATE = 1,
-    WD_STREAM_MODE_VIDEO_READY = 2,
-    WD_STREAM_MODE_VIDEO_ACTIVE = 3,
-    WD_STREAM_MODE_TILE_RECOVERY = 4,
+    WD_STREAM_MODE_VIDEO_READY     = 2,
+    WD_STREAM_MODE_VIDEO_ACTIVE    = 3,
+    WD_STREAM_MODE_TILE_RECOVERY   = 4,
 };
 
 struct wd_stats_log_state {
-    struct wd_stats totals;
-    bool            have_prev_state;
-    uint16_t        prev_requested_capture_fps;
-    uint16_t        prev_adaptive_capture_fps;
-    uint16_t        prev_capture_pacing_fps;
-    uint16_t        prev_compositor_refresh_hz;
-    uint16_t        prev_client_present_cap_fps;
-    bool            prev_client_render_visible;
-    uint64_t        prev_limited_kib;
-    uint16_t        prev_tile_width;
-    uint16_t        prev_tile_height;
-    bool            prev_input_channel;
-    bool            prev_selection_channel;
-    bool            prev_video_channel;
-    bool            prev_video_negotiated;
-    bool            prev_video_encoder;
-    uint8_t         prev_video_mode;
-    uint8_t         prev_video_min_dirty_percent;
-    uint16_t        prev_video_enter_seconds;
-    uint8_t         prev_video_exit_dirty_percent;
-    uint16_t        prev_video_exit_seconds;
-    uint32_t        prev_video_bitrate_kib;
+    struct wd_stats     totals;
+    bool                have_prev_state;
+    uint16_t            prev_requested_capture_fps;
+    uint16_t            prev_adaptive_capture_fps;
+    uint16_t            prev_capture_pacing_fps;
+    uint16_t            prev_compositor_refresh_hz;
+    uint16_t            prev_client_present_cap_fps;
+    bool                prev_client_render_visible;
+    uint64_t            prev_limited_kib;
+    uint16_t            prev_tile_width;
+    uint16_t            prev_tile_height;
+    bool                prev_input_channel;
+    bool                prev_selection_channel;
+    bool                prev_video_channel;
+    bool                prev_video_negotiated;
+    bool                prev_video_encoder;
+    uint8_t             prev_video_mode;
+    uint8_t             prev_video_min_dirty_percent;
+    uint16_t            prev_video_enter_seconds;
+    uint8_t             prev_video_exit_dirty_percent;
+    uint16_t            prev_video_exit_seconds;
+    uint32_t            prev_video_bitrate_kib;
     enum wd_stream_mode prev_stream_mode;
 };
 
@@ -528,22 +527,22 @@ struct wd_stream_policy {
     uint16_t adaptive_capture_fps;
 
     enum wd_stream_mode stream_mode;
-    uint8_t video_mode;
-    uint8_t video_min_dirty_percent;
-    uint16_t video_enter_seconds;
-    uint8_t video_exit_dirty_percent;
-    uint16_t video_exit_seconds;
-    uint32_t video_bitrate_kib_per_second;
-    uint32_t video_candidate_seconds;
-    uint32_t tile_recovery_seconds;
-    uint32_t video_client_failure_seconds;
-    bool     tile_refresh_pending;
-    bool     tile_recovery_refresh_started;
-    bool     tile_recovery_refresh_sent;
-    uint32_t tile_recovery_wait_seconds;
-    uint32_t video_retry_cooldown_seconds;
-    bool     video_auto_bootstrap_suppressed;
-    uint32_t video_auto_bootstrap_seconds;
+    uint8_t             video_mode;
+    uint8_t             video_min_dirty_percent;
+    uint16_t            video_enter_seconds;
+    uint8_t             video_exit_dirty_percent;
+    uint16_t            video_exit_seconds;
+    uint32_t            video_bitrate_kib_per_second;
+    uint32_t            video_candidate_seconds;
+    uint32_t            tile_recovery_seconds;
+    uint32_t            video_client_failure_seconds;
+    bool                tile_refresh_pending;
+    bool                tile_recovery_refresh_started;
+    bool                tile_recovery_refresh_sent;
+    uint32_t            tile_recovery_wait_seconds;
+    uint32_t            video_retry_cooldown_seconds;
+    bool                video_auto_bootstrap_suppressed;
+    uint32_t            video_auto_bootstrap_seconds;
 
     uint32_t frame_rate_good_seconds;
 
@@ -587,9 +586,9 @@ struct wd_net_state {
     pthread_cond_t  startup_cond;
     pthread_cond_t  encoder_idle_cond;
 
-    enum wd_net_startup_state startup_state;
+    enum wd_net_startup_state  startup_state;
     enum wd_net_listener_stage startup_failed_stage;
-    int startup_error;
+    int                        startup_error;
 
     bool     display_resize_pending;
     uint64_t display_resize_request_serial;
@@ -600,7 +599,7 @@ struct wd_net_state {
 
     struct wd_net_run_state run_state;
     bool                    client_connected;
-    uint16_t udp_payload_target;
+    uint16_t                udp_payload_target;
 
     uint64_t link_rtt_ns;
     uint64_t link_jitter_ns;
@@ -611,22 +610,22 @@ struct wd_net_state {
     uint64_t active_summary_interval_ns;
     uint64_t clean_summary_interval_ns;
 
-    uint16_t  dirty_region_cursor;
+    uint16_t                          dirty_region_cursor;
     struct wd_dirty_region_scheduler* dirty_region_scheduler;
-    uint16_t* dirty_regions;
-    bool*     dirty_region_queued;
-    uint64_t* dirty_region_enqueued_ns;
-    uint16_t  dirty_region_count;
+    uint16_t*                         dirty_regions;
+    bool*                             dirty_region_queued;
+    uint64_t*                         dirty_region_enqueued_ns;
+    uint16_t                          dirty_region_count;
 
     uint64_t* dirty_epochs;
 
-    bool encoder_batch_active;
-    void* encoder_pool;
-    void* encode_workspace;
-    void* video_worker;
-    uint64_t video_worker_epoch;
+    bool                     encoder_batch_active;
+    void*                    encoder_pool;
+    void*                    encode_workspace;
+    void*                    video_worker;
+    uint64_t                 video_worker_epoch;
     struct wd_video_encoder* video_encoder;
-    pthread_mutex_t video_encoder_lock;
+    pthread_mutex_t          video_encoder_lock;
 
     uint16_t* dirty_queue;
     bool*     dirty_queued;
@@ -686,15 +685,15 @@ struct wd_net_state {
     struct in_addr listen_address;
     uint16_t       tcp_port;
     uint16_t       udp_port;
-    uint8_t  session_id;
-    uint64_t connection_token;
-    uint64_t connection_epoch;
-    uint64_t config_epoch;
-    uint64_t content_epoch;
-    uint64_t media_clock_id;
-    uint64_t media_clock_start_ns;
-    bool     config_update_pending;
-    uint64_t config_update_sent_ns;
+    uint8_t        session_id;
+    uint64_t       connection_token;
+    uint64_t       connection_epoch;
+    uint64_t       config_epoch;
+    uint64_t       content_epoch;
+    uint64_t       media_clock_id;
+    uint64_t       media_clock_start_ns;
+    bool           config_update_pending;
+    uint64_t       config_update_sent_ns;
 
     bool     video_stream_negotiated;
     uint32_t video_codecs;
@@ -712,14 +711,14 @@ struct wd_net_state {
     struct wd_stream_policy stream_policy;
 
     struct wd_tile_state* tiles;
-    struct wd_stats        stats;
-    uint64_t               last_input_inject_ns;
-    bool                   input_since_last_summary;
-    bool                   input_since_last_fresh_tile;
-    uint64_t               last_input_sequence;
-    uint64_t               input_correlation_inflight_sequence;
-    uint64_t               udp_send_pressure_log_ns;
-    uint64_t               udp_send_pressure_drops;
+    struct wd_stats       stats;
+    uint64_t              last_input_inject_ns;
+    bool                  input_since_last_summary;
+    bool                  input_since_last_fresh_tile;
+    uint64_t              last_input_sequence;
+    uint64_t              input_correlation_inflight_sequence;
+    uint64_t              udp_send_pressure_log_ns;
+    uint64_t              udp_send_pressure_drops;
 
     struct wd_queued_key_event key_queue[WD_SERVER_KEY_QUEUE_CAPACITY];
     size_t                     key_queue_count;
@@ -888,11 +887,9 @@ struct wd_server {
 };
 
 /* wd_server.c */
-bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr listen_address,
-                    const char* app_cmd, double output_scale,
-                    uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height,
-                    uint16_t tile_width, uint16_t tile_height, bool enable_xwayland,
-                    bool enable_xdg_dialog, const char* video_encoder_backend);
+bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr listen_address, const char* app_cmd, double output_scale,
+                    uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height, uint16_t tile_width, uint16_t tile_height,
+                    bool enable_xwayland, bool enable_xdg_dialog, const char* video_encoder_backend);
 
 void wd_server_destroy(struct wd_server* server);
 
@@ -973,24 +970,24 @@ enum wd_render_result {
 enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* server);
 
 /* wd_stream.c */
-bool wd_stream_init(struct wd_server* server);
-void wd_stream_invalidate_all_tiles_locked(struct wd_server* server);
+bool     wd_stream_init(struct wd_server* server);
+void     wd_stream_invalidate_all_tiles_locked(struct wd_server* server);
 uint16_t wd_stream_queue_cached_full_refresh_locked(struct wd_server* server);
-void wd_stream_wait_for_encoder_idle_locked(struct wd_server* server);
-void wd_stream_destroy(struct wd_server* server);
-bool wd_stream_send_dirty_tiles(struct wd_server* server);
-bool wd_stream_service_tile_queues(struct wd_server* server);
-bool wd_stream_send_generation_summary_locked(struct wd_server* server);
-bool wd_stream_send_pending_generation_summary_locked(struct wd_server* server);
-bool wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id, uint64_t requested_generation);
-void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_stats);
-bool wd_stream_try_consume_tcp_control_budget_locked(struct wd_net_state* net, uint32_t bytes, uint64_t now_ns);
-void wd_stream_account_tcp_control_bytes_locked(struct wd_net_state* net, uint32_t bytes);
+void     wd_stream_wait_for_encoder_idle_locked(struct wd_server* server);
+void     wd_stream_destroy(struct wd_server* server);
+bool     wd_stream_send_dirty_tiles(struct wd_server* server);
+bool     wd_stream_service_tile_queues(struct wd_server* server);
+bool     wd_stream_send_generation_summary_locked(struct wd_server* server);
+bool     wd_stream_send_pending_generation_summary_locked(struct wd_server* server);
+bool     wd_stream_queue_retransmit_tile_locked(struct wd_server* server, uint16_t tile_id, uint64_t requested_generation);
+void     wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_stats);
+bool     wd_stream_try_consume_tcp_control_budget_locked(struct wd_net_state* net, uint32_t bytes, uint64_t now_ns);
+void     wd_stream_account_tcp_control_bytes_locked(struct wd_net_state* net, uint32_t bytes);
 
-void     wd_stream_policy_set_defaults(struct wd_stream_policy* policy);
-void     wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const struct wd_client_hello_payload* hello);
-void     wd_stream_policy_set_limited_udp_byte_rate(struct wd_stream_policy* policy, uint64_t bytes_per_second);
-bool     wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_ns);
+void wd_stream_policy_set_defaults(struct wd_stream_policy* policy);
+void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const struct wd_client_hello_payload* hello);
+void wd_stream_policy_set_limited_udp_byte_rate(struct wd_stream_policy* policy, uint64_t bytes_per_second);
+bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_ns);
 void wd_server_mark_scene_dirty(struct wd_server* server);
 void wd_server_mark_rect_dirty(struct wd_server* server, int x, int y, int width, int height);
 bool wd_server_scene_node_bounds(struct wlr_scene_node* node, struct wlr_box* out_box);
@@ -1009,15 +1006,14 @@ void wd_server_set_default_geometry(struct wd_server* server);
 /* wd_clipboard.c */
 bool wd_clipboard_init(struct wd_server* server);
 void wd_clipboard_destroy(struct wd_server* server);
-void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expected_session_id, uint64_t expected_connection_token, const uint8_t* payload,
-                                          uint32_t payload_size, bool primary);
+void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expected_session_id, uint64_t expected_connection_token,
+                                          const uint8_t* payload, uint32_t payload_size, bool primary);
 void wd_clipboard_drain_and_apply(struct wd_server* server);
 void wd_clipboard_queue_client_request_locked(struct wd_net_state* net, bool primary);
 void wd_clipboard_send_pending_locked(struct wd_server* server);
 
 /* wd_server_net.c */
-bool  wd_net_init(struct wd_server* server, uint16_t tcp_port,
-                  struct in_addr listen_address);
+bool  wd_net_init(struct wd_server* server, uint16_t tcp_port, struct in_addr listen_address);
 bool  wd_net_wait_until_ready(struct wd_server* server);
 void  wd_net_destroy(struct wd_server* server);
 void* wd_net_thread_main(void* arg);

@@ -18,8 +18,7 @@ bool fail(ClientConfigValidationError error, ClientConfigValidationError* out_er
 
 } // namespace
 
-bool client_normalize_and_validate_server_config(wd_server_config_payload& config,
-                                                 ClientConfigValidationError* out_error) {
+bool client_normalize_and_validate_server_config(wd_server_config_payload& config, ClientConfigValidationError* out_error) {
     if (out_error)
     {
         *out_error = ClientConfigValidationError::None;
@@ -38,16 +37,14 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
         return fail(ClientConfigValidationError::MissingConfigurationEpoch, out_error);
     }
 
-    if (config.width == 0 || config.height == 0 || config.width > WD_MAX_RENDER_WIDTH ||
-        config.height > WD_MAX_RENDER_HEIGHT)
+    if (config.width == 0 || config.height == 0 || config.width > WD_MAX_RENDER_WIDTH || config.height > WD_MAX_RENDER_HEIGHT)
     {
         return fail(ClientConfigValidationError::UnsupportedDisplayDimensions, out_error);
     }
 
     const uint64_t framebuffer_pixels = static_cast<uint64_t>(config.width) * config.height;
-    const uint64_t framebuffer_bytes = framebuffer_pixels * WD_BYTES_PER_PIXEL;
-    if (framebuffer_pixels > UINT32_MAX || framebuffer_bytes > WD_CLIENT_MAX_FRAMEBUFFER_BYTES ||
-        framebuffer_bytes > UINT32_MAX)
+    const uint64_t framebuffer_bytes  = framebuffer_pixels * WD_BYTES_PER_PIXEL;
+    if (framebuffer_pixels > UINT32_MAX || framebuffer_bytes > WD_CLIENT_MAX_FRAMEBUFFER_BYTES || framebuffer_bytes > UINT32_MAX)
     {
         return fail(ClientConfigValidationError::UnsupportedFramebufferSize, out_error);
     }
@@ -61,10 +58,9 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
 
     const uint32_t expected_tiles_x = wd_tiles_for_width_with_tile(config.width, config.tile_width);
     const uint32_t expected_tiles_y = wd_tiles_for_height_with_tile(config.height, config.tile_height);
-    const uint64_t expected_total = static_cast<uint64_t>(expected_tiles_x) * expected_tiles_y;
-    if (expected_tiles_x == 0 || expected_tiles_y == 0 || expected_tiles_x > UINT16_MAX ||
-        expected_tiles_y > UINT16_MAX || expected_total == 0 || expected_total > UINT16_MAX ||
-        config.tiles_x != expected_tiles_x || config.tiles_y != expected_tiles_y ||
+    const uint64_t expected_total   = static_cast<uint64_t>(expected_tiles_x) * expected_tiles_y;
+    if (expected_tiles_x == 0 || expected_tiles_y == 0 || expected_tiles_x > UINT16_MAX || expected_tiles_y > UINT16_MAX ||
+        expected_total == 0 || expected_total > UINT16_MAX || config.tiles_x != expected_tiles_x || config.tiles_y != expected_tiles_y ||
         config.total_tiles != expected_total)
     {
         return fail(ClientConfigValidationError::InconsistentTileGrid, out_error);
@@ -79,8 +75,7 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
         return fail(ClientConfigValidationError::UnsupportedCompression, out_error);
     }
 
-    if ((config.capabilities & ~WD_SERVER_CAP_MASK) != 0 ||
-        (config.video_codecs & ~WD_VIDEO_CODEC_MASK) != 0)
+    if ((config.capabilities & ~WD_SERVER_CAP_MASK) != 0 || (config.video_codecs & ~WD_VIDEO_CODEC_MASK) != 0)
     {
         return fail(ClientConfigValidationError::InvalidCapabilities, out_error);
     }
@@ -92,20 +87,14 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
     }
     const bool audio = (config.capabilities & WD_SERVER_CAP_AUDIO_STREAM) != 0;
     const bool audio_fields_valid =
-        config.audio_codec == WD_AUDIO_CODEC_OPUS &&
-        config.audio_transport == WD_AUDIO_TRANSPORT_TCP &&
-        config.audio_sample_rate == WD_AUDIO_SAMPLE_RATE_DEFAULT &&
-        config.audio_channels != 0 && config.audio_channels <= WD_AUDIO_CHANNELS_MAX &&
-        config.audio_reserved == 0 &&
-        wd_audio_frame_samples_is_valid(config.audio_frame_samples) &&
-        config.audio_target_latency_ms >= WD_AUDIO_TARGET_LATENCY_MS_MIN &&
-        config.audio_target_latency_ms <= WD_AUDIO_TARGET_LATENCY_MS_MAX &&
-        config.audio_bitrate != 0 && config.media_clock_id != 0;
-    const bool audio_fields_zero =
-        config.audio_codec == 0 && config.audio_transport == 0 &&
-        config.audio_sample_rate == 0 && config.audio_channels == 0 &&
-        config.audio_reserved == 0 && config.audio_frame_samples == 0 &&
-        config.audio_target_latency_ms == 0 && config.audio_bitrate == 0;
+        config.audio_codec == WD_AUDIO_CODEC_OPUS && config.audio_transport == WD_AUDIO_TRANSPORT_TCP &&
+        config.audio_sample_rate == WD_AUDIO_SAMPLE_RATE_DEFAULT && config.audio_channels != 0 &&
+        config.audio_channels <= WD_AUDIO_CHANNELS_MAX && config.audio_reserved == 0 &&
+        wd_audio_frame_samples_is_valid(config.audio_frame_samples) && config.audio_target_latency_ms >= WD_AUDIO_TARGET_LATENCY_MS_MIN &&
+        config.audio_target_latency_ms <= WD_AUDIO_TARGET_LATENCY_MS_MAX && config.audio_bitrate != 0 && config.media_clock_id != 0;
+    const bool audio_fields_zero = config.audio_codec == 0 && config.audio_transport == 0 && config.audio_sample_rate == 0 &&
+                                   config.audio_channels == 0 && config.audio_reserved == 0 && config.audio_frame_samples == 0 &&
+                                   config.audio_target_latency_ms == 0 && config.audio_bitrate == 0;
     if ((audio && !audio_fields_valid) || (!audio && !audio_fields_zero))
     {
         return fail(ClientConfigValidationError::InvalidCapabilities, out_error);
@@ -115,8 +104,7 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
     {
         config.udp_payload_target = WD_UDP_PAYLOAD_TARGET;
     }
-    if (config.udp_payload_target < WD_MIN_PROBED_UDP_PAYLOAD ||
-        config.udp_payload_target > WD_UDP_TILE_PAYLOAD_MAX)
+    if (config.udp_payload_target < WD_MIN_PROBED_UDP_PAYLOAD || config.udp_payload_target > WD_UDP_TILE_PAYLOAD_MAX)
     {
         return fail(ClientConfigValidationError::InvalidUdpPayloadTarget, out_error);
     }
@@ -127,55 +115,50 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
 const char* client_config_validation_error_name(ClientConfigValidationError error) {
     switch (error)
     {
-        case ClientConfigValidationError::None:
-            return "none";
-        case ClientConfigValidationError::MissingSession:
-            return "missing session";
-        case ClientConfigValidationError::MissingConnectionIdentity:
-            return "missing connection identity";
-        case ClientConfigValidationError::MissingConfigurationEpoch:
-            return "missing configuration epoch";
-        case ClientConfigValidationError::UnsupportedDisplayDimensions:
-            return "unsupported display dimensions";
-        case ClientConfigValidationError::UnsupportedFramebufferSize:
-            return "unsupported framebuffer size";
-        case ClientConfigValidationError::UnsupportedTileGeometry:
-            return "unsupported tile geometry";
-        case ClientConfigValidationError::InconsistentTileGrid:
-            return "inconsistent tile grid";
-        case ClientConfigValidationError::UnsupportedPixelFormat:
-            return "unsupported pixel format";
-        case ClientConfigValidationError::UnsupportedCompression:
-            return "unsupported compression";
-        case ClientConfigValidationError::InvalidCapabilities:
-            return "invalid capabilities";
-        case ClientConfigValidationError::InvalidUdpPayloadTarget:
-            return "invalid UDP payload target";
+    case ClientConfigValidationError::None:
+        return "none";
+    case ClientConfigValidationError::MissingSession:
+        return "missing session";
+    case ClientConfigValidationError::MissingConnectionIdentity:
+        return "missing connection identity";
+    case ClientConfigValidationError::MissingConfigurationEpoch:
+        return "missing configuration epoch";
+    case ClientConfigValidationError::UnsupportedDisplayDimensions:
+        return "unsupported display dimensions";
+    case ClientConfigValidationError::UnsupportedFramebufferSize:
+        return "unsupported framebuffer size";
+    case ClientConfigValidationError::UnsupportedTileGeometry:
+        return "unsupported tile geometry";
+    case ClientConfigValidationError::InconsistentTileGrid:
+        return "inconsistent tile grid";
+    case ClientConfigValidationError::UnsupportedPixelFormat:
+        return "unsupported pixel format";
+    case ClientConfigValidationError::UnsupportedCompression:
+        return "unsupported compression";
+    case ClientConfigValidationError::InvalidCapabilities:
+        return "invalid capabilities";
+    case ClientConfigValidationError::InvalidUdpPayloadTarget:
+        return "invalid UDP payload target";
     }
     return "unknown";
 }
 
-
-uint32_t client_classify_server_config_change(const wd_server_config_payload& current,
-                                              const wd_server_config_payload& next) {
+uint32_t client_classify_server_config_change(const wd_server_config_payload& current, const wd_server_config_payload& next) {
     uint32_t flags = ClientConfigChangeNone;
     if (current.config_epoch != next.config_epoch)
     {
         flags |= ClientConfigChangeEpoch;
     }
-    if (current.width != next.width || current.height != next.height ||
-        current.tile_width != next.tile_width || current.tile_height != next.tile_height ||
-        current.tiles_x != next.tiles_x || current.tiles_y != next.tiles_y ||
+    if (current.width != next.width || current.height != next.height || current.tile_width != next.tile_width ||
+        current.tile_height != next.tile_height || current.tiles_x != next.tiles_x || current.tiles_y != next.tiles_y ||
         current.total_tiles != next.total_tiles)
     {
         flags |= ClientConfigChangeGeometry;
     }
     /* session/token describe the transport lifetime. Geometry and epoch
      * changes intentionally do not force UDP receiver recreation. */
-    if (current.session_id != next.session_id ||
-        current.connection_token != next.connection_token ||
-        current.server_udp_port != next.server_udp_port ||
-        current.udp_payload_target != next.udp_payload_target)
+    if (current.session_id != next.session_id || current.connection_token != next.connection_token ||
+        current.server_udp_port != next.server_udp_port || current.udp_payload_target != next.udp_payload_target)
     {
         flags |= ClientConfigChangeTransport;
     }
@@ -193,19 +176,14 @@ uint32_t client_classify_server_config_change(const wd_server_config_payload& cu
     {
         flags |= ClientConfigChangeVideo;
     }
-    if (current.media_clock_id != next.media_clock_id ||
-        current.audio_codec != next.audio_codec ||
-        current.audio_transport != next.audio_transport ||
-        current.audio_sample_rate != next.audio_sample_rate ||
-        current.audio_channels != next.audio_channels ||
-        current.audio_frame_samples != next.audio_frame_samples ||
-        current.audio_target_latency_ms != next.audio_target_latency_ms ||
-        current.audio_bitrate != next.audio_bitrate)
+    if (current.media_clock_id != next.media_clock_id || current.audio_codec != next.audio_codec ||
+        current.audio_transport != next.audio_transport || current.audio_sample_rate != next.audio_sample_rate ||
+        current.audio_channels != next.audio_channels || current.audio_frame_samples != next.audio_frame_samples ||
+        current.audio_target_latency_ms != next.audio_target_latency_ms || current.audio_bitrate != next.audio_bitrate)
     {
         flags |= ClientConfigChangeAudio;
     }
-    if (current.link_rtt_ms != next.link_rtt_ms ||
-        current.summary_retransmit_grace_ms != next.summary_retransmit_grace_ms ||
+    if (current.link_rtt_ms != next.link_rtt_ms || current.summary_retransmit_grace_ms != next.summary_retransmit_grace_ms ||
         current.retransmit_rerequest_ms != next.retransmit_rerequest_ms ||
         current.retransmit_inflight_grace_ms != next.retransmit_inflight_grace_ms ||
         current.tile_reassembly_timeout_ms != next.tile_reassembly_timeout_ms ||
@@ -218,8 +196,7 @@ uint32_t client_classify_server_config_change(const wd_server_config_payload& cu
 }
 
 bool client_config_change_requires_stream_reset(uint32_t flags) {
-    return (flags & (ClientConfigChangeGeometry | ClientConfigChangeTransport |
-                     ClientConfigChangeContent | ClientConfigChangeFormat)) != 0;
+    return (flags & (ClientConfigChangeGeometry | ClientConfigChangeTransport | ClientConfigChangeContent | ClientConfigChangeFormat)) != 0;
 }
 
 } // namespace waydisplay

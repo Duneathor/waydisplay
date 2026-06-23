@@ -31,8 +31,8 @@ uint32_t wd_tile_visible_width_for(uint32_t display_width, uint16_t tile_id, uin
 uint32_t wd_tile_visible_height_for(uint32_t display_height, uint16_t tile_id, uint16_t tiles_x);
 
 uint32_t wd_fnv1a_tile_hash_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
-                                                  uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width,
-                                                  uint16_t tile_height);
+                                              uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width,
+                                              uint16_t tile_height);
 
 bool wd_extract_tile_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
                                        uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,

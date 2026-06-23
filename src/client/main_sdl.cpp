@@ -1,13 +1,12 @@
 #include "client_cli.hpp"
 #include "client_net.hpp"
 #include "sdl_viewer.hpp"
-#include "wd_client.hpp"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
+#include "wd_client.hpp"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
-
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -38,11 +37,10 @@ void usage(const char* argv0) {
 } // namespace
 
 int main(int argc, char** argv) {
-    waydisplay::ClientCliOptions cli_options;
-    std::string error_message;
+    waydisplay::ClientCliOptions   cli_options;
+    std::string                    error_message;
     const std::vector<const char*> arguments(argv, argv + argc);
-    const auto parse_result = waydisplay::client_cli_parse(
-        argc, arguments.data(), cli_options, &error_message);
+    const auto                     parse_result = waydisplay::client_cli_parse(argc, arguments.data(), cli_options, &error_message);
     if (parse_result == waydisplay::ClientCliParseResult::Help)
     {
         usage(argv[0]);
@@ -59,13 +57,13 @@ int main(int argc, char** argv) {
     }
 
     waydisplay::ClientStreamConfig stream_config;
-    stream_config.target_fps = cli_options.target_fps;
+    stream_config.target_fps                 = cli_options.target_fps;
     stream_config.limited_udp_kib_per_second = cli_options.limited_udp_kib_per_second;
-    stream_config.video_mode = cli_options.video_mode;
-    stream_config.video_codec_mask = cli_options.video_codec_mask;
-    stream_config.video_hwdecode_mode = cli_options.video_hwdecode_mode;
-    stream_config.disable_vsync = cli_options.disable_vsync;
-    stream_config.disable_audio = cli_options.disable_audio;
+    stream_config.video_mode                 = cli_options.video_mode;
+    stream_config.video_codec_mask           = cli_options.video_codec_mask;
+    stream_config.video_hwdecode_mode        = cli_options.video_hwdecode_mode;
+    stream_config.disable_vsync              = cli_options.disable_vsync;
+    stream_config.disable_audio              = cli_options.disable_audio;
 
     SDL_InitFlags sdl_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
     if (!stream_config.disable_audio)
@@ -80,10 +78,8 @@ int main(int argc, char** argv) {
 
     waydisplay::ClientState state;
 
-    if (!waydisplay::client_connect(state, cli_options.server_host.c_str(),
-                                    cli_options.tcp_port, cli_options.client_udp_port,
-                                    stream_config, cli_options.desired_width,
-                                    cli_options.desired_height))
+    if (!waydisplay::client_connect(state, cli_options.server_host.c_str(), cli_options.tcp_port, cli_options.client_udp_port,
+                                    stream_config, cli_options.desired_width, cli_options.desired_height))
     {
         waydisplay::client_disconnect(state);
         SDL_Quit();

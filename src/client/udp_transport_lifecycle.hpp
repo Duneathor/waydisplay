@@ -15,7 +15,6 @@ enum class ClientUdpFallbackAction : uint8_t {
     Abort,
 };
 
-ClientUdpFallbackAction client_udp_fallback_action(ClientAsyncUdpDetachResult detach_result,
-                                                   bool socket_is_open);
+ClientUdpFallbackAction client_udp_fallback_action(ClientAsyncUdpDetachResult detach_result, bool socket_is_open);
 
 } // namespace waydisplay
