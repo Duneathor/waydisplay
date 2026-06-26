@@ -129,7 +129,7 @@ bool wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_t
         return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_TCP_GETSOCKNAME, EIO, failed_stage, error_code);
     }
 
-    listener->udp_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    listener->udp_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (listener->udp_fd < 0)
     {
         return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_SOCKET, errno, failed_stage, error_code);
@@ -161,11 +161,6 @@ bool wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_t
         return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_GETSOCKNAME, EIO, failed_stage, error_code);
     }
 
-    if (wd_set_nonblocking(listener->udp_fd) < 0)
-    {
-        return wd_net_listener_fail(listener, WD_NET_LISTENER_STAGE_UDP_NONBLOCK, errno, failed_stage, error_code);
-    }
-
     return true;
 }
 
@@ -190,8 +185,6 @@ const char* wd_net_listener_stage_name(enum wd_net_listener_stage stage) {
         return "UDP bind";
     case WD_NET_LISTENER_STAGE_UDP_GETSOCKNAME:
         return "UDP getsockname";
-    case WD_NET_LISTENER_STAGE_UDP_NONBLOCK:
-        return "UDP nonblocking";
     default:
         return "unknown";
     }

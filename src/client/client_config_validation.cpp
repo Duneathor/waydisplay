@@ -184,7 +184,7 @@ uint32_t client_classify_server_config_change(const wd_server_config_payload& cu
         flags |= ClientConfigChangeAudio;
     }
     if (current.link_rtt_ms != next.link_rtt_ms || current.summary_retransmit_grace_ms != next.summary_retransmit_grace_ms ||
-        current.retransmit_rerequest_ms != next.retransmit_rerequest_ms ||
+        current.retransmit_request_interval_ms != next.retransmit_request_interval_ms ||
         current.retransmit_inflight_grace_ms != next.retransmit_inflight_grace_ms ||
         current.tile_reassembly_timeout_ms != next.tile_reassembly_timeout_ms ||
         current.active_summary_interval_ms != next.active_summary_interval_ms ||

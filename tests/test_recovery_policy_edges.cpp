@@ -82,7 +82,7 @@ void test_client_video_health_precedence() {
 
     metrics.client_frames_presented = 0;
     metrics.client_frames_decoded   = 2;
-    metrics.client_audio_sync_holds = 3;
+    metrics.client_audio_video_sync_holds = 3;
     metrics.client_queue_depth      = 1;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
             "decoded queued frames held by audio should not be a pipeline failure");

@@ -2,7 +2,9 @@
 
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
+#include "waydisplay/wd_io_uring.h"
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_protocol_codec.h"
 
 #include <cerrno>
 #include <cstddef>
@@ -16,12 +18,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <vector>
-
-#ifdef MSG_NOSIGNAL
-#define WD_CLIENT_ASYNC_SEND_FLAGS MSG_NOSIGNAL
-#else
-#define WD_CLIENT_ASYNC_SEND_FLAGS 0
-#endif
 
 #ifndef WD_CLIENT_ASYNC_TCP_DRAIN_LIMIT
 #define WD_CLIENT_ASYNC_TCP_DRAIN_LIMIT WD_ASYNC_SENDER_DRAIN_LIMIT
@@ -119,13 +115,20 @@ void pending_remove(ClientAsyncTcpSender* sender, Message* msg) {
 }
 
 bool is_pointer_motion_message(const Message* msg) {
-    if (!msg || msg->message_type != WD_MSG_POINTER_EVENT || msg->bytes.size() < sizeof(wd_tcp_header) + sizeof(wd_pointer_event_payload))
+    if (!msg || msg->message_type != WD_MSG_POINTER_EVENT || msg->bytes.size() < WD_TCP_HEADER_WIRE_SIZE)
+    {
+        return false;
+    }
+
+    const uint8_t* payload = msg->bytes.data() + WD_TCP_HEADER_WIRE_SIZE;
+    const uint32_t payload_size = static_cast<uint32_t>(msg->bytes.size() - WD_TCP_HEADER_WIRE_SIZE);
+    if (!wd_protocol_payload_validate(WD_MSG_POINTER_EVENT, payload, payload_size))
     {
         return false;
     }
 
     wd_pointer_event_payload pointer{};
-    std::memcpy(&pointer, msg->bytes.data() + sizeof(wd_tcp_header), sizeof(pointer));
+    std::memcpy(&pointer, payload, sizeof(pointer));
     return pointer.event_type == WD_POINTER_EVENT_MOTION;
 }
 
@@ -152,7 +155,8 @@ uint64_t drop_stale_unsubmitted_pointer_motion_locked(ClientAsyncTcpSender* send
 }
 
 Message* create_message(int fd, uint16_t message_type, const void* payload, uint32_t payload_size) {
-    if (payload_size != 0 && !payload)
+    uint32_t wire_payload_size = 0;
+    if (!wd_protocol_payload_wire_size(message_type, payload, payload_size, &wire_payload_size))
     {
         return nullptr;
     }
@@ -163,21 +167,25 @@ Message* create_message(int fd, uint16_t message_type, const void* payload, uint
         return nullptr;
     }
 
-    const size_t total_size = sizeof(wd_tcp_header) + static_cast<size_t>(payload_size);
+    const size_t total_size = WD_TCP_HEADER_WIRE_SIZE + static_cast<size_t>(wire_payload_size);
     msg->bytes.resize(total_size);
 
     wd_tcp_header header{};
     header.magic            = WD_TCP_MAGIC;
     header.protocol_version = WD_PROTOCOL_VERSION;
     header.message_type     = message_type;
-    header.payload_size     = payload_size;
+    header.payload_size     = wire_payload_size;
 
     msg->fd           = fd;
     msg->message_type = message_type;
-    std::memcpy(msg->bytes.data(), &header, sizeof(header));
-    if (payload_size != 0)
+    if (!wd_tcp_header_encode(msg->bytes.data(), &header))
     {
-        std::memcpy(msg->bytes.data() + sizeof(header), payload, payload_size);
+        delete msg;
+        return nullptr;
+    }
+    if (wire_payload_size != 0)
+    {
+        std::memcpy(msg->bytes.data() + WD_TCP_HEADER_WIRE_SIZE, payload, wire_payload_size);
     }
 
     return msg;
@@ -195,7 +203,7 @@ bool submit_message_locked(ClientAsyncTcpSender* sender, Message* msg) {
         return false;
     }
 
-    io_uring_prep_send(sqe, msg->fd, msg->bytes.data() + msg->bytes_sent, msg->bytes.size() - msg->bytes_sent, WD_CLIENT_ASYNC_SEND_FLAGS);
+    io_uring_prep_send(sqe, msg->fd, msg->bytes.data() + msg->bytes_sent, msg->bytes.size() - msg->bytes_sent, MSG_NOSIGNAL);
     io_uring_sqe_set_data(sqe, msg);
 
     msg->submitted = true;
@@ -435,6 +443,7 @@ ClientAsyncTcpSenderStats snapshot_stats_locked(const ClientAsyncTcpSender* send
     stats.inflight_max      = sender->inflight_max;
     stats.inflight          = sender->inflight;
     stats.pending_bytes     = sender->pending_bytes;
+    stats.fatal             = sender->fatal;
     return stats;
 }
 
@@ -455,6 +464,13 @@ ClientAsyncTcpSender* client_async_tcp_sender_create(uint32_t entries, uint64_t 
     const int rc = io_uring_queue_init(entries, &sender->ring, 0);
     if (rc < 0)
     {
+        delete sender;
+        return nullptr;
+    }
+    if (!wd_io_uring_require_operations(&sender->ring, WD_IO_URING_OPERATION_SEND | WD_IO_URING_OPERATION_ASYNC_CANCEL,
+                                        "client TCP sender"))
+    {
+        io_uring_queue_exit(&sender->ring);
         delete sender;
         return nullptr;
     }
@@ -517,7 +533,14 @@ bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_
         return false;
     }
 
-    const uint64_t total_size = static_cast<uint64_t>(sizeof(wd_tcp_header)) + static_cast<uint64_t>(payload_size);
+    uint32_t wire_payload_size = 0;
+    if (!wd_protocol_payload_wire_size(message_type, payload, payload_size, &wire_payload_size))
+    {
+        sender->failed++;
+        return false;
+    }
+
+    const uint64_t total_size = static_cast<uint64_t>(WD_TCP_HEADER_WIRE_SIZE) + static_cast<uint64_t>(wire_payload_size);
     if (sender->max_pending_bytes != 0 && sender->pending_bytes + total_size > sender->max_pending_bytes)
     {
         sender->overflows++;

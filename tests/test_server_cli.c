@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define MUTABLE_ARG(value) (char[]){value}
+
 #define CHECK(condition)                                                                                                                   \
     do                                                                                                                                     \
     {                                                                                                                                      \
@@ -86,8 +88,8 @@ static enum wd_server_cli_parse_result parse_args(size_t count, char** arguments
     return wd_server_cli_parse_args((int)count, arguments, options, error_message, sizeof(error_message));
 }
 
-static void test_full_argument_defaults(void) {
-    char*                        argv[] = {"server"};
+static void test_parse_defaults(void) {
+    char*                        argv[] = {MUTABLE_ARG("server")};
     struct wd_server_cli_options options;
     CHECK(parse_args(sizeof(argv) / sizeof(argv[0]), argv, &options) == WD_SERVER_CLI_OK);
     CHECK(options.tcp_port == WD_DEFAULT_TCP_PORT);
@@ -98,12 +100,15 @@ static void test_full_argument_defaults(void) {
     CHECK(strcmp(options.app_command, WD_SERVER_DEFAULT_APP_COMMAND) == 0);
     CHECK(strcmp(options.renderer_name, WD_SERVER_DEFAULT_RENDERER) == 0);
     CHECK(strcmp(options.video_encoder_backend, WD_SERVER_DEFAULT_VIDEO_ENCODER_BACKEND) == 0);
-    CHECK(options.listen_address.s_addr == htonl(INADDR_LOOPBACK));
+    struct in_addr expected_listen_address;
+    CHECK(inet_pton(AF_INET, WD_SERVER_DEFAULT_LISTEN_IPV4, &expected_listen_address) == 1);
+    CHECK(options.listen_address.s_addr == expected_listen_address.s_addr);
 }
 
-static void test_retained_full_arguments(void) {
-    char* argv[] = {"server",  "--listen", "0.0.0.0",      "--port", "5500",       "--app",  "weston-terminal", "--size",  "1920x1080",
-                    "--scale", "1.25",     "--refresh-hz", "75",     "--renderer", "vulkan", "--video-encoder", "software"};
+static void test_retained_arguments(void) {
+    char* argv[] = {MUTABLE_ARG("server"),  MUTABLE_ARG("--listen"), MUTABLE_ARG("0.0.0.0"),      MUTABLE_ARG("--port"), MUTABLE_ARG("5500"),       MUTABLE_ARG("--app"),  MUTABLE_ARG("weston-terminal"), MUTABLE_ARG("--size"),  MUTABLE_ARG("1920x1080"),
+                    MUTABLE_ARG("--scale"), MUTABLE_ARG("1.25"), MUTABLE_ARG("--refresh-hz"), MUTABLE_ARG("75"),
+                    MUTABLE_ARG("--renderer"), MUTABLE_ARG("vulkan"), MUTABLE_ARG("--video-encoder"), MUTABLE_ARG("software")};
     struct wd_server_cli_options options;
     CHECK(parse_args(sizeof(argv) / sizeof(argv[0]), argv, &options) == WD_SERVER_CLI_OK);
     CHECK(options.listen_address.s_addr == htonl(INADDR_ANY));
@@ -116,14 +121,14 @@ static void test_retained_full_arguments(void) {
     CHECK(strcmp(options.video_encoder_backend, "software") == 0);
 }
 
-static void test_removed_full_arguments(void) {
-    char*        tile_size[]     = {"server", "--tile-size", "64x64"};
-    char*        wan_tiles[]     = {"server", "--wan-tiles"};
-    char*        compression[]   = {"server", "--tile-compression", "force"};
-    char*        xwayland[]      = {"server", "--xwayland"};
-    char*        no_xwayland[]   = {"server", "--no-xwayland"};
-    char*        xdg_dialog[]    = {"server", "--xdg-dialog"};
-    char*        no_xdg_dialog[] = {"server", "--no-xdg-dialog"};
+static void test_removed_arguments(void) {
+    char*        tile_size[]     = {MUTABLE_ARG("server"), MUTABLE_ARG("--tile-size"), MUTABLE_ARG("64x64")};
+    char*        wan_tiles[]     = {MUTABLE_ARG("server"), MUTABLE_ARG("--wan-tiles")};
+    char*        compression[]   = {MUTABLE_ARG("server"), MUTABLE_ARG("--tile-compression"), MUTABLE_ARG("force")};
+    char*        xwayland[]      = {MUTABLE_ARG("server"), MUTABLE_ARG("--xwayland")};
+    char*        no_xwayland[]   = {MUTABLE_ARG("server"), MUTABLE_ARG("--no-xwayland")};
+    char*        xdg_dialog[]    = {MUTABLE_ARG("server"), MUTABLE_ARG("--xdg-dialog")};
+    char*        no_xdg_dialog[] = {MUTABLE_ARG("server"), MUTABLE_ARG("--no-xdg-dialog")};
     char**       removed[]       = {tile_size, wan_tiles, compression, xwayland, no_xwayland, xdg_dialog, no_xdg_dialog};
     const size_t counts[]        = {3, 2, 3, 2, 2, 2, 2};
 
@@ -134,11 +139,11 @@ static void test_removed_full_arguments(void) {
     }
 }
 
-static void test_full_argument_help_and_errors(void) {
-    char*                        help[]             = {"server", "--help"};
-    char*                        missing_app[]      = {"server", "--app"};
-    char*                        invalid_renderer[] = {"server", "--renderer", "metal"};
-    char*                        invalid_size[]     = {"server", "--size", "4097x2160"};
+static void test_help_and_errors(void) {
+    char*                        help[]             = {MUTABLE_ARG("server"), MUTABLE_ARG("--help")};
+    char*                        missing_app[]      = {MUTABLE_ARG("server"), MUTABLE_ARG("--app")};
+    char*                        invalid_renderer[] = {MUTABLE_ARG("server"), MUTABLE_ARG("--renderer"), MUTABLE_ARG("metal")};
+    char*                        invalid_size[]     = {MUTABLE_ARG("server"), MUTABLE_ARG("--size"), MUTABLE_ARG("4097x2160")};
     struct wd_server_cli_options options;
     CHECK(parse_args(2, help, &options) == WD_SERVER_CLI_HELP);
     CHECK(parse_args(2, missing_app, &options) == WD_SERVER_CLI_ERROR);
@@ -152,9 +157,9 @@ int main(void) {
     test_scale_parsing();
     test_ipv4_parsing();
     test_tile_grid_overflow_checks();
-    test_full_argument_defaults();
-    test_retained_full_arguments();
-    test_removed_full_arguments();
-    test_full_argument_help_and_errors();
+    test_parse_defaults();
+    test_retained_arguments();
+    test_removed_arguments();
+    test_help_and_errors();
     return 0;
 }

@@ -58,7 +58,7 @@ enum wd_client_video_health_class wd_client_video_health_classify(const struct w
     {
         return WD_CLIENT_VIDEO_HEALTH_NORMAL;
     }
-    if (metrics->client_frames_decoded != 0 && metrics->client_audio_sync_holds != 0 && metrics->client_queue_depth != 0)
+    if (metrics->client_frames_decoded != 0 && metrics->client_audio_video_sync_holds != 0 && metrics->client_queue_depth != 0)
     {
         return WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT;
     }

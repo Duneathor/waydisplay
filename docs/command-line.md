@@ -7,7 +7,7 @@ Removed options are rejected as unknown arguments. They are not retained as depr
 ## Client command line
 
 ```text
-waydisplay_client_sdl <server_ipv4> <tcp_port> <client_udp_port> [options]
+waydisplay-client <server_ipv4> <tcp_port> <client_udp_port> [options]
 ```
 
 ### Retained
@@ -48,7 +48,7 @@ These are no longer command-line options:
 ## Server command line
 
 ```text
-waydisplay_server_wlroots [options]
+waydisplay-server [options]
 ```
 
 ### Retained

@@ -270,7 +270,7 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv, ClientC
         }
         else if (std::strcmp(argument, "--rate-kib") == 0)
         {
-            if (++i >= argc || !parse_u32(argv[i], 1u, std::numeric_limits<uint32_t>::max(), options.limited_udp_kib_per_second))
+            if (++i >= argc || !parse_u32(argv[i], 1u, std::numeric_limits<uint32_t>::max(), options.udp_rate_cap_kib_per_second))
             {
                 set_error(error_message, "invalid --rate-kib value");
                 return ClientCliParseResult::Error;

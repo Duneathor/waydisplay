@@ -1,4 +1,4 @@
-#include "wd_server.h"
+#include "wd_server_internal.h"
 #include "xdg-dialog-v1-protocol.h"
 
 #include <stdint.h>

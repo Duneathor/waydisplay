@@ -18,7 +18,6 @@ enum wd_net_listener_stage {
     WD_NET_LISTENER_STAGE_UDP_SOCKET,
     WD_NET_LISTENER_STAGE_UDP_BIND,
     WD_NET_LISTENER_STAGE_UDP_GETSOCKNAME,
-    WD_NET_LISTENER_STAGE_UDP_NONBLOCK,
 };
 
 struct wd_net_listener {

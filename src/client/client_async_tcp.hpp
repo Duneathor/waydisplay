@@ -16,6 +16,7 @@ struct ClientAsyncTcpSenderStats {
     uint64_t inflight_max      = 0;
     uint64_t inflight          = 0;
     uint64_t pending_bytes     = 0;
+    bool     fatal             = false;
 };
 
 ClientAsyncTcpSender*     client_async_tcp_sender_create(uint32_t entries, uint64_t max_pending_bytes);

@@ -1,4 +1,4 @@
-#include "wd_server.h"
+#include "wd_server_internal.h"
 
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
@@ -7,6 +7,7 @@
 #include "wd_audio_routing.h"
 #include "wd_audio_stream.h"
 #include "wd_dirty_region_scheduler.h"
+#include "wd_stream_pipeline_internal.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -251,6 +252,35 @@ static void server_process_pending_display_resize(struct wd_server* server) {
     pthread_mutex_unlock(&net->lock);
 }
 
+static void server_apply_pending_compositor_requests(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    if (!wd_stream_frame_worker_idle(server))
+    {
+        return;
+    }
+
+    const uint32_t requests = atomic_exchange_explicit(&server->compositor_requests, 0, memory_order_acq_rel);
+    if ((requests & WD_COMPOSITOR_REQUEST_FULL_REFRESH) != 0)
+    {
+        wd_server_mark_scene_dirty(server);
+        server->framebuffer_shadow_valid = false;
+    }
+}
+
+void wd_server_request_full_refresh(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    atomic_fetch_or_explicit(&server->compositor_requests, WD_COMPOSITOR_REQUEST_FULL_REFRESH, memory_order_release);
+    wd_server_wake_input(server);
+}
+
 static void server_drain_pending_input(struct wd_server* server) {
     if (!server)
     {
@@ -330,7 +360,12 @@ static int server_input_wakeup(int fd, uint32_t mask, void* data) {
         }
     }
 
+    server_apply_pending_compositor_requests(server);
     server_drain_pending_input(server);
+    if (server->frame_timer && server->scene_dirty && wd_stream_frame_worker_idle(server))
+    {
+        wl_event_source_timer_update(server->frame_timer, (int)WD_SERVER_FRAME_SERVICE_MIN_INTERVAL_MS);
+    }
 
     pthread_mutex_lock(&server->net.lock);
     server->net.stats.input_wakeup_callbacks++;
@@ -415,6 +450,8 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
                 WD_LOG_ERROR("video TCP async completion failed; returning display ownership to tiles");
                 wd_stream_video_reset_locked(server, "video async completion failed", false, false);
                 wd_stream_invalidate_all_tiles_locked(server);
+                wd_server_mark_scene_dirty(server);
+                server->framebuffer_shadow_valid = false;
                 (void)shutdown(server->net.video_tcp_fd, SHUT_RDWR);
             }
         }
@@ -425,7 +462,7 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
         uint64_t queued          = wd_async_udp_sender_queued(server->net.udp_tx);
         uint64_t completed       = wd_async_udp_sender_completed(server->net.udp_tx);
         uint64_t failed          = wd_async_udp_sender_failed(server->net.udp_tx);
-        uint64_t fallbacks       = wd_async_udp_sender_fallbacks(server->net.udp_tx);
+        uint64_t sqe_exhaustions       = wd_async_udp_sender_sqe_exhaustions(server->net.udp_tx);
         uint64_t submit_calls    = wd_async_udp_sender_submit_calls(server->net.udp_tx);
         uint64_t partial_submits = wd_async_udp_sender_partial_submits(server->net.udp_tx);
         if (queued > server->net.udp_tx_queued_seen)
@@ -438,10 +475,10 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
             server->net.stats.udp_async_completed += completed - server->net.udp_tx_completed_seen;
             server->net.udp_tx_completed_seen = completed;
         }
-        if (fallbacks > server->net.udp_tx_fallback_seen)
+        if (sqe_exhaustions > server->net.udp_tx_sqe_exhausted_seen)
         {
-            server->net.stats.udp_async_fallback_sync += fallbacks - server->net.udp_tx_fallback_seen;
-            server->net.udp_tx_fallback_seen = fallbacks;
+            server->net.stats.udp_async_sqe_exhausted += sqe_exhaustions - server->net.udp_tx_sqe_exhausted_seen;
+            server->net.udp_tx_sqe_exhausted_seen = sqe_exhaustions;
         }
         if (submit_calls > server->net.udp_tx_submit_calls_seen)
         {
@@ -472,16 +509,13 @@ static bool server_promote_wlroots_scene_damage(struct wd_server* server) {
         return false;
     }
 
-    /*
-     * The wlroots scene graph is the authoritative source of render damage.
-     * Manual view/surface commit trackers are useful for deriving a smaller
-     * readback box, but they can miss toolkit-specific subsurface or buffer
-     * commits. If wlroots says a frame is needed and WayDisplay has no matching
-     * damage, conservatively promote it to a full-output update.
-     */
-    if (!server->scene_dirty || (!server->damage_all_tiles && server->damage_tile_count == 0))
+    /* wlroots is authoritative about whether a frame is required. The exact
+     * output damage is merged from wlr_output_state after the scene state has
+     * been built, so this promotion only schedules the render and does not
+     * broaden an existing manual damage set. */
+    if (!server->scene_dirty)
     {
-        wd_server_mark_scene_dirty(server);
+        server->scene_dirty = true;
         return true;
     }
 
@@ -506,14 +540,22 @@ static int server_frame_timer(void* data) {
 
     const uint64_t timer_start_ns = wd_now_ns();
 
-    /* Rearm before render/readback/encode. If that work exceeds the 8 ms
-     * compositor tick, the timer is already ready when this callback returns
-     * instead of adding another unconditional 8 ms of latency. */
-    wl_event_source_timer_update(server->frame_timer, WD_SERVER_FRAME_SERVICE_INTERVAL_MS);
+    /* Rearm before compositor work. The interval follows the effective capture
+     * target, capped by the backend refresh and by the queue-service ceiling.
+     * If work exceeds the interval, the timer is ready when this callback
+     * returns instead of adding another fixed delay. */
+    wl_event_source_timer_update(server->frame_timer, (int)wd_stream_frame_service_interval_ms(server));
 
-    server_process_pending_display_resize(server);
+    const bool stream_worker_idle = wd_stream_frame_worker_idle(server);
+    if (stream_worker_idle)
+    {
+        server_process_pending_display_resize(server);
+    }
 
-    /* Periodic fallback in case a wakeup is coalesced or unavailable. */
+    /* Periodic fallback in case a wakeup is coalesced or unavailable. Frame
+     * and shadow ownership remain with the compositor while the stream worker
+     * is idle. */
+    server_apply_pending_compositor_requests(server);
     server_drain_pending_input(server);
 
     uint64_t t = wd_now_ns();
@@ -526,7 +568,7 @@ static int server_frame_timer(void* data) {
 
     const bool scene_damage_promoted = server_promote_wlroots_scene_damage(server);
 
-    bool                  should_render      = wd_stream_policy_should_render_now(server, t);
+    bool                  should_render      = stream_worker_idle && wd_stream_policy_should_render_now(server, t);
     bool                  render_attempted   = false;
     bool                  tile_stream_pass   = false;
     uint64_t              render_readback_ns = 0;
@@ -546,26 +588,35 @@ static int server_frame_timer(void* data) {
 
         if (render_result == WD_RENDER_RESULT_FRAME)
         {
-            tile_stream_pass = wd_stream_send_dirty_tiles(server);
+            tile_stream_pass = wd_stream_frame_worker_submit(server);
+            if (!tile_stream_pass)
+            {
+                /* Keep compositor damage live if the worker became busy
+                 * between the idle check and publication. */
+                server->scene_dirty = true;
+            }
+        }
+        else if (render_result == WD_RENDER_RESULT_IDLE)
+        {
+            /* wlroots built no output buffer, so the manual damage was a
+             * conservative false positive. Clear the complete damage state;
+             * leaving only the bitmap populated can strand work because
+             * render eligibility is driven by scene_dirty. */
+            wd_server_clear_scene_damage(server);
         }
         else
         {
-            /*
-             * An idle scene is expected when an output was scheduled without
-             * new wlroots damage. A renderer/backend failure remains distinct
-             * for diagnostics. In both cases stop this attempt; the next
-             * wlroots needs-frame transition is promoted above.
-             */
-            server->scene_dirty = false;
+            /* Renderer/backend failures retain damage for a later retry. */
+            server->scene_dirty = true;
         }
     }
 
     /* Dirty and repair queues consume the most recently captured framebuffer;
      * they do not require wlroots to render an unchanged scene. Service queued
      * work every compositor tick, including after a static-scene idle result. */
-    if (!tile_stream_pass)
+    if (!tile_stream_pass && stream_worker_idle)
     {
-        (void)wd_stream_service_tile_queues(server);
+        wd_stream_frame_worker_request_service(server);
     }
 
     if (server->last_summary_ns == 0 || t - server->last_summary_ns >= WD_GENERATION_SUMMARY_FULL_SANITY_INTERVAL_NS)
@@ -604,6 +655,10 @@ static int server_frame_timer(void* data) {
         wd_server_reap_and_sample_async_locked(server);
         pthread_mutex_unlock(&server->net.lock);
 
+        /* Keep adaptive health and mode transitions on the established
+         * one-second cadence. Telemetry observes the controller result but no
+         * longer owns correctness-critical state transitions. */
+        wd_stream_controller_tick(server);
         wd_stream_sample_and_maybe_log_stats(server, log_stats);
         server->last_stats_ns = t;
         if (log_stats)
@@ -662,6 +717,21 @@ static void mark_damage_tile(struct wd_server* server, uint32_t tile_id) {
     {
         server->damage_tiles[tile_id] = true;
         server->damage_tile_count++;
+    }
+}
+
+void wd_server_clear_scene_damage(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    server->scene_dirty       = false;
+    server->damage_all_tiles  = false;
+    server->damage_tile_count = 0;
+    if (server->damage_tiles && server->total_base_tiles > 0)
+    {
+        memset(server->damage_tiles, 0, (size_t)server->total_base_tiles * sizeof(*server->damage_tiles));
     }
 }
 
@@ -1329,7 +1399,6 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     server->framebuffer_xrgb8888                = next_allocs.framebuffer_xrgb8888;
     server->framebuffer_shadow_xrgb8888         = next_allocs.framebuffer_shadow_xrgb8888;
     server->framebuffer_shadow_valid            = false;
-    server->framebuffer_content_valid           = false;
     server->net.tiles                           = next_allocs.tiles;
     server->damage_tiles                        = next_allocs.damage_tiles;
     server->net.dirty_regions                   = next_allocs.dirty_regions;
@@ -1374,6 +1443,8 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     wd_stream_video_reset_locked(server, "display resize", true, true);
     wd_server_begin_config_update_locked(server);
     wd_stream_invalidate_all_tiles_locked(server);
+    wd_server_mark_scene_dirty(server);
+    server->framebuffer_shadow_valid = false;
 
     pthread_mutex_unlock(&server->net.lock);
 
@@ -1392,9 +1463,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     return true;
 }
 
-bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr listen_address, const char* app_cmd, double output_scale,
-                    uint16_t output_refresh_hz, uint32_t display_width, uint32_t display_height, uint16_t tile_width, uint16_t tile_height,
-                    bool enable_xwayland, bool enable_xdg_dialog, const char* video_encoder_backend) {
+static bool wd_server_init(struct wd_server* server, const struct wd_server_config* config) {
     memset(server, 0, sizeof(*server));
     wd_spawned_process_init(&server->startup_process);
     server->input_wakeup_fd = -1;
@@ -1406,23 +1475,25 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr 
     wl_list_init(&server->keyboard_shortcuts_inhibit_manager_destroy.link);
     wl_list_init(&server->pointer_button_grab_surface_destroy.link);
 
-    if (!wd_server_set_tile_size(server, tile_width, tile_height) || !wd_server_set_geometry(server, display_width, display_height))
+    if (!wd_server_set_tile_size(server, config->tile_width, config->tile_height) ||
+        !wd_server_set_geometry(server, config->display_width, config->display_height))
     {
         return false;
     }
 
     server->scene_dirty = true;
 
-    server->startup_command       = app_cmd;
-    server->video_encoder_backend = video_encoder_backend;
-    server->output_scale          = output_scale;
-    server->output_refresh_mhz    = (uint32_t)(output_refresh_hz != 0 ? output_refresh_hz : WD_SERVER_DEFAULT_REFRESH_HZ) * 1000u;
+    server->startup_command       = config->app_command;
+    server->video_encoder_backend = config->video_encoder_backend;
+    server->output_scale          = config->output_scale;
+    server->output_refresh_mhz =
+        (uint32_t)(config->output_refresh_hz != 0 ? config->output_refresh_hz : WD_SERVER_DEFAULT_REFRESH_HZ) * 1000u;
 #if WAYDISPLAY_ENABLE_XWAYLAND
-    server->enable_xwayland = enable_xwayland;
+    server->enable_xwayland = config->enable_xwayland;
 #else
-    (void)enable_xwayland;
+    (void)config->enable_xwayland;
 #endif
-    server->enable_xdg_dialog = enable_xdg_dialog;
+    server->enable_xdg_dialog = config->enable_xdg_dialog;
 
     if (server->output_scale <= 0.0)
     {
@@ -1435,7 +1506,6 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr 
     {
         server->framebuffer_generation    = 1;
         server->framebuffer_shadow_valid  = false;
-        server->framebuffer_content_valid = false;
     }
 
     if (!server->framebuffer_xrgb8888 || !server->framebuffer_shadow_xrgb8888)
@@ -1447,10 +1517,14 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr 
         return false;
     }
 
-    if (!wd_net_init(server, tcp_port, listen_address))
+    if (!wd_net_init(server, config->tcp_port, config->listen_address))
     {
         return false;
     }
+
+    server->tile_compression_benchmark_mode = config->tile_compression_benchmark_mode;
+    WD_LOG_DEBUG("tile compression policy: mode=%s",
+                 wd_tile_compression_benchmark_mode_name(server->tile_compression_benchmark_mode));
 
     if (!wd_stream_init(server))
     {
@@ -1516,7 +1590,7 @@ bool wd_server_init(struct wd_server* server, uint16_t tcp_port, struct in_addr 
     return true;
 }
 
-void wd_server_destroy(struct wd_server* server) {
+static void wd_server_destroy(struct wd_server* server) {
     if (!server)
     {
         return;
@@ -1620,7 +1694,6 @@ void wd_server_destroy(struct wd_server* server) {
     free(server->framebuffer_shadow_xrgb8888);
     server->framebuffer_shadow_xrgb8888 = NULL;
     server->framebuffer_shadow_valid    = false;
-    server->framebuffer_content_valid   = false;
 }
 
 static void server_request_network_stop(struct wd_server* server) {
@@ -1645,8 +1718,39 @@ static void server_request_network_stop(struct wd_server* server) {
     }
 }
 
+struct wd_server* wd_server_create(const struct wd_server_config* config) {
+    if (!config)
+    {
+        return NULL;
+    }
+
+    struct wd_server* server = calloc(1, sizeof(*server));
+    if (!server)
+    {
+        return NULL;
+    }
+
+    if (!wd_server_init(server, config))
+    {
+        wd_server_destroy(server);
+        free(server);
+        return NULL;
+    }
+
+    return server;
+}
+
+void wd_server_free(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+    wd_server_destroy(server);
+    free(server);
+}
+
 int wd_server_run(struct wd_server* server) {
-#if WAYDISPLAY_ENABLE_LOGGING && WAYDISPLAY_ENABLE_DEBUG_LOGGING
+#if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_DEBUG
     wlr_log_init(WLR_DEBUG, NULL);
 #else
     wlr_log_init(WLR_ERROR, NULL);

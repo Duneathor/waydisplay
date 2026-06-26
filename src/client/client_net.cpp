@@ -1,8 +1,11 @@
 #include "client_net.hpp"
 
+#include "client_transport.hpp"
+
 #include "client_async_tcp.hpp"
 #include "client_async_udp.hpp"
 #include "client_config_validation.hpp"
+#include "client_receive.hpp"
 #include "content_order.hpp"
 #include "video_decoder.hpp"
 #include "waydisplay/wd_config.h"
@@ -10,10 +13,12 @@
 #include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_protocol_dispatch.h"
 #include "waydisplay/wd_selection.h"
 #include "waydisplay/wd_time.h"
 
 #include <algorithm>
+#include <array>
 #include <arpa/inet.h>
 #include <cmath>
 #include <cstddef>
@@ -23,8 +28,10 @@
 #include <cstring>
 #include <errno.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <climits>
 #include <unistd.h>
 #include <vector>
 
@@ -40,6 +47,8 @@ constexpr uint64_t RETRANSMIT_GRACE_MIN_NS           = WD_LINK_RETRANSMIT_INFLIG
 constexpr uint64_t RETRANSMIT_GRACE_DEFAULT_NS       = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
 constexpr uint64_t RETRANSMIT_GRACE_MAX_NS           = WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS;
 constexpr uint64_t MTU_PROBE_SERVER_STARTUP_DELAY_NS = WD_NET_PROBE_STARTUP_DELAY_MS * WD_NSEC_PER_MSEC;
+constexpr size_t CLIENT_VIDEO_DECODE_QUEUE_CAPACITY = 4;
+constexpr size_t CLIENT_AUDIO_DECODE_QUEUE_CAPACITY = 32;
 
 const char* video_mode_name(uint8_t mode) {
     switch (mode)
@@ -115,16 +124,17 @@ uint64_t summary_retransmit_grace_ns(const ClientState& state) {
     return grace_ns;
 }
 
-uint64_t retransmit_rerequest_interval_ns(const ClientState& state) {
-    uint64_t rerequest_ns = clamp_timer_ns(state.retransmit_rerequest_interval_ns.load(std::memory_order_relaxed),
-                                           WD_LINK_RETRANSMIT_REREQUEST_MIN_NS, WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
+uint64_t retransmit_request_interval_ns(const ClientState& state) {
+    uint64_t request_interval_ns = clamp_timer_ns(state.retransmit_request_interval_ns.load(std::memory_order_relaxed),
+                                           WD_LINK_RETRANSMIT_REQUEST_INTERVAL_MIN_NS, WD_LINK_RETRANSMIT_REQUEST_INTERVAL_MAX_NS);
     uint64_t gap_ns       = udp_gap_pressure_ns(state);
     if (gap_ns >= WD_LINK_RUNTIME_GAP_PRESSURE_MIN_NS)
     {
-        rerequest_ns =
-            std::max(rerequest_ns, clamp_timer_ns(gap_ns * 2ull, WD_LINK_RETRANSMIT_REREQUEST_MIN_NS, WD_LINK_RETRANSMIT_REREQUEST_MAX_NS));
+        request_interval_ns = std::max(request_interval_ns,
+                                       clamp_timer_ns(gap_ns * 2ull, WD_LINK_RETRANSMIT_REQUEST_INTERVAL_MIN_NS,
+                                                      WD_LINK_RETRANSMIT_REQUEST_INTERVAL_MAX_NS));
     }
-    return rerequest_ns;
+    return request_interval_ns;
 }
 
 uint64_t retransmit_inflight_grace_ns_locked(const ClientState& state) {
@@ -145,7 +155,7 @@ uint64_t summary_clean_interval_ns_locked(const ClientState& state) {
 }
 
 uint64_t large_summary_repair_grace_ns_locked(const ClientState& state) {
-    return std::max({summary_retransmit_grace_ns(state), retransmit_rerequest_interval_ns(state), summary_clean_interval_ns_locked(state)});
+    return std::max({summary_retransmit_grace_ns(state), retransmit_request_interval_ns(state), summary_clean_interval_ns_locked(state)});
 }
 
 bool recent_concrete_repair_loss_signal(const ClientState& state, uint64_t now_ns) {
@@ -187,8 +197,9 @@ bool large_summary_repair_batch_locked(ClientState& state, uint16_t total_tiles,
 void apply_link_timers_from_config(ClientState& state, const wd_server_config_payload& config) {
     const uint64_t summary_grace_ns = clamp_timer_ns(ms_to_ns(config.summary_retransmit_grace_ms, WD_LINK_SUMMARY_GRACE_DEFAULT_NS),
                                                      WD_LINK_SUMMARY_GRACE_MIN_NS, WD_LINK_SUMMARY_GRACE_MAX_NS);
-    const uint64_t rerequest_ns     = clamp_timer_ns(ms_to_ns(config.retransmit_rerequest_ms, WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS),
-                                                     WD_LINK_RETRANSMIT_REREQUEST_MIN_NS, WD_LINK_RETRANSMIT_REREQUEST_MAX_NS);
+    const uint64_t request_interval_ns =
+        clamp_timer_ns(ms_to_ns(config.retransmit_request_interval_ms, WD_LINK_RETRANSMIT_REQUEST_INTERVAL_DEFAULT_NS),
+                       WD_LINK_RETRANSMIT_REQUEST_INTERVAL_MIN_NS, WD_LINK_RETRANSMIT_REQUEST_INTERVAL_MAX_NS);
     const uint64_t inflight_ns      = clamp_timer_ns(ms_to_ns(config.retransmit_inflight_grace_ms, WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS),
                                                      WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS, WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS);
     const uint64_t reassembly_ns    = clamp_timer_ns(ms_to_ns(config.tile_reassembly_timeout_ms, WD_LINK_TILE_REASSEMBLY_DEFAULT_NS),
@@ -197,7 +208,7 @@ void apply_link_timers_from_config(ClientState& state, const wd_server_config_pa
                                                         WD_LINK_TILE_REASSEMBLY_MIN_NS, WD_LINK_TILE_REASSEMBLY_MAX_NS);
 
     state.summary_retransmit_grace_ns.store(summary_grace_ns, std::memory_order_relaxed);
-    state.retransmit_rerequest_interval_ns.store(rerequest_ns, std::memory_order_relaxed);
+    state.retransmit_request_interval_ns.store(request_interval_ns, std::memory_order_relaxed);
 
     {
         std::lock_guard<std::mutex> lock(state.retx_mutex);
@@ -236,553 +247,6 @@ void remember_input_timestamp(ClientState& state, uint64_t sequence, uint64_t ti
     }
 }
 
-void format_sockaddr_in(const sockaddr_in& addr, char* buf, size_t buf_size) {
-    char ip[INET_ADDRSTRLEN]{};
-
-    if (!buf || buf_size == 0)
-    {
-        return;
-    }
-
-    if (::inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip)) == nullptr)
-    {
-        std::snprintf(buf, buf_size, "<invalid>:%u", static_cast<unsigned>(ntohs(addr.sin_port)));
-        return;
-    }
-
-    std::snprintf(buf, buf_size, "%s:%u", ip, static_cast<unsigned>(ntohs(addr.sin_port)));
-}
-
-void format_socket_endpoint(int fd, bool peer, char* buf, size_t buf_size) {
-    sockaddr_in addr{};
-    socklen_t   addr_len = sizeof(addr);
-
-    if (!buf || buf_size == 0)
-    {
-        return;
-    }
-
-    std::snprintf(buf, buf_size, "unavailable");
-
-    if (fd < 0)
-    {
-        std::snprintf(buf, buf_size, "closed");
-        return;
-    }
-
-    if ((peer ? ::getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &addr_len)
-              : ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &addr_len)) != 0)
-    {
-        std::snprintf(buf, buf_size, "unavailable:%s", std::strerror(errno));
-        return;
-    }
-
-    if (addr.sin_family != AF_INET)
-    {
-        std::snprintf(buf, buf_size, "non-ipv4");
-        return;
-    }
-
-    format_sockaddr_in(addr, buf, buf_size);
-}
-
-void log_tcp_channel_endpoint(const char* channel, int fd) {
-    char local[64]{};
-    char remote[64]{};
-
-    format_socket_endpoint(fd, false, local, sizeof(local));
-    format_socket_endpoint(fd, true, remote, sizeof(remote));
-    WD_LOG_INFO("%s TCP channel connected local=%s remote=%s", channel, local, remote);
-}
-
-void log_udp_endpoint(const ClientState& state) {
-    char local[64]{};
-
-    format_socket_endpoint(state.udp_fd, false, local, sizeof(local));
-    WD_LOG_INFO("UDP receive endpoint local=%s requested_port=%u fd=%d", local, state.client_udp_port, state.udp_fd);
-}
-
-ClientAsyncTcpSender* create_client_tcp_sender(const char* label) {
-    ClientAsyncTcpSender* sender = client_async_tcp_sender_create(WD_CLIENT_TCP_TX_RING_ENTRIES, WD_CLIENT_TCP_TX_PENDING_BYTES);
-    if (!sender)
-    {
-        WD_LOG_WARN("io_uring TCP sender unavailable for %s channel; using synchronous sends", label ? label : "unknown");
-    }
-    return sender;
-}
-
-void destroy_client_tcp_sender(ClientAsyncTcpSender*& sender) {
-    if (sender)
-    {
-        client_async_tcp_sender_destroy(sender);
-        sender = nullptr;
-    }
-}
-
-size_t client_async_udp_packet_bytes(const wd_server_config_payload& config) {
-    uint16_t udp_payload_target = config.udp_payload_target;
-    if (udp_payload_target == 0)
-    {
-        udp_payload_target = WD_UDP_PAYLOAD_TARGET;
-    }
-    return WD_UDP_TILE_HEADER_MAX_SIZE + static_cast<size_t>(udp_payload_target) + WD_CLIENT_UDP_RECV_SLACK_BYTES;
-}
-
-ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state, const wd_server_config_payload& config) {
-    const size_t            packet_bytes = client_async_udp_packet_bytes(config);
-    ClientAsyncUdpReceiver* receiver     = client_async_udp_receiver_create(state.udp_fd, WD_CLIENT_UDP_RX_RING_ENTRIES, packet_bytes);
-    if (!receiver)
-    {
-        if (state.udp_fd >= 0 && wd_set_nonblocking(state.udp_fd) < 0)
-        {
-            WD_LOG_ERROR("restore UDP nonblocking failed: %s", std::strerror(errno));
-        }
-        WD_LOG_WARN("io_uring UDP receiver unavailable; using synchronous recv fallback");
-    }
-    else if (!client_async_udp_receiver_ready(receiver))
-    {
-        WD_LOG_ERROR("io_uring UDP receiver setup failed with outstanding receives; reconnect required");
-    }
-    else
-    {
-        state.stats.udp_async_receiver_generations.fetch_add(1, std::memory_order_relaxed);
-        WD_LOG_INFO("UDP io_uring receive enabled entries=%u buffer=%zu", WD_CLIENT_UDP_RX_RING_ENTRIES, packet_bytes);
-    }
-    return receiver;
-}
-
-ClientAsyncUdpDetachResult destroy_client_udp_receiver(ClientState& state) {
-    if (!state.udp_receiver)
-    {
-        return ClientAsyncUdpDetachResult::Detached;
-    }
-
-    ClientAsyncUdpReceiverStats      final_stats{};
-    const ClientAsyncUdpStatsSeen    before = state.udp_seen;
-    const ClientAsyncUdpDetachResult result = client_async_udp_receiver_destroy(state.udp_receiver, &final_stats);
-    if (result == ClientAsyncUdpDetachResult::Detached)
-    {
-        if (final_stats.posted >= before.posted)
-        {
-            state.stats.udp_async_posted.fetch_add(final_stats.posted - before.posted, std::memory_order_relaxed);
-        }
-        if (final_stats.retired >= before.retired)
-        {
-            const uint64_t drained = final_stats.retired - before.retired;
-            state.stats.udp_async_retired.fetch_add(drained, std::memory_order_relaxed);
-            state.stats.udp_async_drained_on_reconfigure.fetch_add(drained, std::memory_order_relaxed);
-        }
-        if (final_stats.completed >= before.completed)
-        {
-            state.stats.udp_async_completed.fetch_add(final_stats.completed - before.completed, std::memory_order_relaxed);
-        }
-        if (final_stats.failed >= before.failed)
-        {
-            state.stats.udp_async_failed.fetch_add(final_stats.failed - before.failed, std::memory_order_relaxed);
-        }
-        if (final_stats.submit_failed >= before.submit_failed)
-        {
-            state.stats.udp_async_submit_failed.fetch_add(final_stats.submit_failed - before.submit_failed, std::memory_order_relaxed);
-        }
-        if (final_stats.cancels >= before.cancels)
-        {
-            const uint64_t cancelled = final_stats.cancels - before.cancels;
-            state.stats.udp_async_cancels.fetch_add(cancelled, std::memory_order_relaxed);
-            state.stats.udp_async_cancelled_on_reconfigure.fetch_add(cancelled, std::memory_order_relaxed);
-        }
-        if (final_stats.accounting_errors >= before.accounting_errors)
-        {
-            state.stats.udp_async_accounting_errors.fetch_add(final_stats.accounting_errors - before.accounting_errors,
-                                                              std::memory_order_relaxed);
-        }
-        state.stats.udp_async_inflight_current.store(0, std::memory_order_relaxed);
-        state.stats.udp_async_prepared_current.store(0, std::memory_order_relaxed);
-        state.udp_receiver = nullptr;
-    }
-    return result;
-}
-
-ClientAsyncTcpSender* sender_for_fd(ClientState& state, int fd) {
-    if (fd < 0)
-    {
-        return nullptr;
-    }
-    if (fd == state.input_tcp_fd)
-    {
-        return state.input_tcp_sender;
-    }
-    if (fd == state.selection_tcp_fd)
-    {
-        return state.selection_tcp_sender;
-    }
-    if (fd == state.tcp_fd)
-    {
-        return state.control_tcp_sender;
-    }
-    return nullptr;
-}
-
-bool client_send_tcp_message_queued(ClientState& state, int fd, uint16_t message_type, const void* payload, uint32_t payload_size) {
-    if (fd < 0)
-    {
-        return false;
-    }
-
-    if (ClientAsyncTcpSender* sender = sender_for_fd(state, fd))
-    {
-        return client_async_tcp_send_message(sender, fd, message_type, payload, payload_size);
-    }
-
-    return wd_send_tcp_message(fd, message_type, payload, payload_size);
-}
-
-void update_async_seen(ClientState& state, ClientAsyncTcpSender* sender, ClientAsyncTcpStatsSeen& seen) {
-    if (!sender)
-    {
-        return;
-    }
-
-    ClientAsyncTcpSenderStats stats = client_async_tcp_sender_stats(sender);
-    if (stats.queued >= seen.queued)
-    {
-        state.stats.tcp_async_queued.fetch_add(stats.queued - seen.queued, std::memory_order_relaxed);
-    }
-    if (stats.completed >= seen.completed)
-    {
-        state.stats.tcp_async_completed.fetch_add(stats.completed - seen.completed, std::memory_order_relaxed);
-    }
-    if (stats.failed >= seen.failed)
-    {
-        state.stats.tcp_async_failed.fetch_add(stats.failed - seen.failed, std::memory_order_relaxed);
-    }
-    if (stats.overflows >= seen.overflows)
-    {
-        state.stats.tcp_async_overflow.fetch_add(stats.overflows - seen.overflows, std::memory_order_relaxed);
-    }
-    if (stats.partial_resubmits >= seen.partial_resubmits)
-    {
-        state.stats.tcp_async_partial.fetch_add(stats.partial_resubmits - seen.partial_resubmits, std::memory_order_relaxed);
-    }
-    if (stats.coalesced >= seen.coalesced)
-    {
-        state.stats.tcp_async_coalesced.fetch_add(stats.coalesced - seen.coalesced, std::memory_order_relaxed);
-    }
-
-    uint64_t current_max = state.stats.tcp_async_inflight_max.load(std::memory_order_relaxed);
-    while (stats.inflight_max > current_max && !state.stats.tcp_async_inflight_max.compare_exchange_weak(
-                                                   current_max, stats.inflight_max, std::memory_order_relaxed, std::memory_order_relaxed))
-    {
-    }
-
-    seen.queued            = stats.queued;
-    seen.completed         = stats.completed;
-    seen.failed            = stats.failed;
-    seen.overflows         = stats.overflows;
-    seen.partial_resubmits = stats.partial_resubmits;
-    seen.coalesced         = stats.coalesced;
-    seen.inflight_max      = stats.inflight_max;
-}
-
-void update_async_udp_seen(ClientState& state) {
-    if (!state.udp_receiver)
-    {
-        state.stats.udp_async_inflight_current.store(0, std::memory_order_relaxed);
-        state.stats.udp_async_prepared_current.store(0, std::memory_order_relaxed);
-        return;
-    }
-
-    ClientAsyncUdpReceiverStats stats = client_async_udp_receiver_stats(state.udp_receiver);
-    ClientAsyncUdpStatsSeen&    seen  = state.udp_seen;
-    if (stats.posted >= seen.posted)
-    {
-        state.stats.udp_async_posted.fetch_add(stats.posted - seen.posted, std::memory_order_relaxed);
-    }
-    if (stats.retired >= seen.retired)
-    {
-        state.stats.udp_async_retired.fetch_add(stats.retired - seen.retired, std::memory_order_relaxed);
-    }
-    if (stats.completed >= seen.completed)
-    {
-        state.stats.udp_async_completed.fetch_add(stats.completed - seen.completed, std::memory_order_relaxed);
-    }
-    if (stats.failed >= seen.failed)
-    {
-        state.stats.udp_async_failed.fetch_add(stats.failed - seen.failed, std::memory_order_relaxed);
-    }
-    if (stats.submit_failed >= seen.submit_failed)
-    {
-        state.stats.udp_async_submit_failed.fetch_add(stats.submit_failed - seen.submit_failed, std::memory_order_relaxed);
-    }
-    if (stats.cancels >= seen.cancels)
-    {
-        state.stats.udp_async_cancels.fetch_add(stats.cancels - seen.cancels, std::memory_order_relaxed);
-    }
-    if (stats.accounting_errors >= seen.accounting_errors)
-    {
-        state.stats.udp_async_accounting_errors.fetch_add(stats.accounting_errors - seen.accounting_errors, std::memory_order_relaxed);
-    }
-
-    state.stats.udp_async_inflight_current.store(stats.inflight, std::memory_order_relaxed);
-    state.stats.udp_async_prepared_current.store(stats.prepared, std::memory_order_relaxed);
-
-    uint64_t current_max = state.stats.udp_async_inflight_max.load(std::memory_order_relaxed);
-    while (stats.inflight_max > current_max && !state.stats.udp_async_inflight_max.compare_exchange_weak(
-                                                   current_max, stats.inflight_max, std::memory_order_relaxed, std::memory_order_relaxed))
-    {
-    }
-
-    seen.posted            = stats.posted;
-    seen.retired           = stats.retired;
-    seen.completed         = stats.completed;
-    seen.failed            = stats.failed;
-    seen.submit_failed     = stats.submit_failed;
-    seen.cancels           = stats.cancels;
-    seen.inflight_max      = stats.inflight_max;
-    seen.accounting_errors = stats.accounting_errors;
-}
-
-bool set_socket_rcvbuf(int fd, int requested_bytes) {
-    if (fd < 0)
-    {
-        return false;
-    }
-
-    if (::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &requested_bytes, sizeof(requested_bytes)) != 0)
-    {
-        WD_LOG_ERROR("setsockopt SO_RCVBUF failed: %s", std::strerror(errno));
-        return false;
-    }
-
-    int       actual_bytes = 0;
-    socklen_t actual_len   = sizeof(actual_bytes);
-
-    if (::getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &actual_bytes, &actual_len) == 0)
-    {
-        WD_LOG_INFO("UDP receive buffer: requested=%d actual=%d", requested_bytes, actual_bytes);
-    }
-
-    return true;
-}
-
-bool open_udp_socket(ClientState& state) {
-    state.udp_fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (state.udp_fd < 0)
-    {
-        WD_LOG_ERROR("socket UDP failed: %s", std::strerror(errno));
-        return false;
-    }
-
-    sockaddr_in bind_addr{};
-    bind_addr.sin_family      = AF_INET;
-    bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    bind_addr.sin_port        = htons(state.client_udp_port);
-
-    if (::bind(state.udp_fd, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) < 0)
-    {
-        WD_LOG_ERROR("bind UDP failed: %s", std::strerror(errno));
-        ::close(state.udp_fd);
-        state.udp_fd = -1;
-        return false;
-    }
-
-    if (wd_set_nonblocking(state.udp_fd) < 0)
-    {
-        WD_LOG_ERROR("set UDP nonblocking failed: %s", std::strerror(errno));
-        ::close(state.udp_fd);
-        state.udp_fd = -1;
-        return false;
-    }
-
-    set_socket_rcvbuf(state.udp_fd, WD_UDP_SOCKET_BUFFER_BYTES);
-    log_udp_endpoint(state);
-
-    return true;
-}
-
-bool connect_udp_socket_to_server(ClientState& state, const wd_server_config_payload& config) {
-    if (state.udp_fd < 0 || config.server_udp_port == 0)
-    {
-        return false;
-    }
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(config.server_udp_port);
-    if (::inet_pton(AF_INET, state.server_host.c_str(), &addr.sin_addr) != 1)
-    {
-        WD_LOG_ERROR("invalid IPv4 address for UDP peer: %s", state.server_host.c_str());
-        return false;
-    }
-    if (::connect(state.udp_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
-    {
-        WD_LOG_ERROR("connect UDP peer failed: %s", std::strerror(errno));
-        return false;
-    }
-    WD_LOG_INFO("UDP peer connected: %s:%u", state.server_host.c_str(), config.server_udp_port);
-    return true;
-}
-
-int connect_tcp_fd(const ClientState& state, const char* label) {
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
-    {
-        WD_LOG_ERROR("%s failed: %s", label ? label : "TCP socket", std::strerror(errno));
-        return -1;
-    }
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(state.tcp_port);
-
-    if (::inet_pton(AF_INET, state.server_host.c_str(), &addr.sin_addr) != 1)
-    {
-        WD_LOG_ERROR("invalid IPv4 address: %s", state.server_host.c_str());
-        ::close(fd);
-        return -1;
-    }
-
-    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
-    {
-        WD_LOG_ERROR("%s failed: %s", label ? label : "TCP socket", std::strerror(errno));
-        ::close(fd);
-        return -1;
-    }
-
-    return fd;
-}
-
-bool open_tcp_socket(ClientState& state) {
-    state.tcp_fd = connect_tcp_fd(state, "connect TCP");
-    if (state.tcp_fd >= 0)
-    {
-        log_tcp_channel_endpoint("control", state.tcp_fd);
-    }
-    return state.tcp_fd >= 0;
-}
-
-bool open_input_tcp_socket(ClientState& state) {
-    if ((state.config.capabilities & WD_SERVER_CAP_INPUT_CHANNEL) == 0)
-    {
-        return false;
-    }
-
-    int fd = connect_tcp_fd(state, "connect input TCP");
-    if (fd < 0)
-    {
-        return false;
-    }
-
-    wd_input_channel_hello_payload hello{};
-    hello.session_id       = state.config.session_id;
-    hello.connection_token = state.config.connection_token;
-
-    if (!wd_send_tcp_message(fd, WD_MSG_INPUT_CHANNEL_HELLO, &hello, sizeof(hello)))
-    {
-        ::close(fd);
-        return false;
-    }
-
-    state.input_tcp_fd     = fd;
-    state.input_tcp_sender = create_client_tcp_sender("input");
-    log_tcp_channel_endpoint("input", state.input_tcp_fd);
-    return true;
-}
-
-bool open_selection_tcp_socket(ClientState& state) {
-    if ((state.config.capabilities & WD_SERVER_CAP_SELECTION_CHANNEL) == 0)
-    {
-        return false;
-    }
-
-    int fd = connect_tcp_fd(state, "connect selection TCP");
-    if (fd < 0)
-    {
-        return false;
-    }
-
-    wd_selection_channel_hello_payload hello{};
-    hello.session_id       = state.config.session_id;
-    hello.connection_token = state.config.connection_token;
-
-    if (!wd_send_tcp_message(fd, WD_MSG_SELECTION_CHANNEL_HELLO, &hello, sizeof(hello)))
-    {
-        ::close(fd);
-        return false;
-    }
-
-    state.selection_tcp_fd     = fd;
-    state.selection_tcp_sender = create_client_tcp_sender("selection");
-    log_tcp_channel_endpoint("selection", state.selection_tcp_fd);
-    return true;
-}
-
-bool open_video_tcp_socket(ClientState& state) {
-    if (!state.video_stream_negotiated)
-    {
-        return false;
-    }
-
-    int fd = connect_tcp_fd(state, "connect video TCP");
-    if (fd < 0)
-    {
-        return false;
-    }
-
-    wd_video_channel_hello_payload hello{};
-    hello.session_id       = state.config.session_id;
-    hello.connection_token = state.config.connection_token;
-    hello.video_codecs     = state.video_codecs;
-    hello.video_transport  = state.video_transport;
-
-    if (!wd_send_tcp_message(fd, WD_MSG_VIDEO_CHANNEL_HELLO, &hello, sizeof(hello)))
-    {
-        ::close(fd);
-        return false;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(state.video_tcp_mutex);
-        state.video_tcp_fd = fd;
-        state.video_tcp_connected.store(true, std::memory_order_release);
-        state.video_unavailable.store(false, std::memory_order_release);
-    }
-    log_tcp_channel_endpoint("video", fd);
-    return true;
-}
-
-bool open_audio_tcp_socket(ClientState& state) {
-    if (!state.audio_stream_negotiated || !state.audio_playback)
-    {
-        return false;
-    }
-
-    int fd = connect_tcp_fd(state, "connect audio TCP");
-    if (fd < 0)
-    {
-        return false;
-    }
-
-    wd_audio_channel_hello_payload hello{};
-    hello.session_id       = state.config.session_id;
-    hello.connection_token = state.config.connection_token;
-    hello.audio_codecs     = state.audio_codec;
-    hello.audio_transport  = state.audio_transport;
-
-    if (!wd_send_tcp_message(fd, WD_MSG_AUDIO_CHANNEL_HELLO, &hello, sizeof(hello)))
-    {
-        ::close(fd);
-        return false;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(state.audio_tcp_mutex);
-        state.audio_tcp_fd = fd;
-        state.audio_tcp_connected.store(true, std::memory_order_release);
-    }
-    log_tcp_channel_endpoint("audio", fd);
-    return true;
-}
-
 bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
     if (payload_size != sizeof(wd_mtu_probe_start_payload))
     {
@@ -802,11 +266,11 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
 
     while (wd_now_ns() < deadline_ns)
     {
-        ssize_t n = ::recv(state.udp_fd, recvbuf.data(), recvbuf.size(), 0);
+        ssize_t n = ::recv(state.session.transport.udp_fd, recvbuf.data(), recvbuf.size(), 0);
 
         if (n < 0)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (errno == EAGAIN)
             {
                 usleep(WD_NET_PROBE_RETRY_SLEEP_MS * WD_USEC_PER_MSEC);
                 continue;
@@ -901,7 +365,7 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
     result.connection_token         = start.connection_token;
     result.max_udp_payload_received = max_received;
 
-    return wd_send_tcp_message(state.tcp_fd, WD_MSG_MTU_PROBE_RESULT, &result, sizeof(result));
+    return wd_send_tcp_message(state.session.transport.control_fd, WD_MSG_MTU_PROBE_RESULT, &result, sizeof(result));
 }
 
 bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
@@ -930,11 +394,11 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
 
     while (wd_now_ns() < deadline_ns && (duration_limited || packets_received < start.probe_count))
     {
-        ssize_t n = ::recv(state.udp_fd, recvbuf.data(), recvbuf.size(), 0);
+        ssize_t n = ::recv(state.session.transport.udp_fd, recvbuf.data(), recvbuf.size(), 0);
 
         if (n < 0)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (errno == EAGAIN)
             {
                 usleep(WD_NET_PROBE_RETRY_SLEEP_MS * WD_USEC_PER_MSEC);
                 continue;
@@ -997,7 +461,7 @@ bool handle_throughput_probe_start(ClientState& state, const uint8_t* payload, u
     result.packets_received = packets_received;
     result.duration_ms      = duration_ms;
 
-    return wd_send_tcp_message(state.tcp_fd, WD_MSG_THROUGHPUT_PROBE_RESULT, &result, sizeof(result));
+    return wd_send_tcp_message(state.session.transport.control_fd, WD_MSG_THROUGHPUT_PROBE_RESULT, &result, sizeof(result));
 }
 
 bool handle_link_probe_ping(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
@@ -1008,7 +472,7 @@ bool handle_link_probe_ping(ClientState& state, const uint8_t* payload, uint32_t
 
     wd_link_probe_payload pong{};
     std::memcpy(&pong, payload, sizeof(pong));
-    return wd_send_tcp_message(state.tcp_fd, WD_MSG_LINK_PROBE_PONG, &pong, sizeof(pong));
+    return wd_send_tcp_message(state.session.transport.control_fd, WD_MSG_LINK_PROBE_PONG, &pong, sizeof(pong));
 }
 
 bool receive_server_config(ClientState& state) {
@@ -1017,13 +481,13 @@ bool receive_server_config(ClientState& state) {
     hello.requested_capture_fps            = state.stream_config.target_fps;
     hello.desired_width                    = state.desired_width;
     hello.desired_height                   = state.desired_height;
-    hello.limited_udp_kib_per_second       = state.stream_config.limited_udp_kib_per_second;
+    hello.udp_rate_cap_kib_per_second       = state.stream_config.udp_rate_cap_kib_per_second;
     const bool     video_allowed           = state.stream_config.video_mode != WD_VIDEO_MODE_OFF;
-    const uint32_t supported_video_codecs  = client_video_decoder_supported_codecs(state.video_decoder);
+    const uint32_t supported_video_codecs  = client_video_decoder_supported_codecs(state.session.video_decoder);
     const uint32_t requested_video_codecs  = state.stream_config.video_codec_mask & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265);
     const uint32_t advertised_video_codecs = video_allowed ? (supported_video_codecs & requested_video_codecs) : 0;
     const bool     video_decoder_available = advertised_video_codecs != 0;
-    const bool     audio_available = !state.stream_config.disable_audio && state.audio_playback && client_audio_playback_available();
+    const bool     audio_available = !state.stream_config.disable_audio && state.session.audio_playback && client_audio_playback_available();
     hello.capabilities             = video_decoder_available ? WD_CLIENT_CAP_VIDEO_STREAM : 0;
     if (audio_available)
     {
@@ -1054,7 +518,7 @@ bool receive_server_config(ClientState& state) {
                 state.stream_config.disable_audio ? "disabled" : "enabled", client_audio_playback_backend_name(),
                 audio_available ? "opus" : "none", audio_available ? "tcp" : "none", WD_AUDIO_TARGET_LATENCY_MS_DEFAULT);
 
-    if (!wd_send_tcp_message(state.tcp_fd, WD_MSG_CLIENT_HELLO, &hello, sizeof(hello)))
+    if (!wd_send_tcp_message(state.session.transport.control_fd, WD_MSG_CLIENT_HELLO, &hello, sizeof(hello)))
     {
         WD_LOG_ERROR("failed to send CLIENT_HELLO");
         return false;
@@ -1066,9 +530,18 @@ bool receive_server_config(ClientState& state) {
         uint8_t* payload      = nullptr;
         uint32_t payload_size = 0;
 
-        if (!wd_recv_tcp_message(state.tcp_fd, &message_type, &payload, &payload_size))
+        if (!wd_recv_tcp_message(state.session.transport.control_fd, &message_type, &payload, &payload_size))
         {
             WD_LOG_ERROR("failed to receive SERVER_CONFIG");
+            return false;
+        }
+
+        if (!wd_protocol_message_allowed(message_type, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
+                                         WD_PROTOCOL_SERVER_TO_CLIENT, payload_size))
+        {
+            WD_LOG_ERROR("rejected negotiation message=%s(%u) size=%u", wd_protocol_message_name(message_type), message_type,
+                         payload_size);
+            std::free(payload);
             return false;
         }
 
@@ -1147,7 +620,7 @@ bool receive_server_config(ClientState& state) {
     state.video_transport         = state.video_stream_negotiated ? state.config.video_transport : 0;
     state.audio_stream_negotiated = !state.stream_config.disable_audio && (state.config.capabilities & WD_SERVER_CAP_AUDIO_STREAM) != 0 &&
                                     state.config.audio_codec == WD_AUDIO_CODEC_OPUS &&
-                                    state.config.audio_transport == WD_AUDIO_TRANSPORT_TCP && state.audio_playback != nullptr;
+                                    state.config.audio_transport == WD_AUDIO_TRANSPORT_TCP && state.session.audio_playback != nullptr;
     state.audio_codec             = state.audio_stream_negotiated ? state.config.audio_codec : 0;
     state.audio_transport         = state.audio_stream_negotiated ? state.config.audio_transport : 0;
     state.audio_channels          = state.audio_stream_negotiated ? state.config.audio_channels : 0;
@@ -1161,8 +634,8 @@ bool receive_server_config(ClientState& state) {
                 state.audio_stream_negotiated ? "enabled" : (state.stream_config.disable_audio ? "disabled by client" : "unavailable"),
                 state.audio_stream_negotiated ? "opus" : "none", state.audio_stream_negotiated ? "tcp" : "none",
                 state.audio_stream_negotiated ? state.config.audio_sample_rate : 0, state.audio_channels, state.audio_target_latency_ms);
-    WD_LOG_INFO("link timers: rtt=%ums summary_grace=%ums rerequest=%ums inflight=%ums reassembly=%ums summary_delta=%u/%ums",
-                state.config.link_rtt_ms, state.config.summary_retransmit_grace_ms, state.config.retransmit_rerequest_ms,
+    WD_LOG_INFO("link timers: rtt=%ums summary_grace=%ums request_interval=%ums inflight=%ums reassembly=%ums summary_delta=%u/%ums",
+                state.config.link_rtt_ms, state.config.summary_retransmit_grace_ms, state.config.retransmit_request_interval_ms,
                 state.config.retransmit_inflight_grace_ms, state.config.tile_reassembly_timeout_ms, state.config.active_summary_interval_ms,
                 state.config.clean_summary_interval_ms);
 
@@ -1351,14 +824,13 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
         return;
     }
 
-    if (client_accept_content_epoch(state, summary.content_epoch, ClientContentOwner::Tiles) == ClientContentEpochDecision::Stale)
+    if (client_accept_content_epoch(state, summary.content_epoch, WD_CLIENT_CONTENT_OWNER_TILES) == ClientContentEpochDecision::Stale)
     {
         return;
     }
 
     {
-        std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
-        std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+        std::scoped_lock generation_retx_lock(state.generation_mutex, state.retx_mutex);
 
         if (total_tiles == 0 || state.received_generation.size() != total_tiles)
         {
@@ -1401,7 +873,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 
             if (state.retx_last_requested_generation[entry.tile_id] >= entry.tile_generation &&
                 state.retx_last_request_ns[entry.tile_id] != 0 &&
-                now_ns - state.retx_last_request_ns[entry.tile_id] < retransmit_rerequest_interval_ns(state))
+                now_ns - state.retx_last_request_ns[entry.tile_id] < retransmit_request_interval_ns(state))
             {
                 if (state.retx_summary_pending_generation[entry.tile_id] < entry.tile_generation)
                 {
@@ -1488,9 +960,7 @@ void queue_retransmits_from_summary(ClientState& state, const uint8_t* payload, 
 }
 
 void promote_deferred_summary_retransmits_locked(ClientState& state) {
-    std::lock_guard<std::mutex> config_lock(state.config_mutex);
-    std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
-    std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+    std::scoped_lock config_generation_retx_lock(state.config_mutex, state.generation_mutex, state.retx_mutex);
 
     const uint16_t total_tiles = state.config.total_tiles;
     if (total_tiles == 0 || state.received_generation.size() != total_tiles)
@@ -1544,10 +1014,10 @@ void promote_deferred_summary_retransmits_locked(ClientState& state) {
         }
         if (state.retx_last_requested_generation[due.tile_id] >= due.generation && state.retx_last_request_ns[due.tile_id] != 0)
         {
-            const uint64_t rerequest_ns   = retransmit_rerequest_interval_ns(state);
-            const uint64_t request_due_ns = state.retx_last_request_ns[due.tile_id] > UINT64_MAX - rerequest_ns
+            const uint64_t request_interval_ns   = retransmit_request_interval_ns(state);
+            const uint64_t request_due_ns = state.retx_last_request_ns[due.tile_id] > UINT64_MAX - request_interval_ns
                                                 ? UINT64_MAX
-                                                : state.retx_last_request_ns[due.tile_id] + rerequest_ns;
+                                                : state.retx_last_request_ns[due.tile_id] + request_interval_ns;
             retry_due_ns                  = std::max(retry_due_ns, request_due_ns);
         }
         if (retry_due_ns > now_ns)
@@ -1639,7 +1109,7 @@ bool selection_payload_to_string(const uint8_t* payload, uint32_t payload_size, 
     return true;
 }
 
-void store_selection_text(ClientState& state, const uint8_t* payload, uint32_t payload_size, bool primary) {
+bool store_selection_text(ClientState& state, const uint8_t* payload, uint32_t payload_size, bool primary) {
     uint8_t  session_id       = 0;
     uint64_t connection_token = 0;
     {
@@ -1651,20 +1121,24 @@ void store_selection_text(ClientState& state, const uint8_t* payload, uint32_t p
     std::string text;
     if (!selection_payload_to_string(payload, payload_size, session_id, connection_token, text))
     {
-        return;
+        return false;
     }
 
-    std::lock_guard<std::mutex> lock(state.selection_mutex);
-    if (primary)
     {
-        state.pending_primary_text       = std::move(text);
-        state.pending_primary_text_valid = true;
+        std::lock_guard<std::mutex> lock(state.selection_mutex);
+        if (primary)
+        {
+            state.pending_primary_text       = std::move(text);
+            state.pending_primary_text_valid = true;
+        }
+        else
+        {
+            state.pending_clipboard_text       = std::move(text);
+            state.pending_clipboard_text_valid = true;
+        }
     }
-    else
-    {
-        state.pending_clipboard_text       = std::move(text);
-        state.pending_clipboard_text_valid = true;
-    }
+    state.render_wake.signal();
+    return true;
 }
 
 void store_cursor_shape(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
@@ -1695,9 +1169,8 @@ void store_cursor_shape(ClientState& state, const uint8_t* payload, uint32_t pay
 void discard_pending_video_frame(ClientState& state) {
     bool wake_render = false;
     {
-        std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
-        std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
-        const uint64_t              tile_epoch = state.stream_ownership.end_video_stream();
+        std::scoped_lock dirty_video_lock(state.dirty_rect_mutex, state.video_frame_mutex);
+        const uint64_t              tile_epoch = wd_client_stream_ownership_end_video_stream(&state.stream_ownership);
         state.video_present_queue.clear();
         state.pending_video_frame_dirty.store(false, std::memory_order_release);
         if (state.pending_dirty_tiles.dirty_tile_count() != 0)
@@ -1712,11 +1185,12 @@ void discard_pending_video_frame(ClientState& state) {
     }
 }
 
-void reset_video_decoder(ClientState& state, const char* reason, ClientVideoPhase next_phase = ClientVideoPhase::AwaitingKeyframe) {
-    std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
-    client_video_decoder_reset(state.video_decoder);
-    state.video_decoder_needs_keyframe = next_phase != ClientVideoPhase::Video;
-    state.video_phase                  = next_phase;
+void reset_video_decoder(ClientState& state, const char* reason,
+                         enum wd_client_video_phase next_phase = WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME) {
+    std::lock_guard<std::mutex> lock(state.session.video_decoder_mutex);
+    client_video_decoder_reset(state.session.video_decoder);
+    state.session.video_decoder_needs_keyframe = next_phase != WD_CLIENT_VIDEO_PHASE_VIDEO;
+    state.session.video_phase                  = next_phase;
     state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
     state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
     state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
@@ -1884,16 +1358,15 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
 
     {
         std::lock_guard<std::mutex> content_lock(state.remote_content_mutex);
-        if (frame.content_epoch != state.remote_content_epoch || state.remote_content_owner != ClientContentOwner::Video)
+        if (frame.content_epoch != state.remote_content_epoch || state.remote_content_owner != WD_CLIENT_CONTENT_OWNER_VIDEO)
         {
             return false;
         }
-        std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
-        std::lock_guard<std::mutex> generation_lock(state.generation_mutex);
-        std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
+        std::scoped_lock dirty_generation_video_lock(state.dirty_rect_mutex, state.generation_mutex,
+                                                        state.video_frame_mutex);
 
-        const ClientContentOwnershipSnapshot ownership = state.stream_ownership.snapshot();
-        if (ownership.owner != ClientContentOwner::Video)
+        const struct wd_client_content_ownership_snapshot ownership = wd_client_stream_ownership_snapshot(&state.stream_ownership);
+        if (ownership.owner != WD_CLIENT_CONTENT_OWNER_VIDEO)
         {
             return false;
         }
@@ -1947,8 +1420,8 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         return;
     }
 
-    const ClientContentOwner content_owner =
-        (packet.header.flags & WD_VIDEO_FRAME_END_OF_STREAM) != 0 ? ClientContentOwner::Tiles : ClientContentOwner::Video;
+    const enum wd_client_content_owner content_owner =
+        (packet.header.flags & WD_VIDEO_FRAME_END_OF_STREAM) != 0 ? WD_CLIENT_CONTENT_OWNER_TILES : WD_CLIENT_CONTENT_OWNER_VIDEO;
     const ClientContentEpochDecision content_decision = client_accept_content_epoch(state, packet.header.content_epoch, content_owner);
     if (content_decision == ClientContentEpochDecision::Stale)
     {
@@ -1958,15 +1431,16 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
     const bool                    resize        = (packet.header.flags & WD_VIDEO_FRAME_RESIZE) != 0;
     const bool                    end_of_stream = (packet.header.flags & WD_VIDEO_FRAME_END_OF_STREAM) != 0;
     const bool                    keyframe      = (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
-    ClientVideoTransitionDecision transition{};
+    struct wd_client_video_transition_decision transition{};
     {
-        std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
-        transition = client_video_transition(
-            state.video_phase, content_decision == ClientContentEpochDecision::Advanced && content_owner == ClientContentOwner::Video,
+        std::lock_guard<std::mutex> lock(state.session.video_decoder_mutex);
+        transition = wd_client_video_transition_decide(
+            state.session.video_phase,
+            content_decision == ClientContentEpochDecision::Advanced && content_owner == WD_CLIENT_CONTENT_OWNER_VIDEO,
             end_of_stream, resize, keyframe, packet.header.data_size != 0);
         if (transition.reset_decoder)
         {
-            client_video_decoder_reset(state.video_decoder);
+            client_video_decoder_reset(state.session.video_decoder);
             state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
             state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
             state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
@@ -1974,13 +1448,13 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
                                                           : end_of_stream ? "video end-of-stream"
                                                                           : "video content epoch advanced");
         }
-        state.video_phase                  = transition.next_phase;
-        state.video_decoder_needs_keyframe = state.video_phase != ClientVideoPhase::Video;
+        state.session.video_phase                  = transition.next_phase;
+        state.session.video_decoder_needs_keyframe = state.session.video_phase != WD_CLIENT_VIDEO_PHASE_VIDEO;
     }
 
     if (end_of_stream)
     {
-        state.video_unavailable.store(true, std::memory_order_release);
+        state.session.video_unavailable.store(true, std::memory_order_release);
     }
     if (!transition.accept_payload)
     {
@@ -2013,17 +1487,17 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
     state.stats.video_last_frame_id_rx.store(packet.header.frame_id, std::memory_order_relaxed);
 
     {
-        std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
+        std::lock_guard<std::mutex> lock(state.session.video_decoder_mutex);
         const auto                  reset_decoder_locked = [&state](const char* reason) {
-            client_video_decoder_reset(state.video_decoder);
+            client_video_decoder_reset(state.session.video_decoder);
             state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
             state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
             state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
-            state.video_decoder_needs_keyframe = true;
-            state.video_phase                  = ClientVideoPhase::AwaitingKeyframe;
+            state.session.video_decoder_needs_keyframe = true;
+            state.session.video_phase                  = WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME;
             WD_LOG_INFO("video decoder reset: reason=%s", reason);
         };
-        if (state.video_decoder_needs_keyframe && (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
+        if (state.session.video_decoder_needs_keyframe && (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
         {
             state.stats.video_need_keyframe_drops.fetch_add(1, std::memory_order_relaxed);
             return;
@@ -2041,33 +1515,33 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         config.codec            = packet.header.codec;
         config.hwdecode_mode    = state.stream_config.video_hwdecode_mode;
 
-        if (!client_video_decoder_configure(state.video_decoder, config))
+        if (!client_video_decoder_configure(state.session.video_decoder, config))
         {
-            state.video_decoder_needs_keyframe = true;
-            state.video_phase                  = ClientVideoPhase::AwaitingKeyframe;
+            state.session.video_decoder_needs_keyframe = true;
+            state.session.video_phase                  = WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME;
             state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
             return;
         }
 
         ClientDecodedVideoFrame frame{};
         const uint64_t          decode_start_ns   = wd_now_ns();
-        bool                    decoded           = client_video_decoder_decode(state.video_decoder, packet, &frame);
+        bool                    decoded           = client_video_decoder_decode(state.session.video_decoder, packet, &frame);
         const uint64_t          decode_elapsed_ns = wd_now_ns() - decode_start_ns;
         state.stats.video_decode_sum_ns.fetch_add(decode_elapsed_ns, std::memory_order_relaxed);
         state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
 
-        if (!decoded && client_video_decoder_hwdecode_failed_auto(state.video_decoder))
+        if (!decoded && client_video_decoder_hwdecode_failed_auto(state.session.video_decoder))
         {
             /* Auto hardware decode is best-effort. If the VAAPI backend fails
              * while decoding the access unit that unlocks the stream, rebuild
              * the decoder immediately as software and retry that same keyframe
              * instead of waiting for a later periodic keyframe. */
-            client_video_decoder_reset(state.video_decoder);
-            if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0 && client_video_decoder_configure(state.video_decoder, config))
+            client_video_decoder_reset(state.session.video_decoder);
+            if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0 && client_video_decoder_configure(state.session.video_decoder, config))
             {
                 frame                           = ClientDecodedVideoFrame{};
                 const uint64_t retry_start_ns   = wd_now_ns();
-                decoded                         = client_video_decoder_decode(state.video_decoder, packet, &frame);
+                decoded                         = client_video_decoder_decode(state.session.video_decoder, packet, &frame);
                 const uint64_t retry_elapsed_ns = wd_now_ns() - retry_start_ns;
                 state.stats.video_decode_sum_ns.fetch_add(retry_elapsed_ns, std::memory_order_relaxed);
                 state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
@@ -2086,7 +1560,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
             if (frame.format != ClientVideoPixelFormat::None)
             {
                 state.stats.video_frames_decoded.fetch_add(1, std::memory_order_relaxed);
-                if (!publish_decoded_video_frame(state, state.video_decoder, frame))
+                if (!publish_decoded_video_frame(state, state.session.video_decoder, frame))
                 {
                     state.stats.video_publish_failed.fetch_add(1, std::memory_order_relaxed);
                     reset_decoder_locked("decoded frame publish failed");
@@ -2096,7 +1570,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
             }
 
             frame = ClientDecodedVideoFrame{};
-            if (!client_video_decoder_take_frame(state.video_decoder, &frame))
+            if (!client_video_decoder_take_frame(state.session.video_decoder, &frame))
             {
                 break;
             }
@@ -2107,8 +1581,8 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
             return;
         }
 
-        state.video_decoder_needs_keyframe = false;
-        state.video_phase                  = ClientVideoPhase::Video;
+        state.session.video_decoder_needs_keyframe = false;
+        state.session.video_phase                  = WD_CLIENT_VIDEO_PHASE_VIDEO;
     }
 
     /* Actual video presentation is recorded by the SDL render thread after
@@ -2116,138 +1590,265 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
      * available for upload. */
 }
 
-void audio_tcp_reader_main(ClientState* state) {
-    int fd = -1;
-    if (state)
+bool process_audio_message(ClientState& state, uint16_t message_type, const uint8_t* payload, uint32_t payload_size) {
+    state.stats.audio_messages_rx.fetch_add(1, std::memory_order_relaxed);
+    state.stats.audio_bytes_rx.fetch_add(payload_size, std::memory_order_relaxed);
+
+    bool ok = true;
+    if (message_type == WD_MSG_AUDIO_CONFIG && payload_size == sizeof(wd_audio_config_payload))
     {
-        std::lock_guard<std::mutex> lock(state->audio_tcp_mutex);
-        fd = state->audio_tcp_fd;
-        state->audio_tcp_connected.store(fd >= 0, std::memory_order_release);
+        wd_audio_config_payload config{};
+        std::memcpy(&config, payload, sizeof(config));
+        uint8_t  session_id = 0;
+        uint64_t connection_token = 0;
+        uint64_t media_clock_id = 0;
+        uint16_t target_latency_ms = 0;
+        {
+            std::lock_guard<std::mutex> lock(state.config_mutex);
+            session_id         = state.config.session_id;
+            connection_token   = state.config.connection_token;
+            media_clock_id     = state.media_clock_id;
+            target_latency_ms  = state.audio_target_latency_ms;
+        }
+        ok = config.session_id == session_id && config.connection_token == connection_token &&
+             config.media_clock_id == media_clock_id &&
+             client_audio_playback_configure(state.session.audio_playback, config, target_latency_ms);
+    }
+    else if (message_type == WD_MSG_AUDIO_PACKET)
+    {
+        state.stats.audio_packets_rx.fetch_add(1, std::memory_order_relaxed);
+        const uint64_t before_discontinuities = client_audio_playback_discontinuities(state.session.audio_playback);
+        const uint64_t before_late_drops      = client_audio_playback_late_drops(state.session.audio_playback);
+        const uint64_t before_underflows      = client_audio_playback_underflows(state.session.audio_playback);
+        ok                                    = client_audio_playback_handle_packet(state.session.audio_playback, payload, payload_size);
+        const uint64_t after_discontinuities  = client_audio_playback_discontinuities(state.session.audio_playback);
+        const uint64_t after_late_drops       = client_audio_playback_late_drops(state.session.audio_playback);
+        const uint64_t after_underflows       = client_audio_playback_underflows(state.session.audio_playback);
+        if (after_discontinuities > before_discontinuities)
+        {
+            state.stats.audio_discontinuities.fetch_add(after_discontinuities - before_discontinuities, std::memory_order_relaxed);
+        }
+        if (after_late_drops > before_late_drops)
+        {
+            state.stats.audio_late_drops.fetch_add(after_late_drops - before_late_drops, std::memory_order_relaxed);
+        }
+        if (after_underflows > before_underflows)
+        {
+            state.stats.audio_underflows.fetch_add(after_underflows - before_underflows, std::memory_order_relaxed);
+        }
+    }
+    else
+    {
+        ok = false;
     }
 
-    while (state && state->running.load(std::memory_order_relaxed))
+    if (!ok)
     {
-        uint16_t       message_type = 0;
-        uint8_t*       payload      = nullptr;
-        uint32_t       payload_size = 0;
-        const uint32_t limit        = static_cast<uint32_t>(sizeof(wd_audio_packet_payload_header)) + WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES;
-        if (!wd_recv_tcp_message_limited(fd, limit, &message_type, &payload, &payload_size))
-        {
-            break;
-        }
-
-        state->stats.audio_messages_rx.fetch_add(1, std::memory_order_relaxed);
-        state->stats.audio_bytes_rx.fetch_add(payload_size, std::memory_order_relaxed);
-        bool ok = true;
-        if (message_type == WD_MSG_AUDIO_CONFIG && payload_size == sizeof(wd_audio_config_payload))
-        {
-            wd_audio_config_payload config{};
-            std::memcpy(&config, payload, sizeof(config));
-            ok = config.session_id == state->config.session_id && config.connection_token == state->config.connection_token &&
-                 config.media_clock_id == state->media_clock_id &&
-                 client_audio_playback_configure(state->audio_playback, config, state->audio_target_latency_ms);
-        }
-        else if (message_type == WD_MSG_AUDIO_PACKET)
-        {
-            state->stats.audio_packets_rx.fetch_add(1, std::memory_order_relaxed);
-            const uint64_t before_discontinuities = client_audio_playback_discontinuities(state->audio_playback);
-            const uint64_t before_late_drops      = client_audio_playback_late_drops(state->audio_playback);
-            const uint64_t before_underflows      = client_audio_playback_underflows(state->audio_playback);
-            ok                                    = client_audio_playback_handle_packet(state->audio_playback, payload, payload_size);
-            const uint64_t after_discontinuities  = client_audio_playback_discontinuities(state->audio_playback);
-            const uint64_t after_late_drops       = client_audio_playback_late_drops(state->audio_playback);
-            const uint64_t after_underflows       = client_audio_playback_underflows(state->audio_playback);
-            if (after_discontinuities > before_discontinuities)
-            {
-                state->stats.audio_discontinuities.fetch_add(after_discontinuities - before_discontinuities, std::memory_order_relaxed);
-            }
-            if (after_late_drops > before_late_drops)
-            {
-                state->stats.audio_late_drops.fetch_add(after_late_drops - before_late_drops, std::memory_order_relaxed);
-            }
-            if (after_underflows > before_underflows)
-            {
-                state->stats.audio_underflows.fetch_add(after_underflows - before_underflows, std::memory_order_relaxed);
-            }
-        }
-        else if (message_type == WD_MSG_ERROR)
-        {
-            WD_LOG_ERROR("server sent MSG_ERROR on audio TCP channel");
-        }
-        else
-        {
-            ok = false;
-        }
-        std::free(payload);
-        if (!ok)
-        {
-            state->stats.audio_decode_failed.fetch_add(1, std::memory_order_relaxed);
-            WD_LOG_WARN("invalid audio channel message type=%u size=%u", message_type, payload_size);
-        }
+        state.stats.audio_decode_failed.fetch_add(1, std::memory_order_relaxed);
+        WD_LOG_WARN("invalid audio channel message type=%u size=%u", message_type, payload_size);
     }
-
-    client_audio_playback_reset(state ? state->audio_playback : nullptr);
-    if (state)
-    {
-        std::lock_guard<std::mutex> lock(state->audio_tcp_mutex);
-        state->audio_tcp_connected.store(false, std::memory_order_release);
-        if (state->audio_tcp_fd == fd)
-        {
-            state->audio_tcp_fd = -1;
-        }
-    }
-    if (fd >= 0)
-    {
-        ::close(fd);
-    }
-    WD_LOG_INFO("audio TCP channel closed");
+    return ok;
 }
 
-void video_tcp_reader_main(ClientState* state) {
-    int fd = -1;
-    if (state)
+void release_media_packet(ClientMediaPacket& packet) {
+    std::free(packet.payload);
+    packet = ClientMediaPacket{};
+}
+
+void clear_media_queue(std::deque<ClientMediaPacket>& queue) {
+    while (!queue.empty())
     {
-        std::lock_guard<std::mutex> lock(state->video_tcp_mutex);
-        fd = state->video_tcp_fd;
-        state->video_tcp_connected.store(fd >= 0, std::memory_order_release);
+        ClientMediaPacket packet = queue.front();
+        queue.pop_front();
+        release_media_packet(packet);
     }
-    while (state && state->running.load(std::memory_order_relaxed))
+}
+
+uint16_t video_packet_flags(const wd_tcp_message& message) {
+    if (message.payload_size < sizeof(wd_video_frame_payload_header))
     {
-        uint16_t message_type = 0;
-        uint8_t* payload      = nullptr;
-        uint32_t payload_size = 0;
+        return 0;
+    }
+    wd_video_frame_payload_header header{};
+    std::memcpy(&header, message.payload, sizeof(header));
+    return header.flags;
+}
 
-        const uint32_t video_payload_limit =
-            static_cast<uint32_t>(sizeof(wd_video_frame_payload_header)) + WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES;
-        if (!wd_recv_tcp_message_limited(fd, video_payload_limit, &message_type, &payload, &payload_size))
-        {
-            break;
-        }
-
-        if (message_type == WD_MSG_VIDEO_FRAME)
-        {
-            state->stats.video_messages_rx.fetch_add(1, std::memory_order_relaxed);
-            state->stats.video_frames_rx.fetch_add(1, std::memory_order_relaxed);
-            state->stats.video_bytes_rx.fetch_add(payload_size, std::memory_order_relaxed);
-            handle_video_frame(*state, payload, payload_size);
-        }
-        else if (message_type == WD_MSG_ERROR)
-        {
-            WD_LOG_ERROR("server sent MSG_ERROR on video TCP channel");
-        }
-
-        std::free(payload);
+bool enqueue_video_message(ClientState& state, wd_tcp_message& message) {
+    std::lock_guard<std::mutex> lock(state.session.media_queue_mutex);
+    if (!state.session.media_workers_running.load(std::memory_order_acquire))
+    {
+        return false;
     }
 
-    reset_video_decoder(*state, "video TCP channel closed", ClientVideoPhase::Tiles);
-    discard_pending_video_frame(*state);
+    const uint16_t flags      = video_packet_flags(message);
+    const bool     keyframe   = (flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
+    const bool     control    = (flags & (WD_VIDEO_FRAME_END_OF_STREAM | WD_VIDEO_FRAME_RESIZE)) != 0;
+    const bool     reset_decoder_before = keyframe && state.session.video_decode_wait_keyframe;
+    if (keyframe || control)
     {
-        std::lock_guard<std::mutex> lock(state->video_tcp_mutex);
-        state->video_tcp_connected.store(false, std::memory_order_release);
-        state->video_unavailable.store(true, std::memory_order_release);
-        if (state->video_tcp_fd == fd)
+        clear_media_queue(state.session.video_decode_queue);
+        state.session.video_decode_wait_keyframe = !keyframe;
+    }
+    else if (state.session.video_decode_wait_keyframe)
+    {
+        state.stats.video_decode_queue_drops.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    else if (state.session.video_decode_queue.size() >= CLIENT_VIDEO_DECODE_QUEUE_CAPACITY)
+    {
+        clear_media_queue(state.session.video_decode_queue);
+        state.session.video_decode_wait_keyframe = true;
+        state.stats.video_decode_queue_drops.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    state.session.video_decode_queue.push_back(
+        ClientMediaPacket{message.message_type, message.payload, message.payload_size, reset_decoder_before});
+    message.payload      = nullptr;
+    message.payload_size = 0;
+    state.session.video_decode_ready.notify_one();
+    return true;
+}
+
+bool enqueue_audio_message(ClientState& state, wd_tcp_message& message) {
+    std::lock_guard<std::mutex> lock(state.session.media_queue_mutex);
+    if (!state.session.media_workers_running.load(std::memory_order_acquire))
+    {
+        return false;
+    }
+
+    if (message.message_type == WD_MSG_AUDIO_CONFIG)
+    {
+        clear_media_queue(state.session.audio_decode_queue);
+    }
+    else if (state.session.audio_decode_queue.size() >= CLIENT_AUDIO_DECODE_QUEUE_CAPACITY)
+    {
+        state.stats.audio_decode_queue_drops.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    state.session.audio_decode_queue.push_back(
+        ClientMediaPacket{message.message_type, message.payload, message.payload_size, false});
+    message.payload      = nullptr;
+    message.payload_size = 0;
+    state.session.audio_decode_ready.notify_one();
+    return true;
+}
+
+bool handle_video_tcp_message(ClientState& state, wd_tcp_message& message) {
+    if (message.message_type != WD_MSG_VIDEO_FRAME)
+    {
+        return false;
+    }
+
+    state.stats.video_messages_rx.fetch_add(1, std::memory_order_relaxed);
+    state.stats.video_frames_rx.fetch_add(1, std::memory_order_relaxed);
+    state.stats.video_bytes_rx.fetch_add(message.payload_size, std::memory_order_relaxed);
+    return enqueue_video_message(state, message);
+}
+
+bool handle_audio_tcp_message(ClientState& state, wd_tcp_message& message) {
+    if (message.message_type != WD_MSG_AUDIO_CONFIG && message.message_type != WD_MSG_AUDIO_PACKET)
+    {
+        return false;
+    }
+    return enqueue_audio_message(state, message);
+}
+
+bool handle_selection_tcp_message(ClientState& state, wd_tcp_message& message) {
+    if (message.message_type != WD_MSG_CLIPBOARD_SET && message.message_type != WD_MSG_PRIMARY_SET)
+    {
+        return false;
+    }
+
+    return store_selection_text(state, message.payload, message.payload_size, message.message_type == WD_MSG_PRIMARY_SET);
+}
+
+bool handle_control_tcp_message(ClientState& state, wd_tcp_message& message) {
+    if (message.message_type == WD_MSG_TILE_GENERATION_SUMMARY)
+    {
+        queue_retransmits_from_summary(state, message.payload, message.payload_size);
+        state.stats.tcp_summaries_rx.fetch_add(1, std::memory_order_relaxed);
+    }
+    else if (message.message_type == WD_MSG_SERVER_CONFIG)
+    {
+        store_server_config_update(state, message.payload, message.payload_size);
+    }
+    else if (message.message_type == WD_MSG_CURSOR_SHAPE)
+    {
+        store_cursor_shape(state, message.payload, message.payload_size);
+    }
+    else if (message.message_type == WD_MSG_LINK_PROBE_PING)
+    {
+        return handle_link_probe_ping(state, message.payload, message.payload_size);
+    }
+    else
+    {
+        return false;
+    }
+    return true;
+}
+
+enum class ClientTcpDrainResult : uint8_t {
+    Healthy,
+    PeerClosed,
+    Failed,
+};
+
+using ClientTcpMessageHandler = bool (*)(ClientState&, wd_tcp_message&);
+
+ClientTcpDrainResult drain_tcp_channel(ClientState& state, int fd, wd_tcp_reader& reader, wd_protocol_channel channel,
+                                       ClientTcpMessageHandler handler, uint32_t max_messages) {
+    for (uint32_t processed = 0; processed < max_messages; ++processed)
+    {
+        wd_tcp_message message{};
+        const wd_tcp_reader_status status = wd_tcp_reader_receive(&reader, fd, wd_now_ns(), WD_TCP_FRAME_TIMEOUT_NS, &message);
+        if (status == WD_TCP_READER_NEED_MORE)
         {
-            state->video_tcp_fd = -1;
+            return ClientTcpDrainResult::Healthy;
+        }
+        if (status == WD_TCP_READER_PEER_CLOSED)
+        {
+            return ClientTcpDrainResult::PeerClosed;
+        }
+        if (status != WD_TCP_READER_MESSAGE)
+        {
+            WD_LOG_WARN("TCP channel=%u receive failed status=%u", static_cast<unsigned>(channel), static_cast<unsigned>(status));
+            return ClientTcpDrainResult::Failed;
+        }
+
+        const bool allowed = wd_protocol_message_allowed(message.message_type, channel, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                                         WD_PROTOCOL_SERVER_TO_CLIENT, message.payload_size);
+        const bool handled = allowed && handler(state, message);
+        if (!allowed)
+        {
+            WD_LOG_WARN("rejected channel=%u message=%s(%u) size=%u", static_cast<unsigned>(channel),
+                        wd_protocol_message_name(message.message_type), message.message_type, message.payload_size);
+        }
+        wd_tcp_message_release(&message);
+        if (!handled)
+        {
+            return ClientTcpDrainResult::Failed;
+        }
+    }
+    return ClientTcpDrainResult::Healthy;
+}
+
+void clear_video_decode_queue(ClientState& state);
+void clear_audio_decode_queue(ClientState& state);
+
+void close_video_receive_channel(ClientState& state, int fd) {
+    clear_video_decode_queue(state);
+    reset_video_decoder(state, "video TCP channel closed", WD_CLIENT_VIDEO_PHASE_TILES);
+    discard_pending_video_frame(state);
+    {
+        std::lock_guard<std::mutex> lock(state.session.video_tcp_mutex);
+        state.session.video_tcp_connected.store(false, std::memory_order_release);
+        state.session.video_unavailable.store(true, std::memory_order_release);
+        if (state.session.transport.video_fd == fd)
+        {
+            state.session.transport.video_fd = -1;
         }
     }
     if (fd >= 0)
@@ -2257,48 +1858,305 @@ void video_tcp_reader_main(ClientState* state) {
     WD_LOG_INFO("video TCP channel closed");
 }
 
-void tcp_reader_main(ClientState* state) {
-    while (state->running.load(std::memory_order_relaxed))
+void close_audio_receive_channel(ClientState& state, int fd) {
+    clear_audio_decode_queue(state);
+    client_audio_playback_reset(state.session.audio_playback);
     {
-        uint16_t message_type = 0;
-        uint8_t* payload      = nullptr;
-        uint32_t payload_size = 0;
+        std::lock_guard<std::mutex> lock(state.session.audio_tcp_mutex);
+        state.session.audio_tcp_connected.store(false, std::memory_order_release);
+        if (state.session.transport.audio_fd == fd)
+        {
+            state.session.transport.audio_fd = -1;
+        }
+    }
+    if (fd >= 0)
+    {
+        ::close(fd);
+    }
+    WD_LOG_INFO("audio TCP channel closed");
+}
 
-        if (!wd_recv_tcp_message(state->tcp_fd, &message_type, &payload, &payload_size))
+void include_reader_deadline(const wd_tcp_reader& reader, uint64_t& deadline_ns) {
+    if (!wd_tcp_reader_has_partial_frame(&reader))
+    {
+        return;
+    }
+    const uint64_t reader_deadline = wd_tcp_reader_deadline_ns(&reader);
+    if (reader_deadline != 0 && reader_deadline < deadline_ns)
+    {
+        deadline_ns = reader_deadline;
+    }
+}
+
+int poll_timeout_ms(uint64_t now_ns, uint64_t deadline_ns) {
+    if (deadline_ns <= now_ns)
+    {
+        return 0;
+    }
+    const uint64_t delta_ns = deadline_ns - now_ns;
+    const uint64_t delta_ms = (delta_ns + WD_NSEC_PER_MSEC - 1u) / WD_NSEC_PER_MSEC;
+    return delta_ms > static_cast<uint64_t>(INT_MAX) ? INT_MAX : static_cast<int>(delta_ms);
+}
+
+bool pop_media_packet(ClientState& state, std::deque<ClientMediaPacket>& queue, std::condition_variable& ready,
+                      ClientMediaPacket& out) {
+    std::unique_lock<std::mutex> lock(state.session.media_queue_mutex);
+    ready.wait(lock, [&state, &queue]() {
+        return !state.session.media_workers_running.load(std::memory_order_acquire) || !queue.empty();
+    });
+    if (!state.session.media_workers_running.load(std::memory_order_acquire))
+    {
+        return false;
+    }
+    out = queue.front();
+    queue.pop_front();
+    return true;
+}
+
+void client_video_decode_worker_main(ClientState* state) {
+    if (!state)
+    {
+        return;
+    }
+
+    ClientMediaPacket packet{};
+    while (pop_media_packet(*state, state->session.video_decode_queue, state->session.video_decode_ready, packet))
+    {
+        if (packet.reset_video_decoder_before)
+        {
+            reset_video_decoder(*state, "video decode queue overflow");
+        }
+        handle_video_frame(*state, packet.payload, packet.payload_size);
+        release_media_packet(packet);
+    }
+}
+
+void client_audio_decode_worker_main(ClientState* state) {
+    if (!state)
+    {
+        return;
+    }
+
+    ClientMediaPacket packet{};
+    while (pop_media_packet(*state, state->session.audio_decode_queue, state->session.audio_decode_ready, packet))
+    {
+        const bool ok = process_audio_message(*state, packet.message_type, packet.payload, packet.payload_size);
+        release_media_packet(packet);
+        if (!ok)
+        {
+            std::lock_guard<std::mutex> lock(state->session.audio_tcp_mutex);
+            if (state->session.transport.audio_fd >= 0)
+            {
+                (void)::shutdown(state->session.transport.audio_fd, SHUT_RDWR);
+            }
+        }
+    }
+}
+
+void request_client_media_workers_stop(ClientState& state) {
+    {
+        std::lock_guard<std::mutex> lock(state.session.media_queue_mutex);
+        state.session.media_workers_running.store(false, std::memory_order_release);
+        clear_media_queue(state.session.video_decode_queue);
+        state.session.video_decode_wait_keyframe = false;
+        clear_media_queue(state.session.audio_decode_queue);
+    }
+    state.session.video_decode_ready.notify_all();
+    state.session.audio_decode_ready.notify_all();
+}
+
+void stop_client_media_workers(ClientState& state) {
+    request_client_media_workers_stop(state);
+    if (state.session.video_decode_thread.joinable())
+    {
+        state.session.video_decode_thread.join();
+    }
+    if (state.session.audio_decode_thread.joinable())
+    {
+        state.session.audio_decode_thread.join();
+    }
+}
+
+bool start_client_media_workers(ClientState& state) {
+    if (state.session.media_workers_running.exchange(true, std::memory_order_acq_rel))
+    {
+        return false;
+    }
+
+    try
+    {
+        if (state.session.transport.video_fd >= 0)
+        {
+            state.session.video_decode_thread = std::thread(client_video_decode_worker_main, &state);
+        }
+        if (state.session.transport.audio_fd >= 0)
+        {
+            state.session.audio_decode_thread = std::thread(client_audio_decode_worker_main, &state);
+        }
+    }
+    catch (...)
+    {
+        stop_client_media_workers(state);
+        return false;
+    }
+    return true;
+}
+
+void clear_video_decode_queue(ClientState& state) {
+    std::lock_guard<std::mutex> lock(state.session.media_queue_mutex);
+    clear_media_queue(state.session.video_decode_queue);
+    state.session.video_decode_wait_keyframe = false;
+}
+
+void clear_audio_decode_queue(ClientState& state) {
+    std::lock_guard<std::mutex> lock(state.session.media_queue_mutex);
+    clear_media_queue(state.session.audio_decode_queue);
+}
+
+void client_network_reader_main(ClientState* state) {
+    if (!state)
+    {
+        return;
+    }
+
+    int control_fd   = state->session.transport.control_fd;
+    int selection_fd = state->session.transport.selection_fd;
+    int video_fd     = -1;
+    int audio_fd     = -1;
+    {
+        std::scoped_lock lock(state->session.video_tcp_mutex, state->session.audio_tcp_mutex);
+        video_fd = state->session.transport.video_fd;
+        audio_fd = state->session.transport.audio_fd;
+        state->session.video_tcp_connected.store(video_fd >= 0, std::memory_order_release);
+        state->session.audio_tcp_connected.store(audio_fd >= 0, std::memory_order_release);
+    }
+
+    wd_tcp_reader control_reader{};
+    wd_tcp_reader selection_reader{};
+    wd_tcp_reader video_reader{};
+    wd_tcp_reader audio_reader{};
+    wd_tcp_reader_init(&control_reader, wd_protocol_channel_max_payload(WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                                                        WD_PROTOCOL_SERVER_TO_CLIENT));
+    wd_tcp_reader_init(&selection_reader,
+                       wd_protocol_channel_max_payload(WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                                       WD_PROTOCOL_SERVER_TO_CLIENT));
+    wd_tcp_reader_init(&video_reader, wd_protocol_channel_max_payload(WD_PROTOCOL_CHANNEL_VIDEO, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                                                      WD_PROTOCOL_SERVER_TO_CLIENT));
+    wd_tcp_reader_init(&audio_reader, wd_protocol_channel_max_payload(WD_PROTOCOL_CHANNEL_AUDIO, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                                                      WD_PROTOCOL_SERVER_TO_CLIENT));
+
+    ClientReceiveState* udp_state = client_receive_state_create(*state);
+    if (!udp_state)
+    {
+        WD_LOG_ERROR("failed to create client receive state");
+        state->session.running.store(false, std::memory_order_release);
+    }
+
+    while (udp_state && state->session.running.load(std::memory_order_acquire))
+    {
+        const uint64_t now_ns = wd_now_ns();
+        uint64_t deadline_ns  = client_receive_udp_deadline_ns(*state, *udp_state, now_ns);
+        include_reader_deadline(control_reader, deadline_ns);
+        include_reader_deadline(selection_reader, deadline_ns);
+        include_reader_deadline(video_reader, deadline_ns);
+        include_reader_deadline(audio_reader, deadline_ns);
+
+        std::array<pollfd, 5> pfds{};
+        nfds_t                nfds = 0;
+        pfds[nfds++]               = pollfd{control_fd, POLLIN, 0};
+        pfds[nfds++]               = pollfd{selection_fd, POLLIN, 0};
+        if (video_fd >= 0)
+        {
+            pfds[nfds++] = pollfd{video_fd, POLLIN, 0};
+        }
+        if (audio_fd >= 0)
+        {
+            pfds[nfds++] = pollfd{audio_fd, POLLIN, 0};
+        }
+        if (!client_receive_udp_paused(*state))
+        {
+            std::lock_guard<std::mutex> lock(state->udp_processing_mutex);
+            const int udp_poll_fd = client_async_udp_receiver_poll_fd(state->session.udp_receiver);
+            if (udp_poll_fd >= 0)
+            {
+                pfds[nfds++] = pollfd{udp_poll_fd, POLLIN, 0};
+            }
+        }
+
+        const int rc = ::poll(pfds.data(), nfds, poll_timeout_ms(now_ns, deadline_ns));
+        if (rc < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        if (rc < 0)
+        {
+            WD_LOG_ERROR("client network poll failed: %s", std::strerror(errno));
+            break;
+        }
+
+        const ClientTcpDrainResult control_result =
+            drain_tcp_channel(*state, control_fd, control_reader, WD_PROTOCOL_CHANNEL_CONTROL, handle_control_tcp_message,
+                              WD_CLIENT_TCP_DRAIN_BATCH);
+        if (control_result != ClientTcpDrainResult::Healthy)
         {
             break;
         }
 
-        if (message_type == WD_MSG_TILE_GENERATION_SUMMARY)
+        const ClientTcpDrainResult selection_result =
+            drain_tcp_channel(*state, selection_fd, selection_reader, WD_PROTOCOL_CHANNEL_SELECTION,
+                              handle_selection_tcp_message, WD_CLIENT_TCP_DRAIN_BATCH);
+        if (selection_result != ClientTcpDrainResult::Healthy)
         {
-            queue_retransmits_from_summary(*state, payload, payload_size);
-            state->stats.tcp_summaries_rx.fetch_add(1, std::memory_order_relaxed);
-        }
-        else if (message_type == WD_MSG_SERVER_CONFIG)
-        {
-            store_server_config_update(*state, payload, payload_size);
-        }
-        else if (message_type == WD_MSG_CLIPBOARD_SET || message_type == WD_MSG_PRIMARY_SET)
-        {
-            store_selection_text(*state, payload, payload_size, message_type == WD_MSG_PRIMARY_SET);
-        }
-        else if (message_type == WD_MSG_CURSOR_SHAPE)
-        {
-            store_cursor_shape(*state, payload, payload_size);
-        }
-        else if (message_type == WD_MSG_LINK_PROBE_PING)
-        {
-            (void)handle_link_probe_ping(*state, payload, payload_size);
-        }
-        else if (message_type == WD_MSG_ERROR)
-        {
-            WD_LOG_ERROR("server sent MSG_ERROR");
+            break;
         }
 
-        std::free(payload);
+        if (!client_receive_udp_service(*state, *udp_state))
+        {
+            WD_LOG_ERROR("client UDP receive service failed");
+            break;
+        }
+
+        if (video_fd >= 0)
+        {
+            const ClientTcpDrainResult video_result =
+                drain_tcp_channel(*state, video_fd, video_reader, WD_PROTOCOL_CHANNEL_VIDEO, handle_video_tcp_message, 1);
+            if (video_result != ClientTcpDrainResult::Healthy)
+            {
+                wd_tcp_reader_reset(&video_reader);
+                close_video_receive_channel(*state, video_fd);
+                video_fd = -1;
+            }
+        }
+
+        if (audio_fd >= 0)
+        {
+            const ClientTcpDrainResult audio_result =
+                drain_tcp_channel(*state, audio_fd, audio_reader, WD_PROTOCOL_CHANNEL_AUDIO, handle_audio_tcp_message,
+                                  WD_CLIENT_TCP_DRAIN_BATCH);
+            if (audio_result != ClientTcpDrainResult::Healthy)
+            {
+                wd_tcp_reader_reset(&audio_reader);
+                close_audio_receive_channel(*state, audio_fd);
+                audio_fd = -1;
+            }
+        }
     }
 
-    state->running.store(false, std::memory_order_relaxed);
+    client_receive_state_destroy(udp_state);
+    wd_tcp_reader_destroy(&control_reader);
+    wd_tcp_reader_destroy(&selection_reader);
+    wd_tcp_reader_destroy(&video_reader);
+    wd_tcp_reader_destroy(&audio_reader);
+    if (video_fd >= 0)
+    {
+        close_video_receive_channel(*state, video_fd);
+    }
+    if (audio_fd >= 0)
+    {
+        close_audio_receive_channel(*state, audio_fd);
+    }
+    request_client_media_workers_stop(*state);
+    state->session.running.store(false, std::memory_order_release);
 }
 
 } // namespace
@@ -2309,6 +2167,12 @@ void client_promote_deferred_summary_retransmits(ClientState& state) {
 
 bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_port, uint16_t client_udp_port,
                     const ClientStreamConfig& stream_config, uint16_t desired_width, uint16_t desired_height) {
+    if (!wd_client_session_begin_connect(&state.session.transport))
+    {
+        WD_LOG_ERROR("client session is already active or still owns transport descriptors");
+        return false;
+    }
+
     client_selection_sync_reset(state.selection_sync);
 
     state.server_host     = server_host ? server_host : "";
@@ -2321,23 +2185,23 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
     state.pending_cursor_shape.store(WD_CURSOR_SHAPE_DEFAULT, std::memory_order_relaxed);
     state.pending_cursor_shape_dirty.store(true, std::memory_order_release);
 
-    if (!client_video_decoder_create(&state.video_decoder))
+    if (!client_video_decoder_create(&state.session.video_decoder))
     {
         WD_LOG_WARN("failed to create video decoder skeleton");
     }
-    WD_LOG_INFO("video decoder: backend=%s codecs=0x%x available=%s", client_video_decoder_backend_name(state.video_decoder),
-                client_video_decoder_supported_codecs(state.video_decoder),
-                client_video_decoder_available(state.video_decoder) ? "yes" : "no");
+    WD_LOG_INFO("video decoder: backend=%s codecs=0x%x available=%s", client_video_decoder_backend_name(state.session.video_decoder),
+                client_video_decoder_supported_codecs(state.session.video_decoder),
+                client_video_decoder_available(state.session.video_decoder) ? "yes" : "no");
 
     if (!state.stream_config.disable_audio && client_audio_playback_available())
     {
-        if (!client_audio_playback_create(&state.audio_playback))
+        if (!client_audio_playback_create(&state.session.audio_playback))
         {
             WD_LOG_WARN("failed to create audio playback state");
         }
     }
     WD_LOG_INFO("audio playback: requested=%s backend=%s available=%s", state.stream_config.disable_audio ? "no" : "yes",
-                client_audio_playback_backend_name(), state.audio_playback ? "yes" : "no");
+                client_audio_playback_backend_name(), state.session.audio_playback ? "yes" : "no");
 
     if (!open_udp_socket(state))
     {
@@ -2362,25 +2226,20 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         return false;
     }
 
-    state.control_tcp_sender = create_client_tcp_sender("control");
-
-    if (open_input_tcp_socket(state))
+    state.session.control_tcp_sender = create_client_tcp_sender("control");
+    if (!state.session.control_tcp_sender)
     {
-        WD_LOG_INFO("input TCP channel: enabled");
-    }
-    else
-    {
-        WD_LOG_INFO("input TCP channel: unavailable, using control TCP");
+        client_disconnect(state);
+        return false;
     }
 
-    if (open_selection_tcp_socket(state))
+    if (!open_input_tcp_socket(state) || !open_selection_tcp_socket(state))
     {
-        WD_LOG_INFO("selection TCP channel: enabled");
+        WD_LOG_ERROR("failed to establish required input and selection TCP channels");
+        client_disconnect(state);
+        return false;
     }
-    else
-    {
-        WD_LOG_INFO("selection TCP channel: unavailable, using control TCP");
-    }
+    WD_LOG_INFO("required input and selection TCP channels enabled");
 
     if (open_video_tcp_socket(state))
     {
@@ -2412,7 +2271,7 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         client_disconnect(state);
         return false;
     }
-    client_reset_content_epoch(state, state.config.content_epoch, ClientContentOwner::Tiles);
+    client_reset_content_epoch(state, state.config.content_epoch, WD_CLIENT_CONTENT_OWNER_TILES);
 
     {
         std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
@@ -2434,14 +2293,15 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
     }
 
     state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + state.config.udp_payload_target + WD_CLIENT_UDP_RECV_SLACK_BYTES, 0);
-    state.udp_receiver = create_client_udp_receiver(state, state.config);
-    if (state.udp_receiver && !client_async_udp_receiver_ready(state.udp_receiver))
+    state.session.udp_receiver = create_client_udp_receiver(state, state.config);
+    if (!state.session.udp_receiver || !client_async_udp_receiver_ready(state.session.udp_receiver))
     {
         client_disconnect(state);
         return false;
     }
 
-    state.running.store(true, std::memory_order_relaxed);
+    wd_client_session_mark_connected(&state.session.transport);
+    state.session.running.store(true, std::memory_order_release);
 
     WD_LOG_INFO("connected: session=%u display=%ux%u tiles=%ux%u total=%u", state.config.session_id, state.config.width,
                 state.config.height, state.config.tiles_x, state.config.tiles_y, state.config.total_tiles);
@@ -2450,109 +2310,50 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
 }
 
 void client_disconnect(ClientState& state) {
-    state.running.store(false, std::memory_order_relaxed);
+    state.session.running.store(false, std::memory_order_release);
+    (void)wd_client_session_begin_shutdown(&state.session.transport);
 
-    if (state.tcp_fd >= 0)
     {
-        ::shutdown(state.tcp_fd, SHUT_RDWR);
-    }
-    if (state.input_tcp_fd >= 0)
-    {
-        ::shutdown(state.input_tcp_fd, SHUT_RDWR);
-    }
-    if (state.selection_tcp_fd >= 0)
-    {
-        ::shutdown(state.selection_tcp_fd, SHUT_RDWR);
-    }
-    {
-        std::lock_guard<std::mutex> lock(state.video_tcp_mutex);
-        if (state.video_tcp_fd >= 0)
-        {
-            ::shutdown(state.video_tcp_fd, SHUT_RDWR);
-        }
-        state.video_tcp_connected.store(false, std::memory_order_release);
-    }
-    {
-        std::lock_guard<std::mutex> lock(state.audio_tcp_mutex);
-        if (state.audio_tcp_fd >= 0)
-        {
-            ::shutdown(state.audio_tcp_fd, SHUT_RDWR);
-        }
-        state.audio_tcp_connected.store(false, std::memory_order_release);
+        std::scoped_lock lock(state.session.video_tcp_mutex, state.session.audio_tcp_mutex);
+        wd_client_session_shutdown_open_fds(&state.session.transport);
+        state.session.video_tcp_connected.store(false, std::memory_order_release);
+        state.session.audio_tcp_connected.store(false, std::memory_order_release);
     }
 
-    if (state.tcp_thread.joinable())
+    if (state.session.network_thread.joinable())
     {
-        state.tcp_thread.join();
+        state.session.network_thread.join();
     }
-    if (state.video_thread.joinable())
-    {
-        state.video_thread.join();
-    }
-    if (state.audio_thread.joinable())
-    {
-        state.audio_thread.join();
-    }
+    stop_client_media_workers(state);
 
     client_reap_async_sends(state);
-    destroy_client_tcp_sender(state.input_tcp_sender);
-    destroy_client_tcp_sender(state.selection_tcp_sender);
-    destroy_client_tcp_sender(state.control_tcp_sender);
+    destroy_client_tcp_sender(state.session.input_tcp_sender);
+    destroy_client_tcp_sender(state.session.selection_tcp_sender);
+    destroy_client_tcp_sender(state.session.control_tcp_sender);
     destroy_client_udp_receiver(state);
     {
-        std::lock_guard<std::mutex> lock(state.video_decoder_mutex);
-        client_video_decoder_reset(state.video_decoder);
-        client_video_decoder_destroy(state.video_decoder);
-        state.video_decoder                = nullptr;
-        state.video_decoder_needs_keyframe = true;
+        std::lock_guard<std::mutex> lock(state.session.video_decoder_mutex);
+        client_video_decoder_reset(state.session.video_decoder);
+        client_video_decoder_destroy(state.session.video_decoder);
+        state.session.video_decoder                = nullptr;
+        state.session.video_decoder_needs_keyframe = true;
     }
-    client_audio_playback_destroy(state.audio_playback);
-    state.audio_playback = nullptr;
+    client_audio_playback_destroy(state.session.audio_playback);
+    state.session.audio_playback = nullptr;
 
-    if (state.udp_fd >= 0)
-    {
-        ::close(state.udp_fd);
-        state.udp_fd = -1;
-    }
-
-    if (state.tcp_fd >= 0)
-    {
-        ::close(state.tcp_fd);
-        state.tcp_fd = -1;
-    }
-    if (state.input_tcp_fd >= 0)
-    {
-        ::close(state.input_tcp_fd);
-        state.input_tcp_fd = -1;
-    }
-    if (state.selection_tcp_fd >= 0)
-    {
-        ::close(state.selection_tcp_fd);
-        state.selection_tcp_fd = -1;
-    }
-    {
-        std::lock_guard<std::mutex> lock(state.video_tcp_mutex);
-        if (state.video_tcp_fd >= 0)
-        {
-            ::close(state.video_tcp_fd);
-            state.video_tcp_fd = -1;
-        }
-    }
-    {
-        std::lock_guard<std::mutex> lock(state.audio_tcp_mutex);
-        if (state.audio_tcp_fd >= 0)
-        {
-            ::close(state.audio_tcp_fd);
-            state.audio_tcp_fd = -1;
-        }
-    }
+    wd_client_session_close_open_fds(&state.session.transport);
 }
 
 void client_reap_async_sends(ClientState& state) {
-    std::lock_guard<std::mutex> lock(state.async_tcp_stats_mutex);
-    update_async_seen(state, state.control_tcp_sender, state.control_tcp_seen);
-    update_async_seen(state, state.input_tcp_sender, state.input_tcp_seen);
-    update_async_seen(state, state.selection_tcp_sender, state.selection_tcp_seen);
+    std::lock_guard<std::mutex> lock(state.session.async_tcp_stats_mutex);
+    const bool healthy = update_async_seen(state, state.session.control_tcp_sender, state.session.control_tcp_seen) &&
+                         update_async_seen(state, state.session.input_tcp_sender, state.session.input_tcp_seen) &&
+                         update_async_seen(state, state.session.selection_tcp_sender, state.session.selection_tcp_seen);
+    if (!healthy)
+    {
+        WD_LOG_ERROR("client io_uring TCP sender failed; reconnecting the session");
+        state.session.running.store(false, std::memory_order_release);
+    }
 }
 
 void client_reap_async_udp_receives(ClientState& state) {
@@ -2567,78 +2368,60 @@ bool client_reconfigure_udp_transport_locked(ClientState& state, const wd_server
         return false;
     }
 
-    if (state.udp_fd >= 0)
+    if (state.session.transport.udp_fd >= 0)
     {
-        ::close(state.udp_fd);
-        state.udp_fd = -1;
+        ::close(state.session.transport.udp_fd);
+        state.session.transport.udp_fd = -1;
     }
-    state.udp_seen = ClientAsyncUdpStatsSeen{};
+    state.session.udp_seen = ClientAsyncUdpStatsSeen{};
 
     if (!open_udp_socket(state) || !connect_udp_socket_to_server(state, config))
     {
-        if (state.udp_fd >= 0)
+        if (state.session.transport.udp_fd >= 0)
         {
-            ::close(state.udp_fd);
-            state.udp_fd = -1;
+            ::close(state.session.transport.udp_fd);
+            state.session.transport.udp_fd = -1;
         }
         return false;
     }
 
     state.udp_recv_buffer.assign(WD_UDP_TILE_HEADER_MAX_SIZE + config.udp_payload_target + WD_CLIENT_UDP_RECV_SLACK_BYTES, 0);
-    state.udp_receiver = create_client_udp_receiver(state, config);
-    if (state.udp_receiver && !client_async_udp_receiver_ready(state.udp_receiver))
+    state.session.udp_receiver = create_client_udp_receiver(state, config);
+    if (!state.session.udp_receiver || !client_async_udp_receiver_ready(state.session.udp_receiver))
     {
-        WD_LOG_ERROR("replacement UDP io_uring receiver failed with outstanding receives");
+        WD_LOG_ERROR("replacement UDP io_uring receiver initialization failed");
         return false;
     }
     return true;
 }
 
-bool client_disable_async_udp_receiver(ClientState& state) {
-    if (!state.udp_receiver)
-    {
-        return true;
-    }
-
-    update_async_udp_seen(state);
-    const ClientAsyncUdpDetachResult detach_result = destroy_client_udp_receiver(state);
-    if (client_udp_fallback_action(detach_result, state.udp_fd >= 0) != ClientUdpFallbackAction::ReuseSocket)
-    {
-        WD_LOG_ERROR("UDP io_uring receiver still owns the socket; stopping the session instead of starting a second receiver");
-        return false;
-    }
-    state.udp_seen = ClientAsyncUdpStatsSeen{};
-
-    if (state.udp_fd >= 0 && wd_set_nonblocking(state.udp_fd) < 0)
-    {
-        WD_LOG_ERROR("restore UDP nonblocking failed: %s", std::strerror(errno));
-        return false;
-    }
-
-    WD_LOG_WARN("UDP io_uring receive failed; falling back to synchronous recv");
-    return true;
-}
-
-bool client_start_tcp_reader(ClientState& state) {
-    if (state.tcp_fd < 0)
+bool client_start_network_worker(ClientState& state) {
+    if (state.session.transport.phase != WD_CLIENT_SESSION_CONNECTED || state.session.transport.control_fd < 0 ||
+        !state.session.udp_receiver || state.session.network_thread.joinable())
     {
         return false;
     }
 
-    state.tcp_thread = std::thread(tcp_reader_main, &state);
-    if (state.video_tcp_fd >= 0)
+    if (!start_client_media_workers(state))
     {
-        state.video_thread = std::thread(video_tcp_reader_main, &state);
+        WD_LOG_ERROR("failed to start client media decode workers");
+        return false;
     }
-    if (state.audio_tcp_fd >= 0)
+
+    try
     {
-        state.audio_thread = std::thread(audio_tcp_reader_main, &state);
+        state.session.network_thread = std::thread(client_network_reader_main, &state);
+    }
+    catch (...)
+    {
+        stop_client_media_workers(state);
+        return false;
     }
     return true;
 }
 
 bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool pressed) {
-    const int fd = state.input_tcp_fd >= 0 ? state.input_tcp_fd : state.tcp_fd;
+    const int fd = state.session.transport.input_fd;
     if (fd < 0 || evdev_key_code == 0)
     {
         return false;
@@ -2658,18 +2441,15 @@ bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool 
     {
         state.stats.tcp_keyboard_tx.fetch_add(1, std::memory_order_relaxed);
         state.stats.tcp_input_events_tx.fetch_add(1, std::memory_order_relaxed);
-        if (fd == state.input_tcp_fd)
-        {
-            state.stats.tcp_input_channel_tx.fetch_add(1, std::memory_order_relaxed);
-        }
-        else
-        {
-            state.stats.tcp_input_channel_fallback_tx.fetch_add(1, std::memory_order_relaxed);
-        }
+        state.stats.tcp_input_channel_tx.fetch_add(1, std::memory_order_relaxed);
         remember_input_timestamp(state, event.input_sequence, event.client_timestamp_ns);
         state.stats.latest_input_event_timestamp_ns.store(event.client_timestamp_ns, std::memory_order_relaxed);
     }
 
+    if (!ok)
+    {
+        state.session.running.store(false, std::memory_order_release);
+    }
     return ok;
 }
 
@@ -2681,7 +2461,7 @@ bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payloa
     }
     outbound.input_sequence = next_input_sequence(state);
 
-    const int fd = state.input_tcp_fd >= 0 ? state.input_tcp_fd : state.tcp_fd;
+    const int fd = state.session.transport.input_fd;
     if (fd < 0)
     {
         return false;
@@ -2693,14 +2473,7 @@ bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payloa
     {
         state.stats.tcp_pointer_tx.fetch_add(1, std::memory_order_relaxed);
         state.stats.tcp_input_events_tx.fetch_add(1, std::memory_order_relaxed);
-        if (fd == state.input_tcp_fd)
-        {
-            state.stats.tcp_input_channel_tx.fetch_add(1, std::memory_order_relaxed);
-        }
-        else
-        {
-            state.stats.tcp_input_channel_fallback_tx.fetch_add(1, std::memory_order_relaxed);
-        }
+        state.stats.tcp_input_channel_tx.fetch_add(1, std::memory_order_relaxed);
 
         remember_input_timestamp(state, outbound.input_sequence, outbound.client_timestamp_ns);
         if (outbound.client_timestamp_ns != 0)
@@ -2709,11 +2482,15 @@ bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payloa
         }
     }
 
+    if (!ok)
+    {
+        state.session.running.store(false, std::memory_order_release);
+    }
     return ok;
 }
 
 bool client_send_selection_text(ClientState& state, uint16_t message_type, const char* text) {
-    const int fd = state.selection_tcp_fd >= 0 ? state.selection_tcp_fd : state.tcp_fd;
+    const int fd = state.session.transport.selection_fd;
     if (fd < 0 || !text)
     {
         return false;
@@ -2736,44 +2513,29 @@ bool client_send_selection_text(ClientState& state, uint16_t message_type, const
         return false;
     }
 
-    bool ok = client_send_tcp_message_queued(state, fd, message_type, payload.data(), payload_size);
-    if (!ok && fd == state.selection_tcp_fd && state.tcp_fd >= 0)
-    {
-        destroy_client_tcp_sender(state.selection_tcp_sender);
-        ::close(state.selection_tcp_fd);
-        state.selection_tcp_fd = -1;
-        ok                     = client_send_tcp_message_queued(state, state.tcp_fd, message_type, payload.data(), payload_size);
-    }
-
+    const bool ok = client_send_tcp_message_queued(state, fd, message_type, payload.data(), payload_size);
     if (ok)
     {
-        if (fd == state.selection_tcp_fd)
-        {
-            state.stats.tcp_selection_channel_tx.fetch_add(1, std::memory_order_relaxed);
-        }
-        else
-        {
-            state.stats.tcp_selection_channel_fallback_tx.fetch_add(1, std::memory_order_relaxed);
-        }
+        state.stats.tcp_selection_channel_tx.fetch_add(1, std::memory_order_relaxed);
+    }
+    else
+    {
+        state.session.running.store(false, std::memory_order_release);
     }
     return ok;
 }
 
 static bool client_send_selection_request(ClientState& state, uint16_t message_type) {
-    int fd = state.selection_tcp_fd >= 0 ? state.selection_tcp_fd : state.tcp_fd;
+    const int fd = state.session.transport.selection_fd;
     if (fd < 0)
     {
         return false;
     }
 
-    bool ok = client_send_tcp_message_queued(state, fd, message_type, nullptr, 0);
-    if (!ok && fd == state.selection_tcp_fd && state.tcp_fd >= 0)
+    const bool ok = client_send_tcp_message_queued(state, fd, message_type, nullptr, 0);
+    if (!ok)
     {
-        destroy_client_tcp_sender(state.selection_tcp_sender);
-        ::close(state.selection_tcp_fd);
-        state.selection_tcp_fd = -1;
-        fd                     = state.tcp_fd;
-        ok                     = client_send_tcp_message_queued(state, fd, message_type, nullptr, 0);
+        state.session.running.store(false, std::memory_order_release);
     }
     return ok;
 }
@@ -2793,7 +2555,7 @@ bool client_request_server_selections(ClientState& state) {
 }
 
 bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t height) {
-    if (state.tcp_fd < 0 || width == 0 || height == 0)
+    if (state.session.transport.control_fd < 0 || width == 0 || height == 0)
     {
         return false;
     }
@@ -2804,11 +2566,11 @@ bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t hei
     resize.width            = width;
     resize.height           = height;
 
-    return client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_DISPLAY_RESIZE, &resize, sizeof(resize));
+    return client_send_tcp_message_queued(state, state.session.transport.control_fd, WD_MSG_DISPLAY_RESIZE, &resize, sizeof(resize));
 }
 
 bool client_send_config_applied(ClientState& state, uint8_t session_id, uint64_t config_epoch) {
-    if (state.tcp_fd < 0 || session_id == 0 || config_epoch == 0)
+    if (state.session.transport.control_fd < 0 || session_id == 0 || config_epoch == 0)
     {
         return false;
     }
@@ -2820,20 +2582,20 @@ bool client_send_config_applied(ClientState& state, uint8_t session_id, uint64_t
         applied.connection_token = state.config.connection_token;
     }
     applied.config_epoch = config_epoch;
-    return client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_CONFIG_APPLIED, &applied, sizeof(applied));
+    return client_send_tcp_message_queued(state, state.session.transport.control_fd, WD_MSG_CONFIG_APPLIED, &applied, sizeof(applied));
 }
 
 bool client_send_stats(ClientState& state, const wd_client_stats_payload& stats) {
-    if (state.tcp_fd < 0)
+    if (state.session.transport.control_fd < 0)
     {
         return false;
     }
 
-    return client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_CLIENT_STATS, &stats, sizeof(stats));
+    return client_send_tcp_message_queued(state, state.session.transport.control_fd, WD_MSG_CLIENT_STATS, &stats, sizeof(stats));
 }
 
 bool client_flush_retransmit_requests(ClientState& state) {
-    if (state.tcp_fd < 0)
+    if (state.session.transport.control_fd < 0)
     {
         return false;
     }
@@ -2845,9 +2607,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
     uint64_t connection_token = 0;
 
     {
-        std::lock_guard<std::mutex> config_lock(state.config_mutex);
-        std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
-        std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+        std::scoped_lock config_generation_retx_lock(state.config_mutex, state.generation_mutex, state.retx_mutex);
 
         session_id       = state.config.session_id;
         connection_token = state.config.connection_token;
@@ -2893,7 +2653,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
             }
 
             if (state.retx_last_requested_generation[tile_id] >= target_generation && state.retx_last_request_ns[tile_id] != 0 &&
-                now_ns - state.retx_last_request_ns[tile_id] < retransmit_rerequest_interval_ns(state))
+                now_ns - state.retx_last_request_ns[tile_id] < retransmit_request_interval_ns(state))
             {
                 state.retx_queued_generation[tile_id] = target_generation;
                 state.retx_queue.push_back(tile_id);
@@ -2931,7 +2691,7 @@ bool client_flush_retransmit_requests(ClientState& state) {
     std::memcpy(payload.data(), &header, sizeof(header));
     std::memcpy(payload.data() + sizeof(header), entries.data(), entries.size() * sizeof(wd_tile_repair_entry));
 
-    const bool ok = client_send_tcp_message_queued(state, state.tcp_fd, WD_MSG_TILE_REPAIR_REQUEST, payload.data(),
+    const bool ok = client_send_tcp_message_queued(state, state.session.transport.control_fd, WD_MSG_TILE_REPAIR_REQUEST, payload.data(),
                                                    static_cast<uint32_t>(payload.size()));
 
     if (!ok)

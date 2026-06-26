@@ -26,7 +26,15 @@ function(waydisplay_reject_text text pattern description)
 endfunction()
 
 function(waydisplay_configure_profile profile output_var)
-    set(build_dir "${WAYDISPLAY_TEST_ROOT}/${profile}")
+    set(build_suffix "")
+    set(log_level_argument)
+    if(ARGC GREATER 2)
+        string(TOLOWER "${ARGV2}" log_level_suffix)
+        set(build_suffix "-log-${log_level_suffix}")
+        set(log_level_argument "-DWAYDISPLAY_LOG_LEVEL=${ARGV2}")
+    endif()
+
+    set(build_dir "${WAYDISPLAY_TEST_ROOT}/${profile}${build_suffix}")
     file(REMOVE_RECURSE "${build_dir}")
 
     execute_process(
@@ -48,6 +56,7 @@ function(waydisplay_configure_profile profile output_var)
             -DWAYDISPLAY_ENABLE_H264_CLIENT_DECODER=OFF
             -DWAYDISPLAY_ENABLE_H265_CLIENT_DECODER=OFF
             -DWAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER=OFF
+            ${log_level_argument}
         RESULT_VARIABLE result
         OUTPUT_VARIABLE stdout
         ERROR_VARIABLE stderr
@@ -74,17 +83,19 @@ waydisplay_require_text("${debug_commands}" "-O0" "Debug optimization")
 waydisplay_require_text("${debug_commands}" "-g3" "Debug symbols")
 waydisplay_require_text("${debug_commands}" "-ggdb" "GDB symbols")
 waydisplay_require_text("${debug_commands}" "-fno-omit-frame-pointer" "Debug frame pointers")
-waydisplay_require_text("${debug_commands}" "WAYDISPLAY_ENABLE_LOGGING=1" "Debug logging")
-waydisplay_require_text("${debug_commands}" "WAYDISPLAY_ENABLE_DEBUG_LOGGING=1" "Debug-level logging")
+waydisplay_require_text("${debug_commands}" "WAYDISPLAY_LOG_LEVEL=4" "Debug log level")
 waydisplay_reject_text("${debug_commands}" "-fprofile-generate=" "Debug PGO instrumentation")
 
 waydisplay_configure_profile(Release release_commands)
 waydisplay_require_text("${release_commands}" "-O3" "Release optimization")
 waydisplay_require_text("${release_commands}" "-flto" "Release LTO")
-waydisplay_require_text("${release_commands}" "WAYDISPLAY_ENABLE_DEBUG_LOGGING=0" "Release debug logging")
+waydisplay_require_text("${release_commands}" "WAYDISPLAY_LOG_LEVEL=2" "Release log level")
 waydisplay_require_text("${release_commands}" "-DNDEBUG" "Release assertions")
 waydisplay_reject_text("${release_commands}" "-march=native" "Release portability")
 waydisplay_reject_text("${release_commands}" "-fprofile-use=" "Release PGO")
+
+waydisplay_configure_profile(Release release_stats_commands STATS)
+waydisplay_require_text("${release_stats_commands}" "WAYDISPLAY_LOG_LEVEL=3" "Stats log level override")
 
 waydisplay_configure_profile(Profile profile_commands)
 waydisplay_require_text("${profile_commands}" "-O3" "Profile optimization")
@@ -92,7 +103,7 @@ waydisplay_require_text("${profile_commands}" "-flto" "Profile LTO")
 waydisplay_require_text("${profile_commands}" "-march=native" "Profile architecture")
 waydisplay_require_text("${profile_commands}" "-fprofile-generate=" "Profile instrumentation")
 waydisplay_require_text("${profile_commands}" "-fprofile-update=atomic" "Profile thread safety")
-waydisplay_require_text("${profile_commands}" "WAYDISPLAY_ENABLE_DEBUG_LOGGING=0" "Profile debug logging")
+waydisplay_require_text("${profile_commands}" "WAYDISPLAY_LOG_LEVEL=2" "Profile log level")
 
 # Native remains a fully optimized local build without profile data.
 waydisplay_configure_profile(Native native_without_pgo_commands)
@@ -110,4 +121,4 @@ waydisplay_require_text("${native_commands}" "-flto" "Native LTO")
 waydisplay_require_text("${native_commands}" "-march=native" "Native architecture")
 waydisplay_require_text("${native_commands}" "-fprofile-use=" "Native PGO use")
 waydisplay_require_text("${native_commands}" "-fprofile-correction" "Native PGO correction")
-waydisplay_require_text("${native_commands}" "WAYDISPLAY_ENABLE_DEBUG_LOGGING=0" "Native debug logging")
+waydisplay_require_text("${native_commands}" "WAYDISPLAY_LOG_LEVEL=2" "Native log level")

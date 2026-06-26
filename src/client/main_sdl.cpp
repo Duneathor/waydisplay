@@ -3,7 +3,7 @@
 #include "sdl_viewer.hpp"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
-#include "wd_client.hpp"
+#include "client_state.hpp"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
 
     waydisplay::ClientStreamConfig stream_config;
     stream_config.target_fps                 = cli_options.target_fps;
-    stream_config.limited_udp_kib_per_second = cli_options.limited_udp_kib_per_second;
+    stream_config.udp_rate_cap_kib_per_second = cli_options.udp_rate_cap_kib_per_second;
     stream_config.video_mode                 = cli_options.video_mode;
     stream_config.video_codec_mask           = cli_options.video_codec_mask;
     stream_config.video_hwdecode_mode        = cli_options.video_hwdecode_mode;
@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!waydisplay::client_start_tcp_reader(state))
+    if (!waydisplay::client_start_network_worker(state))
     {
         waydisplay::client_disconnect(state);
         SDL_Quit();

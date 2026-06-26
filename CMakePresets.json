@@ -98,6 +98,42 @@
       }
     },
     {
+      "name": "tests-warnings",
+      "displayName": "WayDisplay strict warning build",
+      "inherits": "tests-core",
+      "binaryDir": "${sourceDir}/build-tests-warnings",
+      "cacheVariables": {
+        "WAYDISPLAY_RUN_TESTS_ON_BUILD": "OFF",
+        "WAYDISPLAY_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "tests-asan-ubsan",
+      "displayName": "WayDisplay ASan and UBSan tests",
+      "inherits": "tests-core",
+      "binaryDir": "${sourceDir}/build-tests-asan-ubsan",
+      "cacheVariables": {
+        "WAYDISPLAY_RUN_TESTS_ON_BUILD": "OFF",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "tests-tsan",
+      "displayName": "WayDisplay ThreadSanitizer tests",
+      "inherits": "tests-core",
+      "binaryDir": "${sourceDir}/build-tests-tsan",
+      "cacheVariables": {
+        "WAYDISPLAY_RUN_TESTS_ON_BUILD": "OFF",
+        "CMAKE_C_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread"
+      }
+    },
+    {
       "name": "tests-codecs",
       "displayName": "WayDisplay FFmpeg and VAAPI codec tests",
       "inherits": "tests-base",
@@ -174,6 +210,18 @@
       "configurePreset": "tests-core"
     },
     {
+      "name": "tests-warnings",
+      "configurePreset": "tests-warnings"
+    },
+    {
+      "name": "tests-asan-ubsan",
+      "configurePreset": "tests-asan-ubsan"
+    },
+    {
+      "name": "tests-tsan",
+      "configurePreset": "tests-tsan"
+    },
+    {
       "name": "tests-codecs",
       "configurePreset": "tests-codecs"
     },
@@ -201,6 +249,27 @@
     {
       "name": "tests-core",
       "configurePreset": "tests-core",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tests-warnings",
+      "configurePreset": "tests-warnings",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tests-asan-ubsan",
+      "configurePreset": "tests-asan-ubsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tests-tsan",
+      "configurePreset": "tests-tsan",
       "output": {
         "outputOnFailure": true
       }

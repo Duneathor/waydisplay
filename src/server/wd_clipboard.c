@@ -3,7 +3,7 @@
 #include "waydisplay/wd_time.h"
 #include "wd_async_tcp.h"
 #include "wd_selection_capture.h"
-#include "wd_server.h"
+#include "wd_server_internal.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -158,7 +158,7 @@ static int selection_capture_readable(int fd, uint32_t mask, void* data) {
         {
             continue;
         }
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        if (errno == EAGAIN)
         {
             if ((mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) == 0)
             {

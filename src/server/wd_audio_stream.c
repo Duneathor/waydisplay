@@ -20,7 +20,7 @@
 static uint64_t wd_audio_tx_max_pending_bytes(uint32_t bitrate) {
     const uint64_t payload  = ((uint64_t)bitrate * WD_AUDIO_TX_QUEUE_MS + 7999u) / 8000u;
     const uint64_t packets  = (WD_AUDIO_TX_QUEUE_MS + 19u) / 20u;
-    const uint64_t overhead = packets * (sizeof(struct wd_tcp_header) + sizeof(struct wd_audio_packet_payload_header));
+    const uint64_t overhead = packets * (WD_TCP_HEADER_WIRE_SIZE + sizeof(struct wd_audio_packet_payload_header));
     const uint64_t total    = payload + overhead;
     return total < WD_AUDIO_TX_MIN_PENDING_BYTES ? WD_AUDIO_TX_MIN_PENDING_BYTES : total;
 }

@@ -1,4 +1,4 @@
-#include "audio_video_sync.hpp"
+#include "audio_video_sync.h"
 #include "render_planning.hpp"
 #include "video_present_queue.hpp"
 #include "waydisplay/wd_protocol.h"
@@ -58,8 +58,8 @@ void test_audio_held_video_survives_decode_and_recovery_cycle() {
 
     const ClientQueuedVideoFrame* head = queue.front();
     require(head && head->frame_id == 1, "the oldest frame should be the presentation head");
-    const ClientVideoAudioSyncPlan held = client_video_audio_sync_plan(head->pts_usec, 48000, 48000);
-    require(held.decision == ClientVideoAudioSyncDecision::Hold, "a frame 50 ms ahead of audio should wait");
+    const struct wd_client_audio_video_sync_plan held = wd_client_audio_video_sync_plan_compute(head->pts_usec, 48000, 48000);
+    require(held.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_HOLD, "a frame 50 ms ahead of audio should wait");
     require(held.retry_after_ms == 10, "the renderer should wake when the frame crosses the 40 ms early threshold");
 
     bool                   dropped_tail  = false;
@@ -75,7 +75,7 @@ void test_audio_held_video_survives_decode_and_recovery_cycle() {
     health.client_reports          = 1;
     health.client_frames_seen      = 4;
     health.client_frames_decoded   = 4;
-    health.client_audio_sync_holds = 1;
+    health.client_audio_video_sync_holds = 1;
     health.client_queue_depth      = static_cast<uint32_t>(queue.size());
     require(wd_client_video_health_classify(&health) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
             "queued frames waiting for audio must not be classified as decoder failure");
@@ -89,8 +89,8 @@ void test_audio_held_video_survives_decode_and_recovery_cycle() {
     require(!wd_video_entry_allowed(false, 1), "video should remain blocked during its post-recovery cooldown");
     require(wd_video_entry_allowed(false, 0), "video may resume after recovery and cooldown complete");
 
-    const ClientVideoAudioSyncPlan due = client_video_audio_sync_plan(queue.front()->pts_usec, 48480, 48000);
-    require(due.decision == ClientVideoAudioSyncDecision::Present,
+    const struct wd_client_audio_video_sync_plan due = wd_client_audio_video_sync_plan_compute(queue.front()->pts_usec, 48480, 48000);
+    require(due.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT,
             "the preserved head should become presentable when audio reaches its deadline");
     const ClientQueuedVideoFrame presented = queue.pop_front();
     require(presented.frame_id == 1, "the frame that waited for audio should be presented rather than overwritten");
@@ -116,19 +116,19 @@ void test_bootstrap_refresh_does_not_trigger_video_selection() {
 void test_reconnect_telemetry_survives_protocol_copy() {
     wd_client_stats_payload sent{};
     sent.video_frames_decoded      = 23;
-    sent.video_audio_sync_holds    = 17;
+    sent.audio_video_sync_holds    = 17;
     sent.video_queue_depth         = 3;
     sent.video_queue_depth_max     = 6;
     sent.video_oldest_pts_usec     = 1050000;
-    sent.video_audio_delta_samples = 2400;
+    sent.audio_video_delta_samples = 2400;
     sent.tile_frames_presented     = 1;
 
     wd_client_stats_payload received{};
     std::memcpy(&received, &sent, sizeof(received));
-    require(received.video_frames_decoded == sent.video_frames_decoded && received.video_audio_sync_holds == sent.video_audio_sync_holds &&
+    require(received.video_frames_decoded == sent.video_frames_decoded && received.audio_video_sync_holds == sent.audio_video_sync_holds &&
                 received.video_queue_depth == sent.video_queue_depth && received.video_queue_depth_max == sent.video_queue_depth_max &&
                 received.video_oldest_pts_usec == sent.video_oldest_pts_usec &&
-                received.video_audio_delta_samples == sent.video_audio_delta_samples &&
+                received.audio_video_delta_samples == sent.audio_video_delta_samples &&
                 received.tile_frames_presented == sent.tile_frames_presented,
             "reconnect health and recovery telemetry should survive the wire payload");
 }

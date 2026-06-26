@@ -40,7 +40,7 @@ struct wd_client_video_health_metrics {
     uint64_t client_decode_failures;
     uint64_t client_publish_failures;
     uint64_t client_need_keyframe_drops;
-    uint64_t client_audio_sync_holds;
+    uint64_t client_audio_video_sync_holds;
     uint32_t client_queue_depth;
 };
 

@@ -2,6 +2,7 @@
 
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
+#include "waydisplay/wd_io_uring.h"
 #include "waydisplay/wd_protocol.h"
 #include "wd_async_udp_accounting.h"
 
@@ -55,7 +56,7 @@ struct wd_async_udp_sender {
     struct wd_async_udp_accounting accounting;
     uint64_t                       inflight_max;
     uint64_t                       local_failures;
-    uint64_t                       fallbacks;
+    uint64_t                       sqe_exhaustions;
     uint64_t                       submit_calls;
     uint64_t                       partial_submits;
     uint64_t                       saturation_count;
@@ -174,6 +175,12 @@ bool wd_async_udp_sender_create(struct wd_async_udp_sender** out_sender, uint32_
     int rc = io_uring_queue_init(entries, &sender->ring, 0);
     if (rc < 0)
     {
+        free(sender);
+        return false;
+    }
+    if (!wd_io_uring_require_operations(&sender->ring, WD_IO_URING_OPERATION_SENDMSG, "server UDP sender"))
+    {
+        io_uring_queue_exit(&sender->ring);
         free(sender);
         return false;
     }
@@ -324,7 +331,7 @@ enum wd_async_udp_send_status wd_async_udp_send_packet(struct wd_async_udp_sende
         sqe = io_uring_get_sqe(&sender->ring);
         if (!sqe)
         {
-            sender->fallbacks++;
+            sender->sqe_exhaustions++;
             wd_async_udp_packet_release(sender, packet);
             return WD_ASYNC_UDP_SEND_FAILED;
         }
@@ -374,8 +381,8 @@ uint64_t wd_async_udp_sender_failed(const struct wd_async_udp_sender* sender) {
     return sender ? sender->accounting.failed_total + sender->accounting.submit_failures + sender->local_failures : 0;
 }
 
-uint64_t wd_async_udp_sender_fallbacks(const struct wd_async_udp_sender* sender) {
-    return sender ? sender->fallbacks : 0;
+uint64_t wd_async_udp_sender_sqe_exhaustions(const struct wd_async_udp_sender* sender) {
+    return sender ? sender->sqe_exhaustions : 0;
 }
 
 uint64_t wd_async_udp_sender_inflight_max(const struct wd_async_udp_sender* sender) {

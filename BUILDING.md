@@ -5,16 +5,21 @@
 WayDisplay supports GCC and G++ only. The checked-in CMake presets provide four
 single-purpose build profiles:
 
-| Preset | Compiler behavior | Debug logging |
+| Preset | Compiler behavior | Default log level |
 | --- | --- | --- |
-| `debug` | `-O0 -g3 -ggdb -fno-omit-frame-pointer` | Enabled |
-| `release` | `-O3` plus GCC link-time optimization | Disabled |
-| `profile` | Native `-O3`/LTO build instrumented with `-fprofile-generate` | Disabled |
-| `native` | `-O3`, LTO, `-march=native`, and PGO when data is available | Disabled |
+| `debug` | `-O0 -g3 -ggdb -fno-omit-frame-pointer` | `DEBUG` |
+| `release` | `-O3` plus GCC link-time optimization | `INFO` |
+| `profile` | Native `-O3`/LTO build instrumented with `-fprofile-generate` | `INFO` |
+| `native` | `-O3`, LTO, `-march=native`, and PGO when data is available | `INFO` |
 
-Normal informational logging remains controlled by `WAYDISPLAY_ENABLE_LOGGING`.
-The `Debug` profile always enables both normal and debug-level logging. Release,
-Profile, and Native always compile out debug-level logging.
+`WAYDISPLAY_LOG_LEVEL` is the sole logging build option. It accepts `OFF`,
+`ERROR`, `WARN`, `INFO`, `STATS`, or `DEBUG`; each level includes all levels to
+its left. Periodic client and server telemetry uses `STATS`, so it can be
+compiled in without enabling event-by-event debug logging:
+
+```sh
+cmake --preset native -DWAYDISPLAY_LOG_LEVEL=STATS
+```
 
 Build a portable optimized binary with:
 
@@ -89,10 +94,10 @@ To listen on a specific IPv4 interface, pass `--listen`:
 
 ```sh
 # Local machine only:
-waydisplay_server_wlroots --listen 127.0.0.1 --port 5000 --app foot
+waydisplay-server --listen 127.0.0.1 --port 5000 --app foot
 
 # All IPv4 interfaces; use only on a trusted network:
-waydisplay_server_wlroots --listen 0.0.0.0 --port 5000 --app foot
+waydisplay-server --listen 0.0.0.0 --port 5000 --app foot
 ```
 
 `--listen` accepts an IPv4 address, not a hostname or an address-and-port pair.
@@ -127,8 +132,8 @@ encoder first and falls back to `libx264`/`libx265` when the selected codec is
 not supported by an automatically discovered VA device. Select a backend explicitly with:
 
 ```sh
-waydisplay_server_wlroots --video-encoder vaapi --app foot
-waydisplay_server_wlroots --video-encoder software --app foot
+waydisplay-server --video-encoder vaapi --app foot
+waydisplay-server --video-encoder software --app foot
 ```
 
 The first VA-API implementation still converts XRGB to NV12 in system memory
@@ -182,7 +187,7 @@ updates are usually reduced to one lock per presented frame.
 
 ## Render geometry limit
 
-WayDisplay protocol v37 limits the negotiated render surface to **4096x2160**.
+WayDisplay protocol zero limits the negotiated render surface to **4096x2160**.
 The tile protocol uses 16-bit base-tile IDs and counts with a fixed 16x16 base
 grid; enforcing this 4K-class limit prevents grid-count truncation and keeps
 framebuffer allocation bounded. Both client-requested sizes and server config
@@ -254,3 +259,35 @@ codec test. The full preset restores all default optional backends.
 The supported client/server command lines and the options intentionally kept in
 `wd_config.h` are documented in [`docs/command-line.md`](docs/command-line.md).
 Legacy aliases are rejected rather than silently translated.
+
+Protocol assumptions and the little-endian-only wire contract are documented in `docs/protocol.md`.
+
+## Installation
+
+After configuring and building a runtime profile, install the available executables and documentation with:
+
+```sh
+cmake --install build-native --prefix "$HOME/.local"
+```
+
+The installed executable names are `waydisplay-server` and `waydisplay-client`. A target is installed only when its required dependencies were found and the target was built.
+
+## Continuous integration profiles
+
+The repository provides dedicated presets for strict warnings and sanitizers:
+
+```sh
+cmake --preset tests-warnings
+cmake --build --preset tests-warnings
+ctest --preset tests-warnings
+
+cmake --preset tests-asan-ubsan
+cmake --build --preset tests-asan-ubsan
+ctest --preset tests-asan-ubsan
+
+cmake --preset tests-tsan
+cmake --build --preset tests-tsan
+ctest --preset tests-tsan
+```
+
+The package-heavy SDL, wlroots, codec, VAAPI, and audio matrix is kept separate from required dependency-light checks.

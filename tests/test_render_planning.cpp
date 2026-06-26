@@ -2,9 +2,9 @@
 #include "present_telemetry.hpp"
 #include "render_planning.hpp"
 #include "render_wakeup.hpp"
-#include "stream_ownership.hpp"
+#include "stream_ownership.h"
 #include "video_decoder.hpp"
-#include "wd_client.hpp"
+#include "client_state.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -253,25 +253,28 @@ void test_iyuv_frame_buffer_layout_validation() {
 }
 
 void test_stream_ownership_epochs() {
-    ClientStreamOwnership                ownership;
-    const ClientContentOwnershipSnapshot initial = ownership.snapshot();
-    require(initial.owner == ClientContentOwner::Tiles, "initial owner should be tiles");
+    struct wd_client_stream_ownership ownership = WD_CLIENT_STREAM_OWNERSHIP_INITIALIZER;
+    const struct wd_client_content_ownership_snapshot initial = wd_client_stream_ownership_snapshot(&ownership);
+    require(initial.owner == WD_CLIENT_CONTENT_OWNER_TILES, "initial owner should be tiles");
 
-    const uint64_t video_epoch = ownership.begin_video_stream();
+    const uint64_t video_epoch = wd_client_stream_ownership_begin_video_stream(&ownership);
     require(video_epoch > initial.epoch, "video entry should advance ownership epoch");
-    require(ownership.is_current(video_epoch, ClientContentOwner::Video), "video epoch should be current");
+    require(wd_client_stream_ownership_is_current(&ownership, video_epoch, WD_CLIENT_CONTENT_OWNER_VIDEO), "video epoch should be current");
 
-    const uint64_t same_video_epoch = ownership.begin_video_stream();
+    const uint64_t same_video_epoch = wd_client_stream_ownership_begin_video_stream(&ownership);
     require(same_video_epoch == video_epoch, "new video frames must not invalidate an upload from the same stream");
-    require(ownership.is_current(video_epoch, ClientContentOwner::Video), "same-stream video uploads should remain current");
+    require(wd_client_stream_ownership_is_current(&ownership, video_epoch, WD_CLIENT_CONTENT_OWNER_VIDEO),
+            "same-stream video uploads should remain current");
 
-    const uint64_t reset_video_epoch = ownership.reset_to_video();
+    const uint64_t reset_video_epoch = wd_client_stream_ownership_reset_to_video(&ownership);
     require(reset_video_epoch > video_epoch, "a remote video content-epoch change must invalidate older uploads");
 
-    const uint64_t tile_epoch = ownership.end_video_stream();
+    const uint64_t tile_epoch = wd_client_stream_ownership_end_video_stream(&ownership);
     require(tile_epoch > reset_video_epoch, "end-of-stream should advance ownership epoch");
-    require(ownership.is_current(tile_epoch, ClientContentOwner::Tiles), "tiles should own content after end-of-stream");
-    require(!ownership.is_current(reset_video_epoch, ClientContentOwner::Video), "video should be stale after end-of-stream");
+    require(wd_client_stream_ownership_is_current(&ownership, tile_epoch, WD_CLIENT_CONTENT_OWNER_TILES),
+            "tiles should own content after end-of-stream");
+    require(!wd_client_stream_ownership_is_current(&ownership, reset_video_epoch, WD_CLIENT_CONTENT_OWNER_VIDEO),
+            "video should be stale after end-of-stream");
 }
 
 void test_remote_content_epochs_reject_late_cross_transport_packets() {
@@ -279,16 +282,16 @@ void test_remote_content_epochs_reject_late_cross_transport_packets() {
     require(state.pending_dirty_tiles.reset(64, 64, 16, 16), "content test dirty grid");
     state.pending_present_generation.assign(16, 0);
 
-    client_reset_content_epoch(state, 10, ClientContentOwner::Tiles);
-    require(client_accept_content_epoch(state, 11, ClientContentOwner::Video) == ClientContentEpochDecision::Advanced,
+    client_reset_content_epoch(state, 10, WD_CLIENT_CONTENT_OWNER_TILES);
+    require(client_accept_content_epoch(state, 11, WD_CLIENT_CONTENT_OWNER_VIDEO) == ClientContentEpochDecision::Advanced,
             "new video epoch should advance");
-    require(client_accept_content_epoch(state, 10, ClientContentOwner::Tiles) == ClientContentEpochDecision::Stale,
+    require(client_accept_content_epoch(state, 10, WD_CLIENT_CONTENT_OWNER_TILES) == ClientContentEpochDecision::Stale,
             "late tile epoch should be rejected after video ownership");
-    require(client_accept_content_epoch(state, 11, ClientContentOwner::Tiles) == ClientContentEpochDecision::Stale,
+    require(client_accept_content_epoch(state, 11, WD_CLIENT_CONTENT_OWNER_TILES) == ClientContentEpochDecision::Stale,
             "same epoch cannot change transport ownership");
-    require(client_accept_content_epoch(state, 12, ClientContentOwner::Tiles) == ClientContentEpochDecision::Advanced,
+    require(client_accept_content_epoch(state, 12, WD_CLIENT_CONTENT_OWNER_TILES) == ClientContentEpochDecision::Advanced,
             "new tile epoch should supersede video ownership");
-    require(client_accept_content_epoch(state, 11, ClientContentOwner::Video) == ClientContentEpochDecision::Stale,
+    require(client_accept_content_epoch(state, 11, WD_CLIENT_CONTENT_OWNER_VIDEO) == ClientContentEpochDecision::Stale,
             "late video frame should be rejected after tile recovery");
 }
 

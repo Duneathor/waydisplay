@@ -7,8 +7,8 @@ compile_commands.json
 cmake_install.cmake
 
 # Binaries and libraries
-/waydisplay_client_sdl
-/waydisplay_server_wlroots
+/waydisplay-client
+/waydisplay-server
 /waydisplay_proto
 *.a
 *.so

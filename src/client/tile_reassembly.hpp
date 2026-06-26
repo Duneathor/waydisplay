@@ -1,7 +1,7 @@
 #pragma once
 
 #include "waydisplay/wd_protocol.h"
-#include "wd_client.hpp"
+#include "client_state.hpp"
 
 #include <array>
 #include <cstddef>

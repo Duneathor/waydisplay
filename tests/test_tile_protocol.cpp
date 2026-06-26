@@ -2,6 +2,7 @@
 #include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_protocol_dispatch.h"
 #include "waydisplay/wd_tile.h"
 
 #include <array>
@@ -25,9 +26,144 @@ void require(bool condition, const char* message) {
 }
 
 void test_protocol_version_and_header_sizes() {
-    require(WD_PROTOCOL_VERSION == 39, "audio telemetry protocol should bump the wire version");
+    require(WD_PROTOCOL_VERSION == 0, "undeployed protocol should reset to version zero");
     require(WD_UDP_TILE_HEADER_MIN_SIZE == 36, "canonical tile header size");
     require(WD_UDP_TILE_HEADER_MAX_SIZE == 44, "correlated tile header size");
+}
+
+
+template <typename T>
+void require_fixed_wire_layout(uint16_t message_type, const T& source, const char* message) {
+    uint32_t wire_size = 0;
+    require(wd_protocol_payload_wire_size(message_type, &source, sizeof(source), &wire_size), message);
+    require(wire_size == sizeof(source), "fixed wire size should match the packed protocol-zero structure");
+    require(wd_protocol_payload_validate(message_type, &source, sizeof(source)), message);
+}
+
+void test_protocol_zero_native_wire_layout() {
+    wd_tcp_header header{};
+    header.magic            = WD_TCP_MAGIC;
+    header.protocol_version = WD_PROTOCOL_VERSION;
+    header.message_type     = WD_MSG_SERVER_CONFIG;
+    header.payload_size     = 0x12345678u;
+    uint8_t wire_header[WD_TCP_HEADER_WIRE_SIZE]{};
+    require(wd_tcp_header_encode(wire_header, &header), "TCP header should encode");
+    const uint8_t expected_header[WD_TCP_HEADER_WIRE_SIZE] = {0x57, 0x44, 0x43, 0x54, 0x00, 0x00,
+                                                              0x02, 0x00, 0x78, 0x56, 0x34, 0x12};
+    require(std::memcmp(wire_header, expected_header, sizeof(expected_header)) == 0,
+            "TCP header should use the documented little-endian layout");
+    wd_tcp_header decoded_header{};
+    require(wd_tcp_header_decode(wire_header, &decoded_header), "TCP header should decode");
+    require(decoded_header.magic == header.magic && decoded_header.protocol_version == 0 &&
+                decoded_header.message_type == header.message_type && decoded_header.payload_size == header.payload_size,
+            "TCP header fields should round trip");
+
+    require_fixed_wire_layout(WD_MSG_CLIENT_HELLO, wd_client_hello_payload{}, "client hello codec");
+    require_fixed_wire_layout(WD_MSG_SERVER_CONFIG, wd_server_config_payload{}, "server config codec");
+    require_fixed_wire_layout(WD_MSG_KEYBOARD_KEY, wd_keyboard_event_payload{}, "keyboard codec");
+    require_fixed_wire_layout(WD_MSG_POINTER_EVENT, wd_pointer_event_payload{}, "pointer codec");
+    require_fixed_wire_layout(WD_MSG_MTU_PROBE_START, wd_mtu_probe_start_payload{}, "MTU start codec");
+    require_fixed_wire_layout(WD_MSG_MTU_PROBE_RESULT, wd_mtu_probe_result_payload{}, "MTU result codec");
+    require_fixed_wire_layout(WD_MSG_CURSOR_SHAPE, wd_cursor_shape_payload{}, "cursor codec");
+    require_fixed_wire_layout(WD_MSG_DISPLAY_RESIZE, wd_display_resize_payload{}, "resize codec");
+    require_fixed_wire_layout(WD_MSG_THROUGHPUT_PROBE_START, wd_throughput_probe_start_payload{}, "throughput start codec");
+    require_fixed_wire_layout(WD_MSG_THROUGHPUT_PROBE_RESULT, wd_throughput_probe_result_payload{}, "throughput result codec");
+    require_fixed_wire_layout(WD_MSG_INPUT_CHANNEL_HELLO, wd_input_channel_hello_payload{}, "input hello codec");
+    require_fixed_wire_layout(WD_MSG_SELECTION_CHANNEL_HELLO, wd_selection_channel_hello_payload{}, "selection hello codec");
+    require_fixed_wire_layout(WD_MSG_CLIENT_STATS, wd_client_stats_payload{}, "client stats codec");
+    require_fixed_wire_layout(WD_MSG_LINK_PROBE_PING, wd_link_probe_payload{}, "link ping codec");
+    require_fixed_wire_layout(WD_MSG_LINK_PROBE_PONG, wd_link_probe_payload{}, "link pong codec");
+    require_fixed_wire_layout(WD_MSG_VIDEO_CHANNEL_HELLO, wd_video_channel_hello_payload{}, "video hello codec");
+    require_fixed_wire_layout(WD_MSG_CONFIG_APPLIED, wd_config_applied_payload{}, "config applied codec");
+    require_fixed_wire_layout(WD_MSG_AUDIO_CHANNEL_HELLO, wd_audio_channel_hello_payload{}, "audio hello codec");
+    require_fixed_wire_layout(WD_MSG_AUDIO_CONFIG, wd_audio_config_payload{}, "audio config codec");
+
+    std::array<uint8_t, sizeof(wd_tile_summary_payload_header) + 2 * sizeof(wd_tile_generation_entry)> summary{};
+    auto* summary_header       = reinterpret_cast<wd_tile_summary_payload_header*>(summary.data());
+    summary_header->tile_count = 2;
+    auto* summary_entries = reinterpret_cast<wd_tile_generation_entry*>(summary.data() + sizeof(*summary_header));
+    summary_entries[0]    = {1, 0x0102030405060708ull};
+    summary_entries[1]    = {2, 9};
+    uint32_t wire_size = 0;
+    require(wd_protocol_payload_wire_size(WD_MSG_TILE_GENERATION_SUMMARY, summary.data(), summary.size(), &wire_size),
+            "summary wire layout should accept repeated entries");
+    require(wire_size == summary.size() &&
+                wd_protocol_payload_validate(WD_MSG_TILE_GENERATION_SUMMARY, summary.data(), summary.size()),
+            "summary wire layout should preserve repeated entries in place");
+    require(!wd_protocol_payload_size_is_valid(WD_MSG_TILE_GENERATION_SUMMARY,
+                                                    sizeof(wd_tile_summary_payload_header) + 1u),
+            "summary dispatch metadata should reject a partial repeated entry");
+
+    std::array<uint8_t, sizeof(wd_selection_payload_header) + 4> selection{};
+    auto* selection_header     = reinterpret_cast<wd_selection_payload_header*>(selection.data());
+    selection_header->mime_type = WD_SELECTION_MIME_TEXT_UTF8;
+    selection_header->data_size = 4;
+    std::memcpy(selection.data() + sizeof(*selection_header), "test", 4);
+    require(wd_protocol_payload_wire_size(WD_MSG_CLIPBOARD_SET, selection.data(), selection.size(), &wire_size),
+            "selection wire layout should accept opaque data");
+    require(wire_size == selection.size() && wd_protocol_payload_validate(WD_MSG_CLIPBOARD_SET, selection.data(), selection.size()),
+            "selection wire layout should preserve opaque bytes in place");
+
+    require(wd_protocol_payload_wire_size(WD_MSG_CLIPBOARD_REQUEST, nullptr, 0, &wire_size) && wire_size == 0,
+            "empty request codec should accept a zero-size payload");
+    require(!wd_protocol_payload_wire_size(0x7fffu, nullptr, 0, &wire_size), "unknown message types should not have an implicit codec");
+}
+
+void test_typed_protocol_dispatch() {
+    const uint16_t message_types[] = {
+        WD_MSG_CLIENT_HELLO,           WD_MSG_SERVER_CONFIG,          WD_MSG_TILE_GENERATION_SUMMARY,
+        WD_MSG_TILE_REPAIR_REQUEST,    WD_MSG_KEYBOARD_KEY,           WD_MSG_POINTER_EVENT,
+        WD_MSG_MTU_PROBE_START,        WD_MSG_MTU_PROBE_RESULT,       WD_MSG_CLIPBOARD_SET,
+        WD_MSG_CLIPBOARD_REQUEST,      WD_MSG_PRIMARY_SET,            WD_MSG_PRIMARY_REQUEST,
+        WD_MSG_CURSOR_SHAPE,           WD_MSG_DISPLAY_RESIZE,         WD_MSG_THROUGHPUT_PROBE_START,
+        WD_MSG_THROUGHPUT_PROBE_RESULT, WD_MSG_INPUT_CHANNEL_HELLO,    WD_MSG_SELECTION_CHANNEL_HELLO,
+        WD_MSG_CLIENT_STATS,           WD_MSG_LINK_PROBE_PING,        WD_MSG_LINK_PROBE_PONG,
+        WD_MSG_VIDEO_CHANNEL_HELLO,    WD_MSG_VIDEO_FRAME,            WD_MSG_CONFIG_APPLIED,
+        WD_MSG_AUDIO_CHANNEL_HELLO,    WD_MSG_AUDIO_CONFIG,           WD_MSG_AUDIO_PACKET,
+    };
+    for (const uint16_t message_type : message_types)
+    {
+        require(wd_protocol_message_descriptor_find(message_type) != nullptr, "every declared message should have a dispatch descriptor");
+        require(std::strcmp(wd_protocol_message_name(message_type), "WD_MSG_UNKNOWN") != 0,
+                "every declared message should have a dispatch name");
+    }
+
+    require(wd_protocol_message_allowed(WD_MSG_CLIENT_HELLO, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
+                                        WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_client_hello_payload)),
+            "client hello should be legal only during control negotiation");
+    require(!wd_protocol_message_allowed(WD_MSG_CLIENT_HELLO, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                         WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_client_hello_payload)),
+            "client hello should be rejected after negotiation");
+    require(wd_protocol_message_allowed(WD_MSG_KEYBOARD_KEY, WD_PROTOCOL_CHANNEL_INPUT, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                        WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_keyboard_event_payload)),
+            "keyboard input should be legal on the input channel");
+    require(!wd_protocol_message_allowed(WD_MSG_KEYBOARD_KEY, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                         WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_keyboard_event_payload)),
+            "keyboard input should be rejected on the control channel");
+    require(wd_protocol_message_allowed(WD_MSG_CLIPBOARD_SET, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                        WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_selection_payload_header)),
+            "clipboard updates should be legal on the selection channel");
+    require(!wd_protocol_message_allowed(WD_MSG_CLIPBOARD_SET, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                         WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_selection_payload_header)),
+            "clipboard updates should be rejected on the control channel");
+    require(!wd_protocol_message_allowed(WD_MSG_KEYBOARD_KEY, WD_PROTOCOL_CHANNEL_VIDEO, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                         WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_keyboard_event_payload)),
+            "keyboard input should be rejected on the video channel");
+    require(wd_protocol_message_allowed(WD_MSG_VIDEO_FRAME, WD_PROTOCOL_CHANNEL_VIDEO, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                        WD_PROTOCOL_SERVER_TO_CLIENT, sizeof(wd_video_frame_payload_header)),
+            "video frame should be legal from server to client");
+    require(!wd_protocol_message_allowed(WD_MSG_VIDEO_FRAME, WD_PROTOCOL_CHANNEL_VIDEO, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                         WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_video_frame_payload_header)),
+            "video frame should be rejected in the reverse direction");
+    require(!wd_protocol_message_allowed(WD_MSG_AUDIO_PACKET, WD_PROTOCOL_CHANNEL_AUDIO, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                         WD_PROTOCOL_SERVER_TO_CLIENT,
+                                         sizeof(wd_audio_packet_payload_header) + WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES + 1u),
+            "audio payloads above the channel cap should be rejected");
+    require(wd_protocol_channel_max_payload(WD_PROTOCOL_CHANNEL_VIDEO, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                            WD_PROTOCOL_SERVER_TO_CLIENT) ==
+                sizeof(wd_video_frame_payload_header) + WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES,
+            "video channel limit should come from the dispatch table");
+    require(wd_protocol_message_descriptor_find(0x7fffu) == nullptr, "unknown message should not have a dispatch descriptor");
 }
 
 void test_media_clock_helpers() {
@@ -227,9 +363,9 @@ void test_fragment_layout_is_canonical() {
             "declared total payload must match validated payload");
 }
 
-void test_protocol_v38_strict_payload_helpers() {
-    require(sizeof(wd_server_config_payload) == 101, "v38 server config should include media and audio negotiation");
-    require(sizeof(wd_config_applied_payload) == 17, "v37 config ACK should include config epoch");
+void test_protocol_zero_strict_payload_helpers() {
+    require(sizeof(wd_server_config_payload) == 101, "protocol-zero server config should include media and audio negotiation");
+    require(sizeof(wd_config_applied_payload) == 17, "protocol-zero config ACK should include config epoch");
     require(wd_fixed_payload_size_is_valid(17, sizeof(wd_config_applied_payload)), "fixed payload helper should accept exact size");
     require(!wd_fixed_payload_size_is_valid(18, sizeof(wd_config_applied_payload)), "fixed payload helper should reject trailing bytes");
     wd_config_applied_payload applied{4, 5, 6};
@@ -267,9 +403,11 @@ void test_client_hello_strict_validation() {
     hello.audio_max_channels = 0;
     require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello)), "audio capability requires a channel count");
     hello.audio_max_channels      = 2;
-    hello.audio_target_latency_ms = 10;
+    hello.audio_target_latency_ms = WD_AUDIO_TARGET_LATENCY_MS_MIN;
+    require(wd_client_hello_payload_is_valid(&hello, sizeof(hello)), "minimum audio latency should validate");
+    hello.audio_target_latency_ms = WD_AUDIO_TARGET_LATENCY_MS_MIN - 1u;
     require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello)), "audio latency below the protocol minimum should be rejected");
-    hello.audio_target_latency_ms = 60;
+    hello.audio_target_latency_ms = WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
 
     hello.video_reserved = 1;
     require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello)), "reserved client hello bits should be rejected");
@@ -418,12 +556,70 @@ void test_channel_specific_tcp_payload_limits() {
     header.protocol_version = WD_PROTOCOL_VERSION;
     header.message_type     = WD_MSG_VIDEO_FRAME;
     header.payload_size     = WD_TCP_MAX_PAYLOAD_SIZE + 1u;
-    require(wd_send_all(sockets[0], &header, sizeof(header)), "send oversized control header");
+    uint8_t wire_header[WD_TCP_HEADER_WIRE_SIZE]{};
+    require(wd_tcp_header_encode(wire_header, &header), "encode oversized control header");
+    require(wd_send_all(sockets[0], wire_header, sizeof(wire_header)), "send oversized control header");
     received      = reinterpret_cast<uint8_t*>(1);
     received_size = 1;
     require(!wd_recv_tcp_message(sockets[1], &type, &received, &received_size),
             "default control receiver should retain the strict 2 MiB limit");
     require(received == nullptr && received_size == 0, "failed receive should clear outputs");
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
+
+void test_incremental_tcp_reader() {
+    int sockets[2] = {-1, -1};
+    require(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0, "create incremental reader socket pair");
+
+    wd_tcp_header header{};
+    header.magic            = WD_TCP_MAGIC;
+    header.protocol_version = WD_PROTOCOL_VERSION;
+    header.message_type     = WD_MSG_MTU_PROBE_START;
+    header.payload_size     = sizeof(wd_mtu_probe_start_payload);
+
+    uint8_t wire_header[WD_TCP_HEADER_WIRE_SIZE]{};
+    require(wd_tcp_header_encode(wire_header, &header), "encode incremental TCP header");
+
+    wd_tcp_reader reader{};
+    wd_tcp_reader_init(&reader, 64);
+    wd_tcp_message message{};
+
+    require(wd_send_all(sockets[0], wire_header, 5), "send partial TCP header");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 100, 50, &message) == WD_TCP_READER_NEED_MORE,
+            "partial header should not block or complete");
+    require(wd_tcp_reader_has_partial_frame(&reader), "partial header should retain reader state");
+    require(wd_tcp_reader_deadline_ns(&reader) == 150, "partial header should start a frame deadline");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 151, 50, &message) == WD_TCP_READER_TIMED_OUT,
+            "stalled partial header should time out");
+
+    wd_tcp_reader_reset(&reader);
+    const uint8_t payload[sizeof(wd_mtu_probe_start_payload)] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    require(wd_send_all(sockets[0], wire_header + 5, sizeof(wire_header) - 5), "finish prior test header bytes");
+    uint8_t discard[sizeof(wire_header) - 5]{};
+    require(wd_recv_all(sockets[1], discard, sizeof(discard)), "discard prior test header remainder");
+
+    require(wd_send_all(sockets[0], wire_header, sizeof(wire_header)), "send complete TCP header");
+    require(wd_send_all(sockets[0], payload, 3), "send partial TCP payload");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 200, 50, &message) == WD_TCP_READER_NEED_MORE,
+            "partial payload should retain frame state");
+    require(wd_send_all(sockets[0], payload + 3, sizeof(payload) - 3), "finish TCP payload");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 220, 50, &message) == WD_TCP_READER_MESSAGE,
+            "incremental reader should complete after remaining payload arrives");
+    require(message.message_type == WD_MSG_MTU_PROBE_START && message.payload_size == sizeof(payload),
+            "incremental reader should preserve framing metadata");
+    require(std::memcmp(message.payload, payload, sizeof(payload)) == 0, "incremental reader should preserve payload bytes");
+    wd_tcp_message_release(&message);
+
+    header.payload_size = 65;
+    require(wd_tcp_header_encode(wire_header, &header), "encode oversized incremental header");
+    require(wd_send_all(sockets[0], wire_header, sizeof(wire_header)), "send oversized incremental header");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 300, 50, &message) == WD_TCP_READER_INVALID_FRAME,
+            "incremental reader should reject oversized payload before allocation");
+    require(reader.payload == nullptr, "oversized incremental frame should not allocate payload memory");
+
+    wd_tcp_reader_destroy(&reader);
     close(sockets[0]);
     close(sockets[1]);
 }
@@ -439,6 +635,8 @@ void test_tile_count_helpers_reject_overflow() {
 
 int main() {
     test_protocol_version_and_header_sizes();
+    test_protocol_zero_native_wire_layout();
+    test_typed_protocol_dispatch();
     test_media_clock_helpers();
     test_tile_size_round_trip();
     test_base_header_round_trip();
@@ -446,12 +644,13 @@ int main() {
     test_rejects_invalid_extensions_and_flags();
     test_decode_rejects_trailing_bytes_and_reserved_data();
     test_fragment_layout_is_canonical();
-    test_protocol_v38_strict_payload_helpers();
+    test_protocol_zero_strict_payload_helpers();
     test_client_hello_strict_validation();
     test_video_frame_strict_validation();
     test_audio_payload_strict_validation();
     test_input_payload_strict_validation();
     test_channel_specific_tcp_payload_limits();
+    test_incremental_tcp_reader();
     test_tile_count_helpers_reject_overflow();
     return 0;
 }

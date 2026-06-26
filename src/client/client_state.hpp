@@ -1,17 +1,19 @@
 #pragma once
 #include "audio_playback.hpp"
+#include "client_session.h"
 #include "present_telemetry.hpp"
 #include "render_planning.hpp"
 #include "render_wakeup.hpp"
 #include "selection_sync.hpp"
-#include "stream_ownership.hpp"
+#include "stream_ownership.h"
 #include "video_decoder.hpp"
 #include "video_present_queue.hpp"
-#include "video_transition.hpp"
+#include "video_transition.h"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_protocol.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -23,6 +25,13 @@ namespace waydisplay {
 
 struct ClientAsyncTcpSender;
 struct ClientAsyncUdpReceiver;
+
+struct ClientMediaPacket {
+    uint16_t message_type = 0;
+    uint8_t* payload      = nullptr;
+    uint32_t payload_size = 0;
+    bool reset_video_decoder_before = false;
+};
 
 struct ClientAsyncTcpStatsSeen {
     uint64_t queued            = 0;
@@ -45,9 +54,47 @@ struct ClientAsyncUdpStatsSeen {
     uint64_t accounting_errors = 0;
 };
 
+struct ClientSessionRuntime {
+    struct wd_client_session transport = WD_CLIENT_SESSION_INITIALIZER;
+    std::atomic<bool>        running{false};
+
+    ClientAsyncTcpSender*   control_tcp_sender   = nullptr;
+    ClientAsyncTcpSender*   input_tcp_sender     = nullptr;
+    ClientAsyncTcpSender*   selection_tcp_sender = nullptr;
+    ClientAsyncUdpReceiver* udp_receiver         = nullptr;
+    ClientVideoDecoder*     video_decoder        = nullptr;
+    ClientAudioPlayback*    audio_playback       = nullptr;
+
+    std::mutex        video_decoder_mutex;
+    bool              video_decoder_needs_keyframe = true;
+    enum wd_client_video_phase  video_phase                  = WD_CLIENT_VIDEO_PHASE_TILES;
+    std::atomic<bool> video_tcp_connected{false};
+    std::atomic<bool> video_unavailable{false};
+    std::mutex        video_tcp_mutex;
+    std::atomic<bool> audio_tcp_connected{false};
+    std::mutex        audio_tcp_mutex;
+
+    std::mutex              async_tcp_stats_mutex;
+    ClientAsyncTcpStatsSeen control_tcp_seen{};
+    ClientAsyncTcpStatsSeen input_tcp_seen{};
+    ClientAsyncTcpStatsSeen selection_tcp_seen{};
+    ClientAsyncUdpStatsSeen udp_seen{};
+
+    std::atomic<bool> media_workers_running{false};
+    std::mutex media_queue_mutex;
+    std::condition_variable video_decode_ready;
+    std::condition_variable audio_decode_ready;
+    std::deque<ClientMediaPacket> video_decode_queue;
+    bool video_decode_wait_keyframe = false;
+    std::deque<ClientMediaPacket> audio_decode_queue;
+    std::thread network_thread;
+    std::thread video_decode_thread;
+    std::thread audio_decode_thread;
+};
+
 struct ClientStreamConfig {
     uint16_t target_fps                   = WD_CLIENT_DEFAULT_TARGET_FPS;
-    uint32_t limited_udp_kib_per_second   = 0;
+    uint32_t udp_rate_cap_kib_per_second   = 0;
     uint8_t  video_mode                   = WD_VIDEO_MODE_AUTO;
     uint8_t  video_min_dirty_percent      = WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT;
     uint16_t video_enter_seconds          = WD_VIDEO_ENTER_SECONDS_DEFAULT;
@@ -123,9 +170,7 @@ struct ClientStats {
     std::atomic<uint64_t> tcp_pointer_tx{0};
     std::atomic<uint64_t> tcp_input_events_tx{0};
     std::atomic<uint64_t> tcp_input_channel_tx{0};
-    std::atomic<uint64_t> tcp_input_channel_fallback_tx{0};
     std::atomic<uint64_t> tcp_selection_channel_tx{0};
-    std::atomic<uint64_t> tcp_selection_channel_fallback_tx{0};
     std::atomic<uint64_t> tcp_async_queued{0};
     std::atomic<uint64_t> tcp_async_completed{0};
     std::atomic<uint64_t> tcp_async_failed{0};
@@ -152,16 +197,18 @@ struct ClientStats {
     std::atomic<uint64_t> video_last_frame_id_presented{0};
     std::atomic<uint64_t> video_present_latency_samples{0};
     std::atomic<uint64_t> video_present_latency_sum_ns{0};
-    std::atomic<uint64_t> video_audio_sync_holds{0};
-    std::atomic<uint64_t> video_audio_sync_drops{0};
+    std::atomic<uint64_t> audio_video_sync_holds{0};
+    std::atomic<uint64_t> audio_video_sync_drops{0};
     std::atomic<uint64_t> video_queue_overflow_drops{0};
+    std::atomic<uint64_t> video_decode_queue_drops{0};
     std::atomic<uint64_t> video_queue_depth_max{0};
-    std::atomic<int64_t>  video_audio_delta_samples{0};
+    std::atomic<int64_t>  audio_video_delta_samples{0};
     std::atomic<uint64_t> tile_frames_presented{0};
     std::atomic<uint64_t> audio_messages_rx{0};
     std::atomic<uint64_t> audio_packets_rx{0};
     std::atomic<uint64_t> audio_bytes_rx{0};
     std::atomic<uint64_t> audio_decode_failed{0};
+    std::atomic<uint64_t> audio_decode_queue_drops{0};
     std::atomic<uint64_t> audio_discontinuities{0};
     std::atomic<uint64_t> audio_late_drops{0};
     std::atomic<uint64_t> audio_underflows{0};
@@ -259,9 +306,7 @@ struct ClientStatsSnapshot {
     uint64_t pointer                            = 0;
     uint64_t input_events                       = 0;
     uint64_t input_channel_events               = 0;
-    uint64_t input_fallback_events              = 0;
     uint64_t selection_channel_events           = 0;
-    uint64_t selection_fallback_events          = 0;
     uint64_t tcp_async_queued                   = 0;
     uint64_t tcp_async_completed                = 0;
     uint64_t tcp_async_failed                   = 0;
@@ -288,18 +333,20 @@ struct ClientStatsSnapshot {
     uint64_t video_last_frame_id_presented      = 0;
     uint64_t video_present_latency_samples      = 0;
     uint64_t video_present_latency_sum_ns       = 0;
-    uint64_t video_audio_sync_holds             = 0;
-    uint64_t video_audio_sync_drops             = 0;
+    uint64_t audio_video_sync_holds             = 0;
+    uint64_t audio_video_sync_drops             = 0;
     uint64_t video_queue_overflow_drops         = 0;
+    uint64_t video_decode_queue_drops           = 0;
     uint32_t video_queue_depth                  = 0;
     uint32_t video_queue_depth_max              = 0;
     uint64_t video_oldest_pts_usec              = 0;
-    int64_t  video_audio_delta_samples          = 0;
+    int64_t  audio_video_delta_samples          = 0;
     uint64_t tile_frames_presented              = 0;
     uint64_t audio_messages_rx                  = 0;
     uint64_t audio_packets_rx                   = 0;
     uint64_t audio_bytes_rx                     = 0;
     uint64_t audio_decode_failed                = 0;
+    uint64_t audio_decode_queue_drops           = 0;
     uint64_t audio_discontinuities              = 0;
     uint64_t audio_late_drops                   = 0;
     uint64_t audio_underflows                   = 0;
@@ -381,34 +428,7 @@ struct ClientSummaryRepairDue {
 };
 
 struct ClientState {
-    std::atomic<bool> running{false};
-
-    int tcp_fd           = -1;
-    int input_tcp_fd     = -1;
-    int selection_tcp_fd = -1;
-    int video_tcp_fd     = -1;
-    int audio_tcp_fd     = -1;
-    int udp_fd           = -1;
-
-    ClientAsyncTcpSender*   control_tcp_sender   = nullptr;
-    ClientAsyncTcpSender*   input_tcp_sender     = nullptr;
-    ClientAsyncTcpSender*   selection_tcp_sender = nullptr;
-    ClientAsyncUdpReceiver* udp_receiver         = nullptr;
-    ClientVideoDecoder*     video_decoder        = nullptr;
-    ClientAudioPlayback*    audio_playback       = nullptr;
-    std::mutex              video_decoder_mutex;
-    bool                    video_decoder_needs_keyframe = true;
-    ClientVideoPhase        video_phase                  = ClientVideoPhase::Tiles;
-    std::atomic<bool>       video_tcp_connected{false};
-    std::atomic<bool>       video_unavailable{false};
-    std::mutex              video_tcp_mutex;
-    std::atomic<bool>       audio_tcp_connected{false};
-    std::mutex              audio_tcp_mutex;
-    std::mutex              async_tcp_stats_mutex;
-    ClientAsyncTcpStatsSeen control_tcp_seen{};
-    ClientAsyncTcpStatsSeen input_tcp_seen{};
-    ClientAsyncTcpStatsSeen selection_tcp_seen{};
-    ClientAsyncUdpStatsSeen udp_seen{};
+    ClientSessionRuntime session;
 
     std::string server_host;
     uint16_t    tcp_port        = 0;
@@ -449,10 +469,10 @@ struct ClientState {
     std::mutex            dirty_rect_mutex;
     ClientDirtyTileGrid   pending_dirty_tiles;
     uint64_t              pending_dirty_epoch = 1;
-    ClientStreamOwnership stream_ownership;
+    struct wd_client_stream_ownership stream_ownership = WD_CLIENT_STREAM_OWNERSHIP_INITIALIZER;
     std::mutex            remote_content_mutex;
     uint64_t              remote_content_epoch = 0;
-    ClientContentOwner    remote_content_owner = ClientContentOwner::Tiles;
+    enum wd_client_content_owner    remote_content_owner = WD_CLIENT_CONTENT_OWNER_TILES;
     std::atomic<uint64_t> client_config_generation{1};
 
     std::mutex                              present_mutex;
@@ -495,7 +515,7 @@ struct ClientState {
     std::deque<ClientSummaryRepairDue> retx_summary_due_queue;
     uint64_t                           retx_inflight_grace_ns = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
     std::atomic<uint64_t>              summary_retransmit_grace_ns{WD_LINK_SUMMARY_GRACE_DEFAULT_NS};
-    std::atomic<uint64_t>              retransmit_rerequest_interval_ns{WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS};
+    std::atomic<uint64_t>              retransmit_request_interval_ns{WD_LINK_RETRANSMIT_REQUEST_INTERVAL_DEFAULT_NS};
     uint32_t                           retx_summary_pending_count         = 0;
     uint64_t                           next_summary_promote_ns            = 0;
     uint64_t                           summary_large_repair_not_before_ns = 0;
@@ -527,9 +547,6 @@ struct ClientState {
 
     ClientStats         stats;
     ClientStatsLogState stats_log;
-    std::thread         tcp_thread;
-    std::thread         video_thread;
-    std::thread         audio_thread;
 };
 
 } // namespace waydisplay

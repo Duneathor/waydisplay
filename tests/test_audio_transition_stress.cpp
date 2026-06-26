@@ -1,4 +1,4 @@
-#include "audio_video_sync.hpp"
+#include "audio_video_sync.h"
 #include "waydisplay/wd_audio_transport.h"
 #include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_protocol.h"
@@ -11,7 +11,6 @@
 #include <random>
 #include <vector>
 
-using namespace waydisplay;
 
 namespace {
 
@@ -163,8 +162,9 @@ void stress_media_clock_sync_and_budget() {
         require(samples >= previous_samples, "media sample clock must be monotonic");
         previous_samples = samples;
 
-        const ClientVideoAudioSyncDecision decision = client_video_audio_sync_decide(usec, samples, WD_AUDIO_SAMPLE_RATE_DEFAULT);
-        require(decision == ClientVideoAudioSyncDecision::Present, "matching audio/video timestamps should present immediately");
+        const enum wd_client_audio_video_sync_decision decision =
+            wd_client_audio_video_sync_decide(usec, samples, WD_AUDIO_SAMPLE_RATE_DEFAULT);
+        require(decision == WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT, "matching audio/video timestamps should present immediately");
     }
 
     std::mt19937_64 random(0xbad6e7ull);

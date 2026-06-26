@@ -1,6 +1,6 @@
 #include "wd_scene_graph.h"
 
-#include "wd_server.h"
+#include "wd_server_internal.h"
 
 static bool view_is_linked_to_server(const struct wd_view* view) {
     if (!view || !view->server || !view->server->views.prev || !view->server->views.next || !view->link.prev || !view->link.next)

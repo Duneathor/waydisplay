@@ -51,7 +51,7 @@ extern "C" {
 #define WD_DISPLAY_WIDTH  800u
 #define WD_DISPLAY_HEIGHT 600u
 
-/* Protocol v37 uses 16-bit base-tile IDs and counts. Keep the advertised
+/* Protocol zero uses 16-bit base-tile IDs and counts. Keep the advertised
  * render surface within a documented 4K-class envelope that is safely
  * representable by the fixed 16x16 base grid. */
 #define WD_MAX_RENDER_WIDTH  4096u
@@ -83,6 +83,7 @@ extern "C" {
 #define WD_DEFAULT_TCP_PORT              5000u
 #define WD_TCP_HANDSHAKE_TIMEOUT_MS      3000L
 #define WD_TCP_CONNECTED_SEND_TIMEOUT_MS 3000L
+#define WD_TCP_FRAME_TIMEOUT_NS           (3000ull * WD_NSEC_PER_MSEC)
 #define WD_TCP_MAX_PAYLOAD_SIZE          (2u * 1024u * 1024u)
 #define WD_UDP_PAYLOAD_TARGET            1400u
 #define WD_UDP_SOCKET_BUFFER_BYTES       (16 * 1024 * 1024)
@@ -182,9 +183,9 @@ extern "C" {
 #define WD_LINK_SUMMARY_GRACE_DEFAULT_NS 150000000ull
 #define WD_LINK_SUMMARY_GRACE_MAX_NS     1200000000ull
 
-#define WD_LINK_RETRANSMIT_REREQUEST_MIN_NS     250000000ull
-#define WD_LINK_RETRANSMIT_REREQUEST_DEFAULT_NS 250000000ull
-#define WD_LINK_RETRANSMIT_REREQUEST_MAX_NS     1200000000ull
+#define WD_LINK_RETRANSMIT_REQUEST_INTERVAL_MIN_NS     250000000ull
+#define WD_LINK_RETRANSMIT_REQUEST_INTERVAL_DEFAULT_NS 250000000ull
+#define WD_LINK_RETRANSMIT_REQUEST_INTERVAL_MAX_NS     1200000000ull
 
 #define WD_LINK_RETRANSMIT_INFLIGHT_MIN_NS     250000000ull
 #define WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS 250000000ull
@@ -271,17 +272,17 @@ extern "C" {
 #define WD_VIDEO_ENCODER_VAAPI_ASYNC_DEPTH       "1"
 
 /* Client request defaults and top-level stream budgets.
- * FPS and limited-mode bounds constrain client requests.  Throughput safety
+ * FPS and adaptive UDP rate bounds constrain client requests.  Throughput safety
  * reserves link headroom.  Video bitrate 0 in a request means derive from the
  * link; WD_VIDEO_DEFAULT_* is the fallback when a fixed estimate is required.
  * Hardware-decode values are enum-compatible client policy modes. */
-#define WD_DEFAULT_PARTIAL_FPS                       60u
+#define WD_DEFAULT_CAPTURE_FPS                       60u
 #define WD_MAX_REASONABLE_FPS                        240u
 #define WD_STREAM_TOKEN_BURST_DIVISOR                4u
-#define WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND (1024ull * 1024ull)
-#define WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND     (25ull * 1024ull)
-#define WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND     (1000ull * 1024ull * 1024ull * 1024ull)
-#define WD_LIMITED_MODE_THROUGHPUT_SAFETY_PERCENT    85u
+#define WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND  (1024ull * 1024ull)
+#define WD_UDP_RATE_MIN_BYTES_PER_SECOND      (25ull * 1024ull)
+#define WD_UDP_RATE_MAX_BYTES_PER_SECOND      (1000ull * 1024ull * 1024ull * 1024ull)
+#define WD_UDP_THROUGHPUT_SAFETY_PERCENT      85u
 #define WD_VIDEO_DEFAULT_BITRATE_KIB_PER_SECOND      8192u
 #define WD_VIDEO_DERIVED_BITRATE_MAX_KIB_PER_SECOND  50000u
 #define WD_CLIENT_VIDEO_HWDECODE_AUTO                0u
@@ -382,7 +383,7 @@ extern "C" {
  * choose dirty rectangles versus bounding/full uploads.  Decoder queue
  * capacities are ordered metadata >= decoded >= present.  Context-menu and
  * wheel values are local UI geometry, not protocol policy. */
-#define WD_CLIENT_DEFAULT_TARGET_FPS               WD_DEFAULT_PARTIAL_FPS
+#define WD_CLIENT_DEFAULT_TARGET_FPS               WD_DEFAULT_CAPTURE_FPS
 #define WD_CLIENT_RESIZE_DEBOUNCE_NS               150000000ull
 #define WD_CLIENT_FRAME_DELAY_MS                   8
 #define WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_THRESHOLD 256u
@@ -419,7 +420,8 @@ extern "C" {
 #define WD_CLIENT_CONTEXT_MENU_TEXT_X           8
 #define WD_CLIENT_CONTEXT_MENU_TEXT_Y           6
 /* Client event-loop networking and runtime feedback cadence. */
-#define WD_CLIENT_UDP_DRAIN_BATCH                     8192u
+#define WD_CLIENT_UDP_DRAIN_BATCH                     256u
+#define WD_CLIENT_TCP_DRAIN_BATCH                     16u
 #define WD_CLIENT_MAX_IDLE_WAIT_NS                    (50ull * WD_NSEC_PER_MSEC)
 #define WD_CLIENT_CONFIG_SYNC_WAIT_NS                 (10ull * WD_NSEC_PER_MSEC)
 #define WD_CLIENT_RUNTIME_GAP_MIN_SAMPLES             16u
@@ -436,7 +438,8 @@ extern "C" {
 #define WD_MIN_WINDOW_WIDTH                 120u
 #define WD_MIN_WINDOW_HEIGHT                80u
 #define WD_XDG_ACTIVATION_TOKEN_TIMEOUT_MS  10000
-#define WD_SERVER_FRAME_SERVICE_INTERVAL_MS 8u
+#define WD_SERVER_FRAME_SERVICE_MIN_INTERVAL_MS 1u
+#define WD_SERVER_FRAME_SERVICE_MAX_INTERVAL_MS 8u
 #define WD_SERVER_STALE_REPAIR_MIN_SAMPLES  16u
 #define WD_SERVER_KEY_QUEUE_CAPACITY        4096u
 #define WD_SERVER_POINTER_QUEUE_CAPACITY    4096u
@@ -539,12 +542,12 @@ WD_CONFIG_STATIC_ASSERT(WD_DISPLAY_WIDTH <= WD_MAX_RENDER_WIDTH && WD_DISPLAY_HE
 WD_CONFIG_STATIC_ASSERT(WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_PERCENT <= 100u && WD_CLIENT_BOUNDS_UPLOAD_MIN_SAVINGS_PERCENT <= 100u &&
                             WD_CLIENT_FULL_UPLOAD_MIN_SAVINGS_PERCENT <= 100u,
                         "render percentages must be valid");
-WD_CONFIG_STATIC_ASSERT(WD_LIMITED_MODE_THROUGHPUT_SAFETY_PERCENT <= 100u && WD_LINK_SUMMARY_BUDGET_PERCENT <= 100u &&
+WD_CONFIG_STATIC_ASSERT(WD_UDP_THROUGHPUT_SAFETY_PERCENT <= 100u && WD_LINK_SUMMARY_BUDGET_PERCENT <= 100u &&
                             WD_CLIENT_REPAIR_PRESSURE_PERCENT <= 100u,
                         "network percentages must be valid");
-WD_CONFIG_STATIC_ASSERT(WD_LIMITED_MODE_MIN_UDP_BYTES_PER_SECOND <= WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND &&
-                            WD_LIMITED_MODE_DEFAULT_UDP_BYTES_PER_SECOND <= WD_LIMITED_MODE_MAX_UDP_BYTES_PER_SECOND,
-                        "limited-mode bandwidth defaults must be ordered");
+WD_CONFIG_STATIC_ASSERT(WD_UDP_RATE_MIN_BYTES_PER_SECOND <= WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND &&
+                            WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND <= WD_UDP_RATE_MAX_BYTES_PER_SECOND,
+                        "UDP rate defaults must be ordered");
 WD_CONFIG_STATIC_ASSERT(WD_CLIENT_VIDEO_METADATA_QUEUE_CAPACITY >= WD_CLIENT_VIDEO_DECODED_QUEUE_CAPACITY &&
                             WD_CLIENT_VIDEO_DECODED_QUEUE_CAPACITY >= WD_CLIENT_VIDEO_PRESENT_QUEUE_CAPACITY,
                         "video queue capacities must be ordered");

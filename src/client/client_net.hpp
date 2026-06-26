@@ -1,6 +1,6 @@
 #pragma once
 
-#include "wd_client.hpp"
+#include "client_state.hpp"
 
 #include <cstdint>
 
@@ -11,7 +11,7 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
 
 void client_disconnect(ClientState& state);
 
-bool client_start_tcp_reader(ClientState& state);
+bool client_start_network_worker(ClientState& state);
 
 bool client_send_keyboard_key(ClientState& state, uint16_t evdev_key_code, bool pressed);
 bool client_send_pointer_event(ClientState& state, const wd_pointer_event_payload& event);
@@ -26,7 +26,6 @@ bool client_flush_retransmit_requests(ClientState& state);
 bool client_send_stats(ClientState& state, const wd_client_stats_payload& stats);
 void client_reap_async_sends(ClientState& state);
 void client_reap_async_udp_receives(ClientState& state);
-bool client_disable_async_udp_receiver(ClientState& state);
 bool client_reconfigure_udp_transport_locked(ClientState& state, const wd_server_config_payload& config);
 
 } // namespace waydisplay

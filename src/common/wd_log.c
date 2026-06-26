@@ -8,12 +8,12 @@
 static const char* wd_log_level_name(enum wd_log_level level) {
     switch (level)
     {
-    case WD_LOG_LEVEL_INFO:
-        return "info";
-    case WD_LOG_LEVEL_WARN:
-        return "warn";
     case WD_LOG_LEVEL_ERROR:
         return "error";
+    case WD_LOG_LEVEL_WARN:
+        return "warn";
+    case WD_LOG_LEVEL_INFO:
+        return "info";
     case WD_LOG_LEVEL_STATS:
         return "stats";
     case WD_LOG_LEVEL_DEBUG:

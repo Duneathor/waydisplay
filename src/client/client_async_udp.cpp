@@ -2,6 +2,7 @@
 
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
+#include "waydisplay/wd_io_uring.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -45,7 +46,7 @@ bool set_blocking(int fd) {
 }
 
 bool is_transient_receive_error(int err) {
-    return err == EAGAIN || err == EWOULDBLOCK || err == EINTR || err == ECANCELED;
+    return err == EAGAIN || err == EINTR || err == ECANCELED;
 }
 
 } // namespace
@@ -384,6 +385,13 @@ ClientAsyncUdpReceiver* client_async_udp_receiver_create(int fd, uint32_t entrie
         delete receiver;
         return nullptr;
     }
+    if (!wd_io_uring_require_operations(&receiver->ring, WD_IO_URING_OPERATION_RECV | WD_IO_URING_OPERATION_ASYNC_CANCEL,
+                                        "client UDP receiver"))
+    {
+        io_uring_queue_exit(&receiver->ring);
+        delete receiver;
+        return nullptr;
+    }
 
     receiver->ring_ready = true;
 
@@ -435,6 +443,7 @@ ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpRecei
                 final_stats->prepared          = receiver->prepared.size();
                 final_stats->inflight_max      = receiver->inflight_max;
                 final_stats->accounting_errors = receiver->accounting_errors;
+            final_stats->fatal             = receiver->fatal;
             }
             WD_LOG_ERROR("client UDP io_uring detach timed out; outstanding receives still own the socket");
             return ClientAsyncUdpDetachResult::SocketStillOwned;
@@ -451,6 +460,7 @@ ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpRecei
             final_stats->prepared          = receiver->prepared.size();
             final_stats->inflight_max      = receiver->inflight_max;
             final_stats->accounting_errors = receiver->accounting_errors;
+            final_stats->fatal             = receiver->fatal;
         }
         if (receiver->ring_ready)
         {
@@ -472,36 +482,13 @@ bool client_async_udp_receiver_ready(ClientAsyncUdpReceiver* receiver) {
     return receiver->ring_ready && !receiver->fatal;
 }
 
-ClientAsyncUdpWaitResult client_async_udp_receiver_wait(ClientAsyncUdpReceiver* receiver, uint64_t timeout_ns) {
+int client_async_udp_receiver_poll_fd(ClientAsyncUdpReceiver* receiver) {
     if (!receiver)
     {
-        return ClientAsyncUdpWaitResult::Failed;
+        return -1;
     }
-
     std::lock_guard<std::mutex> lock(receiver->mutex);
-    if (!receiver->ring_ready || receiver->fatal || !post_receives_locked(receiver))
-    {
-        return ClientAsyncUdpWaitResult::Failed;
-    }
-
-    __kernel_timespec timeout{};
-    timeout.tv_sec  = static_cast<__kernel_time64_t>(timeout_ns / WD_NSEC_PER_SEC);
-    timeout.tv_nsec = static_cast<long>(timeout_ns % WD_NSEC_PER_SEC);
-
-    io_uring_cqe* cqe = nullptr;
-    const int     rc  = io_uring_wait_cqe_timeout(&receiver->ring, &cqe, &timeout);
-    if (rc == 0 && cqe)
-    {
-        return ClientAsyncUdpWaitResult::Ready;
-    }
-    if (rc == -ETIME || rc == -EAGAIN || rc == -EINTR)
-    {
-        return ClientAsyncUdpWaitResult::Timeout;
-    }
-
-    receiver->failed++;
-    receiver->fatal = true;
-    return ClientAsyncUdpWaitResult::Failed;
+    return receiver->ring_ready && !receiver->fatal ? receiver->ring.ring_fd : -1;
 }
 
 bool client_async_udp_receiver_drain(ClientAsyncUdpReceiver* receiver, void* userdata, ClientAsyncUdpPacketHandler handler,
@@ -609,6 +596,7 @@ ClientAsyncUdpReceiverStats client_async_udp_receiver_stats(ClientAsyncUdpReceiv
     stats.prepared          = receiver->prepared.size();
     stats.inflight_max      = receiver->inflight_max;
     stats.accounting_errors = receiver->accounting_errors;
+    stats.fatal             = receiver->fatal;
     return stats;
 }
 

@@ -2,7 +2,9 @@
 
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
+#include "waydisplay/wd_io_uring.h"
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_protocol_codec.h"
 
 #include <errno.h>
 #include <liburing.h>
@@ -12,12 +14,6 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
-#ifdef MSG_NOSIGNAL
-#define WD_ASYNC_SEND_FLAGS MSG_NOSIGNAL
-#else
-#define WD_ASYNC_SEND_FLAGS 0
-#endif
 
 #define WD_ASYNC_TCP_DEFAULT_MAX_PENDING_BYTES WD_SERVER_ASYNC_TCP_DEFAULT_PENDING_BYTES
 #ifndef WD_ASYNC_TCP_DRAIN_LIMIT
@@ -127,7 +123,7 @@ static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, stru
         return false;
     }
 
-    io_uring_prep_send(sqe, msg->fd, msg->bytes + msg->bytes_sent, msg->total_size - msg->bytes_sent, WD_ASYNC_SEND_FLAGS);
+    io_uring_prep_send(sqe, msg->fd, msg->bytes + msg->bytes_sent, msg->total_size - msg->bytes_sent, MSG_NOSIGNAL);
     io_uring_sqe_set_data(sqe, msg);
 
     msg->submitted = true;
@@ -186,12 +182,13 @@ static bool wd_async_tcp_try_start_head(struct wd_async_tcp_sender* sender, stru
 
 static struct wd_async_tcp_message* wd_async_tcp_message_create(int fd, uint16_t message_type, const void* payload, uint32_t payload_size,
                                                                 wd_async_tcp_complete_fn complete, void* user_data) {
-    if (payload_size != 0 && !payload)
+    uint32_t wire_payload_size = 0;
+    if (!wd_protocol_payload_wire_size(message_type, payload, payload_size, &wire_payload_size))
     {
         return NULL;
     }
 
-    const size_t                 total_size = sizeof(struct wd_tcp_header) + (size_t)payload_size;
+    const size_t                 total_size = WD_TCP_HEADER_WIRE_SIZE + (size_t)wire_payload_size;
     struct wd_async_tcp_message* msg        = calloc(1, sizeof(*msg) + total_size);
     if (!msg)
     {
@@ -203,17 +200,21 @@ static struct wd_async_tcp_message* wd_async_tcp_message_create(int fd, uint16_t
     header.magic            = WD_TCP_MAGIC;
     header.protocol_version = WD_PROTOCOL_VERSION;
     header.message_type     = message_type;
-    header.payload_size     = payload_size;
+    header.payload_size     = wire_payload_size;
 
     msg->fd           = fd;
     msg->message_type = message_type;
     msg->total_size   = total_size;
     msg->complete     = complete;
     msg->user_data    = user_data;
-    memcpy(msg->bytes, &header, sizeof(header));
-    if (payload_size != 0)
+    if (!wd_tcp_header_encode(msg->bytes, &header))
     {
-        memcpy(msg->bytes + sizeof(header), payload, payload_size);
+        free(msg);
+        return NULL;
+    }
+    if (wire_payload_size != 0)
+    {
+        memcpy(msg->bytes + WD_TCP_HEADER_WIRE_SIZE, payload, wire_payload_size);
     }
 
     return msg;
@@ -241,6 +242,13 @@ bool wd_async_tcp_sender_create(struct wd_async_tcp_sender** out_sender, uint32_
     int rc = io_uring_queue_init(entries, &sender->ring, 0);
     if (rc < 0)
     {
+        free(sender);
+        return false;
+    }
+    if (!wd_io_uring_require_operations(&sender->ring, WD_IO_URING_OPERATION_SEND | WD_IO_URING_OPERATION_ASYNC_CANCEL,
+                                        "server TCP sender"))
+    {
+        io_uring_queue_exit(&sender->ring);
         free(sender);
         return false;
     }
@@ -330,7 +338,14 @@ bool wd_async_tcp_send_message_ex(struct wd_async_tcp_sender* sender, int fd, ui
 
     wd_async_tcp_sender_reap(sender);
 
-    const uint64_t total_size = (uint64_t)sizeof(struct wd_tcp_header) + (uint64_t)payload_size;
+    uint32_t wire_payload_size = 0;
+    if (!wd_protocol_payload_wire_size(message_type, payload, payload_size, &wire_payload_size))
+    {
+        sender->failed++;
+        return false;
+    }
+
+    const uint64_t total_size = (uint64_t)WD_TCP_HEADER_WIRE_SIZE + (uint64_t)wire_payload_size;
     if (sender->max_pending_bytes != 0 && sender->pending_bytes + total_size > sender->max_pending_bytes)
     {
         sender->overflows++;
@@ -367,7 +382,7 @@ bool wd_async_tcp_sender_can_queue(const struct wd_async_tcp_sender* sender, uin
         return false;
     }
 
-    const uint64_t total_size = (uint64_t)sizeof(struct wd_tcp_header) + (uint64_t)payload_size;
+    const uint64_t total_size = (uint64_t)WD_TCP_HEADER_WIRE_SIZE + (uint64_t)payload_size;
     return sender->max_pending_bytes == 0 || sender->pending_bytes + total_size <= sender->max_pending_bytes;
 }
 

@@ -1,4 +1,4 @@
-#include "wd_server.h"
+#include "wd_server_internal.h"
 
 #include <drm_fourcc.h>
 #include <stdlib.h>

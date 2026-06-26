@@ -1,7 +1,16 @@
 #pragma once
 
-/* Internal FFmpeg VAAPI device discovery.  This header is included only by
- * codec translation units that already include libavutil/hwcontext.h. */
+/* Internal FFmpeg VAAPI device discovery. */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include <libavutil/buffer.h>
+#include <libavutil/error.h>
+#include <libavutil/hwcontext.h>
+#ifdef __cplusplus
+}
+#endif
 
 #include <ctype.h>
 #include <errno.h>

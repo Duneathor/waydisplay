@@ -193,12 +193,12 @@ void test_video_health_distinguishes_audio_wait_from_failure() {
     metrics.client_reports          = 1;
     metrics.client_frames_seen      = 60;
     metrics.client_frames_decoded   = 60;
-    metrics.client_audio_sync_holds = 2;
+    metrics.client_audio_video_sync_holds = 2;
     metrics.client_queue_depth      = 3;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
             "decoded frames queued behind audio should not be a video failure");
 
-    metrics.client_audio_sync_holds = 0;
+    metrics.client_audio_video_sync_holds = 0;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
             "decoded frames with no presentation explanation should be a stall");
 

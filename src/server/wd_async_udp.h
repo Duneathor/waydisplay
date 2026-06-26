@@ -32,7 +32,7 @@ uint64_t wd_async_udp_sender_inflight(const struct wd_async_udp_sender* sender);
 uint64_t wd_async_udp_sender_queued(const struct wd_async_udp_sender* sender);
 uint64_t wd_async_udp_sender_completed(const struct wd_async_udp_sender* sender);
 uint64_t wd_async_udp_sender_failed(const struct wd_async_udp_sender* sender);
-uint64_t wd_async_udp_sender_fallbacks(const struct wd_async_udp_sender* sender);
+uint64_t wd_async_udp_sender_sqe_exhaustions(const struct wd_async_udp_sender* sender);
 uint64_t wd_async_udp_sender_inflight_max(const struct wd_async_udp_sender* sender);
 uint64_t wd_async_udp_sender_pending_packets(const struct wd_async_udp_sender* sender);
 uint64_t wd_async_udp_sender_pending_bytes(const struct wd_async_udp_sender* sender);

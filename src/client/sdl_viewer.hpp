@@ -1,6 +1,6 @@
 #pragma once
 
-#include "wd_client.hpp"
+#include "client_state.hpp"
 
 namespace waydisplay {
 

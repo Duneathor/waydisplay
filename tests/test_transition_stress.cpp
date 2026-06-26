@@ -1,6 +1,6 @@
 #include "client_config_validation.hpp"
-#include "stream_ownership.hpp"
-#include "video_transition.hpp"
+#include "stream_ownership.h"
+#include "video_transition.h"
 #include "wd_video_transition.h"
 
 #include <cstdint>
@@ -76,8 +76,8 @@ void stress_resize_keeps_transport_identity() {
 
 void stress_video_transition_invariants() {
     std::mt19937          random(0x7a11e5u);
-    ClientVideoPhase      phase = ClientVideoPhase::Tiles;
-    ClientStreamOwnership ownership;
+    enum wd_client_video_phase         phase     = WD_CLIENT_VIDEO_PHASE_TILES;
+    struct wd_client_stream_ownership ownership = WD_CLIENT_STREAM_OWNERSHIP_INITIALIZER;
 
     for (uint64_t iteration = 0; iteration < 100000; ++iteration)
     {
@@ -87,33 +87,36 @@ void stress_video_transition_invariants() {
         const bool keyframe = (random() % 17u) == 0;
         const bool payload  = !eos && (random() % 5u) != 0;
 
-        const ClientVideoTransitionDecision decision = client_video_transition(phase, advanced, eos, resize, keyframe, payload);
+        const struct wd_client_video_transition_decision decision =
+            wd_client_video_transition_decide(phase, advanced, eos, resize, keyframe, payload);
 
         require(!decision.accept_payload || payload, "transition cannot accept an empty video payload");
-        require(!decision.accept_payload || keyframe || phase == ClientVideoPhase::Video,
+        require(!decision.accept_payload || keyframe || phase == WD_CLIENT_VIDEO_PHASE_VIDEO,
                 "video entry cannot accept an inter-frame before a keyframe");
         if (resize)
         {
-            require(decision.next_phase == ClientVideoPhase::AwaitingKeyframe, "resize must leave the decoder waiting for a keyframe");
+            require(decision.next_phase == WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME, "resize must leave the decoder waiting for a keyframe");
         }
         else if (eos)
         {
-            require(decision.next_phase == ClientVideoPhase::Tiles, "EOS must return to tile ownership");
+            require(decision.next_phase == WD_CLIENT_VIDEO_PHASE_TILES, "EOS must return to tile ownership");
         }
 
         phase = decision.next_phase;
-        if (phase == ClientVideoPhase::Video)
+        if (phase == WD_CLIENT_VIDEO_PHASE_VIDEO)
         {
-            const uint64_t                       epoch    = ownership.begin_video_stream();
-            const ClientContentOwnershipSnapshot snapshot = ownership.snapshot();
-            require(snapshot.epoch == epoch && snapshot.owner == ClientContentOwner::Video &&
-                        ownership.is_current(snapshot.epoch, ClientContentOwner::Video),
+            const uint64_t epoch = wd_client_stream_ownership_begin_video_stream(&ownership);
+            const struct wd_client_content_ownership_snapshot snapshot =
+                wd_client_stream_ownership_snapshot(&ownership);
+            require(snapshot.epoch == epoch && snapshot.owner == WD_CLIENT_CONTENT_OWNER_VIDEO &&
+                        wd_client_stream_ownership_is_current(&ownership, snapshot.epoch, WD_CLIENT_CONTENT_OWNER_VIDEO),
                     "video ownership snapshot must remain current");
         }
-        else if (phase == ClientVideoPhase::Tiles)
+        else if (phase == WD_CLIENT_VIDEO_PHASE_TILES)
         {
-            const uint64_t epoch = ownership.end_video_stream();
-            require(ownership.is_current(epoch, ClientContentOwner::Tiles), "tile ownership snapshot must remain current");
+            const uint64_t epoch = wd_client_stream_ownership_end_video_stream(&ownership);
+            require(wd_client_stream_ownership_is_current(&ownership, epoch, WD_CLIENT_CONTENT_OWNER_TILES),
+                    "tile ownership snapshot must remain current");
         }
     }
 }

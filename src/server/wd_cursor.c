@@ -1,6 +1,6 @@
 #include "waydisplay/wd_net.h"
 #include "wd_async_tcp.h"
-#include "wd_server.h"
+#include "wd_server_internal.h"
 
 #include <string.h>
 #include <sys/socket.h>
@@ -109,7 +109,7 @@ static bool wd_cursor_send_shape_locked(struct wd_server* server, uint16_t shape
 
     if (ok)
     {
-        wd_stream_account_tcp_control_bytes_locked(net, (uint32_t)(sizeof(struct wd_tcp_header) + sizeof(payload)));
+        wd_stream_account_tcp_control_bytes_locked(net, (uint32_t)(WD_TCP_HEADER_WIRE_SIZE + sizeof(payload)));
         net->stats.cursor_shape_tx++;
     }
     return ok;

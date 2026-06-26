@@ -1,6 +1,6 @@
 #include "waydisplay/wd_input.h"
 #include "waydisplay/wd_time.h"
-#include "wd_server.h"
+#include "wd_server_internal.h"
 
 #include <stdlib.h>
 #include <string.h>

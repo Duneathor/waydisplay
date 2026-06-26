@@ -1,7 +1,5 @@
 #pragma once
 
-#include "udp_transport_lifecycle.hpp"
-
 #include <cstddef>
 #include <cstdint>
 
@@ -9,10 +7,9 @@ namespace waydisplay {
 
 struct ClientAsyncUdpReceiver;
 
-enum class ClientAsyncUdpWaitResult : uint8_t {
-    Ready,
-    Timeout,
-    Failed,
+enum class ClientAsyncUdpDetachResult : uint8_t {
+    Detached = 0,
+    SocketStillOwned,
 };
 
 struct ClientAsyncUdpReceiverStats {
@@ -26,6 +23,7 @@ struct ClientAsyncUdpReceiverStats {
     uint64_t prepared          = 0;
     uint64_t inflight_max      = 0;
     uint64_t accounting_errors = 0;
+    bool     fatal             = false;
 };
 
 using ClientAsyncUdpPacketHandler = bool (*)(void* userdata, const uint8_t* data, size_t size);
@@ -34,7 +32,7 @@ ClientAsyncUdpReceiver*    client_async_udp_receiver_create(int fd, uint32_t ent
 ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpReceiver*      receiver,
                                                              ClientAsyncUdpReceiverStats* final_stats = nullptr);
 bool                       client_async_udp_receiver_ready(ClientAsyncUdpReceiver* receiver);
-ClientAsyncUdpWaitResult   client_async_udp_receiver_wait(ClientAsyncUdpReceiver* receiver, uint64_t timeout_ns);
+int                        client_async_udp_receiver_poll_fd(ClientAsyncUdpReceiver* receiver);
 
 bool client_async_udp_receiver_drain(ClientAsyncUdpReceiver* receiver, void* userdata, ClientAsyncUdpPacketHandler handler,
                                      uint32_t max_packets);

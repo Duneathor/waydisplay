@@ -134,8 +134,7 @@ void clear_retx_inflight(ClientState& state, uint16_t tile_id, uint64_t generati
 }
 
 bool enqueue_retx_for_partial_timeout(ClientState& state, uint16_t tile_id, uint64_t generation) {
-    std::lock_guard<std::mutex> gen_lock(state.generation_mutex);
-    std::lock_guard<std::mutex> retx_lock(state.retx_mutex);
+    std::scoped_lock generation_retx_lock(state.generation_mutex, state.retx_mutex);
 
     const uint16_t total_tiles = state.config.total_tiles;
     if (total_tiles == 0 || tile_id >= total_tiles || state.received_generation.size() != total_tiles)

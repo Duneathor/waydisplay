@@ -18,7 +18,7 @@ struct ClientCliOptions {
     uint16_t    desired_width              = 0;
     uint16_t    desired_height             = 0;
     uint16_t    target_fps                 = 0;
-    uint32_t    limited_udp_kib_per_second = 0;
+    uint32_t    udp_rate_cap_kib_per_second = 0;
     uint8_t     video_mode                 = 0;
     uint32_t    video_codec_mask           = 0;
     uint8_t     video_hwdecode_mode        = 0;

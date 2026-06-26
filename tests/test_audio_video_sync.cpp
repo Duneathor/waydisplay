@@ -1,5 +1,5 @@
 #include "audio_playback_clock.hpp"
-#include "audio_video_sync.hpp"
+#include "audio_video_sync.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -21,28 +21,34 @@ void require(bool condition, const char* message) {
 
 int main() {
     const uint64_t playhead = 48000;
-    require(client_video_audio_sync_decide(1000000, playhead) == ClientVideoAudioSyncDecision::Present,
+    require(wd_client_audio_video_sync_decide(1000000, playhead, WD_AUDIO_SAMPLE_RATE_DEFAULT) == WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT,
             "a frame at the playhead should be presented");
-    require(client_video_audio_sync_decide(1050000, playhead) == ClientVideoAudioSyncDecision::Hold, "an early frame should be held");
-    require(client_video_audio_sync_decide(900000, playhead) == ClientVideoAudioSyncDecision::Drop, "a late frame should be dropped");
-    require(client_video_audio_sync_decide(1000000, playhead, 0) == ClientVideoAudioSyncDecision::Present,
+    require(wd_client_audio_video_sync_decide(1050000, playhead, WD_AUDIO_SAMPLE_RATE_DEFAULT) ==
+                WD_CLIENT_AUDIO_VIDEO_SYNC_HOLD,
+            "an early frame should be held");
+    require(wd_client_audio_video_sync_decide(900000, playhead, WD_AUDIO_SAMPLE_RATE_DEFAULT) ==
+                WD_CLIENT_AUDIO_VIDEO_SYNC_DROP,
+            "a late frame should be dropped");
+    require(wd_client_audio_video_sync_decide(1000000, playhead, 0) == WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT,
             "zero sample rate should present without synchronization");
 
-    const ClientVideoAudioSyncPlan held = client_video_audio_sync_plan(1050000, playhead);
-    require(held.decision == ClientVideoAudioSyncDecision::Hold, "held plan should retain the hold decision");
+    const struct wd_client_audio_video_sync_plan held =
+        wd_client_audio_video_sync_plan_compute(1050000, playhead, WD_AUDIO_SAMPLE_RATE_DEFAULT);
+    require(held.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_HOLD, "held plan should retain the hold decision");
     require(held.delta_samples == 2400, "held plan should report the sample lead");
     require(held.retry_after_ms == 10, "held plan should cap the immediate retry delay");
 
-    const ClientVideoAudioSyncPlan due = client_video_audio_sync_plan(1040000, playhead);
-    require(due.decision == ClientVideoAudioSyncDecision::Present, "a frame inside the lead tolerance should be presented");
+    const struct wd_client_audio_video_sync_plan due =
+        wd_client_audio_video_sync_plan_compute(1040000, playhead, WD_AUDIO_SAMPLE_RATE_DEFAULT);
+    require(due.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT, "a frame inside the lead tolerance should be presented");
     require(due.retry_after_ms == 0, "a due frame should not request a retry delay");
 
-    const ClientVideoAudioSyncPlan enormous_lead = client_video_audio_sync_plan(UINT64_MAX, 0, 1);
-    require(enormous_lead.decision == ClientVideoAudioSyncDecision::Hold, "an enormous lead should be held without overflow");
+    const struct wd_client_audio_video_sync_plan enormous_lead = wd_client_audio_video_sync_plan_compute(UINT64_MAX, 0, 1);
+    require(enormous_lead.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_HOLD, "an enormous lead should be held without overflow");
     require(enormous_lead.retry_after_ms == WD_CLIENT_VIDEO_AUDIO_MAX_RETRY_MS, "an enormous lead should clamp the retry delay");
 
-    const ClientVideoAudioSyncPlan enormous_lag = client_video_audio_sync_plan(0, UINT64_MAX, 1);
-    require(enormous_lag.decision == ClientVideoAudioSyncDecision::Drop, "an enormous lag should be dropped without overflow");
+    const struct wd_client_audio_video_sync_plan enormous_lag = wd_client_audio_video_sync_plan_compute(0, UINT64_MAX, 1);
+    require(enormous_lag.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_DROP, "an enormous lag should be dropped without overflow");
 
     const uint64_t mixed = client_audio_frames_to_samples_fp(2880, 48000, 48000);
     require(client_audio_device_playhead(48000, 52800, mixed, 480) == 50400,

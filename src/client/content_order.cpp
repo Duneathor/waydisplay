@@ -1,6 +1,6 @@
 #include "content_order.hpp"
 
-#include "wd_client.hpp"
+#include "client_state.hpp"
 
 #include <algorithm>
 #include <mutex>
@@ -8,7 +8,7 @@
 namespace waydisplay {
 namespace {
 
-void reset_pending_content_locked(ClientState& state, ClientContentOwner owner) {
+void reset_pending_content_locked(ClientState& state, enum wd_client_content_owner owner) {
     state.pending_dirty_tiles.clear();
     state.pending_dirty_rect_count.store(0, std::memory_order_release);
     std::fill(state.pending_present_generation.begin(), state.pending_present_generation.end(), 0);
@@ -19,8 +19,9 @@ void reset_pending_content_locked(ClientState& state, ClientContentOwner owner) 
     /* A remote content-epoch advance invalidates any upload already in
      * progress even when ownership remains on the same transport. Ordinary
      * video frames do not change this local ownership epoch. */
-    const uint64_t local_epoch =
-        owner == ClientContentOwner::Video ? state.stream_ownership.reset_to_video() : state.stream_ownership.reset_to_tiles();
+    const uint64_t local_epoch = owner == WD_CLIENT_CONTENT_OWNER_VIDEO
+                                     ? wd_client_stream_ownership_reset_to_video(&state.stream_ownership)
+                                     : wd_client_stream_ownership_reset_to_tiles(&state.stream_ownership);
     state.pending_dirty_epoch = local_epoch;
 }
 
@@ -31,7 +32,7 @@ void reset_present_telemetry(ClientState& state) {
 
 } // namespace
 
-ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint64_t content_epoch, ClientContentOwner owner) {
+ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint64_t content_epoch, enum wd_client_content_owner owner) {
     if (content_epoch == 0)
     {
         return ClientContentEpochDecision::Stale;
@@ -48,9 +49,8 @@ ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint6
     }
 
     {
-        std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
-        std::lock_guard<std::mutex> generation_lock(state.generation_mutex);
-        std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
+        std::scoped_lock dirty_generation_video_lock(state.dirty_rect_mutex, state.generation_mutex,
+                                                        state.video_frame_mutex);
         reset_pending_content_locked(state, owner);
     }
     reset_present_telemetry(state);
@@ -60,12 +60,11 @@ ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint6
     return ClientContentEpochDecision::Advanced;
 }
 
-void client_reset_content_epoch(ClientState& state, uint64_t content_epoch, ClientContentOwner owner) {
+void client_reset_content_epoch(ClientState& state, uint64_t content_epoch, enum wd_client_content_owner owner) {
     std::lock_guard<std::mutex> transition_lock(state.remote_content_mutex);
     {
-        std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
-        std::lock_guard<std::mutex> generation_lock(state.generation_mutex);
-        std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
+        std::scoped_lock dirty_generation_video_lock(state.dirty_rect_mutex, state.generation_mutex,
+                                                        state.video_frame_mutex);
         reset_pending_content_locked(state, owner);
     }
     reset_present_telemetry(state);

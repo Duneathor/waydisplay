@@ -1,6 +1,6 @@
 #include "wd_scene_graph.h"
 #include "wd_scene_policy.h"
-#include "wd_server.h"
+#include "wd_server_internal.h"
 
 #include <stdlib.h>
 #include <string.h>

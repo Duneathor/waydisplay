@@ -1,5 +1,5 @@
 #include "wd_scene_graph.h"
-#include "wd_server.h"
+#include "wd_server_internal.h"
 
 #include <stdio.h>
 #include <string.h>

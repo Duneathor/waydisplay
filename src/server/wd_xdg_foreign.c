@@ -1,4 +1,4 @@
-#include "wd_server.h"
+#include "wd_server_internal.h"
 
 #include <wlr/types/wlr_xdg_foreign_v1.h>
 

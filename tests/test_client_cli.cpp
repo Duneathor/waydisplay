@@ -34,7 +34,7 @@ static void test_defaults(void) {
     CHECK(options.tcp_port == 5000);
     CHECK(options.client_udp_port == 6000);
     CHECK(options.target_fps == WD_CLIENT_DEFAULT_TARGET_FPS);
-    CHECK(options.limited_udp_kib_per_second == 0);
+    CHECK(options.udp_rate_cap_kib_per_second == 0);
     CHECK(options.video_mode == WD_VIDEO_MODE_AUTO);
     CHECK(options.video_codec_mask == WD_VIDEO_CODEC_H265);
     CHECK(options.video_hwdecode_mode == WD_CLIENT_VIDEO_HWDECODE_AUTO);
@@ -50,7 +50,7 @@ static void test_retained_options(void) {
                 options, error) == ClientCliParseResult::Ok);
     CHECK(options.target_fps == 75);
     CHECK(options.desired_width == 1920 && options.desired_height == 1080);
-    CHECK(options.limited_udp_kib_per_second == 8192);
+    CHECK(options.udp_rate_cap_kib_per_second == 8192);
     CHECK(options.disable_vsync && options.disable_audio);
     CHECK(options.video_mode == WD_VIDEO_MODE_FORCE);
     CHECK(options.video_codec_mask == (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265));
@@ -96,7 +96,8 @@ static void test_invalid_values(void) {
     ClientCliOptions options;
     std::string      error;
     CHECK(parse({"client", "127.0.0.1", "0", "6000"}, options, error) == ClientCliParseResult::Error);
-    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--fps", "121"}, options, error) == ClientCliParseResult::Error);
+    const std::string excessive_fps = std::to_string(static_cast<uint64_t>(WD_MAX_REASONABLE_FPS) + 1u);
+    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--fps", excessive_fps.c_str()}, options, error) == ClientCliParseResult::Error);
     CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--rate-kib", "+1"}, options, error) == ClientCliParseResult::Error);
 }
 

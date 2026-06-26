@@ -1,5 +1,4 @@
-#include "udp_transport_lifecycle.hpp"
-#include "video_transition.hpp"
+#include "video_transition.h"
 #include "wd_connection_identity.h"
 #include "wd_input_correlation.h"
 #include "wd_video_transition.h"
@@ -120,16 +119,6 @@ void test_nonentry_frames_keep_current_epoch() {
     require(wrapped.frame_content_epoch == 1, "content epoch must skip zero on wrap");
 }
 
-void test_udp_fallback_never_reuses_a_socket_still_owned_by_io_uring() {
-    using namespace waydisplay;
-    require(client_udp_fallback_action(ClientAsyncUdpDetachResult::Detached, true) == ClientUdpFallbackAction::ReuseSocket,
-            "fully detached receiver may reuse its socket");
-    require(client_udp_fallback_action(ClientAsyncUdpDetachResult::SocketStillOwned, true) == ClientUdpFallbackAction::ReplaceSocket,
-            "outstanding receives require a replacement socket");
-    require(client_udp_fallback_action(ClientAsyncUdpDetachResult::Detached, false) == ClientUdpFallbackAction::Abort,
-            "fallback cannot proceed without a socket");
-}
-
 void test_input_correlation_commits_only_matching_successful_delivery() {
     require(wd_input_correlation_select(true, 44, 0) == 44, "pending input should be selected when no delivery is in flight");
     require(wd_input_correlation_select(true, 45, 44) == 0, "a second correlation must wait for the first delivery");
@@ -148,24 +137,23 @@ void test_input_correlation_commits_only_matching_successful_delivery() {
 }
 
 void test_client_video_transition_state_machine() {
-    using namespace waydisplay;
-
-    ClientVideoTransitionDecision decision = client_video_transition(ClientVideoPhase::Tiles, true, false, false, false, true);
-    require(!decision.accept_payload && decision.next_phase == ClientVideoPhase::AwaitingKeyframe,
+    struct wd_client_video_transition_decision decision =
+        wd_client_video_transition_decide(WD_CLIENT_VIDEO_PHASE_TILES, true, false, false, false, true);
+    require(!decision.accept_payload && decision.next_phase == WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME,
             "a video epoch cannot begin on a non-keyframe");
     require(decision.reset_decoder, "a new video epoch should reset a tile-owned decoder");
 
-    decision = client_video_transition(ClientVideoPhase::AwaitingKeyframe, true, false, false, true, true);
-    require(decision.accept_payload && decision.next_phase == ClientVideoPhase::Video,
+    decision = wd_client_video_transition_decide(WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME, true, false, false, true, true);
+    require(decision.accept_payload && decision.next_phase == WD_CLIENT_VIDEO_PHASE_VIDEO,
             "the first matching keyframe should enter video ownership");
     require(!decision.reset_decoder, "a config reset followed by the same transition keyframe must not reset twice");
 
-    decision = client_video_transition(ClientVideoPhase::Video, false, true, true, false, false);
-    require(!decision.accept_payload && decision.next_phase == ClientVideoPhase::AwaitingKeyframe,
+    decision = wd_client_video_transition_decide(WD_CLIENT_VIDEO_PHASE_VIDEO, false, true, true, false, false);
+    require(!decision.accept_payload && decision.next_phase == WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME,
             "resize EOS should wait for the next configured keyframe");
     require(decision.reset_decoder, "resize should invalidate an active decoder once");
 
-    decision = client_video_transition(ClientVideoPhase::AwaitingKeyframe, false, false, true, false, false);
+    decision = wd_client_video_transition_decide(WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME, false, false, true, false, false);
     require(!decision.reset_decoder, "a duplicate resize control must not tear down an already-reset decoder");
 }
 
@@ -191,7 +179,6 @@ int main() {
     test_connection_identity_requires_secure_randomness();
     test_first_keyframe_reserves_next_epoch_without_early_commit();
     test_nonentry_frames_keep_current_epoch();
-    test_udp_fallback_never_reuses_a_socket_still_owned_by_io_uring();
     test_input_correlation_commits_only_matching_successful_delivery();
     test_client_video_transition_state_machine();
     return 0;

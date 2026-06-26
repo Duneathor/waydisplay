@@ -11,14 +11,19 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 39u
+#define WD_PROTOCOL_VERSION 0u
+
+#if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error "WayDisplay protocol version 0 requires a little-endian host"
+#endif
 
 /*
- * WayDisplay peers are little-endian Linux systems and transmit packed
- * integer fields directly. Protocol versions still change whenever a wire
- * structure changes.
+ * Protocol version 0 intentionally supports only little-endian Linux peers.
+ * TCP headers and payloads still use explicit codecs so compiler ABI layout,
+ * padding, and unaligned accesses are not part of the wire contract.
  */
 #define WD_TCP_MAGIC                    0x54434457u
+#define WD_TCP_HEADER_WIRE_SIZE          12u
 #define WD_UDP_TILE_ID_MTU_PROBE        0xffffu
 #define WD_UDP_TILE_ID_THROUGHPUT_PROBE 0xfffeu
 
@@ -50,7 +55,12 @@ enum wd_message_type {
     WD_MSG_AUDIO_CHANNEL_HELLO     = 25,
     WD_MSG_AUDIO_CONFIG            = 26,
     WD_MSG_AUDIO_PACKET            = 27,
-    WD_MSG_ERROR                   = 255,
+};
+
+enum wd_protocol_error_code {
+    WD_PROTOCOL_ERROR_INVALID_MESSAGE = 1,
+    WD_PROTOCOL_ERROR_INVALID_PHASE   = 2,
+    WD_PROTOCOL_ERROR_INVALID_PAYLOAD = 3,
 };
 
 enum wd_pointer_event_type {
@@ -141,13 +151,8 @@ enum wd_cursor_shape {
     WD_CURSOR_SHAPE_COUNT,
 };
 
-#if defined(_MSC_VER)
-#define WD_PACKED_BEGIN __pragma(pack(push, 1))
-#define WD_PACKED_END   __pragma(pack(pop))
-#else
 #define WD_PACKED_BEGIN _Pragma("pack(push, 1)")
 #define WD_PACKED_END   _Pragma("pack(pop)")
-#endif
 
 WD_PACKED_BEGIN
 
@@ -180,7 +185,7 @@ struct wd_client_hello_payload {
      * 0 means use the server throughput probe. Nonzero values act as a cap
      * and do not raise the server-selected throughput-probe ceiling.
      */
-    uint32_t limited_udp_kib_per_second;
+    uint32_t udp_rate_cap_kib_per_second;
 
     /* Bitmask from enum wd_client_capability. */
     uint32_t capabilities;
@@ -221,13 +226,10 @@ struct wd_client_hello_payload {
 };
 
 enum wd_server_capability {
-    WD_SERVER_CAP_INPUT_CHANNEL     = 1u << 0,
-    WD_SERVER_CAP_SELECTION_CHANNEL = 1u << 1,
-    WD_SERVER_CAP_VIDEO_STREAM      = 1u << 2,
-    WD_SERVER_CAP_AUDIO_STREAM      = 1u << 3,
+    WD_SERVER_CAP_VIDEO_STREAM = 1u << 0,
+    WD_SERVER_CAP_AUDIO_STREAM = 1u << 1,
 };
-#define WD_SERVER_CAP_MASK                                                                                                                 \
-    (WD_SERVER_CAP_INPUT_CHANNEL | WD_SERVER_CAP_SELECTION_CHANNEL | WD_SERVER_CAP_VIDEO_STREAM | WD_SERVER_CAP_AUDIO_STREAM)
+#define WD_SERVER_CAP_MASK (WD_SERVER_CAP_VIDEO_STREAM | WD_SERVER_CAP_AUDIO_STREAM)
 
 struct wd_server_config_payload {
     /* Stable for the lifetime of one control/UDP transport connection. */
@@ -275,7 +277,7 @@ struct wd_server_config_payload {
      * probe. Values are milliseconds; 0 means use the compiled default. */
     uint16_t link_rtt_ms;
     uint16_t summary_retransmit_grace_ms;
-    uint16_t retransmit_rerequest_ms;
+    uint16_t retransmit_request_interval_ms;
     uint16_t retransmit_inflight_grace_ms;
     uint16_t tile_reassembly_timeout_ms;
     uint16_t active_summary_interval_ms;
@@ -389,13 +391,13 @@ struct wd_client_stats_payload {
     uint64_t audio_discontinuities;
     uint64_t audio_late_drops;
     uint64_t audio_underflows;
-    uint64_t video_audio_sync_holds;
-    uint64_t video_audio_sync_drops;
+    uint64_t audio_video_sync_holds;
+    uint64_t audio_video_sync_drops;
     uint64_t video_queue_overflow_drops;
     uint32_t video_queue_depth;
     uint32_t video_queue_depth_max;
     uint64_t video_oldest_pts_usec;
-    int64_t  video_audio_delta_samples;
+    int64_t  audio_video_delta_samples;
     uint64_t tile_frames_presented;
 };
 
@@ -547,7 +549,7 @@ enum wd_tile_size {
     WD_TILE_16x16  = 3,
 };
 
-/* Protocol v36 uses one canonical base header for every tile fragment.
+/* Protocol zero uses one canonical base header for every tile fragment.
  * tile_payload_size is the total compressed or uncompressed tile payload.
  * The optional input sequence extension is legal only on packet zero. */
 struct wd_udp_tile_packet_header {
@@ -857,13 +859,14 @@ struct wd_config_applied_payload {
     uint64_t config_epoch;
 };
 
+
+
 WD_PACKED_END
 
 #undef WD_PACKED_BEGIN
 #undef WD_PACKED_END
 
 #if defined(__cplusplus)
-static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 static_assert(sizeof(struct wd_udp_tile_packet_header) == 36, "unexpected wd_udp_tile_packet_header size");
 static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 44, "unexpected maximum wd_udp_tile_packet_header size");
 static_assert(sizeof(struct wd_client_hello_payload) == 44, "unexpected wd_client_hello_payload size");
@@ -891,7 +894,6 @@ static_assert(sizeof(struct wd_cursor_shape_payload) == 11, "unexpected wd_curso
 static_assert(sizeof(struct wd_display_resize_payload) == 13, "unexpected wd_display_resize_payload size");
 static_assert(sizeof(struct wd_config_applied_payload) == 17, "unexpected wd_config_applied_payload size");
 #else
-_Static_assert(sizeof(struct wd_tcp_header) == 12, "unexpected wd_tcp_header size");
 _Static_assert(sizeof(struct wd_udp_tile_packet_header) == 36, "unexpected wd_udp_tile_packet_header size");
 _Static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 44, "unexpected maximum wd_udp_tile_packet_header size");
 _Static_assert(sizeof(struct wd_client_hello_payload) == 44, "unexpected wd_client_hello_payload size");

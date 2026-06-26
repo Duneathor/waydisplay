@@ -1,6 +1,11 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "wd_server.h"
 #include "wd_server_cli.h"
-#include "wd_tile_policy.h"
+
+#include "waydisplay/wd_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,19 +63,28 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    struct wd_server server;
-    if (!wd_server_init(&server, options.tcp_port, options.listen_address, options.app_command, options.output_scale,
-                        options.output_refresh_hz, options.display_width, options.display_height, WD_TILE_WIDTH, WD_TILE_HEIGHT,
-                        WD_SERVER_DEFAULT_ENABLE_XWAYLAND != 0, WD_SERVER_DEFAULT_ENABLE_XDG_DIALOG != 0, options.video_encoder_backend))
+    const struct wd_server_config config = {
+        .tcp_port                       = options.tcp_port,
+        .listen_address                 = options.listen_address,
+        .app_command                    = options.app_command,
+        .output_scale                   = options.output_scale,
+        .output_refresh_hz              = options.output_refresh_hz,
+        .display_width                  = options.display_width,
+        .display_height                 = options.display_height,
+        .tile_width                     = WD_TILE_WIDTH,
+        .tile_height                    = WD_TILE_HEIGHT,
+        .enable_xwayland                = WD_SERVER_DEFAULT_ENABLE_XWAYLAND != 0,
+        .enable_xdg_dialog              = WD_SERVER_DEFAULT_ENABLE_XDG_DIALOG != 0,
+        .video_encoder_backend          = options.video_encoder_backend,
+        .tile_compression_benchmark_mode = (uint8_t)WD_SERVER_TILE_COMPRESSION_BENCHMARK_MODE_DEFAULT,
+    };
+    struct wd_server* server = wd_server_create(&config);
+    if (!server)
     {
-        wd_server_destroy(&server);
         return 1;
     }
 
-    server.tile_compression_benchmark_mode = (uint8_t)WD_SERVER_TILE_COMPRESSION_BENCHMARK_MODE_DEFAULT;
-    WD_LOG_DEBUG("tile compression policy: mode=%s", wd_tile_compression_benchmark_mode_name(server.tile_compression_benchmark_mode));
-
-    const int rc = wd_server_run(&server);
-    wd_server_destroy(&server);
+    const int rc = wd_server_run(server);
+    wd_server_free(server);
     return rc;
 }

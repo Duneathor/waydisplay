@@ -1,124 +1,13 @@
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
-#include "wd_server.h"
+#include "wd_server_internal.h"
+#include "wd_readback_regions.h"
 
 #include <drm_fourcc.h>
 #include <string.h>
 #include <wlr/types/wlr_buffer.h>
 
-static void readback_box_from_damage(struct wd_server* server, int max_width, int max_height, int* out_x, int* out_y, int* out_width,
-                                     int* out_height, bool* out_full_readback) {
-    int  x1   = 0;
-    int  y1   = 0;
-    int  x2   = max_width;
-    int  y2   = max_height;
-    bool full = true;
-
-    if (server && !server->damage_all_tiles && server->damage_tiles && server->damage_tile_count > 0)
-    {
-        bool have = false;
-
-        for (uint32_t tile_id = 0; tile_id < server->total_base_tiles; ++tile_id)
-        {
-            if (!server->damage_tiles[tile_id])
-            {
-                continue;
-            }
-
-            const uint32_t bx  = tile_id % (uint32_t)server->base_tiles_x;
-            const uint32_t by  = tile_id / (uint32_t)server->base_tiles_x;
-            int            tx1 = (int)(bx * (uint32_t)server->base_tile_width);
-            int            ty1 = (int)(by * (uint32_t)server->base_tile_height);
-            int            tx2 = tx1 + (int)server->base_tile_width;
-            int            ty2 = ty1 + (int)server->base_tile_height;
-
-            if (tx1 < 0)
-            {
-                tx1 = 0;
-            }
-            if (ty1 < 0)
-            {
-                ty1 = 0;
-            }
-            if (tx2 > max_width)
-            {
-                tx2 = max_width;
-            }
-            if (ty2 > max_height)
-            {
-                ty2 = max_height;
-            }
-            if (tx1 >= tx2 || ty1 >= ty2)
-            {
-                continue;
-            }
-
-            if (!have)
-            {
-                x1   = tx1;
-                y1   = ty1;
-                x2   = tx2;
-                y2   = ty2;
-                have = true;
-            }
-            else
-            {
-                if (tx1 < x1)
-                {
-                    x1 = tx1;
-                }
-                if (ty1 < y1)
-                {
-                    y1 = ty1;
-                }
-                if (tx2 > x2)
-                {
-                    x2 = tx2;
-                }
-                if (ty2 > y2)
-                {
-                    y2 = ty2;
-                }
-            }
-        }
-
-        if (have)
-        {
-            full = false;
-        }
-    }
-
-    if (x1 < 0)
-    {
-        x1 = 0;
-    }
-    if (y1 < 0)
-    {
-        y1 = 0;
-    }
-    if (x2 > max_width)
-    {
-        x2 = max_width;
-    }
-    if (y2 > max_height)
-    {
-        y2 = max_height;
-    }
-    if (x1 >= x2 || y1 >= y2)
-    {
-        x1   = 0;
-        y1   = 0;
-        x2   = max_width;
-        y2   = max_height;
-        full = true;
-    }
-
-    *out_x             = x1;
-    *out_y             = y1;
-    *out_width         = x2 - x1;
-    *out_height        = y2 - y1;
-    *out_full_readback = full;
-}
+#define WD_READBACK_REGION_CAPACITY 16u
 
 static uint32_t xrgb_from_pixel(uint32_t pixel, uint32_t format) {
     switch (format)
@@ -222,6 +111,33 @@ static bool readback_buffer_data_ptr_xrgb8888(struct wd_server* server, struct w
     return ok;
 }
 
+static void merge_wlroots_output_damage(struct wd_server* server, struct wlr_output_state* state) {
+    if (!server || !state)
+    {
+        return;
+    }
+
+    if ((state->committed & WLR_OUTPUT_STATE_DAMAGE) == 0)
+    {
+        /* A rendered buffer without an explicit damage region must be treated
+         * as a complete replacement. */
+        wd_server_mark_scene_dirty(server);
+        return;
+    }
+
+    int                       rect_count = 0;
+    const pixman_box32_t*     rects      = pixman_region32_rectangles(&state->damage, &rect_count);
+    for (int i = 0; i < rect_count; ++i)
+    {
+        const int width  = rects[i].x2 - rects[i].x1;
+        const int height = rects[i].y2 - rects[i].y1;
+        if (width > 0 && height > 0)
+        {
+            wd_server_mark_rect_dirty(server, rects[i].x1, rects[i].y1, width, height);
+        }
+    }
+}
+
 enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
     if (!server || !server->scene_output || !server->output || !server->renderer || !server->framebuffer_xrgb8888)
     {
@@ -233,7 +149,6 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
 
     enum wd_render_result result                  = WD_RENDER_RESULT_ERROR;
     bool                  built_state             = false;
-    bool                  captured_complete_frame = false;
 
     if (!wlr_scene_output_build_state(server->scene_output, &state, NULL))
     {
@@ -261,6 +176,8 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
         goto commit_only;
     }
 
+    merge_wlroots_output_damage(server, &state);
+
     int read_width = state.buffer->width < (int)server->display_width ? state.buffer->width : (int)server->display_width;
 
     int read_height = state.buffer->height < (int)server->display_height ? state.buffer->height : (int)server->display_height;
@@ -281,10 +198,16 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
         goto commit_only;
     }
 
-    int  read_x        = 0;
-    int  read_y        = 0;
-    bool full_readback = true;
-    readback_box_from_damage(server, read_width, read_height, &read_x, &read_y, &read_width, &read_height, &full_readback);
+    struct wd_readback_region read_regions[WD_READBACK_REGION_CAPACITY];
+    bool                      full_readback = true;
+    const size_t read_region_count = wd_readback_plan_regions(
+        server->damage_all_tiles, server->damage_tiles, server->damage_tile_count, server->total_base_tiles,
+        server->base_tiles_x, server->base_tile_width, server->base_tile_height, read_width, read_height,
+        read_regions, WD_READBACK_REGION_CAPACITY, &full_readback);
+    if (read_region_count == 0)
+    {
+        goto commit_only;
+    }
 
     if (full_readback && (full_read_width < (int)server->display_width || full_read_height < (int)server->display_height))
     {
@@ -299,7 +222,6 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
 
         if (readback_buffer_data_ptr_xrgb8888(server, state.buffer, full_read_width, full_read_height))
         {
-            captured_complete_frame = true;
             result                  = WD_RENDER_RESULT_FRAME;
             goto commit_only;
         }
@@ -314,22 +236,33 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
         goto commit_only;
     }
 
-    struct wlr_texture_read_pixels_options read_options = {
-        .data   = server->framebuffer_xrgb8888,
-        .format = DRM_FORMAT_XRGB8888,
-        .stride = server->display_width * WD_BYTES_PER_PIXEL,
-        .dst_x  = read_x,
-        .dst_y  = read_y,
-        .src_box =
-            {
-                .x      = read_x,
-                .y      = read_y,
-                .width  = read_width,
-                .height = read_height,
-            },
-    };
+    bool readback_ok = true;
+    for (size_t i = 0; i < read_region_count; ++i)
+    {
+        const struct wd_readback_region* region = &read_regions[i];
+        struct wlr_texture_read_pixels_options read_options = {
+            .data   = server->framebuffer_xrgb8888,
+            .format = DRM_FORMAT_XRGB8888,
+            .stride = server->display_width * WD_BYTES_PER_PIXEL,
+            .dst_x  = region->x,
+            .dst_y  = region->y,
+            .src_box =
+                {
+                    .x      = region->x,
+                    .y      = region->y,
+                    .width  = region->width,
+                    .height = region->height,
+                },
+        };
 
-    if (!wlr_texture_read_pixels(texture, &read_options))
+        if (!wlr_texture_read_pixels(texture, &read_options))
+        {
+            readback_ok = false;
+            break;
+        }
+    }
+
+    if (!readback_ok)
     {
         uint32_t preferred = wlr_texture_preferred_read_format(texture);
 
@@ -348,7 +281,6 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
     }
 
     wlr_texture_destroy(texture);
-    captured_complete_frame = full_readback;
     result                  = WD_RENDER_RESULT_FRAME;
 
 commit_only:
@@ -370,13 +302,6 @@ commit_only:
 
 out:
     wlr_output_state_finish(&state);
-
-    if (result == WD_RENDER_RESULT_FRAME && captured_complete_frame)
-    {
-        pthread_mutex_lock(&server->net.lock);
-        server->framebuffer_content_valid = true;
-        pthread_mutex_unlock(&server->net.lock);
-    }
 
     return result;
 }
