@@ -511,8 +511,27 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
     }
 }
 
-bool wd_stream_try_publish_video_frame_locked(struct wd_server* server, uint64_t now_ns) {
+bool wd_stream_video_snapshot_needed(struct wd_server* server, uint64_t now_ns) {
     if (!server || !server->framebuffer_xrgb8888)
+    {
+        return false;
+    }
+
+    struct wd_net_state* net = &server->net;
+    pthread_mutex_lock(&net->lock);
+    const bool needed = net->video_worker &&
+                        (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY ||
+                         net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE) &&
+                        net->video_stream_negotiated && net->video_tcp_fd >= 0 && net->video_tx &&
+                        wd_video_encoder_available(net->video_encoder) &&
+                        wd_stream_video_frame_due_locked(&net->stream_policy, now_ns);
+    pthread_mutex_unlock(&net->lock);
+    return needed;
+}
+
+bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint64_t now_ns,
+                                                  struct wd_stream_video_snapshot* snapshot) {
+    if (!server || !snapshot || !snapshot->ready || !snapshot->pixels)
     {
         return false;
     }
@@ -547,7 +566,8 @@ bool wd_stream_try_publish_video_frame_locked(struct wd_server* server, uint64_t
     }
 
     const size_t pixel_count = (size_t)width * (size_t)height;
-    if ((height != 0 && pixel_count / height != width) || pixel_count > SIZE_MAX / sizeof(uint32_t))
+    if ((height != 0 && pixel_count / height != width) || pixel_count > SIZE_MAX / sizeof(uint32_t) ||
+        snapshot->pixel_count != pixel_count || snapshot->pixel_capacity < pixel_count)
     {
         net->stats.video_encode_failed++;
         return false;
@@ -564,8 +584,7 @@ bool wd_stream_try_publish_video_frame_locked(struct wd_server* server, uint64_t
     config.bitrate_kib_per_second = wd_stream_video_bitrate_kib_locked(&net->stream_policy);
     config.codec                  = net->video_codecs != 0 ? net->video_codecs : WD_VIDEO_CODEC_H265;
 
-    const bool     request_keyframe = net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY;
-    const uint64_t copy_start_ns    = wd_now_ns();
+    const bool request_keyframe = net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY;
 
     pthread_mutex_lock(&worker->lock);
     if (worker->stop)
@@ -574,21 +593,16 @@ bool wd_stream_try_publish_video_frame_locked(struct wd_server* server, uint64_t
         return false;
     }
 
-    if (worker->pending_job.pixel_capacity < pixel_count)
-    {
-        uint32_t* new_pixels = realloc(worker->pending_job.pixels, pixel_count * sizeof(uint32_t));
-        if (!new_pixels)
-        {
-            pthread_mutex_unlock(&worker->lock);
-            net->stats.video_encode_failed++;
-            return false;
-        }
-        worker->pending_job.pixels         = new_pixels;
-        worker->pending_job.pixel_capacity = pixel_count;
-    }
-
     const bool superseded = worker->pending;
-    memcpy(worker->pending_job.pixels, server->framebuffer_xrgb8888, pixel_count * sizeof(*worker->pending_job.pixels));
+    uint32_t*    spare_pixels   = worker->pending_job.pixels;
+    const size_t spare_capacity = worker->pending_job.pixel_capacity;
+    worker->pending_job.pixels         = snapshot->pixels;
+    worker->pending_job.pixel_capacity = snapshot->pixel_capacity;
+    snapshot->pixels                   = spare_pixels;
+    snapshot->pixel_capacity           = spare_capacity;
+    snapshot->pixel_count              = 0;
+    snapshot->ready                    = false;
+
     worker->pending_job.config               = config;
     worker->pending_job.epoch                = net->video_worker_epoch;
     worker->pending_job.source_content_epoch = net->content_epoch;
@@ -606,7 +620,8 @@ bool wd_stream_try_publish_video_frame_locked(struct wd_server* server, uint64_t
         net->stats.video_frames_superseded++;
     }
     net->stats.video_publish_copy_samples++;
-    net->stats.video_publish_copy_ns += wd_now_ns() - copy_start_ns;
+    net->stats.video_publish_copy_ns += snapshot->copy_ns;
+    snapshot->copy_ns = 0;
 
     /* This timestamp paces capture/publication, not TCP completion. The worker
      * may discard an older pending frame when a fresher one arrives. */

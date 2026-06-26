@@ -73,4 +73,12 @@ No subsystem may grow an unbounded queue. Telemetry samples may always be droppe
 
 The stream controller applies health and tile/video ownership policy on the fixed health cadence; telemetry only snapshots and reports its results.
 
-Capture service timing follows the effective adaptive FPS target and compositor refresh. The millisecond Wayland timer uses a bounded target-derived service interval, while pacing admits a frame within one service tick of its deadline to avoid rate halving at integer-millisecond boundaries.
+Capture service timing follows the effective adaptive FPS target and compositor refresh. The millisecond Wayland timer uses a bounded target-derived service interval, while an absolute nanosecond deadline remains the authoritative capture gate. Eventfd wakeups may accelerate queue service but cannot advance a capture deadline or exceed the configured FPS cap.
+
+The eventfd wake path is lock-free and may be called while the network mutex is held.
+
+The stream-frame worker owns framebuffer comparison and full-frame video snapshot copies outside the network mutex. It reacquires the mutex only to apply changed-tile generations, validate epochs and channel state, and enqueue transport work.
+
+UDP receive-ring teardown is terminal: bounded cancellation is attempted first, then the ring is closed before the socket may be closed or reused. No receiver object survives disconnect or reconfiguration.
+
+Incremental TCP readers maintain two deadlines: an idle-progress deadline refreshed by every successful read, and a hard total frame lifetime that never moves. Slow but progressing frames remain valid without allowing an unbounded frame to monopolize a channel.

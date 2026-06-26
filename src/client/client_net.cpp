@@ -1803,7 +1803,7 @@ ClientTcpDrainResult drain_tcp_channel(ClientState& state, int fd, wd_tcp_reader
     for (uint32_t processed = 0; processed < max_messages; ++processed)
     {
         wd_tcp_message message{};
-        const wd_tcp_reader_status status = wd_tcp_reader_receive(&reader, fd, wd_now_ns(), WD_TCP_FRAME_TIMEOUT_NS, &message);
+        const wd_tcp_reader_status status = wd_tcp_reader_receive(&reader, fd, wd_now_ns(), WD_TCP_FRAME_IDLE_TIMEOUT_NS, WD_TCP_FRAME_MAX_LIFETIME_NS, &message);
         if (status == WD_TCP_READER_NEED_MORE)
         {
             return ClientTcpDrainResult::Healthy;
@@ -2361,12 +2361,7 @@ void client_reap_async_udp_receives(ClientState& state) {
 }
 
 bool client_reconfigure_udp_transport_locked(ClientState& state, const wd_server_config_payload& config) {
-    const ClientAsyncUdpDetachResult detach_result = destroy_client_udp_receiver(state);
-    if (detach_result != ClientAsyncUdpDetachResult::Detached)
-    {
-        WD_LOG_ERROR("cannot reconfigure UDP transport while io_uring still owns the old socket");
-        return false;
-    }
+    destroy_client_udp_receiver(state);
 
     if (state.session.transport.udp_fd >= 0)
     {

@@ -12,7 +12,7 @@ namespace waydisplay {
 ClientAsyncTcpSender* create_client_tcp_sender(const char* label);
 void                  destroy_client_tcp_sender(ClientAsyncTcpSender*& sender);
 ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state, const wd_server_config_payload& config);
-ClientAsyncUdpDetachResult destroy_client_udp_receiver(ClientState& state);
+void destroy_client_udp_receiver(ClientState& state);
 
 bool client_send_tcp_message_queued(ClientState& state, int fd, uint16_t message_type, const void* payload, uint32_t payload_size);
 bool update_async_seen(ClientState& state, ClientAsyncTcpSender* sender, ClientAsyncTcpStatsSeen& seen);

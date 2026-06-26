@@ -408,8 +408,7 @@ ClientAsyncUdpReceiver* client_async_udp_receiver_create(int fd, uint32_t entrie
         {
             if (!drain_destroy_locked(receiver))
             {
-                WD_LOG_ERROR("client UDP io_uring setup timed out during drain; receiver still owns the socket");
-                return receiver;
+                WD_LOG_ERROR("client UDP io_uring setup timed out; forcing ring teardown");
             }
             io_uring_queue_exit(&receiver->ring);
             receiver->ring_ready = false;
@@ -421,32 +420,22 @@ ClientAsyncUdpReceiver* client_async_udp_receiver_create(int fd, uint32_t entrie
     return receiver;
 }
 
-ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpReceiver* receiver, ClientAsyncUdpReceiverStats* final_stats) {
+void client_async_udp_receiver_destroy(ClientAsyncUdpReceiver* receiver, ClientAsyncUdpReceiverStats* final_stats) {
     if (!receiver)
     {
-        return ClientAsyncUdpDetachResult::Detached;
+        return;
     }
 
     {
         std::lock_guard<std::mutex> lock(receiver->mutex);
-        if (!drain_destroy_locked(receiver))
+        const bool drained = drain_destroy_locked(receiver);
+        if (!drained)
         {
-            if (final_stats)
-            {
-                final_stats->posted            = receiver->submitted;
-                final_stats->retired           = receiver->retired;
-                final_stats->completed         = receiver->completed;
-                final_stats->failed            = receiver->failed;
-                final_stats->submit_failed     = receiver->submit_failed;
-                final_stats->cancels           = receiver->cancels;
-                final_stats->inflight          = receiver->inflight;
-                final_stats->prepared          = receiver->prepared.size();
-                final_stats->inflight_max      = receiver->inflight_max;
-                final_stats->accounting_errors = receiver->accounting_errors;
-            final_stats->fatal             = receiver->fatal;
-            }
-            WD_LOG_ERROR("client UDP io_uring detach timed out; outstanding receives still own the socket");
-            return ClientAsyncUdpDetachResult::SocketStillOwned;
+            /* Closing the ring is the terminal ownership boundary. Linux
+             * cancels outstanding requests when the ring fd is closed, so the
+             * UDP socket may be closed or reused only after queue_exit. */
+            receiver->fatal = true;
+            WD_LOG_ERROR("client UDP io_uring detach timed out; forcing ring teardown");
         }
         if (final_stats)
         {
@@ -470,7 +459,6 @@ ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpRecei
     }
 
     delete receiver;
-    return ClientAsyncUdpDetachResult::Detached;
 }
 
 bool client_async_udp_receiver_ready(ClientAsyncUdpReceiver* receiver) {

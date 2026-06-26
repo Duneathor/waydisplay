@@ -1706,7 +1706,7 @@ void* wd_net_thread_main(void* arg) {
         net->summary_dirty_count    = 0;
         wd_stream_invalidate_all_tiles_locked(server);
         wd_server_request_full_refresh(server);
-        net->stream_policy.last_frame_send_ns              = 0;
+        wd_frame_pacing_reset(&net->stream_policy.frame_pacing);
         net->stream_policy.video_auto_bootstrap_suppressed = true;
         net->stream_policy.video_auto_bootstrap_seconds    = 0;
         server->last_summary_ns                            = 0;
@@ -1932,7 +1932,7 @@ void* wd_net_thread_main(void* arg) {
             {
                 struct wd_tcp_message input_message;
                 enum wd_tcp_reader_status input_status =
-                    wd_tcp_reader_receive(&input_reader, input_tcp_fd, receive_now_ns, WD_TCP_FRAME_TIMEOUT_NS, &input_message);
+                    wd_tcp_reader_receive(&input_reader, input_tcp_fd, receive_now_ns, WD_TCP_FRAME_IDLE_TIMEOUT_NS, WD_TCP_FRAME_MAX_LIFETIME_NS, &input_message);
 
                 if (input_status == WD_TCP_READER_MESSAGE &&
                     !wd_protocol_message_allowed(input_message.message_type, WD_PROTOCOL_CHANNEL_INPUT,
@@ -1988,7 +1988,7 @@ void* wd_net_thread_main(void* arg) {
             {
                 struct wd_tcp_message selection_message;
                 enum wd_tcp_reader_status selection_status = wd_tcp_reader_receive(
-                    &selection_reader, selection_tcp_fd, receive_now_ns, WD_TCP_FRAME_TIMEOUT_NS, &selection_message);
+                    &selection_reader, selection_tcp_fd, receive_now_ns, WD_TCP_FRAME_IDLE_TIMEOUT_NS, WD_TCP_FRAME_MAX_LIFETIME_NS, &selection_message);
 
                 if (selection_status == WD_TCP_READER_MESSAGE &&
                     !wd_protocol_message_allowed(selection_message.message_type, WD_PROTOCOL_CHANNEL_SELECTION,
@@ -2054,7 +2054,7 @@ void* wd_net_thread_main(void* arg) {
             {
                 struct wd_tcp_message video_message;
                 enum wd_tcp_reader_status video_status =
-                    wd_tcp_reader_receive(&video_reader, video_tcp_fd, receive_now_ns, WD_TCP_FRAME_TIMEOUT_NS, &video_message);
+                    wd_tcp_reader_receive(&video_reader, video_tcp_fd, receive_now_ns, WD_TCP_FRAME_IDLE_TIMEOUT_NS, WD_TCP_FRAME_MAX_LIFETIME_NS, &video_message);
 
                 if (video_status == WD_TCP_READER_MESSAGE &&
                     !wd_protocol_message_allowed(video_message.message_type, WD_PROTOCOL_CHANNEL_VIDEO,
@@ -2111,7 +2111,7 @@ void* wd_net_thread_main(void* arg) {
             {
                 struct wd_tcp_message control_message;
                 const enum wd_tcp_reader_status control_status =
-                    wd_tcp_reader_receive(&control_reader, tcp_fd, receive_now_ns, WD_TCP_FRAME_TIMEOUT_NS, &control_message);
+                    wd_tcp_reader_receive(&control_reader, tcp_fd, receive_now_ns, WD_TCP_FRAME_IDLE_TIMEOUT_NS, WD_TCP_FRAME_MAX_LIFETIME_NS, &control_message);
                 if (control_status == WD_TCP_READER_NEED_MORE)
                 {
                     continue;
@@ -2227,7 +2227,7 @@ void* wd_net_thread_main(void* arg) {
                          * contents only after the client has installed the
                          * matching geometry/session. Reset pacing so the
                          * first refresh is not delayed by the old FPS slot. */
-                        net->stream_policy.last_frame_send_ns             = 0;
+                        wd_frame_pacing_reset(&net->stream_policy.frame_pacing);
                         net->stream_policy.client_render_pressure_seconds = 0;
                         net->stream_policy.frame_rate_good_seconds        = 0;
                         wd_stream_invalidate_all_tiles_locked(server);

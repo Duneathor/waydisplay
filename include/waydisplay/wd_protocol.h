@@ -19,8 +19,9 @@ extern "C" {
 
 /*
  * Protocol version 0 intentionally supports only little-endian Linux peers.
- * TCP headers and payloads still use explicit codecs so compiler ABI layout,
- * padding, and unaligned accesses are not part of the wire contract.
+ * Fixed-width packed C structures are the wire ABI. GCC-compatible packing,
+ * the asserted structure sizes below, and little-endian field order are part
+ * of the undeployed protocol-zero contract.
  */
 #define WD_TCP_MAGIC                    0x54434457u
 #define WD_TCP_HEADER_WIRE_SIZE          12u
@@ -867,6 +868,7 @@ WD_PACKED_END
 #undef WD_PACKED_END
 
 #if defined(__cplusplus)
+static_assert(sizeof(struct wd_tcp_header) == WD_TCP_HEADER_WIRE_SIZE, "unexpected wd_tcp_header size");
 static_assert(sizeof(struct wd_udp_tile_packet_header) == 36, "unexpected wd_udp_tile_packet_header size");
 static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 44, "unexpected maximum wd_udp_tile_packet_header size");
 static_assert(sizeof(struct wd_client_hello_payload) == 44, "unexpected wd_client_hello_payload size");
@@ -894,6 +896,7 @@ static_assert(sizeof(struct wd_cursor_shape_payload) == 11, "unexpected wd_curso
 static_assert(sizeof(struct wd_display_resize_payload) == 13, "unexpected wd_display_resize_payload size");
 static_assert(sizeof(struct wd_config_applied_payload) == 17, "unexpected wd_config_applied_payload size");
 #else
+_Static_assert(sizeof(struct wd_tcp_header) == WD_TCP_HEADER_WIRE_SIZE, "unexpected wd_tcp_header size");
 _Static_assert(sizeof(struct wd_udp_tile_packet_header) == 36, "unexpected wd_udp_tile_packet_header size");
 _Static_assert(WD_UDP_TILE_HEADER_MAX_SIZE == 44, "unexpected maximum wd_udp_tile_packet_header size");
 _Static_assert(sizeof(struct wd_client_hello_payload) == 44, "unexpected wd_client_hello_payload size");

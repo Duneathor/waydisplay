@@ -28,18 +28,57 @@ uint32_t wd_frame_service_interval_ms(uint16_t capture_fps, uint32_t minimum_ms,
     return interval_ms;
 }
 
-bool wd_frame_pacing_due(uint64_t last_frame_ns, uint64_t now_ns, uint16_t capture_fps, uint32_t service_interval_ms) {
-    if (last_frame_ns == 0 || now_ns < last_frame_ns)
+void wd_frame_pacing_reset(struct wd_frame_pacing_state* state) {
+    if (!state)
     {
-        return true;
+        return;
+    }
+    state->next_deadline_ns = 0;
+    state->capture_fps      = 0;
+}
+
+static uint64_t wd_frame_interval_ns(uint16_t capture_fps) {
+    if (capture_fps == 0)
+    {
+        capture_fps = 1;
+    }
+
+    /* Round up so the configured FPS remains a hard upper bound. */
+    return (WD_NSEC_PER_SEC + (uint64_t)capture_fps - 1u) / (uint64_t)capture_fps;
+}
+
+bool wd_frame_pacing_due(struct wd_frame_pacing_state* state, uint64_t now_ns, uint16_t capture_fps) {
+    if (!state)
+    {
+        return false;
     }
     if (capture_fps == 0)
     {
         capture_fps = 1;
     }
 
-    const uint64_t interval_ns  = WD_NSEC_PER_SEC / (uint64_t)capture_fps;
-    const uint64_t tolerance_ns = (uint64_t)service_interval_ms * WD_NSEC_PER_MSEC;
-    const uint64_t elapsed_ns   = now_ns - last_frame_ns;
-    return elapsed_ns >= interval_ns || tolerance_ns >= interval_ns - elapsed_ns;
+    const uint64_t interval_ns = wd_frame_interval_ns(capture_fps);
+    if (state->capture_fps != capture_fps || state->next_deadline_ns == 0)
+    {
+        state->capture_fps = capture_fps;
+        state->next_deadline_ns = UINT64_MAX - now_ns < interval_ns ? UINT64_MAX : now_ns + interval_ns;
+        return true;
+    }
+
+    if (now_ns < state->next_deadline_ns)
+    {
+        return false;
+    }
+
+    const uint64_t overdue_ns = now_ns - state->next_deadline_ns;
+    const uint64_t periods    = overdue_ns / interval_ns + 1u;
+    if (periods > (UINT64_MAX - state->next_deadline_ns) / interval_ns)
+    {
+        state->next_deadline_ns = UINT64_MAX;
+    }
+    else
+    {
+        state->next_deadline_ns += periods * interval_ns;
+    }
+    return true;
 }

@@ -58,6 +58,22 @@ void test_protocol_zero_native_wire_layout() {
                 decoded_header.message_type == header.message_type && decoded_header.payload_size == header.payload_size,
             "TCP header fields should round trip");
 
+    wd_input_channel_hello_payload input_hello{};
+    input_hello.session_id       = 0x7au;
+    input_hello.connection_token = 0x0102030405060708ull;
+    const uint8_t expected_input_hello[sizeof(input_hello)] = {0x7a, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01};
+    require(std::memcmp(&input_hello, expected_input_hello, sizeof(input_hello)) == 0,
+            "packed input-channel hello should match the protocol-zero golden bytes");
+
+    wd_config_applied_payload applied{};
+    applied.session_id       = 0x11u;
+    applied.connection_token = 0x1122334455667788ull;
+    applied.config_epoch     = 0x0102030405060708ull;
+    const uint8_t expected_applied[sizeof(applied)] = {0x11, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+                                                       0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01};
+    require(std::memcmp(&applied, expected_applied, sizeof(applied)) == 0,
+            "packed config-applied payload should match the protocol-zero golden bytes");
+
     require_fixed_wire_layout(WD_MSG_CLIENT_HELLO, wd_client_hello_payload{}, "client hello codec");
     require_fixed_wire_layout(WD_MSG_SERVER_CONFIG, wd_server_config_payload{}, "server config codec");
     require_fixed_wire_layout(WD_MSG_KEYBOARD_KEY, wd_keyboard_event_payload{}, "keyboard codec");
@@ -587,11 +603,11 @@ void test_incremental_tcp_reader() {
     wd_tcp_message message{};
 
     require(wd_send_all(sockets[0], wire_header, 5), "send partial TCP header");
-    require(wd_tcp_reader_receive(&reader, sockets[1], 100, 50, &message) == WD_TCP_READER_NEED_MORE,
+    require(wd_tcp_reader_receive(&reader, sockets[1], 100, 50, 500, &message) == WD_TCP_READER_NEED_MORE,
             "partial header should not block or complete");
     require(wd_tcp_reader_has_partial_frame(&reader), "partial header should retain reader state");
-    require(wd_tcp_reader_deadline_ns(&reader) == 150, "partial header should start a frame deadline");
-    require(wd_tcp_reader_receive(&reader, sockets[1], 151, 50, &message) == WD_TCP_READER_TIMED_OUT,
+    require(wd_tcp_reader_deadline_ns(&reader) == 150, "partial header should start the idle deadline");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 151, 50, 500, &message) == WD_TCP_READER_TIMED_OUT,
             "stalled partial header should time out");
 
     wd_tcp_reader_reset(&reader);
@@ -602,20 +618,46 @@ void test_incremental_tcp_reader() {
 
     require(wd_send_all(sockets[0], wire_header, sizeof(wire_header)), "send complete TCP header");
     require(wd_send_all(sockets[0], payload, 3), "send partial TCP payload");
-    require(wd_tcp_reader_receive(&reader, sockets[1], 200, 50, &message) == WD_TCP_READER_NEED_MORE,
+    require(wd_tcp_reader_receive(&reader, sockets[1], 200, 50, 500, &message) == WD_TCP_READER_NEED_MORE,
             "partial payload should retain frame state");
     require(wd_send_all(sockets[0], payload + 3, sizeof(payload) - 3), "finish TCP payload");
-    require(wd_tcp_reader_receive(&reader, sockets[1], 220, 50, &message) == WD_TCP_READER_MESSAGE,
+    require(wd_tcp_reader_receive(&reader, sockets[1], 220, 50, 500, &message) == WD_TCP_READER_MESSAGE,
             "incremental reader should complete after remaining payload arrives");
     require(message.message_type == WD_MSG_MTU_PROBE_START && message.payload_size == sizeof(payload),
             "incremental reader should preserve framing metadata");
     require(std::memcmp(message.payload, payload, sizeof(payload)) == 0, "incremental reader should preserve payload bytes");
     wd_tcp_message_release(&message);
 
+    wd_tcp_reader_reset(&reader);
+    require(wd_send_all(sockets[0], wire_header, 4), "send slow-progress header prefix");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 400, 50, 500, &message) == WD_TCP_READER_NEED_MORE,
+            "slow frame should start idle and total deadlines");
+    require(wd_send_all(sockets[0], wire_header + 4, 4), "advance slow-progress header");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 440, 50, 500, &message) == WD_TCP_READER_NEED_MORE,
+            "useful progress should refresh the idle deadline");
+    require(wd_tcp_reader_deadline_ns(&reader) == 490, "idle deadline should follow the most recent progress");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 491, 50, 500, &message) == WD_TCP_READER_TIMED_OUT,
+            "a frame should still time out after progress stops");
+
+    wd_tcp_reader_reset(&reader);
+    require(wd_send_all(sockets[0], wire_header, 4), "send total-lifetime header prefix");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 500, 50, 100, &message) == WD_TCP_READER_NEED_MORE,
+            "total-lifetime frame should start");
+    require(wd_send_all(sockets[0], wire_header + 4, 4), "advance total-lifetime frame");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 540, 50, 100, &message) == WD_TCP_READER_NEED_MORE,
+            "progress should keep the idle deadline alive");
+    require(wd_send_all(sockets[0], wire_header + 8, 4), "finish total-lifetime header bytes");
+    require(wd_tcp_reader_receive(&reader, sockets[1], 601, 50, 100, &message) == WD_TCP_READER_TIMED_OUT,
+            "hard frame lifetime should win even when unread progress is available");
+    uint8_t total_lifetime_remainder[4]{};
+    require(wd_recv_all(sockets[1], total_lifetime_remainder, sizeof(total_lifetime_remainder)),
+            "discard bytes left after total-lifetime timeout");
+
+    wd_tcp_reader_reset(&reader);
     header.payload_size = 65;
     require(wd_tcp_header_encode(wire_header, &header), "encode oversized incremental header");
     require(wd_send_all(sockets[0], wire_header, sizeof(wire_header)), "send oversized incremental header");
-    require(wd_tcp_reader_receive(&reader, sockets[1], 300, 50, &message) == WD_TCP_READER_INVALID_FRAME,
+    require(wd_tcp_reader_receive(&reader, sockets[1], 300, 50, 500, &message) == WD_TCP_READER_INVALID_FRAME,
             "incremental reader should reject oversized payload before allocation");
     require(reader.payload == nullptr, "oversized incremental frame should not allocate payload memory");
 

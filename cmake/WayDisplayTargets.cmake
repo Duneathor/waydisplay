@@ -7,6 +7,7 @@ pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
 add_library(waydisplay_common STATIC
     src/common/wd_time.c
     src/common/wd_log.c
+    src/common/wd_eventfd.c
     src/common/wd_io_uring.c
     src/common/wd_net.c
     src/common/wd_protocol_codec.c

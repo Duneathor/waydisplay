@@ -1,3 +1,4 @@
+#include "waydisplay/wd_eventfd.h"
 #include "wd_server_internal.h"
 
 #include "waydisplay/wd_tile.h"
@@ -304,24 +305,15 @@ void wd_server_wake_input(struct wd_server* server) {
         return;
     }
 
-    const uint64_t value = 1;
-    ssize_t        written;
-
-    do
+    /* This helper is intentionally lock-free. Compositor requests and input
+     * queue publication commonly wake the event loop while server->net.lock is
+     * already held. Successful eventfd writes are counted from the drained
+     * eventfd value in server_input_wakeup(); only failures need a side-band
+     * counter. */
+    if (!wd_eventfd_signal(server->input_wakeup_fd))
     {
-        written = write(server->input_wakeup_fd, &value, sizeof(value));
-    } while (written < 0 && errno == EINTR);
-
-    pthread_mutex_lock(&server->net.lock);
-    if (written == (ssize_t)sizeof(value))
-    {
-        server->net.stats.input_wakeup_signals++;
+        atomic_fetch_add_explicit(&server->input_wakeup_write_failures, 1, memory_order_relaxed);
     }
-    else
-    {
-        server->net.stats.input_wakeup_failures++;
-    }
-    pthread_mutex_unlock(&server->net.lock);
 }
 
 static int server_input_wakeup(int fd, uint32_t mask, void* data) {
@@ -367,13 +359,18 @@ static int server_input_wakeup(int fd, uint32_t mask, void* data) {
         wl_event_source_timer_update(server->frame_timer, (int)WD_SERVER_FRAME_SERVICE_MIN_INTERVAL_MS);
     }
 
+    const uint64_t write_failures =
+        atomic_exchange_explicit(&server->input_wakeup_write_failures, 0, memory_order_relaxed);
+
     pthread_mutex_lock(&server->net.lock);
     server->net.stats.input_wakeup_callbacks++;
+    server->net.stats.input_wakeup_signals += wake_events;
     server->net.stats.input_wakeup_events += wake_events;
     if (wake_events > 1)
     {
         server->net.stats.input_wakeup_coalesced += wake_events - 1;
     }
+    server->net.stats.input_wakeup_failures += write_failures;
     if (read_failed || (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0)
     {
         server->net.stats.input_wakeup_failures++;

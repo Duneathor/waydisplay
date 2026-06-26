@@ -3,6 +3,8 @@
 #include "wd_server_compositor.h"
 #include "wd_server_net.h"
 
+#include "waydisplay/wd_time.h"
+
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +20,9 @@ struct wd_stream_frame_worker {
     bool              frame_pending;
     bool              service_pending;
     bool*             damage_tiles;
+    bool*             changed_tiles;
     uint32_t          damage_capacity;
+    struct wd_stream_video_snapshot video_snapshot;
     bool              damage_all_tiles;
     uint32_t          damage_tile_count;
 };
@@ -33,12 +37,19 @@ static bool worker_resize_damage_snapshot(struct wd_stream_frame_worker* worker,
         return true;
     }
 
-    bool* resized = realloc(worker->damage_tiles, (size_t)tile_count * sizeof(*resized));
-    if (!resized)
+    bool* resized_damage = realloc(worker->damage_tiles, (size_t)tile_count * sizeof(*resized_damage));
+    if (!resized_damage)
     {
         return false;
     }
-    worker->damage_tiles    = resized;
+    worker->damage_tiles = resized_damage;
+
+    bool* resized_changed = realloc(worker->changed_tiles, (size_t)tile_count * sizeof(*resized_changed));
+    if (!resized_changed)
+    {
+        return false;
+    }
+    worker->changed_tiles   = resized_changed;
     worker->damage_capacity = tile_count;
     return true;
 }
@@ -76,7 +87,43 @@ static void* stream_frame_worker_main(void* data) {
 
         if (process_frame)
         {
-            (void)wd_stream_process_frame(worker->server, &damage);
+            struct wd_stream_frame_analysis analysis;
+            memset(&analysis, 0, sizeof(analysis));
+            const bool force_full_refresh = wd_stream_frame_force_full_refresh(worker->server);
+            if (wd_stream_analyze_frame(worker->server, &damage, force_full_refresh, worker->changed_tiles,
+                                        worker->damage_capacity, &analysis))
+            {
+                const uint64_t now_ns = wd_now_ns();
+                worker->video_snapshot.ready   = false;
+                worker->video_snapshot.copy_ns = 0;
+                if (wd_stream_video_snapshot_needed(worker->server, now_ns))
+                {
+                    const size_t pixel_count = (size_t)worker->server->display_width * worker->server->display_height;
+                    if (worker->server->display_height != 0 && pixel_count / worker->server->display_height == worker->server->display_width &&
+                        pixel_count <= SIZE_MAX / sizeof(uint32_t))
+                    {
+                        if (worker->video_snapshot.pixel_capacity < pixel_count)
+                        {
+                            uint32_t* pixels = realloc(worker->video_snapshot.pixels, pixel_count * sizeof(*pixels));
+                            if (pixels)
+                            {
+                                worker->video_snapshot.pixels         = pixels;
+                                worker->video_snapshot.pixel_capacity = pixel_count;
+                            }
+                        }
+                        if (worker->video_snapshot.pixel_capacity >= pixel_count)
+                        {
+                            const uint64_t copy_start_ns = wd_now_ns();
+                            memcpy(worker->video_snapshot.pixels, worker->server->framebuffer_xrgb8888,
+                                   pixel_count * sizeof(*worker->video_snapshot.pixels));
+                            worker->video_snapshot.copy_ns     = wd_now_ns() - copy_start_ns;
+                            worker->video_snapshot.pixel_count = pixel_count;
+                            worker->video_snapshot.ready       = true;
+                        }
+                    }
+                }
+                (void)wd_stream_process_frame(worker->server, &damage, &analysis, &worker->video_snapshot);
+            }
         }
         else
         {
@@ -129,6 +176,8 @@ bool wd_stream_frame_worker_init(struct wd_server* server) {
     if (!worker_resize_damage_snapshot(worker, server->total_base_tiles) ||
         pthread_create(&worker->thread, NULL, stream_frame_worker_main, worker) != 0)
     {
+        free(worker->video_snapshot.pixels);
+        free(worker->changed_tiles);
         free(worker->damage_tiles);
         pthread_cond_destroy(&worker->cond);
         pthread_mutex_destroy(&worker->lock);
@@ -162,6 +211,8 @@ void wd_stream_frame_worker_destroy(struct wd_server* server) {
         pthread_join(worker->thread, NULL);
     }
 
+    free(worker->video_snapshot.pixels);
+    free(worker->changed_tiles);
     free(worker->damage_tiles);
     pthread_cond_destroy(&worker->cond);
     pthread_mutex_destroy(&worker->lock);

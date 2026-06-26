@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install core dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake gcc g++ make pkg-config libzstd-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake gcc g++ make pkg-config libzstd-dev liburing-dev
       - name: Configure
         run: cmake --preset tests-core
       - name: Build and test
@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install core dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake gcc g++ make pkg-config libzstd-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake gcc g++ make pkg-config libzstd-dev liburing-dev
       - name: Configure
         run: cmake --preset tests-warnings
       - name: Build
@@ -57,7 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install core dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake gcc g++ make pkg-config libzstd-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake gcc g++ make pkg-config libzstd-dev liburing-dev
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
@@ -65,21 +65,30 @@ jobs:
       - name: Test
         run: ${{ matrix.environment }} ctest --preset ${{ matrix.preset }}
 
-  optional-backends:
-    name: Optional SDL, wlroots, codec, and audio backends
+  runtime-backends:
+    name: Required SDL, wlroots 0.19, codec, and audio build
     runs-on: ubuntu-24.04
-    continue-on-error: true
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install runtime dependencies
         run: >-
           sudo apt-get update && sudo apt-get install -y
-          cmake gcc g++ make pkg-config
-          libzstd-dev liburing-dev libsdl2-dev libwayland-dev libxkbcommon-dev
-          libwlroots-dev libavcodec-dev libavutil-dev libswscale-dev
+          cmake gcc g++ make pkg-config git meson ninja-build
+          libzstd-dev liburing-dev libsdl2-dev libwayland-dev wayland-protocols libxkbcommon-dev
+          libpixman-1-dev libdrm-dev libgbm-dev libinput-dev libseat-dev libudev-dev
+          libdisplay-info-dev libliftoff-dev libavcodec-dev libavutil-dev libswscale-dev
           libopus-dev libpipewire-0.3-dev
-      - name: Configure
-        run: cmake --preset tests-full
+      - name: Build pinned wlroots 0.19
+        run: |
+          git clone --depth 1 --branch 0.19.0 https://gitlab.freedesktop.org/wlroots/wlroots.git /tmp/wlroots
+          meson setup /tmp/wlroots/build /tmp/wlroots \
+            --buildtype=release --prefix=/usr/local \
+            -Dxwayland=disabled -Dexamples=false
+          meson compile -C /tmp/wlroots/build
+          sudo meson install -C /tmp/wlroots/build
+          pkg-config --modversion wlroots-0.19
+      - name: Configure full runtime build
+        run: cmake --preset tests-full -DWAYDISPLAY_ENABLE_XWAYLAND=OFF
       - name: Build and test
         run: cmake --build --preset tests-full --parallel 2

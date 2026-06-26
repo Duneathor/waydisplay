@@ -33,7 +33,8 @@ struct wd_tcp_reader {
     uint32_t payload_received;
     uint32_t max_payload_size;
     uint16_t message_type;
-    uint64_t deadline_ns;
+    uint64_t idle_deadline_ns;
+    uint64_t frame_deadline_ns;
     bool     header_decoded;
 };
 
@@ -42,8 +43,8 @@ void wd_tcp_reader_reset(struct wd_tcp_reader* reader);
 void wd_tcp_reader_destroy(struct wd_tcp_reader* reader);
 bool wd_tcp_reader_has_partial_frame(const struct wd_tcp_reader* reader);
 uint64_t wd_tcp_reader_deadline_ns(const struct wd_tcp_reader* reader);
-enum wd_tcp_reader_status wd_tcp_reader_receive(struct wd_tcp_reader* reader, int fd, uint64_t now_ns, uint64_t frame_timeout_ns,
-                                                struct wd_tcp_message* out_message);
+enum wd_tcp_reader_status wd_tcp_reader_receive(struct wd_tcp_reader* reader, int fd, uint64_t now_ns, uint64_t idle_timeout_ns,
+                                                uint64_t max_frame_lifetime_ns, struct wd_tcp_message* out_message);
 void wd_tcp_message_release(struct wd_tcp_message* message);
 
 bool wd_send_all(int fd, const void* data, size_t size);

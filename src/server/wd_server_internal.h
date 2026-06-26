@@ -30,6 +30,7 @@
 #include "wd_process.h"
 #include "wd_selection_delivery.h"
 #include "wd_server.h"
+#include "wd_frame_pacing.h"
 #include "wd_server_compositor.h"
 #include "wd_server_input.h"
 #include "wd_server_net.h"
@@ -554,8 +555,8 @@ struct wd_stream_policy {
 
     uint32_t frame_rate_good_seconds;
 
-    uint64_t last_frame_send_ns;
-    uint64_t last_video_frame_send_ns;
+    struct wd_frame_pacing_state frame_pacing;
+    uint64_t                     last_video_frame_send_ns;
 
     uint64_t udp_rate_bytes_per_second;
     uint64_t udp_rate_floor_bytes_per_second;
@@ -771,6 +772,7 @@ struct wd_server {
     struct wlr_scene_output_layout*   scene_layout;
     struct wlr_scene_output*          scene_output;
     _Atomic uint32_t                  compositor_requests;
+    _Atomic uint64_t                  input_wakeup_write_failures;
     bool                              scene_dirty;
     bool                              damage_all_tiles;
     bool*                             damage_tiles;

@@ -7,11 +7,6 @@ namespace waydisplay {
 
 struct ClientAsyncUdpReceiver;
 
-enum class ClientAsyncUdpDetachResult : uint8_t {
-    Detached = 0,
-    SocketStillOwned,
-};
-
 struct ClientAsyncUdpReceiverStats {
     uint64_t posted            = 0;
     uint64_t retired           = 0;
@@ -29,8 +24,7 @@ struct ClientAsyncUdpReceiverStats {
 using ClientAsyncUdpPacketHandler = bool (*)(void* userdata, const uint8_t* data, size_t size);
 
 ClientAsyncUdpReceiver*    client_async_udp_receiver_create(int fd, uint32_t entries, size_t packet_size);
-ClientAsyncUdpDetachResult client_async_udp_receiver_destroy(ClientAsyncUdpReceiver*      receiver,
-                                                             ClientAsyncUdpReceiverStats* final_stats = nullptr);
+void client_async_udp_receiver_destroy(ClientAsyncUdpReceiver* receiver, ClientAsyncUdpReceiverStats* final_stats = nullptr);
 bool                       client_async_udp_receiver_ready(ClientAsyncUdpReceiver* receiver);
 int                        client_async_udp_receiver_poll_fd(ClientAsyncUdpReceiver* receiver);
 

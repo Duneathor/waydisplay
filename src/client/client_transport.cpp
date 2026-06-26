@@ -134,55 +134,51 @@ ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state, const wd_
     return receiver;
 }
 
-ClientAsyncUdpDetachResult destroy_client_udp_receiver(ClientState& state) {
+void destroy_client_udp_receiver(ClientState& state) {
     if (!state.session.udp_receiver)
     {
-        return ClientAsyncUdpDetachResult::Detached;
+        return;
     }
 
-    ClientAsyncUdpReceiverStats      final_stats{};
-    const ClientAsyncUdpStatsSeen    before = state.session.udp_seen;
-    const ClientAsyncUdpDetachResult result = client_async_udp_receiver_destroy(state.session.udp_receiver, &final_stats);
-    if (result == ClientAsyncUdpDetachResult::Detached)
+    ClientAsyncUdpReceiverStats   final_stats{};
+    const ClientAsyncUdpStatsSeen before = state.session.udp_seen;
+    client_async_udp_receiver_destroy(state.session.udp_receiver, &final_stats);
+    if (final_stats.posted >= before.posted)
     {
-        if (final_stats.posted >= before.posted)
-        {
-            state.stats.udp_async_posted.fetch_add(final_stats.posted - before.posted, std::memory_order_relaxed);
-        }
-        if (final_stats.retired >= before.retired)
-        {
-            const uint64_t drained = final_stats.retired - before.retired;
-            state.stats.udp_async_retired.fetch_add(drained, std::memory_order_relaxed);
-            state.stats.udp_async_drained_on_reconfigure.fetch_add(drained, std::memory_order_relaxed);
-        }
-        if (final_stats.completed >= before.completed)
-        {
-            state.stats.udp_async_completed.fetch_add(final_stats.completed - before.completed, std::memory_order_relaxed);
-        }
-        if (final_stats.failed >= before.failed)
-        {
-            state.stats.udp_async_failed.fetch_add(final_stats.failed - before.failed, std::memory_order_relaxed);
-        }
-        if (final_stats.submit_failed >= before.submit_failed)
-        {
-            state.stats.udp_async_submit_failed.fetch_add(final_stats.submit_failed - before.submit_failed, std::memory_order_relaxed);
-        }
-        if (final_stats.cancels >= before.cancels)
-        {
-            const uint64_t cancelled = final_stats.cancels - before.cancels;
-            state.stats.udp_async_cancels.fetch_add(cancelled, std::memory_order_relaxed);
-            state.stats.udp_async_cancelled_on_reconfigure.fetch_add(cancelled, std::memory_order_relaxed);
-        }
-        if (final_stats.accounting_errors >= before.accounting_errors)
-        {
-            state.stats.udp_async_accounting_errors.fetch_add(final_stats.accounting_errors - before.accounting_errors,
-                                                              std::memory_order_relaxed);
-        }
-        state.stats.udp_async_inflight_current.store(0, std::memory_order_relaxed);
-        state.stats.udp_async_prepared_current.store(0, std::memory_order_relaxed);
-        state.session.udp_receiver = nullptr;
+        state.stats.udp_async_posted.fetch_add(final_stats.posted - before.posted, std::memory_order_relaxed);
     }
-    return result;
+    if (final_stats.retired >= before.retired)
+    {
+        const uint64_t drained = final_stats.retired - before.retired;
+        state.stats.udp_async_retired.fetch_add(drained, std::memory_order_relaxed);
+        state.stats.udp_async_drained_on_reconfigure.fetch_add(drained, std::memory_order_relaxed);
+    }
+    if (final_stats.completed >= before.completed)
+    {
+        state.stats.udp_async_completed.fetch_add(final_stats.completed - before.completed, std::memory_order_relaxed);
+    }
+    if (final_stats.failed >= before.failed)
+    {
+        state.stats.udp_async_failed.fetch_add(final_stats.failed - before.failed, std::memory_order_relaxed);
+    }
+    if (final_stats.submit_failed >= before.submit_failed)
+    {
+        state.stats.udp_async_submit_failed.fetch_add(final_stats.submit_failed - before.submit_failed, std::memory_order_relaxed);
+    }
+    if (final_stats.cancels >= before.cancels)
+    {
+        const uint64_t cancelled = final_stats.cancels - before.cancels;
+        state.stats.udp_async_cancels.fetch_add(cancelled, std::memory_order_relaxed);
+        state.stats.udp_async_cancelled_on_reconfigure.fetch_add(cancelled, std::memory_order_relaxed);
+    }
+    if (final_stats.accounting_errors >= before.accounting_errors)
+    {
+        state.stats.udp_async_accounting_errors.fetch_add(final_stats.accounting_errors - before.accounting_errors,
+                                                          std::memory_order_relaxed);
+    }
+    state.stats.udp_async_inflight_current.store(0, std::memory_order_relaxed);
+    state.stats.udp_async_prepared_current.store(0, std::memory_order_relaxed);
+    state.session.udp_receiver = nullptr;
 }
 
 ClientAsyncTcpSender* sender_for_fd(ClientState& state, int fd) {

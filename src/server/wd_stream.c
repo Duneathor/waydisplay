@@ -146,7 +146,7 @@ static void wd_stream_policy_reset_tokens(struct wd_stream_policy* policy) {
         return;
     }
 
-    policy->last_frame_send_ns       = 0;
+    wd_frame_pacing_reset(&policy->frame_pacing);
     policy->last_video_frame_send_ns = 0;
     policy->udp_byte_tokens          = 0.0;
     policy->last_udp_token_refill_ns = 0;
@@ -341,7 +341,7 @@ static void wd_stream_policy_restore_requested_capture_fps_locked(struct wd_stre
     policy->adaptive_capture_fps           = policy->requested_capture_fps;
     policy->frame_rate_good_seconds        = 0;
     policy->client_render_pressure_seconds = 0;
-    policy->last_frame_send_ns             = 0;
+    wd_frame_pacing_reset(&policy->frame_pacing);
     policy->last_video_frame_send_ns       = 0;
 
     WD_LOG_DEBUG("stream capture rate reset: %u -> %u fps due to %s", (unsigned)old_fps, (unsigned)policy->requested_capture_fps,
@@ -769,7 +769,7 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
         if ((uint16_t)new_fps != old_fps)
         {
             policy->adaptive_capture_fps = (uint16_t)new_fps;
-            policy->last_frame_send_ns   = 0;
+            wd_frame_pacing_reset(&policy->frame_pacing);
             stats->frame_rate_downshifts++;
             WD_LOG_DEBUG("stream capture rate down: %u -> %u fps due to %s", old_fps, (unsigned)new_fps,
                          pressure_reason ? pressure_reason : "stream pressure");
@@ -809,7 +809,7 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
     if ((uint16_t)new_fps != old_fps)
     {
         policy->adaptive_capture_fps = (uint16_t)new_fps;
-        policy->last_frame_send_ns   = 0;
+        wd_frame_pacing_reset(&policy->frame_pacing);
         stats->frame_rate_upshifts++;
         WD_LOG_DEBUG("stream capture rate up: %u -> %u fps", old_fps, (unsigned)new_fps);
     }
@@ -1092,13 +1092,9 @@ bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_n
 
     const uint16_t output_refresh_hz = (uint16_t)((server->output_refresh_mhz + 500u) / 1000u);
     uint16_t       fps               = wd_stream_policy_capture_pacing_fps_locked(policy, output_refresh_hz);
-    const uint32_t service_interval_ms =
-        wd_frame_service_interval_ms(fps, WD_SERVER_FRAME_SERVICE_MIN_INTERVAL_MS, WD_SERVER_FRAME_SERVICE_MAX_INTERVAL_MS);
-
-    if (wd_frame_pacing_due(policy->last_frame_send_ns, now_ns, fps, service_interval_ms))
+    if (wd_frame_pacing_due(&policy->frame_pacing, now_ns, fps))
     {
-        policy->last_frame_send_ns = now_ns;
-        should                     = true;
+        should = true;
     }
 
     pthread_mutex_unlock(&net->lock);
@@ -2045,7 +2041,7 @@ static void wd_detect_one_dirty_tile_into_queue_locked(struct wd_server* server,
     }
 }
 
-static bool wd_framebuffer_tile_changed_and_update_shadow_locked(struct wd_server* server, uint16_t tile_id) {
+static bool wd_framebuffer_tile_changed_and_update_shadow(struct wd_server* server, uint16_t tile_id, bool force_changed) {
     if (!server || !server->framebuffer_xrgb8888 || !server->framebuffer_shadow_xrgb8888 || tile_id >= server->total_base_tiles ||
         server->base_tiles_x == 0)
     {
@@ -2070,7 +2066,7 @@ static bool wd_framebuffer_tile_changed_and_update_shadow_locked(struct wd_serve
         height = server->display_height - tile_y;
     }
 
-    bool changed = !server->framebuffer_shadow_valid;
+    bool changed = force_changed;
     if (!changed)
     {
         for (uint32_t row = 0; row < height; ++row)
@@ -2098,23 +2094,33 @@ static bool wd_framebuffer_tile_changed_and_update_shadow_locked(struct wd_serve
     return changed;
 }
 
-static uint16_t wd_detect_dirty_tiles_into_queue_locked(struct wd_server* server,
-                                                          const struct wd_stream_damage_view* damage) {
-    if (!server || !server->net.tiles)
+bool wd_stream_frame_force_full_refresh(struct wd_server* server) {
+    if (!server)
     {
-        return 0;
+        return false;
     }
 
-    struct wd_net_state* net           = &server->net;
-    const uint64_t       diff_start_ns = wd_now_ns();
-    const uint32_t       limit         = server->total_base_tiles < server->total_tiles ? server->total_base_tiles : server->total_tiles;
-    const bool           full_candidate_pass = !server->framebuffer_shadow_valid || !damage || damage->all_tiles || !damage->tiles;
-    uint16_t             dirty_tiles         = 0;
+    pthread_mutex_lock(&server->net.lock);
+    const bool force = server->net.stream_policy.tile_refresh_pending ||
+                       (server->net.stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY &&
+                        !server->net.stream_policy.tile_recovery_refresh_started);
+    pthread_mutex_unlock(&server->net.lock);
+    return force;
+}
 
-    if (!server->framebuffer_shadow_valid)
+bool wd_stream_analyze_frame(struct wd_server* server, const struct wd_stream_damage_view* damage, bool force_full_refresh,
+                             bool* changed_tiles, uint32_t changed_capacity, struct wd_stream_frame_analysis* analysis) {
+    if (!server || !changed_tiles || !analysis || changed_capacity < server->total_base_tiles)
     {
-        net->stats.framebuffer_diff_full_refreshes++;
+        return false;
     }
+
+    memset(analysis, 0, sizeof(*analysis));
+    memset(changed_tiles, 0, (size_t)server->total_base_tiles * sizeof(*changed_tiles));
+    const uint64_t diff_start_ns = wd_now_ns();
+    const uint32_t limit = server->total_base_tiles < server->total_tiles ? server->total_base_tiles : server->total_tiles;
+    const bool shadow_valid = server->framebuffer_shadow_valid && !force_full_refresh;
+    const bool full_candidate_pass = !shadow_valid || !damage || damage->all_tiles || !damage->tiles;
 
     for (uint32_t tile_id = 0; tile_id < limit; ++tile_id)
     {
@@ -2123,16 +2129,15 @@ static uint16_t wd_detect_dirty_tiles_into_queue_locked(struct wd_server* server
             continue;
         }
 
-        net->stats.framebuffer_diff_candidates++;
-        if (wd_framebuffer_tile_changed_and_update_shadow_locked(server, (uint16_t)tile_id))
+        analysis->candidate_count++;
+        if (wd_framebuffer_tile_changed_and_update_shadow(server, (uint16_t)tile_id, !shadow_valid))
         {
-            net->stats.framebuffer_diff_changed++;
-            wd_detect_one_dirty_tile_into_queue_locked(server, (uint16_t)tile_id);
-            dirty_tiles++;
+            changed_tiles[tile_id] = true;
+            analysis->changed_tile_count++;
         }
         else
         {
-            net->stats.framebuffer_diff_unchanged++;
+            analysis->unchanged_count++;
         }
     }
 
@@ -2140,9 +2145,38 @@ static uint16_t wd_detect_dirty_tiles_into_queue_locked(struct wd_server* server
     {
         server->framebuffer_shadow_valid = true;
     }
+    analysis->changed_tiles = changed_tiles;
+    analysis->full_refresh  = !shadow_valid;
+    analysis->diff_ns       = wd_now_ns() - diff_start_ns;
+    return true;
+}
 
-    net->stats.framebuffer_diff_ns += wd_now_ns() - diff_start_ns;
-    return dirty_tiles;
+static uint16_t wd_stream_apply_frame_analysis_locked(struct wd_server* server,
+                                                       const struct wd_stream_frame_analysis* analysis) {
+    if (!server || !analysis || !analysis->changed_tiles)
+    {
+        return 0;
+    }
+
+    struct wd_net_state* net = &server->net;
+    net->stats.framebuffer_diff_candidates += analysis->candidate_count;
+    net->stats.framebuffer_diff_changed += analysis->changed_tile_count;
+    net->stats.framebuffer_diff_unchanged += analysis->unchanged_count;
+    net->stats.framebuffer_diff_ns += analysis->diff_ns;
+    if (analysis->full_refresh)
+    {
+        net->stats.framebuffer_diff_full_refreshes++;
+    }
+
+    const uint32_t limit = server->total_base_tiles < server->total_tiles ? server->total_base_tiles : server->total_tiles;
+    for (uint32_t tile_id = 0; tile_id < limit; ++tile_id)
+    {
+        if (analysis->changed_tiles[tile_id])
+        {
+            wd_detect_one_dirty_tile_into_queue_locked(server, (uint16_t)tile_id);
+        }
+    }
+    return analysis->changed_tile_count;
 }
 
 static void wd_stream_note_mode_frame_locked(struct wd_net_state* net, uint16_t dirty_tiles, uint16_t pending_tiles, uint32_t total_tiles,
@@ -3668,7 +3702,9 @@ static void wd_stream_send_retransmits_locked(struct wd_server* server, uint64_t
 }
 
 static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damage,
-                                 const struct wd_stream_damage_view* damage) {
+                                 const struct wd_stream_damage_view* damage,
+                                 const struct wd_stream_frame_analysis* analysis,
+                                 struct wd_stream_video_snapshot* video_snapshot) {
     struct wd_net_state* net = &server->net;
 
     if (!server->framebuffer_xrgb8888)
@@ -3695,6 +3731,15 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
     if (net->stream_policy.tile_refresh_pending ||
         (net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY && !net->stream_policy.tile_recovery_refresh_started))
     {
+        if (detect_new_damage && (!analysis || !analysis->full_refresh))
+        {
+            /* The controller may request recovery after this frame was
+             * analyzed. Do not consume that transition with a partial diff;
+             * request one compositor-owned full-refresh frame instead. */
+            wd_server_request_full_refresh(server);
+            pthread_mutex_unlock(&net->lock);
+            return true;
+        }
         if (!detect_new_damage)
         {
             /* A service-only pass has no captured scene snapshot to turn into
@@ -3712,10 +3757,9 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
         }
         wd_stream_collapse_tile_queues_for_video_locked(server);
         wd_stream_invalidate_all_tiles_locked(server);
-        /* The stream worker exclusively owns the stable framebuffer and its
-         * shadow for this job, so invalidating the shadow here safely forces
-         * every base tile through the captured-frame diff. */
-        server->framebuffer_shadow_valid                 = false;
+        /* The frame analysis was prepared before entering the network
+         * critical section and already forced every base tile through the
+         * stable framebuffer diff for this recovery frame. */
         net->stream_policy.tile_refresh_pending          = false;
         net->stream_policy.tile_recovery_refresh_started = recovering_from_video;
         net->stream_policy.tile_recovery_refresh_sent    = false;
@@ -3743,7 +3787,7 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
         }
 
         net->stats.video_tile_detection_skipped++;
-        (void)wd_stream_try_publish_video_frame_locked(server, now);
+        (void)wd_stream_try_publish_video_snapshot_locked(server, now, video_snapshot);
 
         /* Queues should normally already be empty after video ownership was
          * established. Only pay the memset cost if transition-era work remains. */
@@ -3771,9 +3815,9 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
     if (detect_new_damage)
     {
         const uint64_t dirty_detect_start_ns = wd_now_ns();
-        dirty_frame_tiles                    = wd_detect_dirty_tiles_into_queue_locked(server, damage);
+        dirty_frame_tiles                    = wd_stream_apply_frame_analysis_locked(server, analysis);
         net->stats.dirty_detect_ns += wd_now_ns() - dirty_detect_start_ns;
-        (void)wd_stream_try_publish_video_frame_locked(server, now);
+        (void)wd_stream_try_publish_video_snapshot_locked(server, now, video_snapshot);
     }
 
     const bool client_loss = wd_stream_client_reporting_tile_loss_locked(&net->stream_policy, &net->stats);
@@ -4051,12 +4095,13 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
     return true;
 }
 
-bool wd_stream_process_frame(struct wd_server* server, const struct wd_stream_damage_view* damage) {
-    return wd_stream_send_tiles(server, true, damage);
+bool wd_stream_process_frame(struct wd_server* server, const struct wd_stream_damage_view* damage,
+                             const struct wd_stream_frame_analysis* analysis, struct wd_stream_video_snapshot* video_snapshot) {
+    return wd_stream_send_tiles(server, true, damage, analysis, video_snapshot);
 }
 
 bool wd_stream_process_queued_work(struct wd_server* server) {
-    return wd_stream_send_tiles(server, false, NULL);
+    return wd_stream_send_tiles(server, false, NULL, NULL, NULL);
 }
 
 struct wd_summary_completion_entry {

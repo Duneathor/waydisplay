@@ -3,6 +3,7 @@
 #include "wd_server_internal.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Internal contracts between the stream orchestrator and its video stage.
@@ -14,12 +15,33 @@ struct wd_stream_damage_view {
     uint32_t    tile_count;
 };
 
+struct wd_stream_frame_analysis {
+    const bool* changed_tiles;
+    uint16_t    changed_tile_count;
+    uint32_t    candidate_count;
+    uint32_t    unchanged_count;
+    uint64_t    diff_ns;
+    bool        full_refresh;
+};
+
+struct wd_stream_video_snapshot {
+    uint32_t* pixels;
+    size_t    pixel_capacity;
+    size_t    pixel_count;
+    uint64_t  copy_ns;
+    bool      ready;
+};
+
 bool wd_stream_frame_worker_init(struct wd_server* server);
 void wd_stream_frame_worker_destroy(struct wd_server* server);
 bool wd_stream_frame_worker_idle(struct wd_server* server);
 bool wd_stream_frame_worker_submit(struct wd_server* server);
 void wd_stream_frame_worker_request_service(struct wd_server* server);
-bool wd_stream_process_frame(struct wd_server* server, const struct wd_stream_damage_view* damage);
+bool wd_stream_analyze_frame(struct wd_server* server, const struct wd_stream_damage_view* damage, bool force_full_refresh,
+                             bool* changed_tiles, uint32_t changed_capacity, struct wd_stream_frame_analysis* analysis);
+bool wd_stream_frame_force_full_refresh(struct wd_server* server);
+bool wd_stream_process_frame(struct wd_server* server, const struct wd_stream_damage_view* damage,
+                             const struct wd_stream_frame_analysis* analysis, struct wd_stream_video_snapshot* video_snapshot);
 bool wd_stream_process_queued_work(struct wd_server* server);
 void wd_stream_controller_tick(struct wd_server* server);
 double      wd_stream_coverage_pct(uint64_t per_mille);
@@ -41,5 +63,7 @@ void     wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum 
 bool     wd_stream_video_worker_init(struct wd_server* server);
 void     wd_stream_video_worker_destroy(struct wd_server* server);
 bool     wd_stream_queue_video_control_frame_locked(struct wd_server* server, uint16_t flags);
-bool     wd_stream_try_publish_video_frame_locked(struct wd_server* server, uint64_t now_ns);
+bool     wd_stream_video_snapshot_needed(struct wd_server* server, uint64_t now_ns);
+bool     wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint64_t now_ns,
+                                                      struct wd_stream_video_snapshot* snapshot);
 uint32_t wd_stream_video_bitrate_kib_locked(const struct wd_stream_policy* policy);

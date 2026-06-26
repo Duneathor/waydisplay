@@ -76,7 +76,19 @@ bool wd_tcp_reader_has_partial_frame(const struct wd_tcp_reader* reader) {
 }
 
 uint64_t wd_tcp_reader_deadline_ns(const struct wd_tcp_reader* reader) {
-    return reader ? reader->deadline_ns : 0;
+    if (!reader)
+    {
+        return 0;
+    }
+    if (reader->idle_deadline_ns == 0)
+    {
+        return reader->frame_deadline_ns;
+    }
+    if (reader->frame_deadline_ns == 0)
+    {
+        return reader->idle_deadline_ns;
+    }
+    return reader->idle_deadline_ns < reader->frame_deadline_ns ? reader->idle_deadline_ns : reader->frame_deadline_ns;
 }
 
 void wd_tcp_message_release(struct wd_tcp_message* message) {
@@ -89,24 +101,38 @@ void wd_tcp_message_release(struct wd_tcp_message* message) {
     memset(message, 0, sizeof(*message));
 }
 
-static void wd_tcp_reader_start_deadline(struct wd_tcp_reader* reader, uint64_t now_ns, uint64_t frame_timeout_ns) {
-    if (reader->deadline_ns != 0 || frame_timeout_ns == 0)
+static uint64_t wd_tcp_deadline_after(uint64_t now_ns, uint64_t timeout_ns) {
+    if (timeout_ns == 0)
     {
-        return;
+        return 0;
     }
+    return UINT64_MAX - now_ns < timeout_ns ? UINT64_MAX : now_ns + timeout_ns;
+}
 
-    reader->deadline_ns = UINT64_MAX - now_ns < frame_timeout_ns ? UINT64_MAX : now_ns + frame_timeout_ns;
+static bool wd_tcp_reader_timed_out(const struct wd_tcp_reader* reader, uint64_t now_ns) {
+    return reader && ((reader->idle_deadline_ns != 0 && now_ns >= reader->idle_deadline_ns) ||
+                      (reader->frame_deadline_ns != 0 && now_ns >= reader->frame_deadline_ns));
+}
+
+static void wd_tcp_reader_note_progress(struct wd_tcp_reader* reader, uint64_t now_ns, uint64_t idle_timeout_ns,
+                                        uint64_t max_frame_lifetime_ns) {
+    if (reader->frame_deadline_ns == 0)
+    {
+        reader->frame_deadline_ns = wd_tcp_deadline_after(now_ns, max_frame_lifetime_ns);
+    }
+    reader->idle_deadline_ns = wd_tcp_deadline_after(now_ns, idle_timeout_ns);
 }
 
 static enum wd_tcp_reader_status wd_tcp_reader_recv_bytes(struct wd_tcp_reader* reader, int fd, uint8_t* destination, size_t* received,
-                                                           size_t expected, uint64_t now_ns, uint64_t frame_timeout_ns) {
+                                                           size_t expected, uint64_t now_ns, uint64_t idle_timeout_ns,
+                                                           uint64_t max_frame_lifetime_ns) {
     while (*received < expected)
     {
         ssize_t count = recv(fd, destination + *received, expected - *received, MSG_DONTWAIT);
         if (count > 0)
         {
-            wd_tcp_reader_start_deadline(reader, now_ns, frame_timeout_ns);
             *received += (size_t)count;
+            wd_tcp_reader_note_progress(reader, now_ns, idle_timeout_ns, max_frame_lifetime_ns);
             continue;
         }
 
@@ -133,25 +159,25 @@ static enum wd_tcp_reader_status wd_tcp_reader_recv_bytes(struct wd_tcp_reader* 
         return WD_TCP_READER_MESSAGE;
     }
 
-    if (reader->deadline_ns != 0 && now_ns >= reader->deadline_ns)
-    {
-        return WD_TCP_READER_TIMED_OUT;
-    }
-
-    return WD_TCP_READER_NEED_MORE;
+    return wd_tcp_reader_timed_out(reader, now_ns) ? WD_TCP_READER_TIMED_OUT : WD_TCP_READER_NEED_MORE;
 }
 
-enum wd_tcp_reader_status wd_tcp_reader_receive(struct wd_tcp_reader* reader, int fd, uint64_t now_ns, uint64_t frame_timeout_ns,
-                                                struct wd_tcp_message* out_message) {
+enum wd_tcp_reader_status wd_tcp_reader_receive(struct wd_tcp_reader* reader, int fd, uint64_t now_ns, uint64_t idle_timeout_ns,
+                                                uint64_t max_frame_lifetime_ns, struct wd_tcp_message* out_message) {
     if (!reader || fd < 0 || !out_message || reader->max_payload_size == 0)
     {
         return WD_TCP_READER_IO_ERROR;
     }
 
     memset(out_message, 0, sizeof(*out_message));
+    if (wd_tcp_reader_has_partial_frame(reader) && wd_tcp_reader_timed_out(reader, now_ns))
+    {
+        return WD_TCP_READER_TIMED_OUT;
+    }
 
     enum wd_tcp_reader_status status = wd_tcp_reader_recv_bytes(reader, fd, reader->header_bytes, &reader->header_size,
-                                                                WD_TCP_HEADER_WIRE_SIZE, now_ns, frame_timeout_ns);
+                                                                WD_TCP_HEADER_WIRE_SIZE, now_ns, idle_timeout_ns,
+                                                                max_frame_lifetime_ns);
     if (status != WD_TCP_READER_MESSAGE)
     {
         return status;
@@ -187,7 +213,8 @@ enum wd_tcp_reader_status wd_tcp_reader_receive(struct wd_tcp_reader* reader, in
     if (reader->payload_size != 0)
     {
         size_t payload_received = reader->payload_received;
-        status = wd_tcp_reader_recv_bytes(reader, fd, reader->payload, &payload_received, reader->payload_size, now_ns, frame_timeout_ns);
+        status = wd_tcp_reader_recv_bytes(reader, fd, reader->payload, &payload_received, reader->payload_size, now_ns, idle_timeout_ns,
+                                          max_frame_lifetime_ns);
         reader->payload_received = (uint32_t)payload_received;
         if (status != WD_TCP_READER_MESSAGE)
         {

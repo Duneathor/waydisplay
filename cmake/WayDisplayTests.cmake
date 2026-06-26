@@ -221,6 +221,25 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.eventfd_wakeup
+        TARGET waydisplay_test_eventfd_wakeup
+        SOURCES tests/test_eventfd_wakeup.c
+        LIBRARIES waydisplay_common Threads::Threads
+        LABELS "lifecycle;network;threading"
+    )
+
+    add_test(
+        NAME waydisplay.threaded_runtime_contracts
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_threaded_runtime_contracts.cmake
+    )
+    set_tests_properties(waydisplay.threaded_runtime_contracts PROPERTIES
+        TIMEOUT 10
+        LABELS "cmake;lifecycle;threading"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.net_listener
         TARGET waydisplay_test_net_listener
         SOURCES tests/test_net_listener.c
