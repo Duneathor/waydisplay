@@ -114,6 +114,81 @@ static void wd_log_tcp_channel_endpoint(const char* channel, int fd) {
     WD_LOG_INFO("%s TCP channel connected local=%s remote=%s", channel, local, remote);
 }
 
+static bool wd_receive_client_hello(int tcp_fd, const struct sockaddr_in* peer_addr, struct wd_client_hello_payload* hello) {
+    char peer[64];
+    uint8_t wire_header[WD_TCP_HEADER_WIRE_SIZE];
+    struct wd_tcp_header header;
+
+    if (!hello)
+    {
+        return false;
+    }
+
+    memset(hello, 0, sizeof(*hello));
+    wd_format_sockaddr_in(peer_addr, peer, sizeof(peer));
+
+    errno = 0;
+    if (!wd_recv_all(tcp_fd, wire_header, sizeof(wire_header)))
+    {
+        const int error_code = errno;
+        WD_LOG_ERROR("failed to receive client hello header peer=%s timeout_ms=%ld error=%s", peer,
+                     WD_TCP_HANDSHAKE_TIMEOUT_MS,
+                     error_code != 0 ? strerror(error_code) : "peer closed before a complete header");
+        return false;
+    }
+
+    if (!wd_tcp_header_decode(wire_header, &header))
+    {
+        WD_LOG_ERROR("failed to decode client hello header peer=%s", peer);
+        return false;
+    }
+
+    if (header.magic != WD_TCP_MAGIC || header.protocol_version != WD_PROTOCOL_VERSION)
+    {
+        WD_LOG_ERROR("invalid client hello header peer=%s magic=0x%08x expected_magic=0x%08x version=%u expected_version=%u "
+                     "message=%s(%u) payload_size=%u",
+                     peer, header.magic, WD_TCP_MAGIC, header.protocol_version, WD_PROTOCOL_VERSION,
+                     wd_protocol_message_name(header.message_type), header.message_type, header.payload_size);
+        return false;
+    }
+
+    if (header.message_type != WD_MSG_CLIENT_HELLO ||
+        !wd_protocol_message_allowed(header.message_type, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
+                                     WD_PROTOCOL_CLIENT_TO_SERVER, header.payload_size))
+    {
+        WD_LOG_ERROR("unexpected initial TCP message peer=%s message=%s(%u) payload_size=%u expected=%s(%u) size=%zu",
+                     peer, wd_protocol_message_name(header.message_type), header.message_type, header.payload_size,
+                     wd_protocol_message_name(WD_MSG_CLIENT_HELLO), WD_MSG_CLIENT_HELLO, sizeof(*hello));
+        return false;
+    }
+
+    errno = 0;
+    if (!wd_recv_all(tcp_fd, hello, sizeof(*hello)))
+    {
+        const int error_code = errno;
+        WD_LOG_ERROR("failed to receive client hello payload peer=%s size=%zu timeout_ms=%ld error=%s", peer,
+                     sizeof(*hello), WD_TCP_HANDSHAKE_TIMEOUT_MS,
+                     error_code != 0 ? strerror(error_code) : "peer closed before the complete payload");
+        memset(hello, 0, sizeof(*hello));
+        return false;
+    }
+
+    if (!wd_client_hello_payload_is_valid(hello, sizeof(*hello)) || hello->client_udp_port == 0)
+    {
+        WD_LOG_ERROR("rejected client hello payload peer=%s udp_port=%u capture_fps=%u desired=%ux%u capabilities=0x%x "
+                     "video_codecs=0x%x video_transport=%u video_mode=%u audio_codecs=0x%x audio_transport=%u "
+                     "audio_channels=%u audio_latency_ms=%u",
+                     peer, hello->client_udp_port, hello->requested_capture_fps, hello->desired_width, hello->desired_height,
+                     hello->capabilities, hello->video_codecs, hello->video_transport, hello->video_mode,
+                     hello->audio_codecs, hello->audio_transport, hello->audio_max_channels,
+                     hello->audio_target_latency_ms);
+        return false;
+    }
+
+    WD_LOG_DEBUG("accepted client hello peer=%s payload_size=%zu udp_port=%u", peer, sizeof(*hello), hello->client_udp_port);
+    return true;
+}
+
 static uint64_t wd_clamp_u64(uint64_t value, uint64_t min_value, uint64_t max_value) {
     if (value < min_value)
     {
@@ -1459,30 +1534,9 @@ void* wd_net_thread_main(void* arg) {
 
         wd_configure_accepted_tcp_socket(tcp_fd);
 
-        uint16_t type         = 0;
-        uint8_t* payload      = NULL;
-        uint32_t payload_size = 0;
-
-        if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size) ||
-            !wd_protocol_message_allowed(type, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
-                                         WD_PROTOCOL_CLIENT_TO_SERVER, payload_size) ||
-            type != WD_MSG_CLIENT_HELLO)
-        {
-            WD_LOG_ERROR("invalid client hello");
-            free(payload);
-            close(tcp_fd);
-            continue;
-        }
-
         struct wd_client_hello_payload hello;
-        memset(&hello, 0, sizeof(hello));
-        memcpy(&hello, payload, sizeof(hello));
-        free(payload);
-        payload = NULL;
-
-        if (!wd_client_hello_payload_is_valid(&hello, sizeof(hello)) || hello.client_udp_port == 0)
+        if (!wd_receive_client_hello(tcp_fd, &peer_addr, &hello))
         {
-            WD_LOG_ERROR("rejected invalid client hello");
             close(tcp_fd);
             continue;
         }
@@ -2125,9 +2179,9 @@ void* wd_net_thread_main(void* arg) {
                     break;
                 }
 
-                type         = control_message.message_type;
-                payload      = control_message.payload;
-                payload_size = control_message.payload_size;
+                const uint16_t type         = control_message.message_type;
+                uint8_t* const payload       = control_message.payload;
+                const uint32_t payload_size  = control_message.payload_size;
 
                 if (!wd_protocol_message_allowed(type, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED,
                                                  WD_PROTOCOL_CLIENT_TO_SERVER, payload_size))
