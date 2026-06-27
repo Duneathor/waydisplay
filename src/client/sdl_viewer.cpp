@@ -445,11 +445,13 @@ const char* glyph_5x7(char c) {
 void draw_text(SDL_Renderer* renderer, const char* text, int x, int y, int scale, bool enabled) {
     if (enabled)
     {
-        SDL_SetRenderDrawColor(renderer, 242, 242, 242, 255);
+        SDL_SetRenderDrawColor(renderer, WD_CLIENT_CONTEXT_MENU_TEXT_ENABLED_R, WD_CLIENT_CONTEXT_MENU_TEXT_ENABLED_G,
+                               WD_CLIENT_CONTEXT_MENU_TEXT_ENABLED_B, 255);
     }
     else
     {
-        SDL_SetRenderDrawColor(renderer, 135, 135, 135, 255);
+        SDL_SetRenderDrawColor(renderer, WD_CLIENT_CONTEXT_MENU_TEXT_DISABLED_R, WD_CLIENT_CONTEXT_MENU_TEXT_DISABLED_G,
+                               WD_CLIENT_CONTEXT_MENU_TEXT_DISABLED_B, 255);
     }
 
     int cursor_x = x;
@@ -495,22 +497,26 @@ void render_context_menu(SDL_Renderer* renderer, const ContextMenu& menu) {
 
     const int height = context_menu_height();
 
-    SDL_FRect shadow{static_cast<float>(menu.x + 5), static_cast<float>(menu.y + 5), static_cast<float>(WD_CLIENT_CONTEXT_MENU_WIDTH),
-                     static_cast<float>(height)};
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 150);
+    SDL_FRect shadow{static_cast<float>(menu.x + WD_CLIENT_CONTEXT_MENU_SHADOW_OFFSET_PX),
+                     static_cast<float>(menu.y + WD_CLIENT_CONTEXT_MENU_SHADOW_OFFSET_PX),
+                     static_cast<float>(WD_CLIENT_CONTEXT_MENU_WIDTH), static_cast<float>(height)};
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, WD_CLIENT_CONTEXT_MENU_SHADOW_ALPHA);
     SDL_RenderFillRect(renderer, &shadow);
 
     SDL_FRect bg{static_cast<float>(menu.x), static_cast<float>(menu.y), static_cast<float>(WD_CLIENT_CONTEXT_MENU_WIDTH),
                  static_cast<float>(height)};
-    SDL_SetRenderDrawColor(renderer, 26, 29, 33, 248);
+    SDL_SetRenderDrawColor(renderer, WD_CLIENT_CONTEXT_MENU_BG_R, WD_CLIENT_CONTEXT_MENU_BG_G, WD_CLIENT_CONTEXT_MENU_BG_B,
+                           WD_CLIENT_CONTEXT_MENU_BG_ALPHA);
     SDL_RenderFillRect(renderer, &bg);
 
-    SDL_SetRenderDrawColor(renderer, 72, 78, 86, 255);
+    SDL_SetRenderDrawColor(renderer, WD_CLIENT_CONTEXT_MENU_BORDER_R, WD_CLIENT_CONTEXT_MENU_BORDER_G,
+                           WD_CLIENT_CONTEXT_MENU_BORDER_B, 255);
     SDL_RenderRect(renderer, &bg);
 
     SDL_FRect inner{static_cast<float>(menu.x + 1), static_cast<float>(menu.y + 1), static_cast<float>(WD_CLIENT_CONTEXT_MENU_WIDTH - 2),
                     static_cast<float>(height - 2)};
-    SDL_SetRenderDrawColor(renderer, 43, 47, 53, 255);
+    SDL_SetRenderDrawColor(renderer, WD_CLIENT_CONTEXT_MENU_INNER_R, WD_CLIENT_CONTEXT_MENU_INNER_G,
+                           WD_CLIENT_CONTEXT_MENU_INNER_B, 255);
     SDL_RenderRect(renderer, &inner);
 
     for (int i = 0; i < static_cast<int>(CONTEXT_MENU_ITEMS.size()); ++i)
@@ -524,13 +530,15 @@ void render_context_menu(SDL_Renderer* renderer, const ContextMenu& menu) {
 
         if (i == menu.hover && CONTEXT_MENU_ITEMS[i].enabled)
         {
-            SDL_SetRenderDrawColor(renderer, 56, 116, 186, 255);
+            SDL_SetRenderDrawColor(renderer, WD_CLIENT_CONTEXT_MENU_HOVER_R, WD_CLIENT_CONTEXT_MENU_HOVER_G,
+                                   WD_CLIENT_CONTEXT_MENU_HOVER_B, 255);
             SDL_RenderFillRect(renderer, &item_rect);
         }
 
         if (i == 2)
         {
-            SDL_SetRenderDrawColor(renderer, 66, 70, 76, 255);
+            SDL_SetRenderDrawColor(renderer, WD_CLIENT_CONTEXT_MENU_SEPARATOR_R, WD_CLIENT_CONTEXT_MENU_SEPARATOR_G,
+                                   WD_CLIENT_CONTEXT_MENU_SEPARATOR_B, 255);
             SDL_RenderLine(renderer, static_cast<float>(menu.x + WD_CLIENT_CONTEXT_MENU_PADDING_X), item_rect.y - 1.0f,
                            static_cast<float>(menu.x + WD_CLIENT_CONTEXT_MENU_WIDTH - WD_CLIENT_CONTEXT_MENU_PADDING_X),
                            item_rect.y - 1.0f);
@@ -1098,7 +1106,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
                 config.width, config.height, config.tile_width, config.tile_height, config.tiles_x, config.tiles_y, config.total_tiles,
                 change_flags);
 
-    std::vector<uint32_t>                   new_framebuffer(static_cast<size_t>(config.width) * config.height, 0xff202020u);
+    std::vector<uint32_t> new_framebuffer(static_cast<size_t>(config.width) * config.height, WD_CLIENT_FRAMEBUFFER_CLEAR_XRGB);
     std::vector<uint64_t>                   new_received_generation(config.total_tiles, 0);
     std::vector<uint64_t>                   new_presented_generation(config.total_tiles, 0);
     std::vector<uint64_t>                   new_pending_present_generation(config.total_tiles, 0);
@@ -1111,7 +1119,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
     std::vector<uint64_t>                   new_retx_summary_pending_generation(config.total_tiles, 0);
     std::vector<uint64_t>                   new_retx_summary_pending_since_ns(config.total_tiles, 0);
     std::vector<uint32_t>                   new_retx_summary_pending_position(config.total_tiles, UINT32_MAX);
-    std::vector<uint8_t>                    new_udp_recv_buffer(WD_UDP_TILE_HEADER_MAX_SIZE + config.udp_payload_target + 512, 0);
+    std::vector<uint8_t> new_udp_recv_buffer(
+        WD_UDP_TILE_HEADER_MAX_SIZE + config.udp_payload_target + WD_CLIENT_UDP_RECV_SLACK_BYTES, 0);
     ClientDirtyTileGrid                     new_dirty_tiles;
     if (!configure_client_dirty_tile_grid(new_dirty_tiles, config.width, config.height, config.tile_width, config.tile_height))
     {

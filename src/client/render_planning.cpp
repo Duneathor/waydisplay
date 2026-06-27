@@ -302,9 +302,6 @@ void coalesce_dirty_texture_rects(std::vector<ClientDirtyRect>& rects, uint32_t 
 
 namespace {
 
-constexpr uint64_t DEFAULT_PIXEL_COST_Q16          = 1ull << 16u;
-constexpr uint64_t DEFAULT_SNAPSHOT_PIXEL_COST_Q16 = 1ull << 16u;
-
 uint64_t scaled_pixel_cost_ns(uint64_t cost_q16, uint64_t pixels) {
     const __uint128_t scaled = static_cast<__uint128_t>(pixels) * cost_q16;
     const __uint128_t ns     = scaled >> 16u;
@@ -312,13 +309,13 @@ uint64_t scaled_pixel_cost_ns(uint64_t cost_q16, uint64_t pixels) {
 }
 
 uint64_t texture_pixel_cost_ns(const ClientTextureUploadCostModel& costs, uint64_t pixels) {
-    const uint64_t cost_q16 = costs.pixel_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ? costs.pixel_cost_q16 : DEFAULT_PIXEL_COST_Q16;
+    const uint64_t cost_q16 = costs.pixel_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ? costs.pixel_cost_q16 : WD_CLIENT_RENDER_DEFAULT_PIXEL_COST_Q16;
     return scaled_pixel_cost_ns(cost_q16, pixels);
 }
 
 uint64_t snapshot_pixel_cost_ns(const ClientTextureUploadCostModel& costs, uint64_t pixels) {
     const uint64_t cost_q16 =
-        costs.snapshot_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ? costs.snapshot_pixel_cost_q16 : DEFAULT_SNAPSHOT_PIXEL_COST_Q16;
+        costs.snapshot_samples >= WD_CLIENT_RENDER_COST_MIN_SAMPLES ? costs.snapshot_pixel_cost_q16 : WD_CLIENT_RENDER_DEFAULT_SNAPSHOT_COST_Q16;
     return scaled_pixel_cost_ns(cost_q16, pixels);
 }
 

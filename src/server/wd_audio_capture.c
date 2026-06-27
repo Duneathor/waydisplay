@@ -1,5 +1,6 @@
 #include "wd_audio_capture.h"
 
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_time.h"
@@ -31,8 +32,8 @@ struct wd_audio_capture {
     bool                      shutting_down;
     uint64_t                  delivery_generation;
     uint32_t                  active_callbacks;
-    char                      sink_name[96];
-    char                      sink_target[96];
+    char                      sink_name[WD_AUDIO_ROUTING_SINK_MAX];
+    char                      sink_target[WD_AUDIO_ROUTING_TARGET_MAX];
 };
 
 static void wd_audio_capture_process(void* userdata) {
@@ -184,17 +185,21 @@ bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t chan
         return false;
     }
 
-    char channel_count[8];
-    char owner_scope[64];
+    char channel_count[WD_AUDIO_CAPTURE_CHANNEL_TEXT_BYTES];
+    char owner_scope[WD_AUDIO_ROUTING_SCOPE_MAX];
+    char sample_rate[WD_AUDIO_CAPTURE_RATE_TEXT_BYTES];
+    char node_rate[WD_AUDIO_CAPTURE_NODE_RATE_TEXT_BYTES];
     snprintf(channel_count, sizeof(channel_count), "%u", channels);
     snprintf(owner_scope, sizeof(owner_scope), "waydisplay.%ld", (long)getpid());
+    snprintf(sample_rate, sizeof(sample_rate), "%u", WD_AUDIO_SAMPLE_RATE_DEFAULT);
+    snprintf(node_rate, sizeof(node_rate), "1/%u", WD_AUDIO_SAMPLE_RATE_DEFAULT);
     capture->stream = pw_stream_new_simple(
         pw_thread_loop_get_loop(capture->loop), "WayDisplay private audio sink",
         pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Capture", PW_KEY_MEDIA_ROLE, "Screen", PW_KEY_MEDIA_CLASS,
                           "Audio/Sink", PW_KEY_NODE_NAME, capture->sink_name, PW_KEY_NODE_DESCRIPTION, "WayDisplay private audio sink",
                           PW_KEY_NODE_VIRTUAL, "true", "node.terminal", "true", "node.pause-on-idle", "true", "priority.session", "0",
                           "state.restore-props", "false", "waydisplay.audio.private", "true", "waydisplay.audio.scope", owner_scope,
-                          PW_KEY_AUDIO_FORMAT, "F32", PW_KEY_AUDIO_RATE, "48000", PW_KEY_NODE_RATE, "1/48000", PW_KEY_AUDIO_CHANNELS,
+                          PW_KEY_AUDIO_FORMAT, "F32", PW_KEY_AUDIO_RATE, sample_rate, PW_KEY_NODE_RATE, node_rate, PW_KEY_AUDIO_CHANNELS,
                           channel_count, SPA_KEY_AUDIO_POSITION, channels == 1 ? "[ MONO ]" : "[ FL FR ]", NULL),
         &wd_audio_capture_events, capture);
     if (!capture->stream)
@@ -215,7 +220,7 @@ bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t chan
         audio_info.position[1] = SPA_AUDIO_CHANNEL_FR;
     }
 
-    uint8_t                params_buffer[1024];
+    uint8_t                params_buffer[WD_AUDIO_CAPTURE_PARAM_BUFFER_BYTES];
     struct spa_pod_builder builder   = SPA_POD_BUILDER_INIT(params_buffer, sizeof(params_buffer));
     const struct spa_pod*  params[1] = {
         spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat, &audio_info),
@@ -231,7 +236,7 @@ bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t chan
 
     while (!__atomic_load_n(&capture->ready, __ATOMIC_ACQUIRE) && !__atomic_load_n(&capture->failed, __ATOMIC_ACQUIRE))
     {
-        const int wait_result = pw_thread_loop_timed_wait(capture->loop, 3);
+        const int wait_result = pw_thread_loop_timed_wait(capture->loop, WD_AUDIO_CAPTURE_CONNECT_TIMEOUT_SECONDS);
         if (wait_result != 0)
         {
             WD_LOG_ERROR("timed out waiting for PipeWire private audio sink");

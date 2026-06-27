@@ -1,5 +1,6 @@
 #pragma once
 
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_protocol.h"
 #include "client_state.hpp"
 
@@ -37,7 +38,8 @@ struct CompletedTile {
 
 class TileReassembler {
   public:
-    explicit TileReassembler(size_t max_active_entries = 512, size_t max_active_payload_bytes = 16u * 1024u * 1024u);
+    explicit TileReassembler(size_t max_active_entries = WD_CLIENT_TILE_REASSEMBLY_MAX_ACTIVE_ENTRIES,
+                             size_t max_active_payload_bytes = WD_CLIENT_TILE_REASSEMBLY_MAX_ACTIVE_PAYLOAD_BYTES);
 
     void reset();
 
@@ -95,8 +97,8 @@ class TileReassembler {
     uint16_t                             entry_frame_width_        = 0;
     uint16_t                             entry_frame_height_       = 0;
     size_t                               active_payload_bytes_     = 0;
-    size_t                               max_active_entries_       = 512;
-    size_t                               max_active_payload_bytes_ = 16u * 1024u * 1024u;
+    size_t                               max_active_entries_       = WD_CLIENT_TILE_REASSEMBLY_MAX_ACTIVE_ENTRIES;
+    size_t                               max_active_payload_bytes_ = WD_CLIENT_TILE_REASSEMBLY_MAX_ACTIVE_PAYLOAD_BYTES;
 };
 
 } // namespace waydisplay

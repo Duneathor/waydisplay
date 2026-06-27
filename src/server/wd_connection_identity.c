@@ -1,11 +1,11 @@
 #include "wd_connection_identity.h"
 
+#include "waydisplay/wd_config.h"
+
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/random.h>
-
-#define WD_CONNECTION_RANDOM_ATTEMPTS 8u
 
 uint8_t wd_connection_next_session_id(uint8_t current_session_id) {
     if (current_session_id == 0 || current_session_id == UINT8_MAX)
@@ -36,7 +36,7 @@ static bool wd_connection_random_read_exact(wd_connection_random_read_fn read_ra
 }
 
 static bool wd_connection_random_nonzero_u64(wd_connection_random_read_fn read_random, void* read_random_data, uint64_t* value) {
-    for (unsigned int attempt = 0; attempt < WD_CONNECTION_RANDOM_ATTEMPTS; ++attempt)
+    for (unsigned int attempt = 0; attempt < WD_SERVER_CONNECTION_RANDOM_ATTEMPTS; ++attempt)
     {
         uint64_t candidate = 0;
         if (!wd_connection_random_read_exact(read_random, read_random_data, (uint8_t*)&candidate, sizeof(candidate)))
@@ -65,7 +65,7 @@ bool wd_connection_identity_generate_with(wd_connection_random_read_fn read_rand
         return false;
     }
 
-    for (unsigned int attempt = 0; attempt < WD_CONNECTION_RANDOM_ATTEMPTS; ++attempt)
+    for (unsigned int attempt = 0; attempt < WD_SERVER_CONNECTION_RANDOM_ATTEMPTS; ++attempt)
     {
         uint64_t clock_id = 0;
         if (!wd_connection_random_nonzero_u64(read_random, read_random_data, &clock_id))

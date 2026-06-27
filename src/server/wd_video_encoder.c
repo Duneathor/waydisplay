@@ -1,5 +1,6 @@
 #include "wd_video_encoder.h"
 
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
 
 #include <limits.h>
@@ -23,9 +24,9 @@ enum {
      * This is a one-time capability probe, so the extra surface size is
      * negligible and avoids false negatives from an undersized test frame.
      */
-    WD_VAAPI_PROBE_WIDTH      = 256,
-    WD_VAAPI_PROBE_HEIGHT     = 256,
-    WD_FFMPEG_FRAME_ALIGNMENT = 32,
+    WD_VAAPI_PROBE_WIDTH      = WD_VIDEO_ENCODER_VAAPI_PROBE_WIDTH,
+    WD_VAAPI_PROBE_HEIGHT     = WD_VIDEO_ENCODER_VAAPI_PROBE_HEIGHT,
+    WD_FFMPEG_FRAME_ALIGNMENT = WD_VIDEO_ENCODER_FFMPEG_FRAME_ALIGNMENT,
 };
 #include "../common/wd_vaapi_device.h"
 
@@ -319,7 +320,7 @@ static void wd_video_encoder_set_context_defaults(AVCodecContext* codec_ctx, con
     codec_ctx->time_base    = (AVRational){1, 1000000};
     codec_ctx->framerate    = (AVRational){fps, 1};
     codec_ctx->gop_size     = (fps > 0 ? fps : (int)WD_VIDEO_ENCODER_FALLBACK_FPS) * WD_VIDEO_ENCODER_GOP_SECONDS;
-    codec_ctx->max_b_frames = 0;
+    codec_ctx->max_b_frames = WD_VIDEO_ENCODER_MAX_B_FRAMES;
     codec_ctx->bit_rate     = bitrate;
 }
 
@@ -413,20 +414,19 @@ static bool wd_video_encoder_configure_software(struct wd_video_encoder* encoder
     encoder->codec_ctx->thread_count = WD_VIDEO_ENCODER_SOFTWARE_THREADS;
     if (encoder->codec_ctx->priv_data)
     {
-        (void)av_opt_set(encoder->codec_ctx->priv_data, "preset", "ultrafast", 0);
-        (void)av_opt_set(encoder->codec_ctx->priv_data, "tune", "zerolatency", 0);
+        (void)av_opt_set(encoder->codec_ctx->priv_data, "preset", WD_VIDEO_ENCODER_SOFTWARE_PRESET, 0);
+        (void)av_opt_set(encoder->codec_ctx->priv_data, "tune", WD_VIDEO_ENCODER_SOFTWARE_TUNE, 0);
         /* AVFrame.pict_type requests an intra picture.  libx264/libx265 may
          * otherwise choose a non-IDR intra picture, which is not sufficient
          * for a client that has discarded its decoder reference state. */
-        (void)av_opt_set(encoder->codec_ctx->priv_data, "forced-idr", "1", 0);
+        (void)av_opt_set(encoder->codec_ctx->priv_data, "forced-idr", WD_VIDEO_ENCODER_FORCE_IDR_OPTION, 0);
         if (config->codec == WD_VIDEO_CODEC_H264)
         {
-            (void)av_opt_set(encoder->codec_ctx->priv_data, "x264-params", "repeat-headers=1:sliced-threads=1", 0);
+            (void)av_opt_set(encoder->codec_ctx->priv_data, "x264-params", WD_VIDEO_ENCODER_H264_PRIVATE_PARAMS, 0);
         }
         else
         {
-            (void)av_opt_set(encoder->codec_ctx->priv_data, "x265-params", "repeat-headers=1:log-level=error:pools=none:frame-threads=1",
-                             0);
+            (void)av_opt_set(encoder->codec_ctx->priv_data, "x265-params", WD_VIDEO_ENCODER_H265_PRIVATE_PARAMS, 0);
         }
     }
 
@@ -447,8 +447,9 @@ static bool wd_video_encoder_configure_software(struct wd_video_encoder* encoder
         return false;
     }
 
+    const int scaler_flags = WD_VIDEO_SCALER_USE_FAST_BILINEAR ? SWS_FAST_BILINEAR : SWS_BILINEAR;
     encoder->sws_ctx = sws_getContext(encoder->codec_ctx->width, encoder->codec_ctx->height, AV_PIX_FMT_BGRA, encoder->codec_ctx->width,
-                                      encoder->codec_ctx->height, encoder->codec_ctx->pix_fmt, SWS_FAST_BILINEAR, NULL, NULL, NULL);
+                                      encoder->codec_ctx->height, encoder->codec_ctx->pix_fmt, scaler_flags, NULL, NULL, NULL);
     if (!encoder->sws_ctx)
     {
         wd_video_encoder_release_backend(encoder);
@@ -504,7 +505,7 @@ static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, c
     if (encoder->codec_ctx->priv_data)
     {
         (void)av_opt_set(encoder->codec_ctx->priv_data, "async_depth", WD_VIDEO_ENCODER_VAAPI_ASYNC_DEPTH, 0);
-        (void)av_opt_set(encoder->codec_ctx->priv_data, "aud", "1", 0);
+        (void)av_opt_set(encoder->codec_ctx->priv_data, "aud", WD_VIDEO_ENCODER_VAAPI_AUD_OPTION, 0);
     }
 
     rc = avcodec_open2(encoder->codec_ctx, codec, NULL);
@@ -524,8 +525,9 @@ static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, c
         return false;
     }
 
+    const int scaler_flags = WD_VIDEO_SCALER_USE_FAST_BILINEAR ? SWS_FAST_BILINEAR : SWS_BILINEAR;
     encoder->sws_ctx = sws_getContext(encoder->codec_ctx->width, encoder->codec_ctx->height, AV_PIX_FMT_BGRA, encoder->codec_ctx->width,
-                                      encoder->codec_ctx->height, AV_PIX_FMT_NV12, SWS_FAST_BILINEAR, NULL, NULL, NULL);
+                                      encoder->codec_ctx->height, AV_PIX_FMT_NV12, scaler_flags, NULL, NULL, NULL);
     if (!encoder->sws_ctx)
     {
         wd_video_encoder_release_backend(encoder);

@@ -788,10 +788,13 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
                 const int      ilx            = (int)lx;
                 const int      ily            = (int)ly;
                 const bool     target_changed = last_logged_motion_surface != NULL || last_logged_motion_view != NULL;
-                const bool     moved_enough   = last_logged_motion_x < 0 || last_logged_motion_y < 0 || ilx < last_logged_motion_x - 24 ||
-                                                ilx > last_logged_motion_x + 24 || ily < last_logged_motion_y - 24 ||
-                                                ily > last_logged_motion_y + 24;
-                const bool     old_enough     = now_ns - last_motion_log_ns > 250000000ull;
+                const bool moved_enough =
+                    last_logged_motion_x < 0 || last_logged_motion_y < 0 ||
+                    ilx < last_logged_motion_x - WD_SERVER_POINTER_LOG_MOVE_THRESHOLD_PX ||
+                    ilx > last_logged_motion_x + WD_SERVER_POINTER_LOG_MOVE_THRESHOLD_PX ||
+                    ily < last_logged_motion_y - WD_SERVER_POINTER_LOG_MOVE_THRESHOLD_PX ||
+                    ily > last_logged_motion_y + WD_SERVER_POINTER_LOG_MOVE_THRESHOLD_PX;
+                const bool     old_enough     = now_ns - last_motion_log_ns > WD_SERVER_POINTER_LOG_INTERVAL_NS;
 
                 if (target_changed || (moved_enough && old_enough))
                 {
@@ -821,9 +824,13 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
             const int      ilx            = (int)lx;
             const int      ily            = (int)ly;
             const bool     target_changed = target_surface != last_logged_motion_surface || target_view != last_logged_motion_view;
-            const bool moved_enough = last_logged_motion_x < 0 || last_logged_motion_y < 0 || ilx < last_logged_motion_x - 24 ||
-                                      ilx > last_logged_motion_x + 24 || ily < last_logged_motion_y - 24 || ily > last_logged_motion_y + 24;
-            const bool old_enough   = now_ns - last_motion_log_ns > 250000000ull;
+            const bool moved_enough =
+                last_logged_motion_x < 0 || last_logged_motion_y < 0 ||
+                ilx < last_logged_motion_x - WD_SERVER_POINTER_LOG_MOVE_THRESHOLD_PX ||
+                ilx > last_logged_motion_x + WD_SERVER_POINTER_LOG_MOVE_THRESHOLD_PX ||
+                ily < last_logged_motion_y - WD_SERVER_POINTER_LOG_MOVE_THRESHOLD_PX ||
+                ily > last_logged_motion_y + WD_SERVER_POINTER_LOG_MOVE_THRESHOLD_PX;
+            const bool old_enough   = now_ns - last_motion_log_ns > WD_SERVER_POINTER_LOG_INTERVAL_NS;
 
             if (target_changed || (moved_enough && old_enough))
             {

@@ -255,8 +255,9 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const wd_video_frame_pay
     const int  visible_width  = static_cast<int>(header.width);
     const int  visible_height = static_cast<int>(header.height);
     const auto src_format     = static_cast<AVPixelFormat>(src_frame->format);
+    const int scaler_flags = WD_VIDEO_SCALER_USE_FAST_BILINEAR ? SWS_FAST_BILINEAR : SWS_BILINEAR;
     decoder->sws_ctx = sws_getCachedContext(decoder->sws_ctx, visible_width, visible_height, src_format, visible_width, visible_height,
-                                            AV_PIX_FMT_YUV420P, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+                                            AV_PIX_FMT_YUV420P, scaler_flags, nullptr, nullptr, nullptr);
     if (!decoder->sws_ctx) [[unlikely]]
     {
         return false;
@@ -585,7 +586,7 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
     decoder->codec_ctx->width  = config.coded_width != 0 ? config.coded_width : config.width;
     decoder->codec_ctx->height = config.coded_height != 0 ? config.coded_height : config.height;
     decoder->codec_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
-    decoder->codec_ctx->thread_count = 1;
+    decoder->codec_ctx->thread_count = WD_CLIENT_VIDEO_DECODER_THREADS;
 
 #if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
     decoder->vaapi_required = config.hwdecode_mode == WD_CLIENT_VIDEO_HWDECODE_VAAPI;

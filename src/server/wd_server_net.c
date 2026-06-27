@@ -299,7 +299,7 @@ static void wd_net_derive_link_profile(struct wd_net_state* net, uint64_t measur
 
     const uint64_t rtt_ns =
         wd_clamp_u64(measured_rtt_ns ? measured_rtt_ns : WD_LINK_RTT_DEFAULT_NS, WD_LINK_RTT_MIN_NS, WD_LINK_RTT_MAX_NS);
-    const uint64_t jitter_ns = wd_clamp_u64(measured_jitter_ns, 0, WD_LINK_RTT_MAX_NS / 2ull);
+    const uint64_t jitter_ns = wd_clamp_u64(measured_jitter_ns, 0, WD_LINK_RTT_MAX_NS / WD_LINK_JITTER_MAX_RTT_DIVISOR);
 
     net->link_rtt_ns    = rtt_ns;
     net->link_jitter_ns = jitter_ns;
@@ -899,9 +899,9 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
     start.connection_token = net->connection_token;
     /*
      * UINT8_MAX means the probe is duration-limited. Earlier code sent a
-     * fixed WD_THROUGHPUT_PROBE_TARGET_BYTES budget paced across the probe
-     * window, which capped the best possible localhost result to roughly
-     * 8 MiB / 750 ms * safety ~= 9 MiB/s. Keep the UDP tile probe header in
+     * fixed byte-count budget paced across the probe window, which capped
+     * the best possible result independently of the actual link. Keep the UDP
+     * tile probe header in
      * its normal uint8_t packet-count shape, but repeat packet ids and let the
      * client count every received probe datagram until the deadline.
      */
@@ -1112,7 +1112,7 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
     /* Use the average, not the minimum, and include half the sample spread so
      * very fast LAN measurements do not collapse timers to overly aggressive
      * values while high-latency/jittery links get more slack. */
-    uint64_t jitter_ns = (max_ns > min_ns) ? (max_ns - min_ns) / 2ull : 0;
+    uint64_t jitter_ns = (max_ns > min_ns) ? (max_ns - min_ns) / WD_LINK_PROBE_JITTER_SPREAD_DIVISOR : 0;
     wd_net_derive_link_profile(net, avg_ns, jitter_ns);
     wd_net_update_summary_cadence_for_budget(server);
 

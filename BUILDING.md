@@ -282,6 +282,17 @@ The supported client/server command lines and the options intentionally kept in
 `wd_config.h` are documented in [`docs/command-line.md`](docs/command-line.md).
 Legacy aliases are rejected rather than silently translated.
 
+`include/waydisplay/wd_config.h` is the single build-time policy surface. It
+owns defaults, thresholds, timeouts, queue and cache ceilings, retry counts,
+codec quality/latency choices, estimator coefficients, and product visual
+settings. The `waydisplay.config_tunable_contracts` test prevents representative
+policy constants from drifting back into implementation files.
+
+Wire-format sizes and masks remain in `wd_protocol.h`; time-unit conversions
+remain in `wd_time.h`; backend ABI values, keycodes/modifier bits, and codec
+hard limits remain beside the API that defines them. Those values are
+correctness or compatibility invariants, not product tunables.
+
 Protocol assumptions and the little-endian-only wire contract are documented in `docs/protocol.md`.
 
 ## Installation

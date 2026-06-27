@@ -13,10 +13,14 @@ enum wd_xwayland_decoration_part {
     WD_XWAYLAND_DECORATION_CLOSE,
 };
 
-static const float titlebar_color[4] = {0.14f, 0.16f, 0.18f, 1.0f};
-static const float close_color[4]    = {0.80f, 0.18f, 0.16f, 1.0f};
-static const float maximize_color[4] = {0.22f, 0.62f, 0.24f, 1.0f};
-static const float minimize_color[4] = {0.86f, 0.66f, 0.18f, 1.0f};
+static const float titlebar_color[4] = {
+    WD_XWAYLAND_TITLEBAR_COLOR_R, WD_XWAYLAND_TITLEBAR_COLOR_G, WD_XWAYLAND_TITLEBAR_COLOR_B, 1.0f};
+static const float close_color[4] = {
+    WD_XWAYLAND_CLOSE_COLOR_R, WD_XWAYLAND_CLOSE_COLOR_G, WD_XWAYLAND_CLOSE_COLOR_B, 1.0f};
+static const float maximize_color[4] = {
+    WD_XWAYLAND_MAXIMIZE_COLOR_R, WD_XWAYLAND_MAXIMIZE_COLOR_G, WD_XWAYLAND_MAXIMIZE_COLOR_B, 1.0f};
+static const float minimize_color[4] = {
+    WD_XWAYLAND_MINIMIZE_COLOR_R, WD_XWAYLAND_MINIMIZE_COLOR_G, WD_XWAYLAND_MINIMIZE_COLOR_B, 1.0f};
 
 static bool listener_is_linked(struct wl_listener* listener) {
     return listener && listener->link.prev && listener->link.next && listener->link.prev != &listener->link &&

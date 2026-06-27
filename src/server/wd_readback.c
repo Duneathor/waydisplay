@@ -7,8 +7,6 @@
 #include <string.h>
 #include <wlr/types/wlr_buffer.h>
 
-#define WD_READBACK_REGION_CAPACITY 16u
-
 static uint32_t xrgb_from_pixel(uint32_t pixel, uint32_t format) {
     switch (format)
     {
@@ -198,12 +196,12 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
         goto commit_only;
     }
 
-    struct wd_readback_region read_regions[WD_READBACK_REGION_CAPACITY];
+    struct wd_readback_region read_regions[WD_SERVER_READBACK_REGION_CAPACITY];
     bool                      full_readback = true;
     const size_t read_region_count = wd_readback_plan_regions(
         server->damage_all_tiles, server->damage_tiles, server->damage_tile_count, server->total_base_tiles,
         server->base_tiles_x, server->base_tile_width, server->base_tile_height, read_width, read_height,
-        read_regions, WD_READBACK_REGION_CAPACITY, &full_readback);
+        read_regions, WD_SERVER_READBACK_REGION_CAPACITY, &full_readback);
     if (read_region_count == 0)
     {
         goto commit_only;

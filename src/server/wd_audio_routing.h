@@ -1,5 +1,7 @@
 #pragma once
 
+#include "waydisplay/wd_config.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <sys/types.h>
@@ -7,12 +9,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#define WD_AUDIO_ROUTING_SINK_MAX           96u
-#define WD_AUDIO_ROUTING_TARGET_MAX         96u
-#define WD_AUDIO_ROUTING_SCOPE_MAX          64u
-#define WD_AUDIO_ROUTING_PULSE_PROPS_MAX    256u
-#define WD_AUDIO_ROUTING_PIPEWIRE_PROPS_MAX 512u
 
 struct wd_audio_routing_env {
     bool enabled;

@@ -1,5 +1,7 @@
 #include "wd_dirty_region_scheduler.h"
 
+#include "waydisplay/wd_config.h"
+
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -80,7 +82,8 @@ static bool heap_reserve(struct wd_dirty_region_scheduler* scheduler, size_t cap
     {
         return true;
     }
-    size_t next_capacity = scheduler->heap_capacity ? scheduler->heap_capacity * 2u : 16u;
+    size_t next_capacity = scheduler->heap_capacity ? scheduler->heap_capacity * WD_SERVER_DIRTY_REGION_HEAP_GROWTH_MULTIPLIER
+                                                     : WD_SERVER_DIRTY_REGION_HEAP_INITIAL_CAPACITY;
     if (next_capacity < capacity)
     {
         next_capacity = capacity;

@@ -298,6 +298,17 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     add_test(
+        NAME waydisplay.config_tunable_contracts
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_config_tunable_contracts.cmake
+    )
+    set_tests_properties(waydisplay.config_tunable_contracts PROPERTIES
+        TIMEOUT 10
+        LABELS "unit;cmake;config"
+    )
+
+    add_test(
         NAME waydisplay.threaded_runtime_contracts
         COMMAND ${CMAKE_COMMAND}
             -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -483,7 +494,9 @@ if(WAYDISPLAY_BUILD_TESTS)
         SOURCES
             tests/test_audio_routing.cpp
             src/server/wd_audio_routing.c
-        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/server
     )
 
     waydisplay_add_test(

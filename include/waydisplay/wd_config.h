@@ -23,7 +23,7 @@ extern "C" {
  */
 
 /* Server startup defaults.
- * CLI-overridable: application, listen address, output scale/refresh,
+ * CLI-overridable: application, listen address, output scale,
  * renderer, and video encoder backend.  Configuration-only: Xwayland and
  * xdg-dialog feature policy.  Scale is stored in thousandths so bounds remain
  * exact in compile-time assertions. */
@@ -71,10 +71,6 @@ extern "C" {
 
 #define WD_BYTES_PER_PIXEL 4u
 
-#define WD_FRAMEBUFFER_PIXELS ((uint32_t)(WD_DISPLAY_WIDTH * WD_DISPLAY_HEIGHT))
-#define WD_FRAMEBUFFER_BYTES  ((uint32_t)(WD_FRAMEBUFFER_PIXELS * WD_BYTES_PER_PIXEL))
-
-#define WD_UNCOMPRESSED_TILE_BYTES ((uint32_t)(WD_TILE_WIDTH * WD_TILE_HEIGHT * WD_BYTES_PER_PIXEL))
 
 /* Core network defaults and hard limits.
  * The TCP port is CLI-overridable.  Timeouts bound handshake/send operations;
@@ -89,7 +85,6 @@ extern "C" {
 #define WD_UDP_PAYLOAD_TARGET            1400u
 #define WD_UDP_SOCKET_BUFFER_BYTES       (16 * 1024 * 1024)
 #define WD_MIN_PROBED_UDP_PAYLOAD        512u
-#define WD_THROUGHPUT_PROBE_TARGET_BYTES (120u * 1024u * 1024u)
 #define WD_THROUGHPUT_PROBE_DURATION_MS  1250u
 
 /* Async I/O ownership, memory, and queue sizing.
@@ -109,6 +104,11 @@ extern "C" {
 #define WD_CLIENT_ASYNC_UDP_DEFAULT_PACKET_BYTES  65536u
 #define WD_CLIENT_ASYNC_UDP_DEFAULT_DRAIN_BATCH   4096u
 #define WD_CLIENT_ASYNC_UDP_COMPLETION_RESERVE    512u
+#define WD_CLIENT_TILE_REASSEMBLY_MAX_ACTIVE_ENTRIES       512u
+#define WD_CLIENT_TILE_REASSEMBLY_MAX_ACTIVE_PAYLOAD_BYTES (16ull * 1024ull * 1024ull)
+#define WD_CLIENT_TILE_REASSEMBLY_MAX_RECYCLED_ENTRIES     64u
+#define WD_CLIENT_TILE_REASSEMBLY_MAX_RECYCLED_BUFFERS     8u
+#define WD_CLIENT_TILE_REASSEMBLY_INITIAL_RESERVE_ENTRIES  256u
 
 /* Per-channel rings and memory ceilings.  Control favors message count,
  * video favors retained bytes, and UDP favors packet concurrency. */
@@ -133,6 +133,7 @@ extern "C" {
 #define WD_NET_LINK_PROBE_COUNT               8u
 #define WD_NET_CLIENT_GAP_GRACE_NS            (50ull * WD_NSEC_PER_MSEC)
 #define WD_NET_CLIENT_REPAIR_RETRY_MIN_NS     (10ull * WD_NSEC_PER_MSEC)
+#define WD_SERVER_CONNECTION_RANDOM_ATTEMPTS   8u
 
 /* IPv4 path-MTU discovery policy.
  * *_BYTES values are link MTU candidates; *_PAYLOAD_* values are conservative
@@ -144,8 +145,6 @@ extern "C" {
 #define WD_NET_MTU_PROBE_ETHERNET_BYTES 1500u
 #define WD_NET_MTU_PROBE_PPPOE_BYTES    1492u
 #define WD_NET_MTU_PROBE_TUNNEL_BYTES   1460u
-#define WD_NET_MTU_PROBE_PAYLOAD_VHIGH  1450u
-#define WD_NET_MTU_PROBE_PAYLOAD_MHIGH  1440u
 #define WD_NET_MTU_PROBE_PAYLOAD_HIGH   1400u
 #define WD_NET_MTU_PROBE_PAYLOAD_MEDIUM 1360u
 #define WD_NET_MTU_PROBE_PAYLOAD_LOW    1300u
@@ -215,12 +214,27 @@ extern "C" {
 #define WD_CLIENT_REPAIR_PRESSURE_PERCENT           25u
 #define WD_CLIENT_REPAIR_PRESSURE_MAX_QUEUE_TILES   2048u
 
+/* Client-side link estimators.  Numerator/denominator pairs are EWMA
+ * retention weights; deviation and jitter multipliers add conservative
+ * headroom without changing protocol timers. */
+#define WD_CLIENT_TILE_REASSEMBLY_TIMEOUT_SLACK_NS                 (50ull * WD_NSEC_PER_MSEC)
+#define WD_CLIENT_TILE_REASSEMBLY_EWMA_OLD_NUMERATOR               7u
+#define WD_CLIENT_TILE_REASSEMBLY_EWMA_DENOMINATOR                 8u
+#define WD_CLIENT_TILE_REASSEMBLY_DEVIATION_OLD_NUMERATOR          3u
+#define WD_CLIENT_TILE_REASSEMBLY_DEVIATION_DENOMINATOR            4u
+#define WD_CLIENT_TILE_REASSEMBLY_INITIAL_DEVIATION_DIVISOR        2u
+#define WD_CLIENT_TILE_REASSEMBLY_DEVIATION_MULTIPLIER             2u
+#define WD_CLIENT_TILE_REASSEMBLY_LOSS_DECAY_PERCENT               75u
+#define WD_CLIENT_RETRANSMIT_JITTER_INITIAL_DEVIATION_DIVISOR      4u
+#define WD_CLIENT_RETRANSMIT_JITTER_STDDEV_MULTIPLIER              2u
+
 /* Audio and automatic-video product policy.
  * Audio values define the negotiated product defaults.  Video dirty coverage
  * and enter/exit durations govern automatic switching between tile and video
  * transport.  These detailed thresholds are intentionally configuration-only. */
 #define WD_AUDIO_SAMPLE_RATE_DEFAULT        48000u
-#define WD_AUDIO_FRAME_SAMPLES_DEFAULT      960u
+#define WD_AUDIO_FRAME_DURATION_MS_DEFAULT  20u
+#define WD_AUDIO_FRAME_SAMPLES_DEFAULT      ((WD_AUDIO_SAMPLE_RATE_DEFAULT * WD_AUDIO_FRAME_DURATION_MS_DEFAULT) / WD_MSEC_PER_SEC)
 #define WD_AUDIO_TARGET_LATENCY_MS_DEFAULT  20u
 #define WD_AUDIO_TARGET_LATENCY_MS_MIN      10u
 #define WD_AUDIO_TARGET_LATENCY_MS_MAX      400u
@@ -247,6 +261,21 @@ extern "C" {
 #define WD_AUDIO_TX_RING_ENTRIES                    64u
 #define WD_AUDIO_TX_DRAIN_POLLS                     20u
 #define WD_AUDIO_TX_DRAIN_SLEEP_US                  1000u
+#define WD_CLIENT_AUDIO_DECODE_QUEUE_CAPACITY        32u
+#define WD_AUDIO_CAPTURE_CONNECT_TIMEOUT_SECONDS     3u
+#define WD_AUDIO_CAPTURE_PARAM_BUFFER_BYTES          1024u
+#define WD_AUDIO_CAPTURE_CHANNEL_TEXT_BYTES          8u
+#define WD_AUDIO_CAPTURE_RATE_TEXT_BYTES             16u
+#define WD_AUDIO_CAPTURE_NODE_RATE_TEXT_BYTES        24u
+#define WD_AUDIO_ROUTING_SINK_MAX                    96u
+#define WD_AUDIO_ROUTING_TARGET_MAX                  96u
+#define WD_AUDIO_ROUTING_SCOPE_MAX                   64u
+#define WD_AUDIO_ROUTING_PULSE_PROPS_MAX             256u
+#define WD_AUDIO_ROUTING_PIPEWIRE_PROPS_MAX          512u
+#define WD_AUDIO_ENCODER_ENABLE_VBR                   1
+#define WD_AUDIO_ENCODER_ENABLE_DTX                   0
+#define WD_AUDIO_ENCODER_ENABLE_INBAND_FEC            0
+#define WD_AUDIO_ENCODER_SIGNAL_MODE                  1u /* 0=auto, 1=music, 2=voice. */
 #define WD_CLIENT_VIDEO_AUDIO_EARLY_MS              40u
 #define WD_CLIENT_VIDEO_AUDIO_LATE_MS               80u
 #define WD_CLIENT_VIDEO_AUDIO_MAX_RETRY_MS          20u
@@ -258,6 +287,7 @@ extern "C" {
  * Protocol payload limits remain in wd_protocol.h. */
 #define WD_SELECTION_CAPTURE_INITIAL_BYTES 65536u
 #define WD_SELECTION_CAPTURE_TIMEOUT_MS    2000u
+#define WD_SELECTION_CAPTURE_GROWTH_MULTIPLIER 2u
 
 /* Encoder implementation policy.
  * Software threads bound CPU parallelism.  GOP controls keyframe cadence.
@@ -271,6 +301,18 @@ extern "C" {
 #define WD_VIDEO_ENCODER_VAAPI_PROBE_POOL_SIZE   2u
 #define WD_VIDEO_ENCODER_VAAPI_FRAME_POOL_SIZE   4u
 #define WD_VIDEO_ENCODER_VAAPI_ASYNC_DEPTH       "1"
+#define WD_VIDEO_ENCODER_VAAPI_PROBE_WIDTH        256u
+#define WD_VIDEO_ENCODER_VAAPI_PROBE_HEIGHT       256u
+#define WD_VIDEO_ENCODER_FFMPEG_FRAME_ALIGNMENT   32u
+#define WD_VIDEO_ENCODER_MAX_B_FRAMES             0u
+#define WD_VIDEO_ENCODER_SOFTWARE_PRESET           "ultrafast"
+#define WD_VIDEO_ENCODER_SOFTWARE_TUNE             "zerolatency"
+#define WD_VIDEO_ENCODER_FORCE_IDR_OPTION          "1"
+#define WD_VIDEO_ENCODER_H264_PRIVATE_PARAMS       "repeat-headers=1:sliced-threads=1"
+#define WD_VIDEO_ENCODER_H265_PRIVATE_PARAMS       "repeat-headers=1:log-level=error:pools=none:frame-threads=1"
+#define WD_VIDEO_ENCODER_VAAPI_AUD_OPTION          "1"
+#define WD_VIDEO_SCALER_USE_FAST_BILINEAR          1
+#define WD_CLIENT_VIDEO_DECODER_THREADS            1u
 
 /* Client request defaults and top-level stream budgets.
  * FPS and adaptive UDP rate bounds constrain client requests.  Throughput safety
@@ -308,7 +350,6 @@ extern "C" {
 #define WD_STREAM_MULTIPACKET_LOSS_COOLDOWN_SECONDS          2u
 #define WD_STREAM_TILE_RECOVERY_TIMEOUT_SECONDS              5u
 #define WD_STREAM_VIDEO_RETRY_COOLDOWN_SECONDS               5u
-#define WD_STREAM_BOOTSTRAP_SUPPRESSION_TIMEOUT_SECONDS      5u
 
 #define WD_STREAM_FPS_MIN                       5u
 #define WD_STREAM_HIDDEN_CLIENT_FPS             5u
@@ -333,7 +374,6 @@ extern "C" {
 #define WD_STREAM_VIDEO_RECOVERY_MAX_ATTEMPTS           2u
 #define WD_STREAM_VIDEO_DECODE_HEADROOM_PERCENT          85u
 #define WD_STREAM_VIDEO_FPS_GOOD_SECONDS_TO_INCREASE     10u
-#define WD_STREAM_VIDEO_DERIVED_BUDGET_PERCENT         75u
 
 /* Connection-level bandwidth allocations. Percentages are nominal class
  * budgets derived from the safe throughput probe. Audio and control are
@@ -349,10 +389,6 @@ extern "C" {
 
 /* Supported wire-tile ladder, largest to base.  Keep endpoints aligned with
  * the protocol geometry and derive counts instead of repeating literals. */
-#define WD_TILE_SIZE_MEGA_WIDTH      256u
-#define WD_TILE_SIZE_MEGA_HEIGHT     256u
-#define WD_TILE_SIZE_HUGE_WIDTH      128u
-#define WD_TILE_SIZE_HUGE_HEIGHT     128u
 #define WD_TILE_SIZE_LARGE_WIDTH     128u
 #define WD_TILE_SIZE_LARGE_HEIGHT    64u
 #define WD_TILE_SIZE_MEDIUM_WIDTH    64u
@@ -375,9 +411,6 @@ extern "C" {
 #define WD_TILE_ADVISOR_POOR_STREAK_LIMIT            8u
 #define WD_TILE_ADVISOR_BYPASS_ATTEMPTS              64u
 #define WD_TILE_AUTO_ENTRY_MIN_DIRTY_PERCENT_DEFAULT WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT
-#define WD_TILE_AUTO_ENTRY_DIRTY_FLOOR_DIVISOR       3u
-#define WD_TILE_AUTO_ENTRY_DIRTY_FLOOR_MIN_PERCENT   15u
-#define WD_TILE_AUTO_ENTRY_PEAK_FLOOR_MIN_PERCENT    50u
 #define WD_TILE_AUTO_ENTRY_CHANGED_FRAMES_PERCENT    25u
 #define WD_TILE_AUTO_ENTRY_WIRE_PRESSURE_PERCENT     85u
 #define WD_TILE_AUTO_ENTRY_FPS_PRESSURE_PERCENT      85u
@@ -387,6 +420,8 @@ extern "C" {
  * summary, retransmit, and reassembly deadlines before clamping to the bounds
  * above. */
 #define WD_LINK_PROFILE_JITTER_MULTIPLIER          2u
+#define WD_LINK_JITTER_MAX_RTT_DIVISOR             2u
+#define WD_LINK_PROBE_JITTER_SPREAD_DIVISOR        2u
 #define WD_LINK_PROFILE_SUMMARY_MARGIN_NS          (50ull * WD_NSEC_PER_MSEC)
 #define WD_LINK_PROFILE_RETRANSMIT_MARGIN_NS       (100ull * WD_NSEC_PER_MSEC)
 #define WD_LINK_PROFILE_REASSEMBLY_RTT_DIVISOR     2u
@@ -413,6 +448,8 @@ extern "C" {
 /* Render-cost calibration.  Fixed call costs are nanoseconds; per-pixel cost
  * uses Q16 fixed point and an EWMA with clamped samples. */
 #define WD_CLIENT_RENDER_COST_MIN_SAMPLES           4u
+#define WD_CLIENT_RENDER_DEFAULT_PIXEL_COST_Q16      (1ull << 16u)
+#define WD_CLIENT_RENDER_DEFAULT_SNAPSHOT_COST_Q16   (1ull << 16u)
 #define WD_CLIENT_TEXTURE_UPDATE_CALL_COST_NS       16384ull
 #define WD_CLIENT_TEXTURE_LOCK_CALL_COST_NS         131072ull
 #define WD_CLIENT_RENDER_COST_EWMA_OLD_NUMERATOR    7u
@@ -439,6 +476,31 @@ extern "C" {
 #define WD_CLIENT_CONTEXT_MENU_TEXT_SCALE       1
 #define WD_CLIENT_CONTEXT_MENU_TEXT_X           8
 #define WD_CLIENT_CONTEXT_MENU_TEXT_Y           6
+#define WD_CLIENT_FRAMEBUFFER_CLEAR_XRGB         0xff202020u
+#define WD_CLIENT_CONTEXT_MENU_SHADOW_OFFSET_PX  5
+#define WD_CLIENT_CONTEXT_MENU_TEXT_ENABLED_R    242u
+#define WD_CLIENT_CONTEXT_MENU_TEXT_ENABLED_G    242u
+#define WD_CLIENT_CONTEXT_MENU_TEXT_ENABLED_B    242u
+#define WD_CLIENT_CONTEXT_MENU_TEXT_DISABLED_R   135u
+#define WD_CLIENT_CONTEXT_MENU_TEXT_DISABLED_G   135u
+#define WD_CLIENT_CONTEXT_MENU_TEXT_DISABLED_B   135u
+#define WD_CLIENT_CONTEXT_MENU_SHADOW_ALPHA      150u
+#define WD_CLIENT_CONTEXT_MENU_BG_R              26u
+#define WD_CLIENT_CONTEXT_MENU_BG_G              29u
+#define WD_CLIENT_CONTEXT_MENU_BG_B              33u
+#define WD_CLIENT_CONTEXT_MENU_BG_ALPHA          248u
+#define WD_CLIENT_CONTEXT_MENU_BORDER_R          72u
+#define WD_CLIENT_CONTEXT_MENU_BORDER_G          78u
+#define WD_CLIENT_CONTEXT_MENU_BORDER_B          86u
+#define WD_CLIENT_CONTEXT_MENU_INNER_R           43u
+#define WD_CLIENT_CONTEXT_MENU_INNER_G           47u
+#define WD_CLIENT_CONTEXT_MENU_INNER_B           53u
+#define WD_CLIENT_CONTEXT_MENU_HOVER_R           56u
+#define WD_CLIENT_CONTEXT_MENU_HOVER_G           116u
+#define WD_CLIENT_CONTEXT_MENU_HOVER_B           186u
+#define WD_CLIENT_CONTEXT_MENU_SEPARATOR_R       66u
+#define WD_CLIENT_CONTEXT_MENU_SEPARATOR_G       70u
+#define WD_CLIENT_CONTEXT_MENU_SEPARATOR_B       76u
 /* Client event-loop networking and runtime feedback cadence. */
 #define WD_CLIENT_UDP_DRAIN_BATCH                     256u
 #define WD_CLIENT_TCP_DRAIN_BATCH                     16u
@@ -460,6 +522,11 @@ extern "C" {
 #define WD_XDG_ACTIVATION_TOKEN_TIMEOUT_MS  10000
 #define WD_SERVER_FRAME_SERVICE_MIN_INTERVAL_MS 1u
 #define WD_SERVER_FRAME_SERVICE_MAX_INTERVAL_MS 8u
+#define WD_SERVER_READBACK_REGION_CAPACITY       16u
+#define WD_SERVER_DIRTY_REGION_HEAP_INITIAL_CAPACITY 16u
+#define WD_SERVER_DIRTY_REGION_HEAP_GROWTH_MULTIPLIER 2u
+#define WD_SERVER_POINTER_LOG_MOVE_THRESHOLD_PX  24
+#define WD_SERVER_POINTER_LOG_INTERVAL_NS        (250ull * WD_NSEC_PER_MSEC)
 #define WD_SERVER_STALE_REPAIR_MIN_SAMPLES  16u
 #define WD_SERVER_KEY_QUEUE_CAPACITY        4096u
 #define WD_SERVER_POINTER_QUEUE_CAPACITY    4096u
@@ -498,6 +565,18 @@ extern "C" {
 #define WD_XWAYLAND_BUTTON_SIZE        18u
 #define WD_XWAYLAND_BUTTON_MARGIN      5u
 #define WD_XWAYLAND_BUTTON_GAP         5u
+#define WD_XWAYLAND_TITLEBAR_COLOR_R    0.14f
+#define WD_XWAYLAND_TITLEBAR_COLOR_G    0.16f
+#define WD_XWAYLAND_TITLEBAR_COLOR_B    0.18f
+#define WD_XWAYLAND_CLOSE_COLOR_R       0.80f
+#define WD_XWAYLAND_CLOSE_COLOR_G       0.18f
+#define WD_XWAYLAND_CLOSE_COLOR_B       0.16f
+#define WD_XWAYLAND_MAXIMIZE_COLOR_R    0.22f
+#define WD_XWAYLAND_MAXIMIZE_COLOR_G    0.62f
+#define WD_XWAYLAND_MAXIMIZE_COLOR_B    0.24f
+#define WD_XWAYLAND_MINIMIZE_COLOR_R    0.86f
+#define WD_XWAYLAND_MINIMIZE_COLOR_G    0.66f
+#define WD_XWAYLAND_MINIMIZE_COLOR_B    0.18f
 
 /* Configuration invariants.  Keep these close to the defaults so invalid
  * combinations fail every C and C++ build instead of surfacing at runtime. */
@@ -518,7 +597,7 @@ WD_CONFIG_STATIC_ASSERT(WD_NET_MTU_PROBE_PAYLOAD_FLOOR >= WD_MIN_PROBED_UDP_PAYL
 WD_CONFIG_STATIC_ASSERT(WD_SERVER_MIN_OUTPUT_SCALE_MILLI > 0u && WD_SERVER_MIN_OUTPUT_SCALE_MILLI <= WD_SERVER_DEFAULT_OUTPUT_SCALE_MILLI &&
                             WD_SERVER_DEFAULT_OUTPUT_SCALE_MILLI <= WD_SERVER_MAX_OUTPUT_SCALE_MILLI,
                         "server output-scale defaults must be ordered");
-WD_CONFIG_STATIC_ASSERT(WD_STREAM_TILE_COMPRESSION_MIN_SAVINGS_PERCENT <= 100u && WD_STREAM_VIDEO_DERIVED_BUDGET_PERCENT <= 100u &&
+WD_CONFIG_STATIC_ASSERT(WD_STREAM_TILE_COMPRESSION_MIN_SAVINGS_PERCENT <= 100u &&
                             WD_TILE_AUTO_ENTRY_CHANGED_FRAMES_PERCENT <= 100u && WD_TILE_AUTO_ENTRY_WIRE_PRESSURE_PERCENT <= 100u &&
                             WD_TILE_AUTO_ENTRY_FPS_PRESSURE_PERCENT <= 100u,
                         "stream percentages must be valid");
@@ -531,10 +610,10 @@ WD_CONFIG_STATIC_ASSERT(WD_TILE_SIZE_LARGE_WIDTH == WD_WIRE_TILE_MAX_WIDTH && WD
 WD_CONFIG_STATIC_ASSERT(WD_AUDIO_TARGET_LATENCY_MS_MIN <= WD_AUDIO_TARGET_LATENCY_MS_DEFAULT &&
                             WD_AUDIO_TARGET_LATENCY_MS_DEFAULT <= WD_AUDIO_TARGET_LATENCY_MS_MAX,
                         "audio latency defaults must be ordered");
-WD_CONFIG_STATIC_ASSERT(WD_AUDIO_SAMPLE_RATE_DEFAULT > 0u && WD_AUDIO_FRAME_SAMPLES_DEFAULT > 0u &&
-                            WD_AUDIO_SAMPLE_RATE_DEFAULT % 50u == 0u &&
-                            WD_AUDIO_FRAME_SAMPLES_DEFAULT == WD_AUDIO_SAMPLE_RATE_DEFAULT / 50u,
-                        "default audio frame must represent 20 milliseconds");
+WD_CONFIG_STATIC_ASSERT(WD_AUDIO_SAMPLE_RATE_DEFAULT > 0u && WD_AUDIO_FRAME_DURATION_MS_DEFAULT > 0u &&
+                            (uint64_t)WD_AUDIO_SAMPLE_RATE_DEFAULT * WD_AUDIO_FRAME_DURATION_MS_DEFAULT % WD_MSEC_PER_SEC == 0u &&
+                            WD_AUDIO_FRAME_SAMPLES_DEFAULT > 0u,
+                        "default audio frame duration must produce an integral sample count");
 WD_CONFIG_STATIC_ASSERT(WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT <= WD_VIDEO_MIN_DIRTY_PERCENT_MAX &&
                             WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT <= WD_VIDEO_EXIT_DIRTY_PERCENT_MAX &&
                             WD_VIDEO_MIN_DIRTY_PERCENT_MAX <= 100u && WD_VIDEO_EXIT_DIRTY_PERCENT_MAX <= 100u,
@@ -588,6 +667,31 @@ WD_CONFIG_STATIC_ASSERT(WD_VIDEO_ENCODER_FALLBACK_FPS > 0u && WD_VIDEO_ENCODER_S
                         "video encoder defaults must be nonzero");
 WD_CONFIG_STATIC_ASSERT(WD_CLIENT_RENDER_COST_EWMA_OLD_NUMERATOR < WD_CLIENT_RENDER_COST_EWMA_DENOMINATOR,
                         "render EWMA must retain less than one full sample");
+WD_CONFIG_STATIC_ASSERT(WD_CLIENT_TILE_REASSEMBLY_EWMA_OLD_NUMERATOR < WD_CLIENT_TILE_REASSEMBLY_EWMA_DENOMINATOR &&
+                            WD_CLIENT_TILE_REASSEMBLY_DEVIATION_OLD_NUMERATOR < WD_CLIENT_TILE_REASSEMBLY_DEVIATION_DENOMINATOR,
+                        "tile reassembly EWMAs must retain new samples");
+WD_CONFIG_STATIC_ASSERT(WD_CLIENT_TILE_REASSEMBLY_LOSS_DECAY_PERCENT > 0u &&
+                            WD_CLIENT_TILE_REASSEMBLY_LOSS_DECAY_PERCENT < 100u,
+                        "tile reassembly loss decay must reduce the timeout");
+WD_CONFIG_STATIC_ASSERT(WD_CLIENT_TILE_REASSEMBLY_MAX_ACTIVE_ENTRIES > 0u &&
+                            WD_CLIENT_TILE_REASSEMBLY_MAX_ACTIVE_PAYLOAD_BYTES > 0u &&
+                            WD_CLIENT_TILE_REASSEMBLY_INITIAL_RESERVE_ENTRIES <= WD_CLIENT_TILE_REASSEMBLY_MAX_ACTIVE_ENTRIES,
+                        "tile reassembly resource bounds must be ordered");
+WD_CONFIG_STATIC_ASSERT(WD_SERVER_DIRTY_REGION_HEAP_INITIAL_CAPACITY > 0u &&
+                            WD_SERVER_DIRTY_REGION_HEAP_GROWTH_MULTIPLIER > 1u,
+                        "dirty-region heap growth must make progress");
+WD_CONFIG_STATIC_ASSERT(WD_AUDIO_CAPTURE_CONNECT_TIMEOUT_SECONDS > 0u && WD_AUDIO_CAPTURE_PARAM_BUFFER_BYTES > 0u &&
+                            WD_CLIENT_AUDIO_DECODE_QUEUE_CAPACITY > 0u,
+                        "audio queue and capture defaults must be nonzero");
+WD_CONFIG_STATIC_ASSERT(WD_LINK_JITTER_MAX_RTT_DIVISOR > 0u && WD_LINK_PROBE_JITTER_SPREAD_DIVISOR > 0u,
+                        "link jitter divisors must be nonzero");
+WD_CONFIG_STATIC_ASSERT(WD_VIDEO_ENCODER_VAAPI_PROBE_WIDTH > 0u && WD_VIDEO_ENCODER_VAAPI_PROBE_HEIGHT > 0u &&
+                            WD_VIDEO_ENCODER_FFMPEG_FRAME_ALIGNMENT > 0u,
+                        "video encoder probe geometry must be nonzero");
+WD_CONFIG_STATIC_ASSERT(WD_AUDIO_ENCODER_SIGNAL_MODE <= 2u,
+                        "audio encoder signal mode must be auto, music, or voice");
+WD_CONFIG_STATIC_ASSERT(WD_CLIENT_VIDEO_DECODER_THREADS > 0u,
+                        "client video decoder thread count must be nonzero");
 
 #undef WD_CONFIG_STATIC_ASSERT
 

@@ -50,7 +50,7 @@ constexpr uint64_t RETRANSMIT_GRACE_DEFAULT_NS       = WD_LINK_RETRANSMIT_INFLIG
 constexpr uint64_t RETRANSMIT_GRACE_MAX_NS           = WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS;
 constexpr uint64_t MTU_PROBE_SERVER_STARTUP_DELAY_NS = WD_NET_PROBE_STARTUP_DELAY_MS * WD_NSEC_PER_MSEC;
 constexpr size_t CLIENT_VIDEO_DECODE_QUEUE_CAPACITY = WD_CLIENT_VIDEO_DECODE_INPUT_QUEUE_CAPACITY;
-constexpr size_t CLIENT_AUDIO_DECODE_QUEUE_CAPACITY = 32;
+constexpr size_t CLIENT_AUDIO_DECODE_QUEUE_CAPACITY = WD_CLIENT_AUDIO_DECODE_QUEUE_CAPACITY;
 
 struct DeferredVideoFeedback {
     ClientState& state;
@@ -238,7 +238,7 @@ void apply_link_timers_from_config(ClientState& state, const wd_server_config_pa
         state.tile_reassembly_floor_ns.store(reassembly_floor_ns, std::memory_order_relaxed);
         state.tile_reassembly_timeout_ns.store(reassembly_ns, std::memory_order_relaxed);
         state.tile_reassembly_ewma_ns      = static_cast<double>(reassembly_ns);
-        state.tile_reassembly_deviation_ns = static_cast<double>(reassembly_ns) / 4.0;
+        state.tile_reassembly_deviation_ns = static_cast<double>(reassembly_ns) / WD_CLIENT_RETRANSMIT_JITTER_INITIAL_DEVIATION_DIVISOR;
     }
 }
 
@@ -366,7 +366,7 @@ bool handle_mtu_probe_start(ClientState& state, const uint8_t* payload, uint32_t
         variance_ns /= static_cast<double>(probe_offsets_ns.size());
 
         const double stddev_ns       = std::sqrt(variance_ns);
-        state.retx_inflight_grace_ns = clamp_retransmit_grace_ns(static_cast<uint64_t>(mean_ns + 2.0 * stddev_ns));
+        state.retx_inflight_grace_ns = clamp_retransmit_grace_ns(static_cast<uint64_t>(mean_ns + WD_CLIENT_RETRANSMIT_JITTER_STDDEV_MULTIPLIER * stddev_ns));
     }
     else
     {
@@ -2286,7 +2286,7 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         WD_LOG_INFO("audio TCP channel: unavailable");
     }
 
-    state.framebuffer.assign(state.framebuffer_pixels(), 0xff202020u);
+    state.framebuffer.assign(state.framebuffer_pixels(), WD_CLIENT_FRAMEBUFFER_CLEAR_XRGB);
     state.received_generation.assign(state.tile_count(), 0);
     state.presented_generation.assign(state.tile_count(), 0);
     state.pending_present_generation.assign(state.tile_count(), 0);

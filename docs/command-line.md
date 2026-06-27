@@ -100,6 +100,26 @@ Configuration values are compile-time product policy. Change `include/waydisplay
 
 The static assertions at the end of `wd_config.h` reject invalid relationships such as unordered bounds, impossible tile geometry, and undersized queues.
 
+The centralized policy includes:
+
+- connection deadlines, link estimators, retry limits, and feedback cadence;
+- async rings, decoder queues, tile-reassembly caches, and readback batches;
+- stream thresholds, bandwidth shares, capture pacing, and recovery limits;
+- Opus/FFmpeg latency and quality choices;
+- renderer cost-model defaults and built-in client/Xwayland decoration colors.
+
+Not every numeric constant is a tunable. Wire sizes, protocol masks, keycodes,
+modifier bits, backend API constants, codec-mandated hard limits, and unit
+conversion factors stay in their owning protocol or implementation headers.
+Changing those values would alter compatibility or algorithmic correctness
+rather than product policy.
+
+`waydisplay.config_tunable_contracts` checks representative owners and rejects
+reintroduction of local policy literals. Add a new build-time knob to
+`wd_config.h`, give it an explicit unit suffix where applicable, add a static
+assertion for important relationships, and extend that contract when the knob
+protects an architectural boundary.
+
 ### Bandwidth allocation
 
 `--rate-kib` caps the safe link estimate rather than directly setting a UDP

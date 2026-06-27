@@ -24,9 +24,6 @@ static_assert(WD_TILE_128x64 == 0 && WD_TILE_64x64 == 1 && WD_TILE_32x32 == 2 &&
 constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MIN_NS     = WD_LINK_TILE_REASSEMBLY_MIN_NS;
 constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS = WD_LINK_TILE_REASSEMBLY_DEFAULT_NS;
 constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_MAX_NS     = WD_LINK_TILE_REASSEMBLY_MAX_NS;
-constexpr uint64_t TILE_REASSEMBLY_TIMEOUT_SLACK_NS   = 50ull * 1000ull * 1000ull;
-constexpr size_t   MAX_RECYCLED_ENTRIES               = 64;
-constexpr size_t   MAX_RECYCLED_COMPLETED_BUFFERS     = 8;
 
 size_t max_recycled_compressed_capacity() {
     constexpr size_t max_tile_bytes =
@@ -72,18 +69,26 @@ void update_tile_reassembly_timeout(ClientState& state, uint64_t sample_ns, bool
     if (state.tile_reassembly_ewma_ns <= 0.0)
     {
         state.tile_reassembly_ewma_ns      = static_cast<double>(sample_ns);
-        state.tile_reassembly_deviation_ns = static_cast<double>(sample_ns) / 2.0;
+        state.tile_reassembly_deviation_ns = static_cast<double>(sample_ns) / WD_CLIENT_TILE_REASSEMBLY_INITIAL_DEVIATION_DIVISOR;
     }
     else
     {
         const double sample = static_cast<double>(sample_ns);
         const double delta  = sample - state.tile_reassembly_ewma_ns;
-        state.tile_reassembly_ewma_ns += 0.125 * delta;
-        state.tile_reassembly_deviation_ns += 0.25 * (std::abs(delta) - state.tile_reassembly_deviation_ns);
+        state.tile_reassembly_ewma_ns +=
+            (static_cast<double>(WD_CLIENT_TILE_REASSEMBLY_EWMA_DENOMINATOR - WD_CLIENT_TILE_REASSEMBLY_EWMA_OLD_NUMERATOR) /
+             WD_CLIENT_TILE_REASSEMBLY_EWMA_DENOMINATOR) *
+            delta;
+        state.tile_reassembly_deviation_ns +=
+            (static_cast<double>(WD_CLIENT_TILE_REASSEMBLY_DEVIATION_DENOMINATOR -
+                                 WD_CLIENT_TILE_REASSEMBLY_DEVIATION_OLD_NUMERATOR) /
+             WD_CLIENT_TILE_REASSEMBLY_DEVIATION_DENOMINATOR) *
+            (std::abs(delta) - state.tile_reassembly_deviation_ns);
     }
 
     const double jittered_tile_ns =
-        state.tile_reassembly_ewma_ns + 2.0 * state.tile_reassembly_deviation_ns + static_cast<double>(TILE_REASSEMBLY_TIMEOUT_SLACK_NS);
+        state.tile_reassembly_ewma_ns + WD_CLIENT_TILE_REASSEMBLY_DEVIATION_MULTIPLIER * state.tile_reassembly_deviation_ns +
+        static_cast<double>(WD_CLIENT_TILE_REASSEMBLY_TIMEOUT_SLACK_NS);
     const uint64_t target_ns = clamp_tile_reassembly_timeout_ns(state, static_cast<uint64_t>(jittered_tile_ns));
 
     const uint64_t old_ns = current_tile_reassembly_timeout_ns(state);
@@ -98,7 +103,7 @@ void reduce_tile_reassembly_timeout_after_loss(ClientState& state) {
     std::lock_guard<std::mutex> lock(state.tile_reassembly_timeout_mutex);
 
     const uint64_t old_ns    = current_tile_reassembly_timeout_ns(state);
-    uint64_t       target_ns = old_ns * 3ull / 4ull;
+    uint64_t       target_ns = old_ns * WD_CLIENT_TILE_REASSEMBLY_LOSS_DECAY_PERCENT / 100ull;
     if (old_ns > TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS && target_ns > TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS)
     {
         target_ns = TILE_REASSEMBLY_TIMEOUT_DEFAULT_NS;
@@ -109,9 +114,9 @@ void reduce_tile_reassembly_timeout_after_loss(ClientState& state) {
     {
         state.tile_reassembly_ewma_ns = static_cast<double>(target_ns);
     }
-    if (state.tile_reassembly_deviation_ns > static_cast<double>(target_ns) / 2.0)
+    if (state.tile_reassembly_deviation_ns > static_cast<double>(target_ns) / WD_CLIENT_TILE_REASSEMBLY_INITIAL_DEVIATION_DIVISOR)
     {
-        state.tile_reassembly_deviation_ns = static_cast<double>(target_ns) / 2.0;
+        state.tile_reassembly_deviation_ns = static_cast<double>(target_ns) / WD_CLIENT_TILE_REASSEMBLY_INITIAL_DEVIATION_DIVISOR;
     }
 
     if (old_ns != target_ns)
@@ -360,7 +365,7 @@ bool TileReassembler::configure_entry_slots(const wd_server_config_payload& conf
         remove_entry(active_entries_.size() - 1u);
     }
     entry_slots_by_size_ = std::move(new_slots);
-    active_entries_.reserve(std::min<size_t>(total_slot_count, 256));
+    active_entries_.reserve(std::min<size_t>(total_slot_count, WD_CLIENT_TILE_REASSEMBLY_INITIAL_RESERVE_ENTRIES));
     entry_frame_width_  = config.width;
     entry_frame_height_ = config.height;
     return true;
@@ -420,7 +425,7 @@ void TileReassembler::recycle_entry(Entry&& entry) {
     {
         std::vector<uint8_t>().swap(entry.compressed);
     }
-    if (recycled_entries_.size() < MAX_RECYCLED_ENTRIES)
+    if (recycled_entries_.size() < WD_CLIENT_TILE_REASSEMBLY_MAX_RECYCLED_ENTRIES)
     {
         recycled_entries_.push_back(std::move(entry));
     }
@@ -473,7 +478,7 @@ void TileReassembler::recycle_completed_tile_buffer(std::vector<uint8_t>&& buffe
     buffer.clear();
     constexpr size_t max_tile_bytes =
         static_cast<size_t>(WD_WIRE_TILE_MAX_WIDTH) * static_cast<size_t>(WD_WIRE_TILE_MAX_HEIGHT) * WD_BYTES_PER_PIXEL;
-    if (buffer.capacity() > max_tile_bytes || recycled_completed_buffers_.size() >= MAX_RECYCLED_COMPLETED_BUFFERS)
+    if (buffer.capacity() > max_tile_bytes || recycled_completed_buffers_.size() >= WD_CLIENT_TILE_REASSEMBLY_MAX_RECYCLED_BUFFERS)
     {
         return;
     }

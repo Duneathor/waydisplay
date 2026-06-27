@@ -18,8 +18,10 @@
 #include <unistd.h>
 
 static uint64_t wd_audio_tx_max_pending_bytes(uint32_t bitrate) {
-    const uint64_t payload  = ((uint64_t)bitrate * WD_AUDIO_TX_QUEUE_MS + 7999u) / 8000u;
-    const uint64_t packets  = (WD_AUDIO_TX_QUEUE_MS + 19u) / 20u;
+    const uint64_t bits_per_millisecond = 8ull * WD_MSEC_PER_SEC;
+    const uint64_t payload = ((uint64_t)bitrate * WD_AUDIO_TX_QUEUE_MS + bits_per_millisecond - 1u) / bits_per_millisecond;
+    const uint64_t packets =
+        (WD_AUDIO_TX_QUEUE_MS + WD_AUDIO_FRAME_DURATION_MS_DEFAULT - 1u) / WD_AUDIO_FRAME_DURATION_MS_DEFAULT;
     const uint64_t overhead = packets * (WD_TCP_HEADER_WIRE_SIZE + sizeof(struct wd_audio_packet_payload_header));
     const uint64_t total    = payload + overhead;
     return total < WD_AUDIO_TX_MIN_PENDING_BYTES ? WD_AUDIO_TX_MIN_PENDING_BYTES : total;

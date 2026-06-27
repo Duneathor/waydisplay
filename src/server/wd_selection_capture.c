@@ -38,12 +38,12 @@ static bool reserve_capture_bytes(struct wd_selection_capture_buffer* buffer, ui
     uint32_t capacity = buffer->capacity ? buffer->capacity : WD_SELECTION_CAPTURE_INITIAL_BYTES;
     while (capacity < required)
     {
-        if (capacity > WD_SELECTION_CAPTURE_RAW_MAX_BYTES / 2u)
+        if (capacity > WD_SELECTION_CAPTURE_RAW_MAX_BYTES / WD_SELECTION_CAPTURE_GROWTH_MULTIPLIER)
         {
             capacity = WD_SELECTION_CAPTURE_RAW_MAX_BYTES;
             break;
         }
-        capacity *= 2u;
+        capacity *= WD_SELECTION_CAPTURE_GROWTH_MULTIPLIER;
     }
 
     uint8_t* resized = realloc(buffer->data, (size_t)capacity + 1u);
