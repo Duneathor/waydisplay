@@ -32,12 +32,12 @@ uint32_t wd_stream_video_bitrate_kib_locked(const struct wd_stream_policy* polic
         return policy->video_bitrate_kib_per_second;
     }
 
-    if (!policy || policy->udp_rate_bytes_per_second == 0)
+    if (!policy || policy->video_bytes_per_second == 0)
     {
         return WD_VIDEO_DEFAULT_BITRATE_KIB_PER_SECOND;
     }
 
-    uint64_t kib = (policy->udp_rate_bytes_per_second * WD_STREAM_VIDEO_DERIVED_BUDGET_PERCENT) / (100ull * 1024ull);
+    uint64_t kib = policy->video_bytes_per_second / 1024ull;
     if (kib == 0)
     {
         return WD_VIDEO_DEFAULT_BITRATE_KIB_PER_SECOND;

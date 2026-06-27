@@ -49,6 +49,7 @@ target_link_libraries(waydisplay_server_support PUBLIC
 )
 
 add_library(waydisplay_server_runtime STATIC
+    src/server/wd_bandwidth_plan.c
     src/server/wd_tile_policy.c
     src/server/wd_dirty_region_scheduler.c
     src/server/wd_frame_pacing.c

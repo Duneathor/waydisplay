@@ -32,6 +32,8 @@ enum wd_tile_recovery_action wd_tile_recovery_decide(bool refresh_sent, uint64_t
                                                      uint32_t timeout_seconds);
 bool wd_video_entry_allowed(bool bootstrap_pending, bool recovery_active, uint32_t retry_cooldown_seconds, bool video_forced,
                             enum wd_video_recovery_class recovery_class);
+bool wd_video_control_allows_entry(uint8_t requested_mode, bool video_negotiated, bool video_channel_connected,
+                                   bool video_encoder_available);
 
 enum wd_client_video_health_class {
     WD_CLIENT_VIDEO_HEALTH_IDLE           = 0,

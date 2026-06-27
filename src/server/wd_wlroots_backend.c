@@ -374,7 +374,8 @@ bool wd_wlroots_resize_headless_output(struct wd_server* server) {
         wlr_scene_output_set_position(server->scene_output, 0, 0);
     }
 
-    WD_LOG_INFO("resized headless output to %ux%u", server->display_width, server->display_height);
+    WD_LOG_INFO("updated headless output mode to %ux%u refresh=%.3fHz", server->display_width, server->display_height,
+                (double)server->output_refresh_mhz / 1000.0);
 
     return true;
 }

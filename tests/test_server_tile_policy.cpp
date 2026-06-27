@@ -41,8 +41,8 @@ void test_auto_video_entry_uses_sustained_wire_cost() {
     const wd_video_auto_entry_result bootstrap = wd_video_auto_entry_evaluate(&metrics);
     require(!bootstrap.candidate, "bootstrap and recovery refresh traffic must not select video mode");
     metrics.selection_suppressed = false;
-    require(video.changed_frame_percent >= 70 && video.changed_dirty_percent >= 20,
-            "classifier should expose changed-frame and changed-only coverage signals");
+    require(video.changed_frame_percent >= 70 && video.average_dirty_percent >= 19,
+            "classifier should expose changed-frame frequency and all-frame dirty coverage");
 
     metrics.changed_frame_samples          = 2;
     metrics.dirty_coverage_per_mille_sum   = 2000;
@@ -63,6 +63,44 @@ void test_auto_video_entry_uses_sustained_wire_cost() {
     metrics.adaptive_capture_fps                = 60;
     const wd_video_auto_entry_result suppressed = wd_video_auto_entry_evaluate(&metrics);
     require(suppressed.candidate, "capture suppression should be a usable cost signal");
+
+    metrics.frame_samples = 60;
+    metrics.changed_frame_samples = 60;
+    metrics.dirty_coverage_per_mille_sum = 30000; // 50% average across all frames.
+    metrics.dirty_coverage_per_mille_peak = 500;
+    metrics.tile_wire_bytes = 0;
+    metrics.estimated_tile_demand_bytes_per_second = 0;
+    metrics.adaptive_capture_fps = 120;
+    metrics.minimum_dirty_percent = 50;
+    require(wd_video_auto_entry_evaluate(&metrics).candidate,
+            "sustained 50 percent all-frame turnover should favor video without waiting for congestion");
+
+    metrics.dirty_coverage_per_mille_sum = 18000; // 30% average.
+    metrics.estimated_tile_demand_bytes_per_second = 9u * 1024u * 1024u;
+    metrics.tile_budget_bytes_per_second = 10u * 1024u * 1024u;
+    require(wd_video_auto_entry_evaluate(&metrics).candidate,
+            "predicted tile demand above 85 percent should favor video below the content threshold");
+}
+
+void test_tile_demand_estimate_uses_all_frame_dirty_average() {
+    const uint64_t demand = wd_tile_estimate_demand_bytes_per_second(
+        60, 30000, 60000, 60, 1900, 120, 1100);
+    require(demand == 114000000u, "demand should scale average wire bytes by dirty coverage, tile count, and requested FPS");
+    require(wd_tile_estimate_demand_bytes_per_second(0, 0, 0, 0, 1900, 120, 1100) == 0,
+            "missing frame samples should produce no demand estimate");
+}
+
+void test_video_control_selection_is_authoritative() {
+    require(!wd_video_control_allows_entry(WD_VIDEO_MODE_OFF, true, true, true),
+            "video off must block entry even when every transport prerequisite is ready");
+    require(!wd_video_control_allows_entry(WD_VIDEO_MODE_FORCE, false, true, true),
+            "forced video must still require successful negotiation");
+    require(!wd_video_control_allows_entry(WD_VIDEO_MODE_FORCE, true, false, true),
+            "forced video must still require the video channel");
+    require(!wd_video_control_allows_entry(WD_VIDEO_MODE_FORCE, true, true, false),
+            "forced video must still require an encoder");
+    require(wd_video_control_allows_entry(WD_VIDEO_MODE_FORCE, true, true, true),
+            "forced video may bypass content thresholds only after control prerequisites are satisfied");
 }
 
 void test_compression_requires_material_savings() {
@@ -230,6 +268,8 @@ void test_periodic_capture_is_capped_to_output_refresh() {
 int main() {
     test_wire_bytes_account_for_one_extended_header();
     test_auto_video_entry_uses_sustained_wire_cost();
+    test_tile_demand_estimate_uses_all_frame_dirty_average();
+    test_video_control_selection_is_authoritative();
     test_compression_requires_material_savings();
     test_locality_with_starvation_bound();
     test_xrgb_compression_prefilter();

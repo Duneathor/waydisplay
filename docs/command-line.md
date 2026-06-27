@@ -17,9 +17,9 @@ waydisplay-client <server_ipv4> <tcp_port> <client_udp_port> [options]
 | `<server_ipv4>` | Server address | Connection-specific. |
 | `<tcp_port>` | Server control port | Deployment-specific. |
 | `<client_udp_port>` | Local UDP receive port | Host/network-specific. |
-| `--fps <N>` | Requested capture/presentation cap | Useful per display and connection. |
+| `--fps <N>` | Requested session frame cadence | Becomes the compositor refresh, remote capture ceiling, and client presentation cap for the connection. |
 | `--size <WxH>` | Requested remote output size | Session-specific. |
-| `--rate-kib <N>` | Upper bound for adaptive tile traffic | Connection-specific bandwidth cap. |
+| `--rate-kib <N>` | Upper bound for the safe connection budget | Caps the link estimate before video, tile, audio, control, and overhead allocations are calculated. |
 | `--no-vsync` | Disable SDL present-vsync | Local renderer troubleshooting and latency testing. |
 | `--no-audio` | Disable audio negotiation/playback | Local capability and session preference. |
 | `--video <auto|off|force>` | Coarse video-stream policy | `force` bypasses automatic content thresholds, but not initial bootstrap, active recovery, or failure backoff. A successfully presented planned resize recovery may return directly to forced video. |
@@ -60,10 +60,19 @@ waydisplay-server [options]
 | `--app <command>` | Application launched inside the compositor | Launch-specific. |
 | `--size <WxH>` | Virtual output dimensions | Session-specific. |
 | `--scale <N>` | Virtual output scale | Session/display-specific. |
-| `--refresh-hz <N>` | Virtual output refresh rate | Session/display-specific. |
+| `--refresh-hz <N>` | Pre-connection output refresh fallback | Used while no client has supplied `--fps`; each accepted client request becomes authoritative for that session. |
 | `--renderer <auto|gles2|vulkan|pixman>` | wlroots renderer selection | Hardware/driver compatibility. |
 | `--video-encoder <auto|software|vaapi>` | Encoder backend selection | Hardware/driver compatibility. |
 | `--help`, `-h` | Print usage | Standard interface. |
+
+### Frame cadence ownership
+
+The server's `--refresh-hz` initializes the headless output before the first
+connection so applications always see a valid mode. During handshake, the
+client's normalized `--fps` value becomes the output refresh, capture ceiling,
+and client presentation cap. A later connection may select a different rate;
+the compositor applies it before publishing that connection's configuration.
+Live display-size requests preserve the active client-selected cadence.
 
 ### Configuration-only
 
@@ -88,3 +97,17 @@ Configuration values are compile-time product policy. Change `include/waydisplay
 - `_HZ`, `_PERCENT`, `_PX`
 
 The static assertions at the end of `wd_config.h` reject invalid relationships such as unordered bounds, impossible tile geometry, and undersized queues.
+
+### Bandwidth allocation
+
+`--rate-kib` caps the safe link estimate rather than directly setting a UDP
+socket rate.  The server derives separate video, fresh-tile, repair, audio,
+control, and overhead allocations from that capped estimate.  Tile adaptation
+changes only the current tile-media rate; it does not lower the stable link
+ceiling used when video ownership begins.
+
+Automatic video defaults to a 50% all-frame dirty-coverage entry threshold and
+a 20% exit threshold held for 30 seconds. The entry controller can select video
+below 50% when predicted fresh-tile demand reaches 85% of the current fresh-tile
+allocation. `--video force` bypasses these content thresholds but not protocol,
+channel, bootstrap, recovery, or encoder readiness checks.

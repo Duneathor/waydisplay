@@ -59,6 +59,25 @@ if(session_policy_begin EQUAL -1)
     message(FATAL_ERROR "new connections must enter through the centralized stream-policy session boundary")
 endif()
 
+string(FIND "${server_net_source}"
+       "wd_server_request_display_mode(server, requested_width, requested_height, requested_refresh_hz)"
+       client_mode_request)
+if(client_mode_request EQUAL -1)
+    message(FATAL_ERROR "accepted client cadence must configure the compositor display mode")
+endif()
+
+read_source("src/server/wd_frame_pacing.c" frame_pacing_source)
+string(FIND "${frame_pacing_source}" "wd_frame_rate_normalize_client_request" cadence_normalizer)
+if(cadence_normalizer EQUAL -1)
+    message(FATAL_ERROR "client cadence normalization must remain centralized")
+endif()
+
+read_source("src/server/wd_server_internal.h" server_internal_source)
+require_absent("${server_internal_source}" "udp_rate_bytes_per_second"
+               "aggregate tile-media state must not be mislabeled as a UDP link rate")
+require_absent("${server_net_source}" "adaptive_udp_rate_kib_per_sec"
+               "connection logs must expose the class plan rather than the legacy UDP-rate label")
+
 read_source("src/server/wd_stream.c" stream_source)
 string(FIND "${stream_source}" "void wd_stream_policy_begin_session" begin_session_start)
 string(FIND "${stream_source}" "const char* wd_stream_mode_name" begin_session_end)

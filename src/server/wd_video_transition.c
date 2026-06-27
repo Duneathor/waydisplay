@@ -34,6 +34,12 @@ bool wd_video_entry_allowed(bool bootstrap_pending, bool recovery_active, uint32
     return video_forced && recovery_class == WD_VIDEO_RECOVERY_PLANNED;
 }
 
+bool wd_video_control_allows_entry(uint8_t requested_mode, bool video_negotiated, bool video_channel_connected,
+                                   bool video_encoder_available) {
+    return requested_mode != WD_VIDEO_MODE_OFF && requested_mode <= WD_VIDEO_MODE_FORCE && video_negotiated &&
+           video_channel_connected && video_encoder_available;
+}
+
 uint64_t wd_next_nonzero_epoch(uint64_t current_epoch) {
     current_epoch++;
     return current_epoch == 0 ? 1 : current_epoch;

@@ -77,6 +77,13 @@ Every connection is a hard policy boundary: interval feedback, input correlation
 
 Capture service timing follows the effective adaptive FPS target and compositor refresh. The millisecond Wayland timer uses a bounded target-derived service interval, while an absolute nanosecond deadline remains the authoritative capture gate. Eventfd wakeups may accelerate queue service but cannot advance a capture deadline or exceed the configured FPS cap.
 
+The client owns active-session cadence. Its normalized requested FPS is applied
+to the headless output before the server publishes that connection's
+configuration, and the same value is the remote capture ceiling and local
+presentation cap. The server refresh option exists only to provide a valid
+headless mode before a client connects. Display-size changes preserve the
+active client cadence; a later connection may select a different cadence.
+
 The eventfd wake path is lock-free and may be called while the network mutex is held.
 
 The stream-frame worker owns framebuffer comparison and full-frame video snapshot copies outside the network mutex. It reacquires the mutex only to apply changed-tile generations, validate epochs and channel state, and enqueue transport work.
@@ -92,3 +99,54 @@ Mode-transition diagnostics include bootstrap/recovery epochs, recovery class, w
 ## Stream lifecycle scenario contract
 
 The test suite exercises complete ownership scenarios rather than only isolated transition predicates. Every connection begins tile-owned and must present the exact bootstrap content epoch before video can own the display, including forced-video sessions. Planned resize recovery may resume forced video immediately after the exact recovery epoch is presented; decoder, channel, or presentation failures use a retry circuit breaker. Reconnects rotate the connection identity and cannot consume presentation evidence from the previous session.
+
+### Connection bandwidth plans
+
+The throughput probe establishes a stable safe-link ceiling.  It is not the
+same value as the adaptive tile sender rate: mode-local congestion control may
+reduce tile traffic without lowering the next video encoder target.  From the
+safe-link estimate the server builds a nominal class plan:
+
+- video ownership: 75% video, 10% audio class, 10% control class, 5% overhead;
+- tile ownership: 70% fresh tiles, 5% repair, 10% audio class, 10% control
+  class, 5% overhead.
+
+Audio reserves only its negotiated wire requirement within its 10% class cap.
+The remaining class capacity is headroom unless the scheduler explicitly lends
+it to media.  The 5% overhead share is never lent.  Client rate caps reduce the
+safe-link ceiling before the plan is calculated.
+
+Bandwidth enforcement is class-specific. Fresh tile traffic and repair traffic
+use independent token buckets at their 70% and 5% nominal rates. Either tile
+class may borrow the other's accumulated tokens only when the other class has
+no queued work, making the scheduler work-conserving without losing the repair
+guarantee. Control TCP traffic has its own 10% bucket and is never charged to
+tile media. Entering or leaving video ownership resets all class tokens and
+mode-local congestion streaks; it does not discard the safe link estimate.
+
+Telemetry names the layers explicitly: `link_safe` is the probe/cap ceiling,
+`link_recent` is the plan basis, `tile_media` is the current adaptive aggregate,
+and the fresh, repair, video, audio, control, and overhead fields are the
+current class allocations. Per-minute tile telemetry reports actual fresh and
+repair bytes separately and reports predicted fresh demand against the fresh
+allocation. These names intentionally avoid treating every connection budget
+as a UDP rate, because video, audio, and control use TCP transports.
+
+### Automatic tile/video selection
+
+Automatic entry evaluates dirty coverage across every sampled frame, not only
+frames that changed. Sustained average coverage of 50% selects video directly.
+Lower-coverage workloads may also select video when estimated fresh-tile wire
+demand reaches 85% of the fresh-tile allocation. The estimate combines the
+observed wire cost per covered base tile, the all-frame dirty average, the
+current geometry, and the client-requested frame rate; successfully transmitted
+bytes are retained only as an observed-pressure signal.
+
+While automatic video owns the display, the compositor still records cheap
+damage coverage metadata. A return to tiles requires this average to remain at
+or below 20% for 30 seconds. Dormant tile queues, repair backlog, and tile-budget
+blocking are intentionally not exit requirements because those producers are
+paused during video ownership. Forced video bypasses content thresholds only;
+it still requires the client's selected control mode, successful negotiation,
+a connected video channel, an encoder, completed bootstrap/recovery, and any
+failure cooldown required by the recovery class.

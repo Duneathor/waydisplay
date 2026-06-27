@@ -1,6 +1,19 @@
 #include "wd_frame_pacing.h"
 
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_time.h"
+
+uint16_t wd_frame_rate_normalize_client_request(uint16_t requested_fps) {
+    if (requested_fps == 0)
+    {
+        return WD_DEFAULT_CAPTURE_FPS;
+    }
+    if (requested_fps > WD_MAX_REASONABLE_FPS)
+    {
+        return WD_MAX_REASONABLE_FPS;
+    }
+    return requested_fps;
+}
 
 uint32_t wd_frame_service_interval_ms(uint16_t capture_fps, uint32_t minimum_ms, uint32_t maximum_ms) {
     if (minimum_ms == 0)

@@ -21,7 +21,7 @@ static void usage(const char* argv0) {
             "  --app <command>                 Command launched in the compositor, default %s\n"
             "  --size <WxH>                    Virtual output size, default %ux%u\n"
             "  --scale <N>                     Output scale, default %.2f\n"
-            "  --refresh-hz <N>                Output refresh rate, default %u\n"
+            "  --refresh-hz <N>                Pre-connection refresh fallback, default %u\n"
             "  --renderer <auto|gles2|vulkan|pixman>\n"
             "  --video-encoder <auto|software|vaapi>\n"
             "  --help, -h                      Show this help\n\n"

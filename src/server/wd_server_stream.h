@@ -31,7 +31,8 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy);
 void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const struct wd_client_hello_payload* hello);
 void wd_stream_policy_begin_session(struct wd_stream_policy* policy, const struct wd_client_hello_payload* hello,
                                     uint64_t bootstrap_content_epoch);
-void wd_stream_policy_set_udp_rate(struct wd_stream_policy* policy, uint64_t bytes_per_second);
+void wd_stream_policy_set_link_rate(struct wd_stream_policy* policy, uint64_t bytes_per_second,
+                                    bool audio_enabled, uint32_t audio_bitrate_bits_per_second);
 bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_ns);
 
 void wd_server_mark_scene_dirty(struct wd_server* server);
@@ -45,7 +46,9 @@ bool wd_server_reconfigure_tile_size_locked(struct wd_server* server, uint16_t t
 void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, bool notify_client, bool resize);
 bool wd_server_send_current_config_locked(struct wd_server* server);
 bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t height);
+bool wd_server_apply_display_mode(struct wd_server* server, uint32_t width, uint32_t height, uint16_t refresh_hz);
 bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint32_t height);
+bool wd_server_request_display_mode(struct wd_server* server, uint32_t width, uint32_t height, uint16_t refresh_hz);
 bool wd_server_request_display_size(struct wd_server* server, uint32_t width, uint32_t height);
 void wd_server_set_default_geometry(struct wd_server* server);
 

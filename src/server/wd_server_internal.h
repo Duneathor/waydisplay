@@ -36,6 +36,7 @@
 #include "wd_server_net.h"
 #include "wd_server_stream.h"
 #include "wd_tile_policy.h"
+#include "wd_bandwidth_plan.h"
 
 enum wd_compositor_request {
     WD_COMPOSITOR_REQUEST_FULL_REFRESH = 1u << 0,
@@ -227,7 +228,9 @@ struct wd_stats {
     uint64_t dirty_tiles;
     uint64_t udp_tiles_sent;
     uint64_t udp_fresh_tiles_sent;
+    uint64_t udp_fresh_bytes_sent;
     uint64_t udp_retx_tiles_sent;
+    uint64_t udp_retx_bytes_sent;
     uint64_t udp_compressed_tiles_sent;
     uint64_t udp_uncompressed_tiles_sent;
     uint64_t udp_compressed_tile_bytes_sent;
@@ -243,6 +246,7 @@ struct wd_stats {
     uint64_t tile_choice_compressed_wire_sum;
     uint64_t tile_choice_uncompressed_wire_sum;
     uint64_t tile_choice_chosen_wire_sum;
+    uint64_t tile_choice_covered_base_tiles;
     uint64_t tile_choice_saved_wire_sum;
     uint64_t compression_attempts;
     uint64_t compression_wins;
@@ -520,7 +524,16 @@ struct wd_stats_log_state {
     uint16_t            prev_compositor_refresh_hz;
     uint16_t            prev_client_present_cap_fps;
     bool                prev_client_render_visible;
-    uint64_t            prev_udp_rate_kib_per_second;
+    uint64_t            prev_safe_link_kib_per_second;
+    uint64_t            prev_recent_link_kib_per_second;
+    uint64_t            prev_tile_media_rate_kib_per_second;
+    uint64_t            prev_tile_fresh_kib_per_second;
+    uint64_t            prev_tile_repair_kib_per_second;
+    uint64_t            prev_video_kib_per_second;
+    uint64_t            prev_control_kib_per_second;
+    uint64_t            prev_audio_reserved_kib_per_second;
+    uint64_t            prev_audio_cap_kib_per_second;
+    uint64_t            prev_overhead_kib_per_second;
     uint16_t            prev_tile_width;
     uint16_t            prev_tile_height;
     bool                prev_input_channel;
@@ -569,16 +582,32 @@ struct wd_stream_policy {
     struct wd_frame_pacing_state frame_pacing;
     uint64_t                     last_video_frame_send_ns;
 
-    uint64_t udp_rate_bytes_per_second;
-    uint64_t udp_rate_floor_bytes_per_second;
-    uint64_t udp_rate_ceiling_bytes_per_second;
+    uint64_t safe_link_bytes_per_second;
+    uint64_t recent_link_bytes_per_second;
+    uint64_t tile_fresh_bytes_per_second;
+    uint64_t adaptive_tile_fresh_bytes_per_second;
+    uint64_t tile_repair_bytes_per_second;
+    uint64_t video_bytes_per_second;
+    uint64_t control_bytes_per_second;
+    uint64_t audio_cap_bytes_per_second;
+    uint64_t audio_reserved_bytes_per_second;
+    uint64_t overhead_bytes_per_second;
+    bool     bandwidth_audio_enabled;
+    uint32_t bandwidth_audio_bitrate;
+
+    /* Current tile-media rate. Kept separate from the stable link estimate so
+     * tile adaptation cannot lower the next video encoder target. */
+    uint64_t tile_media_bytes_per_second;
+    uint64_t tile_media_floor_bytes_per_second;
+    uint64_t tile_media_ceiling_bytes_per_second;
     uint32_t link_good_seconds;
     uint32_t link_loss_seconds;
     uint32_t multipacket_loss_cooldown_seconds;
     uint32_t client_render_pressure_seconds;
     bool     client_render_visible;
-    double   udp_byte_tokens;
-    uint64_t last_udp_token_refill_ns;
+    struct wd_bandwidth_bucket fresh_tile_bucket;
+    struct wd_bandwidth_bucket repair_bucket;
+    struct wd_bandwidth_bucket control_bucket;
 };
 
 struct wd_queued_key_event {
@@ -622,6 +651,7 @@ struct wd_net_state {
     uint64_t display_resize_completed_serial;
     uint32_t display_resize_width;
     uint32_t display_resize_height;
+    uint16_t display_resize_refresh_hz;
     bool     display_resize_result;
 
     struct wd_net_run_state run_state;

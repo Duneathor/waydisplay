@@ -106,7 +106,7 @@ static uint64_t wd_stream_byte_burst_cap_for_rate(uint64_t bytes_per_second) {
     return cap ? cap : bytes_per_second;
 }
 
-static uint64_t wd_stream_clamp_udp_rate(uint64_t bytes_per_second) {
+static uint64_t wd_stream_clamp_link_rate(uint64_t bytes_per_second) {
     if (bytes_per_second == 0)
     {
         bytes_per_second = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
@@ -125,7 +125,7 @@ static uint64_t wd_stream_clamp_udp_rate(uint64_t bytes_per_second) {
     return bytes_per_second;
 }
 
-static uint64_t wd_stream_udp_rate_from_kib(uint32_t kib_per_second) {
+static uint64_t wd_stream_link_rate_from_kib(uint32_t kib_per_second) {
     if (kib_per_second == 0)
     {
         return 0;
@@ -137,7 +137,50 @@ static uint64_t wd_stream_udp_rate_from_kib(uint32_t kib_per_second) {
         bytes_per_second = WD_UDP_RATE_MAX_BYTES_PER_SECOND;
     }
 
-    return wd_stream_clamp_udp_rate(bytes_per_second);
+    return wd_stream_clamp_link_rate(bytes_per_second);
+}
+
+void wd_stream_policy_rebuild_bandwidth_plan_locked(struct wd_stream_policy* policy, enum wd_bandwidth_mode mode) {
+    if (!policy)
+    {
+        return;
+    }
+
+    uint64_t link_rate = policy->recent_link_bytes_per_second;
+    if (link_rate == 0)
+    {
+        link_rate = policy->safe_link_bytes_per_second;
+    }
+    if (link_rate == 0)
+    {
+        link_rate = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
+    }
+    link_rate = wd_stream_clamp_link_rate(link_rate);
+
+    const struct wd_bandwidth_plan plan = wd_bandwidth_plan_build(
+        link_rate, mode, policy->bandwidth_audio_enabled, policy->bandwidth_audio_bitrate);
+
+    policy->safe_link_bytes_per_second      = policy->safe_link_bytes_per_second != 0 ? policy->safe_link_bytes_per_second : link_rate;
+    policy->recent_link_bytes_per_second    = link_rate;
+    policy->tile_fresh_bytes_per_second     = plan.fresh_tile_bytes_per_second;
+    policy->tile_repair_bytes_per_second    = plan.repair_bytes_per_second;
+    policy->video_bytes_per_second          = plan.video_bytes_per_second;
+    policy->control_bytes_per_second        = plan.control_bytes_per_second;
+    policy->audio_cap_bytes_per_second      = plan.audio_cap_bytes_per_second;
+    policy->audio_reserved_bytes_per_second = plan.audio_reserved_bytes_per_second;
+    policy->overhead_bytes_per_second       = plan.overhead_bytes_per_second;
+
+    if (mode == WD_BANDWIDTH_MODE_TILES)
+    {
+        const uint64_t tile_rate = wd_bandwidth_plan_media_bytes(&plan, WD_BANDWIDTH_MODE_TILES);
+        policy->adaptive_tile_fresh_bytes_per_second = plan.fresh_tile_bytes_per_second;
+        policy->tile_media_bytes_per_second = tile_rate;
+        const uint64_t fresh_floor = plan.fresh_tile_bytes_per_second < WD_UDP_RATE_MIN_BYTES_PER_SECOND
+                                         ? plan.fresh_tile_bytes_per_second
+                                         : WD_UDP_RATE_MIN_BYTES_PER_SECOND;
+        policy->tile_media_floor_bytes_per_second = plan.repair_bytes_per_second + fresh_floor;
+        policy->tile_media_ceiling_bytes_per_second = tile_rate;
+    }
 }
 
 static void wd_stream_policy_reset_tokens(struct wd_stream_policy* policy) {
@@ -148,8 +191,9 @@ static void wd_stream_policy_reset_tokens(struct wd_stream_policy* policy) {
 
     wd_frame_pacing_reset(&policy->frame_pacing);
     policy->last_video_frame_send_ns = 0;
-    policy->udp_byte_tokens          = 0.0;
-    policy->last_udp_token_refill_ns = 0;
+    wd_bandwidth_bucket_reset(&policy->fresh_tile_bucket);
+    wd_bandwidth_bucket_reset(&policy->repair_bucket);
+    wd_bandwidth_bucket_reset(&policy->control_bucket);
 }
 
 void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
@@ -185,9 +229,11 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->tile_recovery_content_epoch     = 0;
     policy->video_recovery_class            = WD_VIDEO_RECOVERY_NONE;
     policy->frame_rate_good_seconds           = 0;
-    policy->udp_rate_bytes_per_second         = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
-    policy->udp_rate_floor_bytes_per_second   = WD_UDP_RATE_MIN_BYTES_PER_SECOND;
-    policy->udp_rate_ceiling_bytes_per_second = WD_UDP_RATE_MAX_BYTES_PER_SECOND;
+    policy->safe_link_bytes_per_second        = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
+    policy->recent_link_bytes_per_second      = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
+    policy->bandwidth_audio_enabled           = false;
+    policy->bandwidth_audio_bitrate           = 0;
+    wd_stream_policy_rebuild_bandwidth_plan_locked(policy, WD_BANDWIDTH_MODE_TILES);
     policy->link_good_seconds                 = 0;
     policy->link_loss_seconds                 = 0;
     policy->multipacket_loss_cooldown_seconds = 0;
@@ -202,16 +248,7 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
         return;
     }
 
-    uint16_t fps = hello->requested_capture_fps;
-    if (fps == 0)
-    {
-        fps = WD_DEFAULT_CAPTURE_FPS;
-    }
-
-    if (fps > WD_MAX_REASONABLE_FPS)
-    {
-        fps = WD_MAX_REASONABLE_FPS;
-    }
+    const uint16_t fps = wd_frame_rate_normalize_client_request(hello->requested_capture_fps);
 
     policy->requested_capture_fps = fps;
     policy->adaptive_capture_fps  = fps;
@@ -261,36 +298,28 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->multipacket_loss_cooldown_seconds = 0;
     policy->client_render_pressure_seconds    = 0;
     policy->client_render_visible             = true;
-    if (policy->udp_rate_bytes_per_second == 0)
+    if (policy->safe_link_bytes_per_second == 0)
     {
-        policy->udp_rate_bytes_per_second = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
+        policy->safe_link_bytes_per_second = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
     }
-    if (policy->udp_rate_floor_bytes_per_second == 0)
+    if (policy->recent_link_bytes_per_second == 0)
     {
-        policy->udp_rate_floor_bytes_per_second = WD_UDP_RATE_MIN_BYTES_PER_SECOND;
-    }
-    if (policy->udp_rate_ceiling_bytes_per_second == 0)
-    {
-        policy->udp_rate_ceiling_bytes_per_second = WD_UDP_RATE_MAX_BYTES_PER_SECOND;
+        policy->recent_link_bytes_per_second = policy->safe_link_bytes_per_second;
     }
 
-    uint64_t requested_udp_rate = wd_stream_udp_rate_from_kib(hello->udp_rate_cap_kib_per_second);
-    if (requested_udp_rate != 0)
+    const uint64_t requested_link_cap = wd_stream_link_rate_from_kib(hello->udp_rate_cap_kib_per_second);
+    if (requested_link_cap != 0)
     {
-        uint64_t ceiling = wd_stream_clamp_udp_rate(policy->udp_rate_ceiling_bytes_per_second);
-        if (requested_udp_rate > ceiling)
+        if (policy->safe_link_bytes_per_second > requested_link_cap)
         {
-            requested_udp_rate = ceiling;
+            policy->safe_link_bytes_per_second = requested_link_cap;
         }
-
-        policy->udp_rate_bytes_per_second         = requested_udp_rate;
-        policy->udp_rate_ceiling_bytes_per_second = requested_udp_rate;
-        if (policy->udp_rate_floor_bytes_per_second > requested_udp_rate)
+        if (policy->recent_link_bytes_per_second > requested_link_cap)
         {
-            policy->udp_rate_floor_bytes_per_second = requested_udp_rate;
+            policy->recent_link_bytes_per_second = requested_link_cap;
         }
-        policy->link_good_seconds = 0;
     }
+    wd_stream_policy_rebuild_bandwidth_plan_locked(policy, WD_BANDWIDTH_MODE_TILES);
 
     policy->multipacket_loss_cooldown_seconds = 0;
 
@@ -409,7 +438,30 @@ void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_s
     (void)video_encoder_available;
 
     enum wd_stream_mode old_mode = policy->stream_mode;
-    policy->stream_mode          = mode;
+    const enum wd_bandwidth_mode old_bandwidth_mode =
+        wd_stream_mode_uses_video_frames(old_mode) ? WD_BANDWIDTH_MODE_VIDEO : WD_BANDWIDTH_MODE_TILES;
+    const enum wd_bandwidth_mode new_bandwidth_mode =
+        wd_stream_mode_uses_video_frames(mode) ? WD_BANDWIDTH_MODE_VIDEO : WD_BANDWIDTH_MODE_TILES;
+    policy->stream_mode = mode;
+    wd_stream_policy_rebuild_bandwidth_plan_locked(policy, new_bandwidth_mode);
+    if (old_bandwidth_mode != new_bandwidth_mode)
+    {
+        policy->link_good_seconds = 0;
+        policy->link_loss_seconds = 0;
+        policy->frame_rate_good_seconds = 0;
+        policy->client_render_pressure_seconds = 0;
+        wd_stream_policy_reset_tokens(policy);
+        WD_LOG_INFO("bandwidth plan reset: mode=%s link=%llu KiB/s fresh=%llu KiB/s repair=%llu KiB/s "
+                    "video=%llu KiB/s control=%llu KiB/s audio_need=%llu KiB/s overhead=%llu KiB/s",
+                    new_bandwidth_mode == WD_BANDWIDTH_MODE_VIDEO ? "video" : "tiles",
+                    (unsigned long long)(policy->recent_link_bytes_per_second / 1024ull),
+                    (unsigned long long)(policy->adaptive_tile_fresh_bytes_per_second / 1024ull),
+                    (unsigned long long)(policy->tile_repair_bytes_per_second / 1024ull),
+                    (unsigned long long)(policy->video_bytes_per_second / 1024ull),
+                    (unsigned long long)(policy->control_bytes_per_second / 1024ull),
+                    (unsigned long long)(policy->audio_reserved_bytes_per_second / 1024ull),
+                    (unsigned long long)(policy->overhead_bytes_per_second / 1024ull));
+    }
 
     if (mode == WD_STREAM_MODE_TILE_RECOVERY && old_mode != WD_STREAM_MODE_TILE_RECOVERY)
     {
@@ -498,13 +550,20 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
 
     const uint8_t min_dirty_pct =
         policy->video_min_dirty_percent != 0 ? policy->video_min_dirty_percent : WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT;
+    const uint32_t fallback_wire_per_base =
+        WD_BASE_TILE_WIDTH * WD_BASE_TILE_HEIGHT * WD_BYTES_PER_PIXEL + WD_UDP_TILE_HEADER_MAX_SIZE;
+    const uint64_t estimated_tile_demand = wd_tile_estimate_demand_bytes_per_second(
+        stats->stream_mode_frame_samples, stats->stream_mode_dirty_coverage_per_mille_sum,
+        stats->tile_choice_chosen_wire_sum, stats->tile_choice_covered_base_tiles,
+        total_tiles, policy->requested_capture_fps, fallback_wire_per_base);
     const struct wd_video_auto_entry_metrics entry_metrics = {
         .frame_samples                 = stats->stream_mode_frame_samples,
         .changed_frame_samples         = stats->stream_mode_changed_frame_samples,
         .dirty_coverage_per_mille_sum  = stats->stream_mode_dirty_coverage_per_mille_sum,
         .dirty_coverage_per_mille_peak = stats->stream_mode_dirty_coverage_per_mille_peak,
-        .tile_wire_bytes               = stats->udp_bytes_sent,
-        .tile_budget_bytes_per_second  = policy->udp_rate_bytes_per_second,
+        .tile_wire_bytes               = stats->udp_fresh_bytes_sent,
+        .estimated_tile_demand_bytes_per_second = estimated_tile_demand,
+        .tile_budget_bytes_per_second  = policy->adaptive_tile_fresh_bytes_per_second,
         .send_pressure_events          = stats->udp_send_pressure_drops,
         .requested_capture_fps         = policy->requested_capture_fps,
         .adaptive_capture_fps          = policy->adaptive_capture_fps,
@@ -518,7 +577,8 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
     const uint16_t exit_seconds = policy->video_exit_seconds != 0 ? policy->video_exit_seconds : WD_VIDEO_EXIT_SECONDS_DEFAULT;
 
     const bool low_dirty      = stats->stream_mode_frame_samples != 0 && dirty_avg_pct <= (double)exit_dirty_pct;
-    const bool video_ready    = video_negotiated && video_channel_connected && video_encoder_available;
+    const bool video_ready = wd_video_control_allows_entry(policy->video_mode, video_negotiated,
+                                                            video_channel_connected, video_encoder_available);
     const bool video_forced   = policy->video_mode == WD_VIDEO_MODE_FORCE;
     const bool video_disabled = policy->video_mode == WD_VIDEO_MODE_OFF;
     const bool video_entry_candidate =
@@ -528,9 +588,10 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
 
     if (auto_entry.candidate && policy->stream_mode != WD_STREAM_MODE_VIDEO_ACTIVE)
     {
-        WD_LOG_DEBUG("video auto candidate: changed_frames=%u%% changed_dirty=%u%% tile_budget=%u%% send_pressure=%llu",
-                     (unsigned)auto_entry.changed_frame_percent, (unsigned)auto_entry.changed_dirty_percent,
-                     (unsigned)auto_entry.tile_budget_percent, (unsigned long long)stats->udp_send_pressure_drops);
+        WD_LOG_DEBUG("video auto candidate: changed_frames=%u%% dirty_avg=%u%% observed_fresh=%u%% predicted_fresh=%u%% send_pressure=%llu",
+                     (unsigned)auto_entry.changed_frame_percent, (unsigned)auto_entry.average_dirty_percent,
+                     (unsigned)auto_entry.tile_budget_percent, (unsigned)auto_entry.predicted_demand_percent,
+                     (unsigned long long)stats->udp_send_pressure_drops);
     }
 
     if (video_disabled || !video_ready)
@@ -611,50 +672,52 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
     }
 }
 
-void wd_stream_policy_set_udp_rate(struct wd_stream_policy* policy, uint64_t bytes_per_second) {
+void wd_stream_policy_set_link_rate(struct wd_stream_policy* policy, uint64_t bytes_per_second,
+                                    bool audio_enabled, uint32_t audio_bitrate_bits_per_second) {
     if (!policy)
     {
         return;
     }
 
-    uint64_t rate = wd_stream_clamp_udp_rate(bytes_per_second);
-
-    policy->udp_rate_bytes_per_second         = rate;
-    policy->udp_rate_floor_bytes_per_second   = WD_UDP_RATE_MIN_BYTES_PER_SECOND;
-    policy->udp_rate_ceiling_bytes_per_second = rate;
-    policy->link_good_seconds                 = 0;
-    policy->udp_byte_tokens                   = 0.0;
-    policy->last_udp_token_refill_ns         = 0;
+    const uint64_t rate = wd_stream_clamp_link_rate(bytes_per_second);
+    policy->safe_link_bytes_per_second = rate;
+    policy->recent_link_bytes_per_second = rate;
+    policy->bandwidth_audio_enabled = audio_enabled;
+    policy->bandwidth_audio_bitrate = audio_enabled ? audio_bitrate_bits_per_second : 0;
+    policy->link_good_seconds = 0;
+    policy->link_loss_seconds = 0;
+    wd_stream_policy_rebuild_bandwidth_plan_locked(policy, WD_BANDWIDTH_MODE_TILES);
+    wd_stream_policy_reset_tokens(policy);
 }
 
-static uint64_t wd_stream_policy_udp_rate_floor(const struct wd_stream_policy* policy) {
-    uint64_t floor = policy ? policy->udp_rate_floor_bytes_per_second : 0;
+static uint64_t wd_stream_policy_tile_media_rate_floor(const struct wd_stream_policy* policy) {
+    uint64_t floor = policy ? policy->tile_media_floor_bytes_per_second : 0;
     if (floor == 0)
     {
         floor = WD_UDP_RATE_MIN_BYTES_PER_SECOND;
     }
-    return wd_stream_clamp_udp_rate(floor);
+    return wd_stream_clamp_link_rate(floor);
 }
 
-static uint64_t wd_stream_policy_udp_rate_ceiling(const struct wd_stream_policy* policy) {
-    uint64_t ceiling = policy ? policy->udp_rate_ceiling_bytes_per_second : 0;
+static uint64_t wd_stream_policy_tile_media_rate_ceiling(const struct wd_stream_policy* policy) {
+    uint64_t ceiling = policy ? policy->tile_media_ceiling_bytes_per_second : 0;
     if (ceiling == 0)
     {
         ceiling = WD_UDP_RATE_MAX_BYTES_PER_SECOND;
     }
-    return wd_stream_clamp_udp_rate(ceiling);
+    return wd_stream_clamp_link_rate(ceiling);
 }
 
-static void wd_stream_policy_set_udp_rate_locked(struct wd_stream_policy* policy, uint64_t rate) {
+static void wd_stream_policy_set_tile_media_rate_locked(struct wd_stream_policy* policy, uint64_t rate) {
     if (!policy)
     {
         return;
     }
 
-    uint64_t floor   = wd_stream_policy_udp_rate_floor(policy);
-    uint64_t ceiling = wd_stream_policy_udp_rate_ceiling(policy);
+    uint64_t floor   = wd_stream_policy_tile_media_rate_floor(policy);
+    uint64_t ceiling = wd_stream_policy_tile_media_rate_ceiling(policy);
 
-    rate = wd_stream_clamp_udp_rate(rate);
+    rate = wd_stream_clamp_link_rate(rate);
     if (rate < floor)
     {
         rate = floor;
@@ -664,14 +727,15 @@ static void wd_stream_policy_set_udp_rate_locked(struct wd_stream_policy* policy
         rate = ceiling;
     }
 
-    if (rate == policy->udp_rate_bytes_per_second)
+    if (rate == policy->tile_media_bytes_per_second)
     {
         return;
     }
 
-    policy->udp_rate_bytes_per_second = rate;
-    policy->udp_byte_tokens          = 0.0;
-    policy->last_udp_token_refill_ns = 0;
+    policy->tile_media_bytes_per_second = rate;
+    policy->adaptive_tile_fresh_bytes_per_second =
+        rate > policy->tile_repair_bytes_per_second ? rate - policy->tile_repair_bytes_per_second : 0;
+    wd_bandwidth_bucket_reset(&policy->fresh_tile_bucket);
 }
 
 uint16_t wd_stream_policy_effective_fps_locked(const struct wd_stream_policy* policy) {
@@ -855,14 +919,14 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
     }
 }
 
-static void wd_stream_policy_update_udp_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool rate_pressure) {
+static void wd_stream_policy_update_tile_media_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats, bool rate_pressure) {
     if (!policy || !stats)
     {
         return;
     }
 
     const bool useful_tile_activity = stats->udp_tiles_sent != 0 || stats->dirty_tiles != 0 || stats->client_tiles_completed != 0;
-    uint64_t   old_rate             = wd_stream_clamp_udp_rate(policy->udp_rate_bytes_per_second);
+    uint64_t   old_rate             = wd_stream_clamp_link_rate(policy->tile_media_bytes_per_second);
     uint64_t   new_rate             = old_rate;
 
     if (rate_pressure)
@@ -882,12 +946,12 @@ static void wd_stream_policy_update_udp_rate_locked(struct wd_stream_policy* pol
 
         new_rate = old_rate * (uint64_t)WD_STREAM_RATE_PRESSURE_DECREASE_PERCENT / 100ull;
 
-        wd_stream_policy_set_udp_rate_locked(policy, new_rate);
-        if (policy->udp_rate_bytes_per_second != old_rate)
+        wd_stream_policy_set_tile_media_rate_locked(policy, new_rate);
+        if (policy->tile_media_bytes_per_second != old_rate)
         {
             stats->rate_decreases++;
-            WD_LOG_DEBUG("stream byte budget down: %llu -> %llu KiB/s due to UDP send pressure", (unsigned long long)(old_rate / 1024ull),
-                         (unsigned long long)(policy->udp_rate_bytes_per_second / 1024ull));
+            WD_LOG_DEBUG("stream tile-media budget down: %llu -> %llu KiB/s due to UDP send pressure", (unsigned long long)(old_rate / 1024ull),
+                         (unsigned long long)(policy->tile_media_bytes_per_second / 1024ull));
         }
         return;
     }
@@ -914,12 +978,12 @@ static void wd_stream_policy_update_udp_rate_locked(struct wd_stream_policy* pol
     uint64_t step_rate    = old_rate + WD_STREAM_RATE_INCREASE_MIN_BYTES;
     new_rate              = percent_rate > step_rate ? percent_rate : step_rate;
 
-    wd_stream_policy_set_udp_rate_locked(policy, new_rate);
-    if (policy->udp_rate_bytes_per_second != old_rate)
+    wd_stream_policy_set_tile_media_rate_locked(policy, new_rate);
+    if (policy->tile_media_bytes_per_second != old_rate)
     {
         stats->rate_increases++;
-        WD_LOG_DEBUG("stream byte budget up: %llu -> %llu KiB/s", (unsigned long long)(old_rate / 1024ull),
-                     (unsigned long long)(policy->udp_rate_bytes_per_second / 1024ull));
+        WD_LOG_DEBUG("stream tile-media budget up: %llu -> %llu KiB/s", (unsigned long long)(old_rate / 1024ull),
+                     (unsigned long long)(policy->tile_media_bytes_per_second / 1024ull));
     }
 }
 
@@ -967,7 +1031,7 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
     const bool send_pressure = stats->udp_send_pressure_drops != 0;
     /*
      * dirty_budget_blocked means the sender had fresh dirty work ready, but
-     * the configured/probed UDP byte budget could not admit the next tile.
+     * the current fresh-tile allocation could not admit the next tile.
      * That is different from socket send pressure: the link may be healthy,
      * but the requested FPS is too high for the available stream budget and
      * frame size.  Treat it as frame-rate pressure so the sender accumulates
@@ -1096,7 +1160,7 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
         wd_stream_policy_update_frame_rate_locked(policy, stats, tile_frame_pressure || client_render_pressure, tile_frame_pressure,
                                                   pressure_reason);
     }
-    wd_stream_policy_update_udp_rate_locked(policy, stats, send_pressure);
+    wd_stream_policy_update_tile_media_rate_locked(policy, stats, send_pressure);
 }
 
 uint32_t wd_stream_frame_service_interval_ms(struct wd_server* server) {
@@ -1413,7 +1477,7 @@ static bool wd_stream_use_compressed_tile_payload(uint32_t compressed_size, uint
 
 static void wd_stream_note_tile_choice_locked(struct wd_net_state* net, uint32_t compressed_size, uint32_t uncompressed_size,
                                               uint16_t udp_payload_target, uint64_t input_sequence, bool compressed_payload,
-                                              uint16_t tile_width, uint16_t tile_height) {
+                                              uint16_t tile_width, uint16_t tile_height, uint16_t covered_base_tiles) {
     if (!net)
     {
         return;
@@ -1455,76 +1519,117 @@ static void wd_stream_note_tile_choice_locked(struct wd_net_state* net, uint32_t
     net->stats.tile_choice_compressed_wire_sum += compressed_wire;
     net->stats.tile_choice_uncompressed_wire_sum += uncompressed_wire;
     net->stats.tile_choice_chosen_wire_sum += chosen_wire;
+    net->stats.tile_choice_covered_base_tiles += covered_base_tiles;
     if (alternate_wire > chosen_wire)
     {
         net->stats.tile_choice_saved_wire_sum += alternate_wire - chosen_wire;
     }
 }
 
-static uint64_t wd_stream_policy_udp_byte_budget_locked(struct wd_stream_policy* policy, uint64_t now_ns) {
+enum wd_stream_bandwidth_class {
+    WD_STREAM_BANDWIDTH_FRESH = 0,
+    WD_STREAM_BANDWIDTH_REPAIR,
+    WD_STREAM_BANDWIDTH_CONTROL,
+};
+
+static struct wd_bandwidth_bucket* wd_stream_bandwidth_bucket(struct wd_stream_policy* policy,
+                                                               enum wd_stream_bandwidth_class traffic_class) {
     if (!policy)
     {
-        return UINT64_MAX;
+        return NULL;
     }
-
-    uint64_t rate                        = wd_stream_clamp_udp_rate(policy->udp_rate_bytes_per_second);
-    policy->udp_rate_bytes_per_second = rate;
-
-    if (policy->last_udp_token_refill_ns == 0)
+    switch (traffic_class)
     {
-        policy->last_udp_token_refill_ns = now_ns;
-        policy->udp_byte_tokens         = 0.0;
-    }
-    else
-    {
-        uint64_t elapsed_ns      = now_ns - policy->last_udp_token_refill_ns;
-        double   elapsed_seconds = (double)elapsed_ns / (double)WD_NSEC_PER_SEC;
-        policy->udp_byte_tokens += elapsed_seconds * (double)rate;
-
-        uint64_t burst_cap = wd_stream_byte_burst_cap_for_rate(rate);
-        if (policy->udp_byte_tokens > (double)burst_cap)
-        {
-            policy->udp_byte_tokens = (double)burst_cap;
-        }
-
-        policy->last_udp_token_refill_ns = now_ns;
-    }
-
-    return (uint64_t)policy->udp_byte_tokens;
-}
-
-static void wd_stream_policy_consume_udp_bytes_locked(struct wd_stream_policy* policy, uint64_t bytes) {
-    if (!policy || bytes == 0)
-    {
-        return;
-    }
-
-    if (policy->udp_byte_tokens >= (double)bytes)
-    {
-        policy->udp_byte_tokens -= (double)bytes;
-    }
-    else
-    {
-        policy->udp_byte_tokens = 0.0;
+    case WD_STREAM_BANDWIDTH_FRESH:
+        return &policy->fresh_tile_bucket;
+    case WD_STREAM_BANDWIDTH_REPAIR:
+        return &policy->repair_bucket;
+    case WD_STREAM_BANDWIDTH_CONTROL:
+        return &policy->control_bucket;
+    default:
+        return NULL;
     }
 }
 
-static void wd_stream_policy_refund_udp_bytes_locked(struct wd_stream_policy* policy, uint64_t bytes) {
-    if (!policy || bytes == 0)
+static uint64_t wd_stream_bandwidth_rate(const struct wd_stream_policy* policy,
+                                         enum wd_stream_bandwidth_class traffic_class) {
+    if (!policy)
+    {
+        return 0;
+    }
+    switch (traffic_class)
+    {
+    case WD_STREAM_BANDWIDTH_FRESH:
+        return policy->adaptive_tile_fresh_bytes_per_second;
+    case WD_STREAM_BANDWIDTH_REPAIR:
+        return policy->tile_repair_bytes_per_second;
+    case WD_STREAM_BANDWIDTH_CONTROL:
+        return policy->control_bytes_per_second;
+    default:
+        return 0;
+    }
+}
+
+static uint64_t wd_stream_class_budget_locked(struct wd_stream_policy* policy,
+                                               enum wd_stream_bandwidth_class traffic_class,
+                                               enum wd_stream_bandwidth_class borrow_class, bool allow_borrow,
+                                               uint64_t now_ns) {
+    struct wd_bandwidth_bucket* bucket = wd_stream_bandwidth_bucket(policy, traffic_class);
+    const uint64_t rate = wd_stream_bandwidth_rate(policy, traffic_class);
+    const uint64_t available = wd_bandwidth_bucket_available(bucket, rate, wd_stream_byte_burst_cap_for_rate(rate), now_ns);
+    if (!allow_borrow)
+    {
+        return available;
+    }
+
+    struct wd_bandwidth_bucket* borrow_bucket = wd_stream_bandwidth_bucket(policy, borrow_class);
+    const uint64_t borrow_rate = wd_stream_bandwidth_rate(policy, borrow_class);
+    const uint64_t borrowed = wd_bandwidth_bucket_available(
+        borrow_bucket, borrow_rate, wd_stream_byte_burst_cap_for_rate(borrow_rate), now_ns);
+    return UINT64_MAX - available < borrowed ? UINT64_MAX : available + borrowed;
+}
+
+static void wd_stream_class_consume_locked(struct wd_stream_policy* policy,
+                                           enum wd_stream_bandwidth_class traffic_class,
+                                           enum wd_stream_bandwidth_class borrow_class, bool allow_borrow,
+                                           uint64_t bytes) {
+    struct wd_bandwidth_bucket* bucket = wd_stream_bandwidth_bucket(policy, traffic_class);
+    const uint64_t consumed = wd_bandwidth_bucket_consume(bucket, bytes);
+    if (allow_borrow && consumed < bytes)
+    {
+        (void)wd_bandwidth_bucket_consume(wd_stream_bandwidth_bucket(policy, borrow_class), bytes - consumed);
+    }
+}
+
+static void wd_stream_class_refund_locked(struct wd_stream_policy* policy,
+                                          enum wd_stream_bandwidth_class traffic_class, uint64_t bytes) {
+    const uint64_t rate = wd_stream_bandwidth_rate(policy, traffic_class);
+    wd_bandwidth_bucket_refund(wd_stream_bandwidth_bucket(policy, traffic_class), bytes,
+                               wd_stream_byte_burst_cap_for_rate(rate));
+}
+
+static uint64_t wd_stream_tile_byte_budget_locked(struct wd_net_state* net, bool repair, uint64_t now_ns) {
+    if (!net)
+    {
+        return 0;
+    }
+    const bool allow_borrow = repair ? net->dirty_queue_count == 0 : net->retransmit_queue_count == 0;
+    return wd_stream_class_budget_locked(&net->stream_policy,
+                                         repair ? WD_STREAM_BANDWIDTH_REPAIR : WD_STREAM_BANDWIDTH_FRESH,
+                                         repair ? WD_STREAM_BANDWIDTH_FRESH : WD_STREAM_BANDWIDTH_REPAIR,
+                                         allow_borrow, now_ns);
+}
+
+static void wd_stream_consume_tile_bytes_locked(struct wd_net_state* net, bool repair, uint64_t bytes) {
+    if (!net || bytes == 0)
     {
         return;
     }
-
-    uint64_t rate                        = wd_stream_clamp_udp_rate(policy->udp_rate_bytes_per_second);
-    policy->udp_rate_bytes_per_second = rate;
-
-    policy->udp_byte_tokens += (double)bytes;
-
-    uint64_t burst_cap = wd_stream_byte_burst_cap_for_rate(rate);
-    if (policy->udp_byte_tokens > (double)burst_cap)
-    {
-        policy->udp_byte_tokens = (double)burst_cap;
-    }
+    const bool allow_borrow = repair ? net->dirty_queue_count == 0 : net->retransmit_queue_count == 0;
+    wd_stream_class_consume_locked(&net->stream_policy,
+                                   repair ? WD_STREAM_BANDWIDTH_REPAIR : WD_STREAM_BANDWIDTH_FRESH,
+                                   repair ? WD_STREAM_BANDWIDTH_FRESH : WD_STREAM_BANDWIDTH_REPAIR,
+                                   allow_borrow, bytes);
 }
 
 bool wd_stream_try_consume_tcp_control_budget_locked(struct wd_net_state* net, uint32_t bytes, uint64_t now_ns) {
@@ -1533,14 +1638,16 @@ bool wd_stream_try_consume_tcp_control_budget_locked(struct wd_net_state* net, u
         return true;
     }
 
-    uint64_t budget = wd_stream_policy_udp_byte_budget_locked(&net->stream_policy, now_ns);
+    uint64_t budget = wd_stream_class_budget_locked(&net->stream_policy, WD_STREAM_BANDWIDTH_CONTROL,
+                                                       WD_STREAM_BANDWIDTH_CONTROL, false, now_ns);
     if (budget < (uint64_t)bytes)
     {
         net->stats.tcp_budget_blocked++;
         return false;
     }
 
-    wd_stream_policy_consume_udp_bytes_locked(&net->stream_policy, bytes);
+    wd_stream_class_consume_locked(&net->stream_policy, WD_STREAM_BANDWIDTH_CONTROL,
+                                   WD_STREAM_BANDWIDTH_CONTROL, false, bytes);
     net->stats.tcp_control_bytes_sent += bytes;
     return true;
 }
@@ -1551,7 +1658,8 @@ void wd_stream_account_tcp_control_bytes_locked(struct wd_net_state* net, uint32
         return;
     }
 
-    wd_stream_policy_consume_udp_bytes_locked(&net->stream_policy, bytes);
+    wd_stream_class_consume_locked(&net->stream_policy, WD_STREAM_BANDWIDTH_CONTROL,
+                                   WD_STREAM_BANDWIDTH_CONTROL, false, bytes);
     net->stats.tcp_control_bytes_sent += bytes;
 }
 
@@ -1561,7 +1669,7 @@ static void wd_stream_refund_tcp_control_budget_locked(struct wd_net_state* net,
         return;
     }
 
-    wd_stream_policy_refund_udp_bytes_locked(&net->stream_policy, bytes);
+    wd_stream_class_refund_locked(&net->stream_policy, WD_STREAM_BANDWIDTH_CONTROL, bytes);
     net->stats.tcp_control_bytes_refunded += bytes;
 }
 
@@ -3538,7 +3646,7 @@ static void wd_stream_send_retransmits_locked(struct wd_server* server, uint64_t
 
     while (net->retransmit_queue_count > 0)
     {
-        uint64_t token_budget = wd_stream_policy_udp_byte_budget_locked(&net->stream_policy, now);
+        uint64_t token_budget = wd_stream_tile_byte_budget_locked(net, true, now);
         if (token_budget == 0)
         {
             break;
@@ -3672,7 +3780,7 @@ static void wd_stream_send_retransmits_locked(struct wd_server* server, uint64_t
                 }
 
                 const uint64_t send_now              = wd_now_ns();
-                uint64_t       current_budget        = wd_stream_policy_udp_byte_budget_locked(&net->stream_policy, send_now);
+                uint64_t       current_budget        = wd_stream_tile_byte_budget_locked(net, true, send_now);
                 const bool     current_network_happy = !wd_stream_client_reporting_tile_loss_locked(&net->stream_policy, &net->stats);
                 if (!wd_stream_candidate_allowed_for_region_locked(server, &result->candidate, current_budget, current_network_happy,
                                                                    retx_input_sequence != 0))
@@ -3697,7 +3805,7 @@ static void wd_stream_send_retransmits_locked(struct wd_server* server, uint64_t
                 {
                     if (send_result.any_packet_sent)
                     {
-                        wd_stream_policy_consume_udp_bytes_locked(&net->stream_policy, send_result.bytes_sent);
+                        wd_stream_consume_tile_bytes_locked(net, true, send_result.bytes_sent);
                     }
                     wd_stream_free_encode_result_payload(result);
                     stop_sending = true;
@@ -3706,7 +3814,8 @@ static void wd_stream_send_retransmits_locked(struct wd_server* server, uint64_t
 
                 wd_stream_note_tile_choice_locked(net, result->candidate.compressed_size, result->candidate.uncompressed_size,
                                                   net->udp_payload_target, retx_input_sequence, result->candidate.compressed_payload,
-                                                  result->candidate.width, result->candidate.height);
+                                                  result->candidate.width, result->candidate.height,
+                                                  result->candidate.covered_base_count);
 
                 for (uint16_t i = 0; i < result->candidate.covered_base_count; ++i)
                 {
@@ -3726,7 +3835,8 @@ static void wd_stream_send_retransmits_locked(struct wd_server* server, uint64_t
                 }
 
                 net->stats.udp_retx_tiles_sent++;
-                wd_stream_policy_consume_udp_bytes_locked(&net->stream_policy, send_result.bytes_sent);
+                net->stats.udp_retx_bytes_sent += send_result.bytes_sent;
+                wd_stream_consume_tile_bytes_locked(net, true, send_result.bytes_sent);
                 wd_stream_free_encode_result_payload(result);
 
                 if (send_result.send_blocked)
@@ -3892,7 +4002,7 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
 
     while (net->dirty_region_count > 0)
     {
-        const uint64_t remaining_byte_budget = wd_stream_policy_udp_byte_budget_locked(&net->stream_policy, now);
+        const uint64_t remaining_byte_budget = wd_stream_tile_byte_budget_locked(net, false, now);
         const uint64_t tile_input_sequence   = wd_input_correlation_select(net->input_since_last_fresh_tile, net->last_input_sequence,
                                                                            net->input_correlation_inflight_sequence);
         /* Only require enough tokens for the smallest guaranteed-progress
@@ -4030,7 +4140,7 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
 
                 const uint64_t send_now              = wd_now_ns();
                 const uint64_t send_input_sequence   = pending_input_sequence;
-                const uint64_t current_budget        = wd_stream_policy_udp_byte_budget_locked(&net->stream_policy, send_now);
+                const uint64_t current_budget        = wd_stream_tile_byte_budget_locked(net, false, send_now);
                 const bool     current_network_happy = !wd_stream_client_reporting_tile_loss_locked(&net->stream_policy, &net->stats);
                 if (!wd_stream_candidate_allowed_for_region_locked(server, &result->candidate, current_budget, current_network_happy,
                                                                    send_input_sequence != 0))
@@ -4058,7 +4168,7 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
                 {
                     if (send_result.any_packet_sent)
                     {
-                        wd_stream_policy_consume_udp_bytes_locked(&net->stream_policy, send_result.bytes_sent);
+                        wd_stream_consume_tile_bytes_locked(net, false, send_result.bytes_sent);
                     }
                     wd_stream_requeue_dirty_top_region_locked(server, result->top_region_id);
                     wd_stream_free_encode_result_payload(result);
@@ -4073,7 +4183,8 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
 
                 wd_stream_note_tile_choice_locked(net, result->candidate.compressed_size, result->candidate.uncompressed_size,
                                                   net->udp_payload_target, send_input_sequence, result->candidate.compressed_payload,
-                                                  result->candidate.width, result->candidate.height);
+                                                  result->candidate.width, result->candidate.height,
+                                                  result->candidate.covered_base_count);
 
                 for (uint16_t i = 0; i < result->candidate.covered_base_count; ++i)
                 {
@@ -4093,8 +4204,9 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
 
                 net->stats.dirty_tiles++;
                 net->stats.udp_fresh_tiles_sent++;
+                net->stats.udp_fresh_bytes_sent += send_result.bytes_sent;
                 net->stats.encode_jobs_completed++;
-                wd_stream_policy_consume_udp_bytes_locked(&net->stream_policy, send_result.bytes_sent);
+                wd_stream_consume_tile_bytes_locked(net, false, send_result.bytes_sent);
                 wd_stream_free_encode_result_payload(result);
 
                 if (send_result.send_blocked)

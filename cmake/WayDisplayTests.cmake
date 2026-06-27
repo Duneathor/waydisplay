@@ -220,6 +220,15 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.bandwidth_plan
+        TARGET waydisplay_test_bandwidth_plan
+        SOURCES tests/test_bandwidth_plan.cpp
+        LIBRARIES waydisplay_server_runtime
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;network;server;video"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.server_tile_policy
         TARGET waydisplay_test_server_tile_policy
         SOURCES tests/test_server_tile_policy.cpp

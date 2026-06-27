@@ -51,6 +51,7 @@ const char* wd_stream_mode_owner_name(enum wd_stream_mode mode);
 uint16_t    wd_stream_policy_capture_pacing_fps_locked(const struct wd_stream_policy* policy, uint16_t output_refresh_hz);
 uint32_t    wd_stream_frame_service_interval_ms(struct wd_server* server);
 void        wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, struct wd_stats* stats);
+void        wd_stream_policy_rebuild_bandwidth_plan_locked(struct wd_stream_policy* policy, enum wd_bandwidth_mode mode);
 void        wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const struct wd_stats* stats, uint16_t total_tiles,
                                                  bool video_negotiated, bool video_channel_connected,
                                                  bool video_encoder_available);

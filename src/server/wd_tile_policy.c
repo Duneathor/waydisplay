@@ -63,44 +63,59 @@ static uint16_t wd_percent_clamped(uint64_t numerator, uint64_t denominator) {
     return percent > UINT16_MAX ? UINT16_MAX : (uint16_t)percent;
 }
 
+uint64_t wd_tile_estimate_demand_bytes_per_second(uint64_t frame_samples, uint64_t dirty_coverage_per_mille_sum,
+                                                   uint64_t chosen_wire_bytes, uint64_t covered_base_tiles,
+                                                   uint32_t total_base_tiles, uint16_t target_fps,
+                                                   uint32_t fallback_wire_bytes_per_base_tile) {
+    if (frame_samples == 0 || total_base_tiles == 0 || target_fps == 0)
+    {
+        return 0;
+    }
+
+    long double wire_per_base = (long double)fallback_wire_bytes_per_base_tile;
+    if (chosen_wire_bytes != 0 && covered_base_tiles != 0)
+    {
+        wire_per_base = (long double)chosen_wire_bytes / (long double)covered_base_tiles;
+    }
+    const long double dirty_per_mille = (long double)dirty_coverage_per_mille_sum / (long double)frame_samples;
+    const long double demand = wire_per_base * (long double)total_base_tiles * dirty_per_mille * (long double)target_fps / 1000.0L;
+    if (demand <= 0.0L)
+    {
+        return 0;
+    }
+    return demand >= (long double)UINT64_MAX ? UINT64_MAX : (uint64_t)demand;
+}
+
 struct wd_video_auto_entry_result wd_video_auto_entry_evaluate(const struct wd_video_auto_entry_metrics* metrics) {
     struct wd_video_auto_entry_result result;
     memset(&result, 0, sizeof(result));
-    if (!metrics || metrics->frame_samples == 0 || metrics->changed_frame_samples == 0)
+    if (!metrics || metrics->frame_samples == 0)
     {
         return result;
     }
 
     result.changed_frame_percent = wd_percent_clamped(metrics->changed_frame_samples, metrics->frame_samples);
-    result.changed_dirty_percent = wd_percent_clamped(metrics->dirty_coverage_per_mille_sum, metrics->changed_frame_samples * 10u);
-    result.tile_budget_percent   = wd_percent_clamped(metrics->tile_wire_bytes, metrics->tile_budget_bytes_per_second);
+    result.average_dirty_percent = wd_percent_clamped(metrics->dirty_coverage_per_mille_sum, metrics->frame_samples * 1000u);
+    result.tile_budget_percent = wd_percent_clamped(metrics->tile_wire_bytes, metrics->tile_budget_bytes_per_second);
+    result.predicted_demand_percent =
+        wd_percent_clamped(metrics->estimated_tile_demand_bytes_per_second, metrics->tile_budget_bytes_per_second);
 
     const uint16_t min_dirty =
         metrics->minimum_dirty_percent != 0 ? metrics->minimum_dirty_percent : WD_TILE_AUTO_ENTRY_MIN_DIRTY_PERCENT_DEFAULT;
-    uint16_t motion_dirty_floor = min_dirty / WD_TILE_AUTO_ENTRY_DIRTY_FLOOR_DIVISOR;
-    if (motion_dirty_floor < WD_TILE_AUTO_ENTRY_DIRTY_FLOOR_MIN_PERCENT)
-    {
-        motion_dirty_floor = WD_TILE_AUTO_ENTRY_DIRTY_FLOOR_MIN_PERCENT;
-    }
-    const uint16_t peak_dirty_percent = (uint16_t)(metrics->dirty_coverage_per_mille_peak / 10u);
-    uint16_t       peak_floor         = min_dirty;
-    if (peak_floor < WD_TILE_AUTO_ENTRY_PEAK_FLOOR_MIN_PERCENT)
-    {
-        peak_floor = WD_TILE_AUTO_ENTRY_PEAK_FLOOR_MIN_PERCENT;
-    }
-
-    const bool sustained_motion    = result.changed_frame_percent >= WD_TILE_AUTO_ENTRY_CHANGED_FRAMES_PERCENT;
-    const bool broad_motion        = result.changed_dirty_percent >= min_dirty;
-    const bool concentrated_motion = result.changed_dirty_percent >= motion_dirty_floor && peak_dirty_percent >= peak_floor;
-    const bool wire_pressure =
-        metrics->tile_budget_bytes_per_second != 0 && result.tile_budget_percent >= WD_TILE_AUTO_ENTRY_WIRE_PRESSURE_PERCENT;
+    const bool sustained_motion = result.changed_frame_percent >= WD_TILE_AUTO_ENTRY_CHANGED_FRAMES_PERCENT;
+    const bool high_turnover = result.average_dirty_percent >= min_dirty;
+    const bool predicted_pressure = metrics->tile_budget_bytes_per_second != 0 &&
+                                    result.predicted_demand_percent >= WD_TILE_AUTO_ENTRY_WIRE_PRESSURE_PERCENT;
+    const bool observed_pressure = metrics->tile_budget_bytes_per_second != 0 &&
+                                   result.tile_budget_percent >= WD_TILE_AUTO_ENTRY_WIRE_PRESSURE_PERCENT;
     const bool fps_suppressed =
         metrics->requested_capture_fps != 0 &&
-        (uint32_t)metrics->adaptive_capture_fps * 100u < (uint32_t)metrics->requested_capture_fps * WD_TILE_AUTO_ENTRY_FPS_PRESSURE_PERCENT;
+        (uint32_t)metrics->adaptive_capture_fps * 100u <
+            (uint32_t)metrics->requested_capture_fps * WD_TILE_AUTO_ENTRY_FPS_PRESSURE_PERCENT;
     const bool queue_pressure = metrics->send_pressure_events != 0;
 
-    result.candidate = !metrics->selection_suppressed && sustained_motion && (broad_motion || concentrated_motion) &&
-                       (wire_pressure || fps_suppressed || queue_pressure);
+    result.candidate = !metrics->selection_suppressed && sustained_motion &&
+                       (high_turnover || predicted_pressure || observed_pressure || fps_suppressed || queue_pressure);
     return result;
 }
 

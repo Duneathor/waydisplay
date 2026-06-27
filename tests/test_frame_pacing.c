@@ -1,4 +1,5 @@
 #include "../src/server/wd_frame_pacing.h"
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_time.h"
 
 #include <stdio.h>
@@ -34,6 +35,12 @@ static int check_rate(uint16_t fps) {
 }
 
 int main(void) {
+    CHECK(wd_frame_rate_normalize_client_request(0) == WD_DEFAULT_CAPTURE_FPS);
+    CHECK(wd_frame_rate_normalize_client_request(1) == 1);
+    CHECK(wd_frame_rate_normalize_client_request(75) == 75);
+    CHECK(wd_frame_rate_normalize_client_request(WD_MAX_REASONABLE_FPS) == WD_MAX_REASONABLE_FPS);
+    CHECK(wd_frame_rate_normalize_client_request(UINT16_MAX) == WD_MAX_REASONABLE_FPS);
+
     CHECK(wd_frame_service_interval_ms(60, 1, 8) == 8);
     CHECK(wd_frame_service_interval_ms(120, 1, 8) == 8);
     CHECK(wd_frame_service_interval_ms(144, 1, 8) == 6);

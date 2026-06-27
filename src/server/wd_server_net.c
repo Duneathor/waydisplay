@@ -18,6 +18,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
@@ -244,7 +245,7 @@ static uint64_t wd_net_summary_budget_interval_ns(const struct wd_server* server
     }
 
     const struct wd_net_state* net  = &server->net;
-    uint64_t                   rate = net->stream_policy.udp_rate_bytes_per_second;
+    uint64_t                   rate = net->stream_policy.control_bytes_per_second;
     if (rate == 0)
     {
         return base_interval_ns;
@@ -987,7 +988,7 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
         return WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
     }
 
-    uint64_t udp_rate     = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
+    uint64_t safe_link_rate  = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
     uint32_t packets_received = 0;
 
     if (wd_protocol_message_allowed(type, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
@@ -1013,16 +1014,17 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
                 bytes_per_second = WD_UDP_RATE_MAX_BYTES_PER_SECOND;
             }
 
-            udp_rate = bytes_per_second;
+            safe_link_rate = bytes_per_second;
         }
     }
 
     free(payload);
 
-    WD_LOG_INFO("adaptive UDP byte budget selected by throughput probe: %llu KiB/s sent=%u recv=%u",
-                (unsigned long long)(udp_rate / 1024ull), packets_sent, packets_received);
+    WD_LOG_INFO("safe link budget selected by throughput probe: %llu KiB/s sent=%u recv=%u safety=%u%%",
+                (unsigned long long)(safe_link_rate / 1024ull), packets_sent, packets_received,
+                WD_UDP_THROUGHPUT_SAFETY_PERCENT);
 
-    return udp_rate;
+    return safe_link_rate;
 }
 
 static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
@@ -1522,15 +1524,16 @@ void* wd_net_thread_main(void* arg) {
             continue;
         }
 
-        if (hello.desired_width != 0 || hello.desired_height != 0)
+        const uint16_t requested_refresh_hz = wd_frame_rate_normalize_client_request(hello.requested_capture_fps);
+        const uint32_t requested_width       = hello.desired_width != 0 ? hello.desired_width : server->display_width;
+        const uint32_t requested_height      = hello.desired_height != 0 ? hello.desired_height : server->display_height;
+        if ((hello.desired_width == 0) != (hello.desired_height == 0) ||
+            !wd_server_request_display_mode(server, requested_width, requested_height, requested_refresh_hz))
         {
-            if (hello.desired_width == 0 || hello.desired_height == 0 ||
-                !wd_server_request_display_size(server, hello.desired_width, hello.desired_height))
-            {
-                WD_LOG_ERROR("rejected requested client display size %ux%u", hello.desired_width, hello.desired_height);
-                close(tcp_fd);
-                continue;
-            }
+            WD_LOG_ERROR("rejected requested client display mode %ux%u@%uHz", requested_width, requested_height,
+                         requested_refresh_hz);
+            close(tcp_fd);
+            continue;
         }
 
         const uint32_t selected_video_codec =
@@ -1602,8 +1605,8 @@ void* wd_net_thread_main(void* arg) {
         client_udp_addr.sin_addr   = peer_addr.sin_addr;
         client_udp_addr.sin_port   = htons(hello.client_udp_port);
 
-        uint16_t selected_udp_payload      = run_udp_mtu_probe(server, tcp_fd, &client_udp_addr);
-        uint64_t selected_udp_rate = run_udp_throughput_probe(server, tcp_fd, &client_udp_addr, selected_udp_payload);
+        uint16_t selected_udp_payload = run_udp_mtu_probe(server, tcp_fd, &client_udp_addr);
+        uint64_t selected_link_rate  = run_udp_throughput_probe(server, tcp_fd, &client_udp_addr, selected_udp_payload);
 
         pthread_mutex_lock(&net->lock);
         net->udp_payload_target      = selected_udp_payload;
@@ -1624,18 +1627,18 @@ void* wd_net_thread_main(void* arg) {
                 net->audio_epoch = 1;
             }
         }
-        const uint64_t tile_udp_rate = client_audio_tcp
-                                           ? wd_audio_reserve_from_tile_budget(selected_udp_rate, WD_AUDIO_BITRATE_DEFAULT)
-                                           : selected_udp_rate;
-        wd_stream_policy_set_udp_rate(&net->stream_policy, tile_udp_rate);
-        if (client_audio_tcp)
-        {
-            WD_LOG_INFO("audio bandwidth reservation: link=%llu KiB/s reserved=%llu KiB/s tile_budget=%llu KiB/s",
-                        (unsigned long long)(selected_udp_rate / 1024ull),
-                        (unsigned long long)(wd_audio_reserved_bytes_per_second(WD_AUDIO_BITRATE_DEFAULT) / 1024ull),
-                        (unsigned long long)(tile_udp_rate / 1024ull));
-        }
+        wd_stream_policy_set_link_rate(&net->stream_policy, selected_link_rate, client_audio_tcp,
+                                       client_audio_tcp ? WD_AUDIO_BITRATE_DEFAULT : 0);
         wd_stream_policy_begin_session(&net->stream_policy, &hello, net->content_epoch);
+        WD_LOG_INFO("bandwidth plan: mode=tiles link_safe=%llu KiB/s fresh=%llu KiB/s repair=%llu KiB/s "
+                    "audio_need=%llu KiB/s audio_cap=%llu KiB/s control=%llu KiB/s overhead=%llu KiB/s",
+                    (unsigned long long)(net->stream_policy.safe_link_bytes_per_second / 1024ull),
+                    (unsigned long long)(net->stream_policy.tile_fresh_bytes_per_second / 1024ull),
+                    (unsigned long long)(net->stream_policy.tile_repair_bytes_per_second / 1024ull),
+                    (unsigned long long)(net->stream_policy.audio_reserved_bytes_per_second / 1024ull),
+                    (unsigned long long)(net->stream_policy.audio_cap_bytes_per_second / 1024ull),
+                    (unsigned long long)(net->stream_policy.control_bytes_per_second / 1024ull),
+                    (unsigned long long)(net->stream_policy.overhead_bytes_per_second / 1024ull));
         WD_LOG_INFO(
             "video mode control: mode=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u negotiated=%s",
             wd_video_mode_name(net->stream_policy.video_mode), net->stream_policy.video_bitrate_kib_per_second,
@@ -1810,13 +1813,13 @@ void* wd_net_thread_main(void* arg) {
 
             WD_LOG_INFO("client connected; control_tcp=%s<->%s udp=%s->%s input_channel=%s selection_channel=%s video_channel=%s "
                         "video_stream=%s video_codec=%s video_transport=%s audio_channel=%s audio_stream=%s audio_codec=%s display=%ux%u "
-                        "tile=%ux%u requested_capture_fps=%u requested_udp_rate_cap_kib_per_sec=%u adaptive_udp_rate_kib_per_sec=%llu",
+                        "tile=%ux%u requested_session_fps=%u requested_link_cap_kib_per_sec=%u tile_media_kib_per_sec=%llu",
                         control_local, control_remote, udp_local, udp_remote, input_tcp_fd >= 0 ? "yes" : "no",
                         selection_tcp_fd >= 0 ? "yes" : "no", video_tcp_fd >= 0 ? "yes" : "no", client_video_tcp ? "yes" : "no",
                         client_video_tcp ? wd_video_codec_name(selected_video_codec) : "none", client_video_tcp ? "tcp" : "none",
                         audio_tcp_fd >= 0 ? "yes" : "no", client_audio_tcp ? "yes" : "no", client_audio_tcp ? "opus" : "none",
-                        server->display_width, server->display_height, server->tile_width, server->tile_height, hello.requested_capture_fps,
-                        hello.udp_rate_cap_kib_per_second, (unsigned long long)(net->stream_policy.udp_rate_bytes_per_second / 1024ull));
+                        server->display_width, server->display_height, server->tile_width, server->tile_height, requested_refresh_hz,
+                        hello.udp_rate_cap_kib_per_second, (unsigned long long)(net->stream_policy.tile_media_bytes_per_second / 1024ull));
 
             if (input_tcp_fd >= 0)
             {

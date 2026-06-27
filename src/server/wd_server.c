@@ -241,10 +241,11 @@ static void server_process_pending_display_resize(struct wd_server* server) {
     uint64_t serial             = net->display_resize_request_serial;
     uint32_t width              = net->display_resize_width;
     uint32_t height             = net->display_resize_height;
+    uint16_t refresh_hz         = net->display_resize_refresh_hz;
     net->display_resize_pending = false;
     pthread_mutex_unlock(&net->lock);
 
-    bool ok = wd_server_apply_display_size(server, width, height);
+    bool ok = wd_server_apply_display_mode(server, width, height, refresh_hz);
 
     pthread_mutex_lock(&net->lock);
     net->display_resize_result           = ok;
@@ -1098,8 +1099,9 @@ void wd_server_set_default_geometry(struct wd_server* server) {
     (void)wd_server_set_geometry(server, WD_DISPLAY_WIDTH, WD_DISPLAY_HEIGHT);
 }
 
-bool wd_server_request_display_size(struct wd_server* server, uint32_t width, uint32_t height) {
-    if (!server || width == 0 || height == 0 || width > WD_MAX_RENDER_WIDTH || height > WD_MAX_RENDER_HEIGHT)
+bool wd_server_request_display_mode(struct wd_server* server, uint32_t width, uint32_t height, uint16_t refresh_hz) {
+    if (!server || width == 0 || height == 0 || width > WD_MAX_RENDER_WIDTH || height > WD_MAX_RENDER_HEIGHT ||
+        refresh_hz < WD_SERVER_MIN_REFRESH_HZ || refresh_hz > WD_SERVER_MAX_REFRESH_HZ)
     {
         return false;
     }
@@ -1108,10 +1110,11 @@ bool wd_server_request_display_size(struct wd_server* server, uint32_t width, ui
 
     pthread_mutex_lock(&net->lock);
 
-    uint64_t serial             = ++net->display_resize_request_serial;
-    net->display_resize_width   = width;
-    net->display_resize_height  = height;
-    net->display_resize_pending = true;
+    uint64_t serial                    = ++net->display_resize_request_serial;
+    net->display_resize_width          = width;
+    net->display_resize_height         = height;
+    net->display_resize_refresh_hz     = refresh_hz;
+    net->display_resize_pending        = true;
 
     while (wd_net_run_state_is_running(&net->run_state) && net->display_resize_completed_serial < serial)
     {
@@ -1123,6 +1126,19 @@ bool wd_server_request_display_size(struct wd_server* server, uint32_t width, ui
     pthread_mutex_unlock(&net->lock);
 
     return ok;
+}
+
+bool wd_server_request_display_size(struct wd_server* server, uint32_t width, uint32_t height) {
+    if (!server)
+    {
+        return false;
+    }
+    uint16_t refresh_hz = (uint16_t)((server->output_refresh_mhz + 500u) / 1000u);
+    if (refresh_hz < WD_SERVER_MIN_REFRESH_HZ)
+    {
+        refresh_hz = WD_SERVER_DEFAULT_REFRESH_HZ;
+    }
+    return wd_server_request_display_mode(server, width, height, refresh_hz);
 }
 
 struct wd_display_geometry_snapshot {
@@ -1457,6 +1473,47 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     wd_xwayland_handle_output_resize(server);
 #endif
 
+    return true;
+}
+
+bool wd_server_apply_display_mode(struct wd_server* server, uint32_t width, uint32_t height, uint16_t refresh_hz) {
+    if (!server || width == 0 || height == 0 || width > WD_MAX_RENDER_WIDTH || height > WD_MAX_RENDER_HEIGHT ||
+        refresh_hz < WD_SERVER_MIN_REFRESH_HZ || refresh_hz > WD_SERVER_MAX_REFRESH_HZ)
+    {
+        return false;
+    }
+
+    const uint32_t old_refresh_mhz  = server->output_refresh_mhz;
+    const uint32_t next_refresh_mhz = (uint32_t)refresh_hz * 1000u;
+    const bool     geometry_changed = server->display_width != width || server->display_height != height;
+    const bool     refresh_changed  = old_refresh_mhz != next_refresh_mhz;
+    if (!geometry_changed && !refresh_changed)
+    {
+        return true;
+    }
+
+    server->output_refresh_mhz = next_refresh_mhz;
+    if (geometry_changed)
+    {
+        if (wd_server_apply_display_size(server, width, height))
+        {
+            return true;
+        }
+        server->output_refresh_mhz = old_refresh_mhz;
+        (void)wd_wlroots_resize_headless_output(server);
+        return false;
+    }
+
+    if (!wd_wlroots_resize_headless_output(server))
+    {
+        server->output_refresh_mhz = old_refresh_mhz;
+        (void)wd_wlroots_resize_headless_output(server);
+        return false;
+    }
+
+    pthread_mutex_lock(&server->net.lock);
+    wd_frame_pacing_reset(&server->net.stream_policy.frame_pacing);
+    pthread_mutex_unlock(&server->net.lock);
     return true;
 }
 

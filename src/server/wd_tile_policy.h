@@ -20,6 +20,7 @@ struct wd_video_auto_entry_metrics {
     uint64_t dirty_coverage_per_mille_sum;
     uint64_t dirty_coverage_per_mille_peak;
     uint64_t tile_wire_bytes;
+    uint64_t estimated_tile_demand_bytes_per_second;
     uint64_t tile_budget_bytes_per_second;
     uint64_t send_pressure_events;
     uint16_t requested_capture_fps;
@@ -31,11 +32,16 @@ struct wd_video_auto_entry_metrics {
 struct wd_video_auto_entry_result {
     bool     candidate;
     uint16_t changed_frame_percent;
-    uint16_t changed_dirty_percent;
+    uint16_t average_dirty_percent;
     uint16_t tile_budget_percent;
+    uint16_t predicted_demand_percent;
 };
 
 struct wd_video_auto_entry_result wd_video_auto_entry_evaluate(const struct wd_video_auto_entry_metrics* metrics);
+uint64_t wd_tile_estimate_demand_bytes_per_second(uint64_t frame_samples, uint64_t dirty_coverage_per_mille_sum,
+                                                   uint64_t chosen_wire_bytes, uint64_t covered_base_tiles,
+                                                   uint32_t total_base_tiles, uint16_t target_fps,
+                                                   uint32_t fallback_wire_bytes_per_base_tile);
 
 bool wd_tile_compression_is_worthwhile(uint32_t compressed_size, uint32_t uncompressed_size, uint16_t udp_payload_target,
                                        uint16_t packet_header_size, uint16_t first_packet_header_size, uint32_t minimum_savings_bytes,

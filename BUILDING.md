@@ -327,3 +327,14 @@ gcovr --root . --filter 'src/' --print-summary
 ```
 
 Coverage-guided tile protocol and reassembly fuzzers are available with Clang by configuring `-DWAYDISPLAY_BUILD_FUZZERS=ON`. Fuzz binaries are not registered as ordinary CTest cases; CI or local fuzz jobs should provide a corpus and run duration explicitly. Every CTest receives a tier label (`unit`, `integration`, `stress`, `fuzz`, or `hardware`) in addition to subsystem labels. The `tests-full` preset requires both runtime executable targets so missing SDL3 or wlroots dependencies cannot silently reduce coverage.
+
+
+### Bandwidth and cadence policy tests
+
+`waydisplay.bandwidth_plan`, `waydisplay.server_tile_policy`, and
+`waydisplay.frame_pacing` are dependency-light policy tests. They verify that
+video and tile class percentages fit the safe-link budget, automatic video
+selection uses all-frame turnover and predicted fresh-tile demand, forced mode
+still obeys negotiated control readiness, and client cadence normalization is
+shared by compositor and stream pacing. Keep these tests enabled in every core
+profile when changing transport allocation or frame timing.

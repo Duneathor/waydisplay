@@ -15,7 +15,7 @@ struct wd_server_config {
     struct in_addr listen_address;
     const char*    app_command;
     double         output_scale;
-    uint16_t       output_refresh_hz;
+    uint16_t       output_refresh_hz; /* Pre-connection fallback; client FPS owns active sessions. */
     uint32_t       display_width;
     uint32_t       display_height;
     uint16_t       tile_width;

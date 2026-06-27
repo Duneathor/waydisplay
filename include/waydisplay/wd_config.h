@@ -225,11 +225,11 @@ extern "C" {
 #define WD_AUDIO_TARGET_LATENCY_MS_MIN      10u
 #define WD_AUDIO_TARGET_LATENCY_MS_MAX      400u
 #define WD_AUDIO_BITRATE_DEFAULT            128000u
-#define WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT  60u
+#define WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT  50u
 #define WD_VIDEO_MIN_DIRTY_PERCENT_MAX      100u
 #define WD_VIDEO_ENTER_SECONDS_DEFAULT      3u
 #define WD_VIDEO_ENTER_SECONDS_MAX          60u
-#define WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT 30u
+#define WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT 20u
 #define WD_VIDEO_EXIT_DIRTY_PERCENT_MAX     100u
 #define WD_VIDEO_EXIT_SECONDS_DEFAULT       30u
 #define WD_VIDEO_EXIT_SECONDS_MAX           300u
@@ -331,6 +331,18 @@ extern "C" {
 #define WD_STREAM_VIDEO_CLIENT_FAILURE_SECONDS         3u
 #define WD_STREAM_VIDEO_DERIVED_BUDGET_PERCENT         75u
 
+/* Connection-level bandwidth allocations. Percentages are nominal class
+ * budgets derived from the safe throughput probe. Audio and control are
+ * protected classes; unused capacity remains safety headroom unless a later
+ * scheduler explicitly lends it to media. */
+#define WD_BANDWIDTH_VIDEO_PERCENT                    75u
+#define WD_BANDWIDTH_TILE_FRESH_PERCENT                70u
+#define WD_BANDWIDTH_TILE_REPAIR_PERCENT                5u
+#define WD_BANDWIDTH_AUDIO_PERCENT                     10u
+#define WD_BANDWIDTH_CONTROL_PERCENT                   10u
+#define WD_BANDWIDTH_OVERHEAD_PERCENT                   5u
+#define WD_BANDWIDTH_AUDIO_TRANSPORT_ALLOWANCE_PERCENT 20u
+
 /* Supported wire-tile ladder, largest to base.  Keep endpoints aligned with
  * the protocol geometry and derive counts instead of repeating literals. */
 #define WD_TILE_SIZE_MEGA_WIDTH      256u
@@ -363,7 +375,7 @@ extern "C" {
 #define WD_TILE_AUTO_ENTRY_DIRTY_FLOOR_MIN_PERCENT   15u
 #define WD_TILE_AUTO_ENTRY_PEAK_FLOOR_MIN_PERCENT    50u
 #define WD_TILE_AUTO_ENTRY_CHANGED_FRAMES_PERCENT    25u
-#define WD_TILE_AUTO_ENTRY_WIRE_PRESSURE_PERCENT     65u
+#define WD_TILE_AUTO_ENTRY_WIRE_PRESSURE_PERCENT     85u
 #define WD_TILE_AUTO_ENTRY_FPS_PRESSURE_PERCENT      85u
 
 /* Link-timer formula coefficients.
@@ -547,6 +559,16 @@ WD_CONFIG_STATIC_ASSERT(WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_PERCENT <= 100u && WD_C
 WD_CONFIG_STATIC_ASSERT(WD_UDP_THROUGHPUT_SAFETY_PERCENT <= 100u && WD_LINK_SUMMARY_BUDGET_PERCENT <= 100u &&
                             WD_CLIENT_REPAIR_PRESSURE_PERCENT <= 100u,
                         "network percentages must be valid");
+WD_CONFIG_STATIC_ASSERT(WD_BANDWIDTH_VIDEO_PERCENT + WD_BANDWIDTH_AUDIO_PERCENT + WD_BANDWIDTH_CONTROL_PERCENT +
+                                WD_BANDWIDTH_OVERHEAD_PERCENT == 100u,
+                            "video bandwidth classes must consume exactly the safe-link budget");
+WD_CONFIG_STATIC_ASSERT(WD_BANDWIDTH_TILE_FRESH_PERCENT + WD_BANDWIDTH_TILE_REPAIR_PERCENT + WD_BANDWIDTH_AUDIO_PERCENT +
+                                WD_BANDWIDTH_CONTROL_PERCENT + WD_BANDWIDTH_OVERHEAD_PERCENT == 100u,
+                            "tile bandwidth classes must consume exactly the safe-link budget");
+WD_CONFIG_STATIC_ASSERT(WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT < WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT,
+                        "automatic video exit must remain below the entry threshold");
+WD_CONFIG_STATIC_ASSERT(WD_MAX_REASONABLE_FPS <= WD_SERVER_MAX_REFRESH_HZ,
+                        "client-selected cadence must fit the compositor refresh range");
 WD_CONFIG_STATIC_ASSERT(WD_UDP_RATE_MIN_BYTES_PER_SECOND <= WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND &&
                             WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND <= WD_UDP_RATE_MAX_BYTES_PER_SECOND,
                         "UDP rate defaults must be ordered");
