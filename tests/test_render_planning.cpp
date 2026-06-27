@@ -421,6 +421,28 @@ void test_texture_upload_cost_calibration_changes_plan() {
     require(robust.snapshot_samples == 8, "snapshot observations should be tracked independently");
 }
 
+void test_render_surface_handoff_requires_fresh_successful_presentation() {
+    require(client_render_surface_handoff_decide(false, true, true) == ClientRenderSurfaceHandoff::KeepCurrent,
+            "a config update without new content must keep the previous surface visible");
+    require(client_render_surface_handoff_decide(true, false, true) == ClientRenderSurfaceHandoff::KeepCurrent,
+            "a stale upload must not replace the previous surface");
+    require(client_render_surface_handoff_decide(true, true, false) == ClientRenderSurfaceHandoff::KeepCurrent,
+            "a failed presentation must retain the previous surface");
+    require(client_render_surface_handoff_decide(true, true, true) == ClientRenderSurfaceHandoff::CommitNew,
+            "the new surface should commit only after a fresh successful presentation");
+
+    require(!client_tile_frame_complete({}), "an empty configuration is not a complete tile frame");
+    require(!client_tile_frame_complete({1, 0, 1}), "a partially received recovery frame must retain the fallback surface");
+    require(client_tile_frame_complete({1, 2, 1}), "all base tiles with a generation form a complete recovery frame");
+
+    std::vector<uint64_t> repeated_resize_frame{4, 4, 4, 0};
+    require(!client_tile_frame_complete(repeated_resize_frame),
+            "a newer partial resize must not replace the still-visible fallback surface");
+    repeated_resize_frame[3] = 5;
+    require(client_tile_frame_complete(repeated_resize_frame),
+            "the newest complete recovery frame may atomically replace the fallback surface");
+}
+
 } // namespace
 
 int main() {
@@ -443,5 +465,6 @@ int main() {
     test_tile_generation_claim_commit_and_requeue();
     test_texture_upload_cost_calibration_changes_plan();
     test_summary_pending_index_tracks_only_active_tiles();
+    test_render_surface_handoff_requires_fresh_successful_presentation();
     return 0;
 }

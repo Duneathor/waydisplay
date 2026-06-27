@@ -43,10 +43,30 @@ enum wd_tile_recovery_action {
 enum wd_tile_recovery_action wd_tile_recovery_decide(bool refresh_sent, uint64_t required_content_epoch,
                                                      uint64_t presented_content_epoch, uint32_t wait_seconds,
                                                      uint32_t timeout_seconds);
+
+enum wd_tile_recovery_generation_action {
+    WD_TILE_RECOVERY_GENERATION_WAIT        = 0,
+    WD_TILE_RECOVERY_GENERATION_TRANSMITTED = 1,
+    WD_TILE_RECOVERY_GENERATION_STALE       = 2,
+};
+
+enum wd_tile_recovery_generation_action wd_tile_recovery_generation_decide(
+    bool refresh_started, bool refresh_sent, uint64_t recovery_framebuffer_generation,
+    uint64_t current_framebuffer_generation, bool recovery_queues_empty);
 bool wd_video_entry_allowed(bool bootstrap_pending, bool recovery_active, uint32_t retry_cooldown_seconds, bool video_forced,
                             enum wd_video_recovery_class recovery_class);
 bool wd_video_control_allows_entry(uint8_t requested_mode, bool video_negotiated, bool video_channel_connected,
                                    bool video_encoder_available);
+
+enum wd_planned_video_resume_action {
+    WD_PLANNED_VIDEO_RESUME_WAIT  = 0,
+    WD_PLANNED_VIDEO_RESUME_ENTER = 1,
+    WD_PLANNED_VIDEO_RESUME_CLEAR = 2,
+};
+
+enum wd_planned_video_resume_action wd_planned_video_resume_decide(
+    bool resume_requested, bool recovery_active, bool bootstrap_pending, uint8_t requested_mode,
+    bool video_negotiated, bool video_channel_connected, bool video_encoder_available);
 
 enum wd_client_video_health_class {
     WD_CLIENT_VIDEO_HEALTH_IDLE           = 0,
@@ -101,6 +121,16 @@ enum wd_video_feedback_action wd_video_feedback_action_classify(uint32_t flags);
 
 uint16_t                          wd_video_safe_decode_fps(uint64_t average_decode_ns, uint16_t requested_fps,
                                                           uint32_t headroom_percent);
+uint64_t                          wd_video_decode_ewma_update(uint64_t current_ewma_ns, uint64_t sample_ns,
+                                                             uint32_t new_sample_numerator,
+                                                             uint32_t denominator);
+uint16_t                          wd_video_cadence_downshift_target(uint16_t current_fps, uint16_t requested_fps,
+                                                                   uint16_t safe_decode_fps, bool hard_overload,
+                                                                   uint16_t minimum_fps, uint16_t deadband_fps,
+                                                                   uint32_t overload_percent);
+uint16_t                          wd_video_cadence_upshift_target(uint16_t current_fps, uint16_t requested_fps,
+                                                                 uint16_t safe_decode_fps, uint16_t deadband_fps,
+                                                                 uint16_t increase_step);
 
 uint64_t                   wd_next_nonzero_epoch(uint64_t current_epoch);
 struct wd_video_entry_plan wd_video_entry_plan_make(uint64_t current_epoch, bool waiting_for_first_keyframe, bool frame_is_keyframe);

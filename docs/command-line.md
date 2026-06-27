@@ -27,6 +27,17 @@ waydisplay-client <server_ipv4> <tcp_port> <client_udp_port> [options]
 | `--video-hwdecode <off|auto|vaapi>` | Decoder backend policy | Hardware/driver compatibility. |
 | `--help`, `-h` | Print usage | Standard interface. |
 
+### Video cadence below the client ceiling
+
+The client `--fps` value remains the active-session ceiling. Software decode
+telemetry may lower only the video capture/encoder cadence below that ceiling;
+the compositor and local presentation cap remain at the requested session
+rate. Ordinary decode pressure clamps near the measured sustainable rate with a
+deadband, hard queue overflow receives a larger bounded reduction, and recovery
+advances one FPS at a time after sustained health. Planned display resize
+preserves whether forced or automatic video was selected and resumes it after
+the exact recovery frame is presented.
+
 ### Configuration-only
 
 These are no longer command-line options:
@@ -75,6 +86,17 @@ configuration. Live display-size requests preserve the active client-selected
 cadence. There is no server-side refresh-rate option: change
 `WD_SERVER_IDLE_REFRESH_HZ` only when the pre-connection product default itself
 needs to change.
+
+### Video cadence below the client ceiling
+
+The client `--fps` value remains the active-session ceiling. Software decode
+telemetry may lower only the video capture/encoder cadence below that ceiling;
+the compositor and local presentation cap remain at the requested session
+rate. Ordinary decode pressure clamps near the measured sustainable rate with a
+deadband, hard queue overflow receives a larger bounded reduction, and recovery
+advances one FPS at a time after sustained health. Planned display resize
+preserves whether forced or automatic video was selected and resumes it after
+the exact recovery frame is presented.
 
 ### Configuration-only
 

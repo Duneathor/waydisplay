@@ -1053,7 +1053,8 @@ SDL_Texture* create_video_texture(SDL_Renderer* renderer, uint32_t width, uint32
 }
 
 bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Renderer* renderer, SDL_Texture*& texture,
-                                 SDL_Texture*& video_texture, SDL_Texture*& active_texture) {
+                                 SDL_Texture*& video_texture, SDL_Texture*& active_texture,
+                                 SDL_Texture*& fallback_texture) {
     wd_server_config_payload config{};
 
     {
@@ -1161,15 +1162,9 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         }
         state.config      = config;
         state.framebuffer = std::move(new_framebuffer);
-        {
-            std::lock_guard<std::mutex> video_lock(state.video_frame_mutex);
-            state.video_present_queue.clear();
-            state.pending_video_frame_dirty.store(false, std::memory_order_release);
-        }
-        const uint64_t tile_epoch = wd_client_stream_ownership_reset_to_tiles(&state.stream_ownership);
         state.pending_dirty_tiles = std::move(new_dirty_tiles);
         state.pending_dirty_rect_count.store(0, std::memory_order_release);
-        state.pending_dirty_epoch        = tile_epoch;
+        state.pending_dirty_epoch        = 0;
         state.received_generation        = std::move(new_received_generation);
         state.presented_generation       = std::move(new_presented_generation);
         state.pending_present_generation = std::move(new_pending_present_generation);
@@ -1197,11 +1192,45 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
 
     client_reset_content_epoch(state, config.content_epoch, WD_CLIENT_CONTENT_OWNER_TILES);
 
-    SDL_DestroyTexture(texture);
-    SDL_DestroyTexture(video_texture);
+    SDL_Texture* previous_tile   = texture;
+    SDL_Texture* previous_video  = video_texture;
+    SDL_Texture* previous_active = active_texture;
+
+    if (fallback_texture && fallback_texture != previous_active)
+    {
+        SDL_DestroyTexture(fallback_texture);
+        fallback_texture = nullptr;
+    }
+
+    if (previous_active == previous_tile)
+    {
+        fallback_texture = previous_tile;
+        SDL_DestroyTexture(previous_video);
+    }
+    else if (previous_active == previous_video)
+    {
+        fallback_texture = previous_video;
+        SDL_DestroyTexture(previous_tile);
+    }
+    else
+    {
+        /* A second resize arrived before the first new geometry produced a
+         * presentable frame. Keep the already-visible fallback and discard
+         * both uncommitted textures from the superseded configuration. */
+        fallback_texture = previous_active;
+        if (previous_tile != fallback_texture)
+        {
+            SDL_DestroyTexture(previous_tile);
+        }
+        if (previous_video != fallback_texture)
+        {
+            SDL_DestroyTexture(previous_video);
+        }
+    }
+
     texture        = new_texture;
     video_texture  = new_video_texture;
-    active_texture = texture;
+    active_texture = fallback_texture ? fallback_texture : texture;
 
     g_client_config = &state.config;
     if (!SDL_SetWindowMinimumSize(window, WD_CLIENT_MIN_WINDOW_WIDTH, WD_CLIENT_MIN_WINDOW_HEIGHT))
@@ -2020,6 +2049,7 @@ int run_sdl_viewer(ClientState& state) {
     SDL_Texture* texture        = create_frame_texture(renderer, state.config.width, state.config.height);
     SDL_Texture* video_texture  = create_video_texture(renderer, state.config.width, state.config.height);
     SDL_Texture* active_texture = texture;
+    SDL_Texture* fallback_texture = nullptr;
 
     if (!texture || !video_texture)
     {
@@ -2057,7 +2087,8 @@ int run_sdl_viewer(ClientState& state) {
         apply_pending_cursor_shape(state);
         drain_remote_selection_updates(state);
 
-        if (apply_pending_server_config(state, window, renderer, texture, video_texture, active_texture))
+        if (apply_pending_server_config(state, window, renderer, texture, video_texture, active_texture,
+                                        fallback_texture))
         {
             last_requested_width      = state.config.width;
             last_requested_height     = state.config.height;
@@ -2132,7 +2163,7 @@ int run_sdl_viewer(ClientState& state) {
             }
         }
 
-        const bool local_frame_dirty      = frame_dirty || texture_needs_full_upload;
+        const bool local_frame_dirty      = frame_dirty || (texture_needs_full_upload && fallback_texture == nullptr);
         bool       remote_frame_dirty     = false;
         bool       remote_texture_updated = false;
         uint32_t   video_hold_wait_ms     = 0;
@@ -2150,6 +2181,7 @@ int run_sdl_viewer(ClientState& state) {
         {
             const uint32_t frame_width  = state.config.width;
             const uint32_t frame_height = state.config.height;
+            SDL_Texture*  active_texture_before_upload = active_texture;
 
             VideoPresentInfo video_present;
             tile_generation_updates.clear();
@@ -2201,7 +2233,14 @@ int run_sdl_viewer(ClientState& state) {
                     const struct wd_client_content_ownership_snapshot ownership =
                         wd_client_stream_ownership_snapshot(&state.stream_ownership);
                     const bool stale_video_needs_tile_restore      = video_result_stale && ownership.owner == WD_CLIENT_CONTENT_OWNER_TILES;
-                    const bool allow_tile_upload                   = !video_result_stale || ownership.owner == WD_CLIENT_CONTENT_OWNER_TILES;
+                    bool       pending_surface_tile_ready          = true;
+                    if (fallback_texture && ownership.owner == WD_CLIENT_CONTENT_OWNER_TILES)
+                    {
+                        std::lock_guard<std::mutex> generation_lock(state.generation_mutex);
+                        pending_surface_tile_ready = client_tile_frame_complete(state.received_generation);
+                    }
+                    const bool allow_tile_upload = pending_surface_tile_ready &&
+                                                   (!video_result_stale || ownership.owner == WD_CLIENT_CONTENT_OWNER_TILES);
 
                     if (allow_tile_upload && !texture_needs_full_upload && !stale_video_needs_tile_restore)
                     {
@@ -2316,6 +2355,7 @@ int run_sdl_viewer(ClientState& state) {
                 tile_generation_updates.clear();
                 remote_texture_updated = false;
                 video_present.valid    = false;
+                active_texture         = fallback_texture ? fallback_texture : active_texture_before_upload;
                 if (current.owner == WD_CLIENT_CONTENT_OWNER_TILES)
                 {
                     texture_needs_full_upload = true;
@@ -2350,6 +2390,14 @@ int run_sdl_viewer(ClientState& state) {
                     break;
                 }
 
+                if (client_render_surface_handoff_decide(content_texture_updated, !upload_stale, true) ==
+                        ClientRenderSurfaceHandoff::CommitNew &&
+                    fallback_texture && active_texture != fallback_texture)
+                {
+                    SDL_DestroyTexture(fallback_texture);
+                    fallback_texture = nullptr;
+                }
+
                 if (!tile_generation_updates.empty())
                 {
                     {
@@ -2363,8 +2411,11 @@ int run_sdl_viewer(ClientState& state) {
                                                       tile_telemetry_batch.content_epoch);
                     }
                 }
-                frame_dirty               = false;
-                texture_needs_full_upload = false;
+                frame_dirty = false;
+                if (content_texture_updated && !upload_stale)
+                {
+                    texture_needs_full_upload = false;
+                }
             }
         }
 
@@ -2400,6 +2451,10 @@ int run_sdl_viewer(ClientState& state) {
     state.session.running.store(false, std::memory_order_relaxed);
     SDL_DestroyTexture(texture);
     SDL_DestroyTexture(video_texture);
+    if (fallback_texture && fallback_texture != texture && fallback_texture != video_texture)
+    {
+        SDL_DestroyTexture(fallback_texture);
+    }
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     free_cached_cursors();

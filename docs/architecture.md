@@ -73,15 +73,14 @@ No subsystem may grow an unbounded queue. Telemetry samples may always be droppe
 
 The stream controller applies health and tile/video ownership policy on the fixed health cadence; telemetry only snapshots and reports its results.
 
-Every connection is a hard policy boundary: interval feedback, input correlation, pressure history, bootstrap state, and recovery state are reset before the new connection identity is published. Every connection begins with tile ownership and a compositor-produced full refresh. Automatic and forced video both remain blocked until the client reports presentation of that exact content epoch. A video-to-tile handoff likewise completes only after the client reports the recovery epoch, so an unrelated or stale tile presentation cannot release the transition. Planned resize recovery may return directly to forced video after that acknowledgement; decode, publication, channel, and presentation failures retain the retry circuit breaker. Video-health classification uses both the current decode-queue depth and the maximum depth observed during the feedback interval so audio-synchronized frames are not mistaken for a stalled presentation pipeline merely because the queue drained just before telemetry was sampled. Audio-wait classification also requires an explicit client playback state. A buffering audio epoch may delay initial video for one bounded startup window; if no audio clock is established, the client relinquishes the gate, presents video, and reports the timeout so the server does not treat an indefinite hold as healthy.
+Every connection is a hard policy boundary: interval feedback, input correlation, pressure history, bootstrap state, and recovery state are reset before the new connection identity is published. Every connection begins with tile ownership and a compositor-produced full refresh. Automatic and forced video both remain blocked until the client reports presentation of that exact content epoch. A video-to-tile handoff likewise completes only after the client reports the recovery epoch, so an unrelated or stale tile presentation cannot release the transition. Planned resize recovery returns directly to the previously selected video mode—forced or automatic—after that acknowledgement; decode, publication, channel, and presentation failures retain the retry circuit breaker. Video-health classification uses both the current decode-queue depth and the maximum depth observed during the feedback interval so audio-synchronized frames are not mistaken for a stalled presentation pipeline merely because the queue drained just before telemetry was sampled. Audio-wait classification also requires an explicit client playback state. A buffering audio epoch may delay initial video for one bounded startup window; if no audio clock is established, the client relinquishes the gate, presents video, and reports the timeout so the server does not treat an indefinite hold as healthy.
 
 Capture service timing follows the effective adaptive FPS target and compositor refresh. The millisecond Wayland timer uses a bounded target-derived service interval, while an absolute nanosecond deadline remains the authoritative capture gate. Eventfd wakeups may accelerate queue service but cannot advance a capture deadline or exceed the configured FPS cap.
 
 The client owns active-session cadence. Its normalized requested FPS is applied
 to the headless output before the server publishes that connection's
 configuration, and the same value is the remote capture ceiling and local
-presentation cap. The server refresh option exists only to provide a valid
-headless mode before a client connects. Display-size changes preserve the
+presentation cap. `WD_SERVER_IDLE_REFRESH_HZ` provides the valid headless mode before a client connects. Display-size changes preserve the
 active client cadence; a later connection may select a different cadence.
 
 The eventfd wake path is lock-free and may be called while the network mutex is held.
@@ -98,7 +97,7 @@ Mode-transition diagnostics include bootstrap/recovery epochs, recovery class, w
 
 ## Stream lifecycle scenario contract
 
-The test suite exercises complete ownership scenarios rather than only isolated transition predicates. Every connection begins tile-owned and must present the exact bootstrap content epoch before video can own the display, including forced-video sessions. Planned resize recovery may resume forced video immediately after the exact recovery epoch is presented; decoder, channel, or presentation failures use a retry circuit breaker. Reconnects rotate the connection identity and cannot consume presentation evidence from the previous session.
+The test suite exercises complete ownership scenarios rather than only isolated transition predicates. Every connection begins tile-owned and must present the exact bootstrap content epoch before video can own the display, including forced-video sessions. Planned resize recovery resumes previously selected forced or automatic video immediately after the exact recovery epoch is presented; decoder, channel, or presentation failures use a retry circuit breaker. Reconnects rotate the connection identity and cannot consume presentation evidence from the previous session.
 
 ### Connection bandwidth plans
 
@@ -151,6 +150,25 @@ it still requires the client's selected control mode, successful negotiation,
 a connected video channel, an encoder, completed bootstrap/recovery, and any
 failure cooldown required by the recovery class.
 
+### Planned resize continuity
+
+A planned resize records whether video was selected before the geometry change.
+The server temporarily transfers ownership to one exact tile recovery snapshot,
+binds that snapshot to the current framebuffer generation, and suppresses later
+live tile churn while it drains. A second resize cancels the obsolete barrier
+and restarts it against the newest framebuffer generation. Once the client
+presents the exact recovery epoch, the controller moves directly to
+`video-ready` when video negotiation, channel, encoder, and requested mode are
+still valid. Automatic selection is preserved just like forced selection; a
+planned resize does not require a new dirty-content qualification window.
+
+The client treats replacement textures as pending surfaces. The last
+successfully presented surface remains visible while the new geometry is
+allocated and populated. A tile replacement commits only after every base tile
+of the newest recovery frame is present and the upload/presentation succeeds; a
+video replacement commits on a fresh successful keyframe presentation. Stale,
+partial, or failed replacements leave the previous surface active.
+
 ### In-place video recovery
 
 The compressed decode-input queue and the decoded presentation queue are
@@ -174,7 +192,7 @@ false fallback.
 The client `--fps` request is a ceiling, not a promise that every video frame
 will be encoded at that rate. Decode-input overload or average decode time that
 leaves less than the configured headroom immediately lowers video capture and
-encoder cadence. Cadence rises only after ten healthy presentation intervals.
+encoder cadence. Cadence rises one FPS at a time only after the configured sustained-health interval.
 Compositor refresh remains at the client-selected session cadence while video
 capture may run below it. Tile pressure, video overload, and presentation
 health use independent streaks.

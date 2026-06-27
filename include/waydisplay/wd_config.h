@@ -373,7 +373,12 @@ extern "C" {
 #define WD_STREAM_VIDEO_RECOVERY_TIMEOUT_SECONDS        3u
 #define WD_STREAM_VIDEO_RECOVERY_MAX_ATTEMPTS           2u
 #define WD_STREAM_VIDEO_DECODE_HEADROOM_PERCENT          85u
-#define WD_STREAM_VIDEO_FPS_GOOD_SECONDS_TO_INCREASE     10u
+#define WD_STREAM_VIDEO_DECODE_EWMA_NEW_NUMERATOR         1u
+#define WD_STREAM_VIDEO_DECODE_EWMA_DENOMINATOR           4u
+#define WD_STREAM_VIDEO_FPS_DEADBAND                       2u
+#define WD_STREAM_VIDEO_OVERLOAD_DECREASE_PERCENT         75u
+#define WD_STREAM_VIDEO_FPS_INCREASE_STEP                  1u
+#define WD_STREAM_VIDEO_FPS_GOOD_SECONDS_TO_INCREASE      15u
 
 /* Connection-level bandwidth allocations. Percentages are nominal class
  * budgets derived from the safe throughput probe. Audio and control are
@@ -690,6 +695,16 @@ WD_CONFIG_STATIC_ASSERT(WD_VIDEO_ENCODER_VAAPI_PROBE_WIDTH > 0u && WD_VIDEO_ENCO
                         "video encoder probe geometry must be nonzero");
 WD_CONFIG_STATIC_ASSERT(WD_AUDIO_ENCODER_SIGNAL_MODE <= 2u,
                         "audio encoder signal mode must be auto, music, or voice");
+WD_CONFIG_STATIC_ASSERT(WD_STREAM_VIDEO_DECODE_EWMA_NEW_NUMERATOR > 0u &&
+                            WD_STREAM_VIDEO_DECODE_EWMA_NEW_NUMERATOR < WD_STREAM_VIDEO_DECODE_EWMA_DENOMINATOR,
+                        "video decode EWMA must retain both old and new samples");
+WD_CONFIG_STATIC_ASSERT(WD_STREAM_VIDEO_FPS_DEADBAND < WD_MAX_REASONABLE_FPS &&
+                            WD_STREAM_VIDEO_OVERLOAD_DECREASE_PERCENT > 0u &&
+                            WD_STREAM_VIDEO_OVERLOAD_DECREASE_PERCENT < 100u,
+                        "video cadence hysteresis and overload reduction must be bounded");
+WD_CONFIG_STATIC_ASSERT(WD_STREAM_VIDEO_FPS_INCREASE_STEP > 0u &&
+                            WD_STREAM_VIDEO_FPS_GOOD_SECONDS_TO_INCREASE > 0u,
+                        "video cadence recovery must make bounded forward progress");
 WD_CONFIG_STATIC_ASSERT(WD_CLIENT_VIDEO_DECODER_THREADS > 0u,
                         "client video decoder thread count must be nonzero");
 

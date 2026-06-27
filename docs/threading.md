@@ -32,6 +32,24 @@ The conceptual state order is:
 
 No thread may call SDL while holding a producer-state mutex. The receive worker may signal `ClientRenderWake`, but only the render thread consumes and presents frames. Audio synchronization may discard or adjust audio, but it must not hold the video presentation path indefinitely. Initial audio buffering may gate video for at most `WD_CLIENT_AUDIO_VIDEO_STARTUP_HOLD_MAX_MS`; after that bound, video presents without an audio master clock until playback becomes established.
 
+## Resize texture lifetime
+
+Only the SDL/render thread creates, activates, or destroys textures. During a
+server-configuration resize it keeps the last successfully presented texture
+as a fallback and creates the new tile/video textures as pending surfaces.
+Receive and decode workers may populate producer state and wake the renderer,
+but they cannot activate or free either surface. The render thread commits the
+new surface only after fresh content for the current epoch and geometry has
+been uploaded and presented successfully, then destroys the fallback. Repeated
+configuration changes may replace pending textures but never the visible
+fallback.
+
+On the server, planned tile recovery is a framebuffer-generation barrier owned
+under `wd_net_state.lock`. Later compositor damage is coalesced while that
+barrier drains. A newer resize invalidates the barrier and requests a new
+compositor-owned full refresh; asynchronous completions from the older
+generation are rejected before they can release recovery or resume video.
+
 ## Queue policy
 
 All cross-thread queues are bounded. The compressed video decode-input queue and

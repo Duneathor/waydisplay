@@ -503,14 +503,64 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
     net->stream_policy.last_video_frame_send_ns = 0;
     net->stream_policy.video_candidate_seconds  = 0;
     net->stream_policy.tile_recovery_seconds    = 0;
+    if (resize)
+    {
+        net->stream_policy.video_decode_ewma_ns  = 0;
+        net->stream_policy.video_decode_safe_fps = 0;
+    }
     net->stats.video_resets++;
     if (resize)
     {
         net->stats.video_resize_resets++;
     }
 
+    const enum wd_stream_mode previous_mode = net->stream_policy.stream_mode;
+    const bool previous_mode_selected_video = previous_mode == WD_STREAM_MODE_VIDEO_READY ||
+                                              previous_mode == WD_STREAM_MODE_VIDEO_ACTIVE ||
+                                              previous_mode == WD_STREAM_MODE_VIDEO_RECOVERING;
+    if (resize && net->client_connected &&
+        (previous_mode_selected_video ||
+         (previous_mode == WD_STREAM_MODE_TILE_RECOVERY && net->stream_policy.planned_recovery_resume_video)))
+    {
+        net->stream_policy.planned_recovery_resume_video = true;
+        if (previous_mode_selected_video)
+        {
+            net->stream_policy.planned_recovery_source_mode = (uint8_t)previous_mode;
+        }
+    }
+    else if (!resize)
+    {
+        net->stream_policy.planned_recovery_resume_video = false;
+        net->stream_policy.planned_recovery_source_mode  = WD_STREAM_MODE_TILES;
+    }
+
     if (net->stream_policy.stream_mode != WD_STREAM_MODE_TILES)
     {
+        if (resize && net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY &&
+            net->stream_policy.video_recovery_class == WD_VIDEO_RECOVERY_PLANNED)
+        {
+            /* A second resize invalidates the previous recovery snapshot even
+             * though the enum state is unchanged. Restart the transition for
+             * the new framebuffer generation instead of letting set_mode's
+             * same-state guard retain the old epoch/barrier. */
+            const uint64_t previous_recovery_epoch = net->stream_policy.tile_recovery_content_epoch;
+            const uint64_t previous_recovery_generation = net->stream_policy.tile_recovery_framebuffer_generation;
+            net->stream_policy.tile_refresh_pending = true;
+            net->stream_policy.tile_recovery_refresh_started = false;
+            net->stream_policy.tile_recovery_refresh_sent = false;
+            net->stream_policy.tile_recovery_wait_seconds = 0;
+            net->stream_policy.tile_recovery_content_epoch = 0;
+            net->stream_policy.tile_recovery_framebuffer_generation = 0;
+            net->stream_policy.tile_recovery_live_damage_deferred = false;
+            WD_LOG_DEBUG("planned tile recovery restart: old_epoch=%llu old_framebuffer_generation=%llu "
+                         "new_epoch=%llu new_framebuffer_generation=%llu resume_video=%s resume_from=%s",
+                         (unsigned long long)previous_recovery_epoch,
+                         (unsigned long long)previous_recovery_generation,
+                         (unsigned long long)net->content_epoch,
+                         (unsigned long long)server->framebuffer_generation,
+                         net->stream_policy.planned_recovery_resume_video ? "yes" : "no",
+                         wd_stream_mode_name((enum wd_stream_mode)net->stream_policy.planned_recovery_source_mode));
+        }
         wd_stream_policy_set_mode_locked(&net->stream_policy, net->client_connected ? WD_STREAM_MODE_TILE_RECOVERY : WD_STREAM_MODE_TILES,
                                          net->client_connected ? (resize ? WD_VIDEO_RECOVERY_PLANNED : WD_VIDEO_RECOVERY_FAILURE)
                                                                : WD_VIDEO_RECOVERY_NONE,

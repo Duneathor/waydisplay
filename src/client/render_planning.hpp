@@ -94,4 +94,14 @@ bool summary_pending_index_remove(std::vector<uint16_t>& active_tiles, std::vect
 bool should_collect_pending_tile_dirty(bool texture_needs_full_upload, bool video_frame_pending);
 bool should_clear_pending_tile_dirty(bool full_framebuffer_uploaded, bool video_frame_uploaded);
 
+enum class ClientRenderSurfaceHandoff : uint8_t {
+    KeepCurrent,
+    CommitNew,
+};
+
+ClientRenderSurfaceHandoff client_render_surface_handoff_decide(bool new_surface_uploaded,
+                                                                bool ownership_current,
+                                                                bool presentation_succeeded);
+bool client_tile_frame_complete(const std::vector<uint64_t>& received_generations);
+
 } // namespace waydisplay

@@ -218,6 +218,8 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->video_client_failure_seconds      = 0;
     policy->video_client_failure_class        = WD_CLIENT_VIDEO_HEALTH_IDLE;
     policy->video_frame_rate_good_seconds     = 0;
+    policy->video_decode_ewma_ns              = 0;
+    policy->video_decode_safe_fps             = 0;
     policy->video_feedback_pending             = false;
     policy->video_feedback_flags               = 0;
     policy->video_feedback_sequence            = 0;
@@ -229,6 +231,10 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->tile_recovery_refresh_started     = false;
     policy->tile_recovery_refresh_sent        = false;
     policy->tile_recovery_wait_seconds        = 0;
+    policy->tile_recovery_framebuffer_generation = 0;
+    policy->tile_recovery_live_damage_deferred = false;
+    policy->planned_recovery_resume_video     = false;
+    policy->planned_recovery_source_mode      = WD_STREAM_MODE_TILES;
     policy->video_retry_cooldown_seconds      = 0;
     policy->video_bootstrap_pending         = false;
     policy->video_bootstrap_refresh_started = false;
@@ -291,6 +297,8 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->video_client_failure_seconds      = 0;
     policy->video_client_failure_class        = WD_CLIENT_VIDEO_HEALTH_IDLE;
     policy->video_frame_rate_good_seconds     = 0;
+    policy->video_decode_ewma_ns              = 0;
+    policy->video_decode_safe_fps             = 0;
     policy->video_feedback_pending             = false;
     policy->video_feedback_flags               = 0;
     policy->video_feedback_sequence            = 0;
@@ -302,6 +310,10 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->tile_recovery_refresh_started     = false;
     policy->tile_recovery_refresh_sent        = false;
     policy->tile_recovery_wait_seconds        = 0;
+    policy->tile_recovery_framebuffer_generation = 0;
+    policy->tile_recovery_live_damage_deferred = false;
+    policy->planned_recovery_resume_video     = false;
+    policy->planned_recovery_source_mode      = WD_STREAM_MODE_TILES;
     policy->video_retry_cooldown_seconds      = 0;
     policy->video_bootstrap_pending         = false;
     policy->video_bootstrap_refresh_started = false;
@@ -357,8 +369,12 @@ void wd_stream_policy_begin_session(struct wd_stream_policy* policy, const struc
     policy->video_bootstrap_refresh_sent    = false;
     policy->video_bootstrap_wait_seconds    = 0;
     policy->video_bootstrap_content_epoch   = bootstrap_content_epoch;
-    policy->tile_recovery_content_epoch     = 0;
-    policy->video_recovery_class            = WD_VIDEO_RECOVERY_NONE;
+    policy->tile_recovery_content_epoch              = 0;
+    policy->tile_recovery_framebuffer_generation     = 0;
+    policy->tile_recovery_live_damage_deferred       = false;
+    policy->planned_recovery_resume_video            = false;
+    policy->planned_recovery_source_mode             = WD_STREAM_MODE_TILES;
+    policy->video_recovery_class                     = WD_VIDEO_RECOVERY_NONE;
 }
 
 const char* wd_stream_mode_name(enum wd_stream_mode mode) {
@@ -522,15 +538,24 @@ void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_s
         policy->tile_recovery_refresh_started = false;
         policy->tile_recovery_refresh_sent    = false;
         policy->tile_recovery_wait_seconds    = 0;
+        policy->tile_recovery_framebuffer_generation = 0;
+        policy->tile_recovery_live_damage_deferred = false;
         policy->video_client_failure_seconds  = 0;
         policy->tile_recovery_content_epoch    = 0;
         policy->video_recovery_class           = recovery_class;
+        if (recovery_class != WD_VIDEO_RECOVERY_PLANNED)
+        {
+            policy->planned_recovery_resume_video = false;
+            policy->planned_recovery_source_mode  = WD_STREAM_MODE_TILES;
+        }
     }
     else if (mode != WD_STREAM_MODE_TILE_RECOVERY)
     {
         policy->tile_recovery_refresh_started = false;
         policy->tile_recovery_refresh_sent    = false;
         policy->tile_recovery_wait_seconds    = 0;
+        policy->tile_recovery_framebuffer_generation = 0;
+        policy->tile_recovery_live_damage_deferred = false;
     }
 
     if (wd_stream_mode_video_owns_display(old_mode) && !wd_stream_mode_video_owns_display(mode))
@@ -545,13 +570,15 @@ void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_s
     }
 
     WD_LOG_DEBUG("stream mode state: %s -> %s reason=%s dirty_avg_pct=%.1f dirty_peak_pct=%.1f budget_pressure_pct=%.1f video_channel=%s "
-                 "video_encoder=%s bootstrap=%s bootstrap_epoch=%llu recovery_class=%u recovery_epoch=%llu recovery_wait=%u retry_cooldown=%u",
+                 "video_encoder=%s bootstrap=%s bootstrap_epoch=%llu recovery_class=%u recovery_epoch=%llu recovery_wait=%u retry_cooldown=%u "
+                 "planned_resume=%s resume_from=%s",
                  wd_stream_mode_name(old_mode), wd_stream_mode_name(mode), reason ? reason : "unspecified", dirty_avg_pct, dirty_peak_pct,
                  budget_pressure_pct, video_channel_connected ? "yes" : "no", video_encoder_available ? "yes" : "no",
                  policy->video_bootstrap_pending ? "pending" : "complete",
                  (unsigned long long)policy->video_bootstrap_content_epoch, (unsigned)policy->video_recovery_class,
                  (unsigned long long)policy->tile_recovery_content_epoch, policy->tile_recovery_wait_seconds,
-                 policy->video_retry_cooldown_seconds);
+                 policy->video_retry_cooldown_seconds, policy->planned_recovery_resume_video ? "yes" : "no",
+                 wd_stream_mode_name((enum wd_stream_mode)policy->planned_recovery_source_mode));
 }
 
 void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const struct wd_stats* stats, uint16_t total_tiles,
@@ -634,6 +661,36 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
                                                             video_channel_connected, video_encoder_available);
     const bool video_forced   = policy->video_mode == WD_VIDEO_MODE_FORCE;
     const bool video_disabled = policy->video_mode == WD_VIDEO_MODE_OFF;
+
+    const enum wd_planned_video_resume_action planned_resume_action = wd_planned_video_resume_decide(
+        policy->planned_recovery_resume_video, policy->stream_mode == WD_STREAM_MODE_TILE_RECOVERY,
+        policy->video_bootstrap_pending, policy->video_mode, video_negotiated, video_channel_connected,
+        video_encoder_available);
+    if (planned_resume_action == WD_PLANNED_VIDEO_RESUME_CLEAR)
+    {
+        WD_LOG_DEBUG("planned video resume cleared: mode=%s negotiated=%s channel=%s encoder=%s",
+                     video_disabled ? "off" : "enabled", video_negotiated ? "yes" : "no",
+                     video_channel_connected ? "yes" : "no", video_encoder_available ? "yes" : "no");
+        policy->planned_recovery_resume_video = false;
+        policy->planned_recovery_source_mode  = WD_STREAM_MODE_TILES;
+    }
+    else if (planned_resume_action == WD_PLANNED_VIDEO_RESUME_ENTER &&
+             policy->stream_mode == WD_STREAM_MODE_TILES)
+    {
+        const enum wd_stream_mode source_mode = (enum wd_stream_mode)policy->planned_recovery_source_mode;
+        policy->planned_recovery_resume_video = false;
+        policy->planned_recovery_source_mode  = WD_STREAM_MODE_TILES;
+        policy->video_candidate_seconds       = 0;
+        policy->tile_recovery_seconds         = 0;
+        policy->tile_refresh_pending           = false;
+        policy->tile_recovery_live_damage_deferred = false;
+        wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_VIDEO_READY, WD_VIDEO_RECOVERY_NONE,
+                                         source_mode == WD_STREAM_MODE_VIDEO_READY ? "resume selected video after resize"
+                                                                                   : "resume video after resize",
+                                         dirty_avg_pct, dirty_peak_pct, budget_pressure_pct,
+                                         video_channel_connected, video_encoder_available);
+        return;
+    }
     const bool video_entry_candidate =
         !video_disabled && wd_video_entry_allowed(policy->video_bootstrap_pending, false, video_retry_cooldown_active ? 1u : 0u, video_forced,
                                (enum wd_video_recovery_class)policy->video_recovery_class) &&
@@ -1052,26 +1109,36 @@ static void wd_stream_policy_update_video_frame_rate_locked(struct wd_stream_pol
     {
         average_decode_ns = stats->client_video_decode_sum_ns / stats->client_video_decode_samples;
     }
-    const uint16_t safe_decode_fps = wd_video_safe_decode_fps(average_decode_ns, policy->requested_capture_fps,
-                                                              WD_STREAM_VIDEO_DECODE_HEADROOM_PERCENT);
-    const bool overload = health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED ||
-                          stats->client_video_queue_overflow_drops != 0 ||
-                          (safe_decode_fps != 0 && safe_decode_fps < current_fps);
-    if (overload)
+    if (average_decode_ns != 0)
+    {
+        policy->video_decode_ewma_ns = wd_video_decode_ewma_update(
+            policy->video_decode_ewma_ns, average_decode_ns,
+            WD_STREAM_VIDEO_DECODE_EWMA_NEW_NUMERATOR,
+            WD_STREAM_VIDEO_DECODE_EWMA_DENOMINATOR);
+    }
+
+    const uint16_t safe_decode_fps = wd_video_safe_decode_fps(
+        policy->video_decode_ewma_ns, policy->requested_capture_fps,
+        WD_STREAM_VIDEO_DECODE_HEADROOM_PERCENT);
+    policy->video_decode_safe_fps = safe_decode_fps;
+
+    const bool hard_overload = health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED ||
+                               stats->client_video_queue_overflow_drops != 0;
+    const uint16_t downshift_target = wd_video_cadence_downshift_target(
+        current_fps, policy->requested_capture_fps, safe_decode_fps, hard_overload,
+        WD_STREAM_FPS_MIN, WD_STREAM_VIDEO_FPS_DEADBAND,
+        WD_STREAM_VIDEO_OVERLOAD_DECREASE_PERCENT);
+    if (downshift_target < current_fps)
     {
         policy->video_frame_rate_good_seconds = 0;
-        wd_stream_policy_update_frame_rate_locked(policy, stats, true,
-                                                  health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED,
-                                                  health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED
-                                                      ? "client video decode queue overload"
-                                                      : "client video decode time");
-        if (safe_decode_fps >= WD_STREAM_FPS_MIN && policy->adaptive_capture_fps > safe_decode_fps)
-        {
-            const uint16_t old_fps = policy->adaptive_capture_fps;
-            policy->adaptive_capture_fps = safe_decode_fps;
-            wd_frame_pacing_reset(&policy->frame_pacing);
-            WD_LOG_DEBUG("stream video cadence capped by decode time: %u -> %u fps", old_fps, safe_decode_fps);
-        }
+        policy->adaptive_capture_fps = downshift_target;
+        wd_frame_pacing_reset(&policy->frame_pacing);
+        stats->frame_rate_downshifts++;
+        WD_LOG_DEBUG("stream video cadence down: %u -> %u fps reason=%s decode_ewma_ms=%.2f safe_fps=%u",
+                     current_fps, downshift_target,
+                     hard_overload ? "decoder overload" : "decode capacity",
+                     (double)policy->video_decode_ewma_ns / 1000000.0,
+                     safe_decode_fps);
         return;
     }
     if (health != WD_CLIENT_VIDEO_HEALTH_NORMAL || stats->client_video_frames_presented == 0 ||
@@ -1085,22 +1152,17 @@ static void wd_stream_policy_update_video_frame_rate_locked(struct wd_stream_pol
         return;
     }
     policy->video_frame_rate_good_seconds = 0;
-    uint32_t next = (uint32_t)current_fps + 1u;
-    const uint32_t percent = (uint32_t)current_fps * WD_STREAM_FPS_INCREASE_PERCENT / 100u;
-    if (percent > next)
-    {
-        next = percent;
-    }
-    if (next > policy->requested_capture_fps)
-    {
-        next = policy->requested_capture_fps;
-    }
+    const uint16_t next = wd_video_cadence_upshift_target(
+        current_fps, policy->requested_capture_fps, safe_decode_fps,
+        WD_STREAM_VIDEO_FPS_DEADBAND, WD_STREAM_VIDEO_FPS_INCREASE_STEP);
     if (next != current_fps)
     {
-        policy->adaptive_capture_fps = (uint16_t)next;
+        policy->adaptive_capture_fps = next;
         wd_frame_pacing_reset(&policy->frame_pacing);
         stats->frame_rate_upshifts++;
-        WD_LOG_DEBUG("stream video cadence up: %u -> %u fps after sustained decoder health", current_fps, (unsigned)next);
+        WD_LOG_DEBUG("stream video cadence up: %u -> %u fps after sustained decoder health decode_ewma_ms=%.2f safe_fps=%u",
+                     current_fps, next, (double)policy->video_decode_ewma_ns / 1000000.0,
+                     safe_decode_fps);
     }
 }
 
@@ -1127,10 +1189,23 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
                                     WD_STREAM_TILE_RECOVERY_TIMEOUT_SECONDS);
         if (recovery_action != WD_TILE_RECOVERY_WAIT)
         {
-            policy->video_retry_cooldown_seconds = WD_STREAM_VIDEO_RETRY_COOLDOWN_SECONDS;
+            const bool resume_planned_video = recovery_action == WD_TILE_RECOVERY_COMPLETE_PRESENTED &&
+                                              policy->video_recovery_class == WD_VIDEO_RECOVERY_PLANNED &&
+                                              policy->planned_recovery_resume_video;
+            policy->video_retry_cooldown_seconds = resume_planned_video ? 0 : WD_STREAM_VIDEO_RETRY_COOLDOWN_SECONDS;
             if (recovery_action == WD_TILE_RECOVERY_COMPLETE_TIMEOUT)
             {
                 policy->video_recovery_class = WD_VIDEO_RECOVERY_FAILURE;
+                policy->planned_recovery_resume_video = false;
+                policy->planned_recovery_source_mode  = WD_STREAM_MODE_TILES;
+            }
+            if (policy->tile_recovery_live_damage_deferred)
+            {
+                /* If video cannot resume on the same controller tick, force a
+                 * fresh tile snapshot so damage coalesced behind the recovery
+                 * barrier is not lost. The planned-resume path clears this
+                 * request before entering VIDEO_READY. */
+                policy->tile_refresh_pending = true;
             }
             wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILES, WD_VIDEO_RECOVERY_NONE,
                                              recovery_action == WD_TILE_RECOVERY_COMPLETE_PRESENTED ? "client presented recovery tiles"
@@ -1197,7 +1272,8 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
         if (policy->stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE &&
             immediate_feedback_action == WD_VIDEO_FEEDBACK_ACTION_RECOVER_IN_VIDEO)
         {
-            wd_stream_policy_update_frame_rate_locked(policy, stats, true, true, "immediate client decoder overload");
+            wd_stream_policy_update_video_frame_rate_locked(policy, stats,
+                                                             WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED);
             policy->video_frame_rate_good_seconds   = 0;
             policy->video_recovery_attempts        = 1;
             policy->video_recovery_wait_seconds    = 0;
@@ -4093,6 +4169,7 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
         return true;
     }
 
+    bool recovery_refresh_started_this_pass = false;
     if (net->stream_policy.tile_refresh_pending ||
         (net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY && !net->stream_policy.tile_recovery_refresh_started))
     {
@@ -4134,6 +4211,9 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
         if (recovering_from_video)
         {
             net->stream_policy.tile_recovery_content_epoch = net->content_epoch;
+            net->stream_policy.tile_recovery_framebuffer_generation = server->framebuffer_generation;
+            net->stream_policy.tile_recovery_live_damage_deferred = false;
+            recovery_refresh_started_this_pass = true;
         }
         if (bootstrap_refresh)
         {
@@ -4142,9 +4222,14 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
             net->stream_policy.video_bootstrap_wait_seconds    = 0;
             net->stream_policy.video_bootstrap_content_epoch   = net->content_epoch;
         }
-        WD_LOG_INFO("stream mode ownership: owner=tiles refresh=%s epoch=%llu video_eos=%s",
+        WD_LOG_INFO("stream mode ownership: owner=tiles refresh=%s epoch=%llu video_eos=%s "
+                    "framebuffer_generation=%llu planned_resume=%s resume_from=%s",
                     recovering_from_video ? "recovery" : (bootstrap_refresh ? "bootstrap" : "full"),
-                    (unsigned long long)net->content_epoch, recovering_from_video ? "sent" : "no");
+                    (unsigned long long)net->content_epoch, recovering_from_video ? "sent" : "no",
+                    (unsigned long long)(recovering_from_video ? net->stream_policy.tile_recovery_framebuffer_generation
+                                                              : server->framebuffer_generation),
+                    net->stream_policy.planned_recovery_resume_video ? "yes" : "no",
+                    wd_stream_mode_name((enum wd_stream_mode)net->stream_policy.planned_recovery_source_mode));
     }
 
     if (wd_stream_mode_video_owns_display(net->stream_policy.stream_mode))
@@ -4191,7 +4276,19 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
     const uint64_t dirty_budget_blocked_at_frame_start = net->stats.dirty_budget_blocked;
     const uint64_t full_refresh_at_frame_start         = net->stats.framebuffer_diff_full_refreshes;
 
-    if (detect_new_damage)
+    bool process_new_damage = detect_new_damage;
+    if (process_new_damage && net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY &&
+        net->stream_policy.tile_recovery_refresh_started && !recovery_refresh_started_this_pass)
+    {
+        /* The recovery snapshot is a generation barrier, not an open-ended
+         * tile session. Coalesce later compositor damage while its tiles
+         * drain; either the selected video stream supersedes it or a follow-up
+         * tile refresh is requested if video is no longer available. */
+        process_new_damage = false;
+        net->stream_policy.tile_recovery_live_damage_deferred = true;
+    }
+
+    if (process_new_damage)
     {
         const uint64_t dirty_detect_start_ns = wd_now_ns();
         dirty_frame_tiles                    = wd_stream_apply_frame_analysis_locked(server, analysis);
@@ -4449,7 +4546,7 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
         (void)wd_async_udp_sender_flush(net->udp_tx);
     }
 
-    if (detect_new_damage)
+    if (process_new_damage)
     {
         const bool budget_pressure_this_frame = net->stats.dirty_budget_blocked != dirty_budget_blocked_at_frame_start;
         const bool full_refresh_this_frame    = net->stats.framebuffer_diff_full_refreshes != full_refresh_at_frame_start;
@@ -4463,13 +4560,38 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
 
     }
 
-    if (net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY && net->stream_policy.tile_recovery_refresh_started &&
-        !net->stream_policy.tile_recovery_refresh_sent && !wd_stream_has_queued_framebuffer_work_locked(server))
+    const enum wd_tile_recovery_generation_action recovery_generation_action =
+        net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY
+            ? wd_tile_recovery_generation_decide(net->stream_policy.tile_recovery_refresh_started,
+                                                 net->stream_policy.tile_recovery_refresh_sent,
+                                                 net->stream_policy.tile_recovery_framebuffer_generation,
+                                                 server->framebuffer_generation,
+                                                 !wd_stream_has_queued_framebuffer_work_locked(server))
+            : WD_TILE_RECOVERY_GENERATION_WAIT;
+    if (recovery_generation_action == WD_TILE_RECOVERY_GENERATION_STALE)
+    {
+        const uint64_t stale_recovery_generation = net->stream_policy.tile_recovery_framebuffer_generation;
+        net->stream_policy.tile_refresh_pending = true;
+        net->stream_policy.tile_recovery_refresh_started = false;
+        net->stream_policy.tile_recovery_refresh_sent = false;
+        net->stream_policy.tile_recovery_wait_seconds = 0;
+        net->stream_policy.tile_recovery_content_epoch = 0;
+        net->stream_policy.tile_recovery_framebuffer_generation = 0;
+        wd_server_request_full_refresh(server);
+        WD_LOG_DEBUG("discarded stale tile recovery generation: recovery=%llu current=%llu; "
+                     "requesting current framebuffer refresh",
+                     (unsigned long long)stale_recovery_generation,
+                     (unsigned long long)server->framebuffer_generation);
+    }
+    else if (recovery_generation_action == WD_TILE_RECOVERY_GENERATION_TRANSMITTED)
     {
         net->stream_policy.tile_recovery_refresh_sent = true;
         net->stream_policy.tile_recovery_wait_seconds = 0;
-        WD_LOG_INFO("tile recovery refresh transmitted; waiting for client presentation epoch=%llu",
-                    (unsigned long long)net->stream_policy.tile_recovery_content_epoch);
+        WD_LOG_INFO("tile recovery refresh transmitted; waiting for client presentation epoch=%llu "
+                    "framebuffer_generation=%llu planned_resume=%s",
+                    (unsigned long long)net->stream_policy.tile_recovery_content_epoch,
+                    (unsigned long long)net->stream_policy.tile_recovery_framebuffer_generation,
+                    net->stream_policy.planned_recovery_resume_video ? "yes" : "no");
     }
     if (net->stream_policy.video_bootstrap_pending && net->stream_policy.video_bootstrap_refresh_started &&
         !net->stream_policy.video_bootstrap_refresh_sent && !wd_stream_has_queued_framebuffer_work_locked(server))

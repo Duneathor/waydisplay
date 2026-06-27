@@ -556,6 +556,12 @@ struct wd_stats_log_state {
     uint8_t             prev_video_exit_dirty_percent;
     uint16_t            prev_video_exit_seconds;
     uint32_t            prev_video_bitrate_kib;
+    uint64_t            prev_video_decode_ewma_ns;
+    uint16_t            prev_video_decode_safe_fps;
+    bool                prev_planned_recovery_resume_video;
+    uint8_t             prev_planned_recovery_source_mode;
+    uint64_t            prev_tile_recovery_framebuffer_generation;
+    bool                prev_tile_recovery_live_damage_deferred;
     enum wd_stream_mode prev_stream_mode;
 };
 
@@ -575,6 +581,8 @@ struct wd_stream_policy {
     uint32_t            video_client_failure_seconds;
     uint8_t             video_client_failure_class;
     uint32_t            video_frame_rate_good_seconds;
+    uint64_t            video_decode_ewma_ns;
+    uint16_t            video_decode_safe_fps;
     uint32_t            video_recovery_attempts;
     uint32_t            video_recovery_wait_seconds;
     bool                video_recovery_keyframe_queued;
@@ -596,6 +604,10 @@ struct wd_stream_policy {
     bool                tile_recovery_refresh_started;
     bool                tile_recovery_refresh_sent;
     uint32_t            tile_recovery_wait_seconds;
+    uint64_t            tile_recovery_framebuffer_generation;
+    bool                tile_recovery_live_damage_deferred;
+    bool                planned_recovery_resume_video;
+    uint8_t             planned_recovery_source_mode;
     uint32_t            video_retry_cooldown_seconds;
     bool                video_bootstrap_pending;
     bool                video_bootstrap_refresh_started;

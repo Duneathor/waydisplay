@@ -41,6 +41,20 @@ enum wd_tile_recovery_action wd_tile_recovery_decide(bool refresh_sent, uint64_t
     return WD_TILE_RECOVERY_WAIT;
 }
 
+enum wd_tile_recovery_generation_action wd_tile_recovery_generation_decide(
+    bool refresh_started, bool refresh_sent, uint64_t recovery_framebuffer_generation,
+    uint64_t current_framebuffer_generation, bool recovery_queues_empty) {
+    if (!refresh_started || refresh_sent || recovery_framebuffer_generation == 0)
+    {
+        return WD_TILE_RECOVERY_GENERATION_WAIT;
+    }
+    if (recovery_framebuffer_generation != current_framebuffer_generation)
+    {
+        return WD_TILE_RECOVERY_GENERATION_STALE;
+    }
+    return recovery_queues_empty ? WD_TILE_RECOVERY_GENERATION_TRANSMITTED : WD_TILE_RECOVERY_GENERATION_WAIT;
+}
+
 bool wd_video_entry_allowed(bool bootstrap_pending, bool recovery_active, uint32_t retry_cooldown_seconds, bool video_forced,
                             enum wd_video_recovery_class recovery_class) {
     if (bootstrap_pending || recovery_active)
@@ -58,6 +72,25 @@ bool wd_video_control_allows_entry(uint8_t requested_mode, bool video_negotiated
                                    bool video_encoder_available) {
     return requested_mode != WD_VIDEO_MODE_OFF && requested_mode <= WD_VIDEO_MODE_FORCE && video_negotiated &&
            video_channel_connected && video_encoder_available;
+}
+
+enum wd_planned_video_resume_action wd_planned_video_resume_decide(
+    bool resume_requested, bool recovery_active, bool bootstrap_pending, uint8_t requested_mode,
+    bool video_negotiated, bool video_channel_connected, bool video_encoder_available) {
+    if (!resume_requested)
+    {
+        return WD_PLANNED_VIDEO_RESUME_WAIT;
+    }
+    if (!wd_video_control_allows_entry(requested_mode, video_negotiated, video_channel_connected,
+                                       video_encoder_available))
+    {
+        return WD_PLANNED_VIDEO_RESUME_CLEAR;
+    }
+    if (recovery_active || bootstrap_pending)
+    {
+        return WD_PLANNED_VIDEO_RESUME_WAIT;
+    }
+    return WD_PLANNED_VIDEO_RESUME_ENTER;
 }
 
 uint64_t wd_next_nonzero_epoch(uint64_t current_epoch) {
@@ -195,4 +228,92 @@ uint16_t wd_video_safe_decode_fps(uint64_t average_decode_ns, uint16_t requested
         fps = requested_fps;
     }
     return (uint16_t)fps;
+}
+
+uint64_t wd_video_decode_ewma_update(uint64_t current_ewma_ns, uint64_t sample_ns,
+                                     uint32_t new_sample_numerator, uint32_t denominator) {
+    if (sample_ns == 0)
+    {
+        return current_ewma_ns;
+    }
+    if (current_ewma_ns == 0 || denominator == 0 || new_sample_numerator == 0 ||
+        new_sample_numerator >= denominator)
+    {
+        return sample_ns;
+    }
+    const uint64_t old_weight = denominator - new_sample_numerator;
+    return (current_ewma_ns * old_weight + sample_ns * new_sample_numerator) / denominator;
+}
+
+uint16_t wd_video_cadence_downshift_target(uint16_t current_fps, uint16_t requested_fps,
+                                           uint16_t safe_decode_fps, bool hard_overload,
+                                           uint16_t minimum_fps, uint16_t deadband_fps,
+                                           uint32_t overload_percent) {
+    if (current_fps == 0)
+    {
+        current_fps = requested_fps;
+    }
+    if (minimum_fps == 0)
+    {
+        minimum_fps = 1;
+    }
+    uint32_t target = current_fps;
+    if (hard_overload)
+    {
+        if (overload_percent == 0 || overload_percent >= 100)
+        {
+            overload_percent = 75;
+        }
+        target = (uint32_t)current_fps * overload_percent / 100u;
+        if (safe_decode_fps != 0 && safe_decode_fps < target)
+        {
+            target = safe_decode_fps;
+        }
+    }
+    else if (safe_decode_fps != 0 && current_fps > safe_decode_fps + deadband_fps)
+    {
+        target = safe_decode_fps;
+    }
+
+    if (target < minimum_fps)
+    {
+        target = minimum_fps;
+    }
+    if (requested_fps != 0 && target > requested_fps)
+    {
+        target = requested_fps;
+    }
+    if (target >= current_fps)
+    {
+        return current_fps;
+    }
+    return (uint16_t)target;
+}
+
+uint16_t wd_video_cadence_upshift_target(uint16_t current_fps, uint16_t requested_fps,
+                                         uint16_t safe_decode_fps, uint16_t deadband_fps,
+                                         uint16_t increase_step) {
+    if (current_fps == 0 || requested_fps == 0 || current_fps >= requested_fps)
+    {
+        return current_fps;
+    }
+    if (safe_decode_fps != 0 && safe_decode_fps < requested_fps &&
+        (uint32_t)current_fps + deadband_fps >= safe_decode_fps)
+    {
+        return current_fps;
+    }
+    if (increase_step == 0)
+    {
+        increase_step = 1;
+    }
+    uint32_t target = (uint32_t)current_fps + increase_step;
+    if (safe_decode_fps != 0 && target > safe_decode_fps)
+    {
+        target = safe_decode_fps;
+    }
+    if (target > requested_fps)
+    {
+        target = requested_fps;
+    }
+    return (uint16_t)target;
 }

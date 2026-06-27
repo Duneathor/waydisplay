@@ -579,4 +579,27 @@ bool should_clear_pending_tile_dirty(bool full_framebuffer_uploaded, bool video_
     return full_framebuffer_uploaded && !video_frame_uploaded;
 }
 
+ClientRenderSurfaceHandoff client_render_surface_handoff_decide(bool new_surface_uploaded,
+                                                                bool ownership_current,
+                                                                bool presentation_succeeded) {
+    return new_surface_uploaded && ownership_current && presentation_succeeded
+               ? ClientRenderSurfaceHandoff::CommitNew
+               : ClientRenderSurfaceHandoff::KeepCurrent;
+}
+
+bool client_tile_frame_complete(const std::vector<uint64_t>& received_generations) {
+    if (received_generations.empty())
+    {
+        return false;
+    }
+    for (const uint64_t generation : received_generations)
+    {
+        if (generation == 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace waydisplay

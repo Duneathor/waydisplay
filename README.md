@@ -2,6 +2,8 @@
 
 WayDisplay is an experimental low-latency remote display system for Linux. The server runs a headless wlroots compositor and streams tiles, video, audio, clipboard data, and input events to an SDL client.
 
+Planned output resizes use an exact tile recovery frame while retaining the last visible client surface, then resume whichever video mode was previously selected. Video decode cadence adapts below the client-requested FPS ceiling without changing the compositor session cadence.
+
 The project is not deployed and the protocol is intentionally unstable. Protocol compatibility may be broken whenever doing so improves latency, throughput, or maintainability.
 
 ## Trust model

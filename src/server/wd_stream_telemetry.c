@@ -417,6 +417,12 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     uint8_t             video_exit_dirty_percent    = net->stream_policy.video_exit_dirty_percent;
     uint16_t            video_exit_seconds          = net->stream_policy.video_exit_seconds;
     uint32_t            video_bitrate_kib           = wd_stream_video_bitrate_kib_locked(&net->stream_policy);
+    uint64_t            video_decode_ewma_ns        = net->stream_policy.video_decode_ewma_ns;
+    uint16_t            video_decode_safe_fps       = net->stream_policy.video_decode_safe_fps;
+    bool                planned_recovery_resume_video = net->stream_policy.planned_recovery_resume_video;
+    uint8_t             planned_recovery_source_mode = net->stream_policy.planned_recovery_source_mode;
+    uint64_t            tile_recovery_framebuffer_generation = net->stream_policy.tile_recovery_framebuffer_generation;
+    bool                tile_recovery_live_damage_deferred = net->stream_policy.tile_recovery_live_damage_deferred;
     uint8_t             compression_benchmark_mode  = server->tile_compression_benchmark_mode;
 
     pthread_mutex_unlock(&net->lock);
@@ -453,13 +459,22 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
         stats_log->prev_video_encoder != video_encoder_available || stats_log->prev_video_mode != video_mode ||
         stats_log->prev_video_min_dirty_percent != video_min_dirty_percent || stats_log->prev_video_enter_seconds != video_enter_seconds ||
         stats_log->prev_video_exit_dirty_percent != video_exit_dirty_percent || stats_log->prev_video_exit_seconds != video_exit_seconds ||
-        stats_log->prev_video_bitrate_kib != video_bitrate_kib || stats_log->prev_stream_mode != stream_mode;
+        stats_log->prev_video_bitrate_kib != video_bitrate_kib ||
+        stats_log->prev_video_decode_ewma_ns != video_decode_ewma_ns ||
+        stats_log->prev_video_decode_safe_fps != video_decode_safe_fps ||
+        stats_log->prev_planned_recovery_resume_video != planned_recovery_resume_video ||
+        stats_log->prev_planned_recovery_source_mode != planned_recovery_source_mode ||
+        stats_log->prev_tile_recovery_framebuffer_generation != tile_recovery_framebuffer_generation ||
+        stats_log->prev_tile_recovery_live_damage_deferred != tile_recovery_live_damage_deferred ||
+        stats_log->prev_stream_mode != stream_mode;
 
     if (state_changed)
     {
         WD_LOG_STATS("state: requested_capture_fps=%u adaptive_capture_fps=%u capture_pacing_fps=%u compositor_refresh_hz=%u "
                      "client_present_cap_fps=%u client_visible=%s stream_mode=%s owner=%s fresh_udp_tiles=%s tile_repair=%s video_mode=%s "
                      "video_bitrate_kib=%u video_min_dirty_pct=%u video_enter_seconds=%u video_exit_dirty_pct=%u video_exit_seconds=%u "
+                     "video_decode_ewma_ms=%.2f video_decode_safe_fps=%u planned_resize_resume=%s resume_from=%s "
+                     "recovery_framebuffer_generation=%llu recovery_damage_deferred=%s "
                      "link_safe_kib=%llu link_recent_kib=%llu tile_media_kib=%llu tile_fresh_kib=%llu tile_repair_kib=%llu "
                      "video_alloc_kib=%llu audio_need_kib=%llu audio_cap_kib=%llu control_kib=%llu overhead_kib=%llu "
                      "base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 tile_compression=%s input_channel=%s "
@@ -470,7 +485,11 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      wd_stream_mode_video_owns_display(stream_mode) ? "paused" : "enabled",
                      wd_stream_mode_video_owns_display(stream_mode) ? "paused" : "enabled", wd_video_mode_name(video_mode),
                      (unsigned)video_bitrate_kib, (unsigned)video_min_dirty_percent, (unsigned)video_enter_seconds,
-                     (unsigned)video_exit_dirty_percent, (unsigned)video_exit_seconds, (unsigned long long)safe_link_kib_per_second,
+                     (unsigned)video_exit_dirty_percent, (unsigned)video_exit_seconds, (double)video_decode_ewma_ns / 1000000.0,
+                     (unsigned)video_decode_safe_fps, planned_recovery_resume_video ? "yes" : "no",
+                     wd_stream_mode_name((enum wd_stream_mode)planned_recovery_source_mode),
+                     (unsigned long long)tile_recovery_framebuffer_generation,
+                     tile_recovery_live_damage_deferred ? "yes" : "no", (unsigned long long)safe_link_kib_per_second,
                      (unsigned long long)recent_link_kib_per_second, (unsigned long long)tile_media_rate_kib_per_second,
                      (unsigned long long)tile_fresh_kib_per_second, (unsigned long long)tile_repair_kib_per_second,
                      (unsigned long long)video_kib_per_second, (unsigned long long)audio_reserved_kib_per_second,
@@ -509,8 +528,14 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
         stats_log->prev_video_enter_seconds      = video_enter_seconds;
         stats_log->prev_video_exit_dirty_percent = video_exit_dirty_percent;
         stats_log->prev_video_exit_seconds       = video_exit_seconds;
-        stats_log->prev_video_bitrate_kib        = video_bitrate_kib;
-        stats_log->prev_stream_mode              = stream_mode;
+        stats_log->prev_video_bitrate_kib                   = video_bitrate_kib;
+        stats_log->prev_video_decode_ewma_ns                  = video_decode_ewma_ns;
+        stats_log->prev_video_decode_safe_fps                 = video_decode_safe_fps;
+        stats_log->prev_planned_recovery_resume_video         = planned_recovery_resume_video;
+        stats_log->prev_planned_recovery_source_mode          = planned_recovery_source_mode;
+        stats_log->prev_tile_recovery_framebuffer_generation  = tile_recovery_framebuffer_generation;
+        stats_log->prev_tile_recovery_live_damage_deferred    = tile_recovery_live_damage_deferred;
+        stats_log->prev_stream_mode                           = stream_mode;
     }
 
     bool stream_mode_activity = s.stream_mode_full_refresh_samples != 0 || s.stream_mode_bootstrap_suppressed_samples != 0 ||

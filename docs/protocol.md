@@ -17,6 +17,20 @@ The expected deployment is localhost, a trusted network, or a VPN. Protocol vers
 
 The control connection begins with exactly one `WD_MSG_CLIENT_HELLO`. The frame may be split across any number of TCP reads; implementations therefore use the incremental reader and enforce both an idle timeout and an absolute frame-lifetime timeout.
 
+
+## Planned resize ownership
+
+`SERVER_CONFIG` changes geometry but does not make a blank client texture a
+valid presentation. The server advances the content epoch and emits one tile
+recovery snapshot bound to the newest framebuffer generation. The client keeps
+the previous surface visible, acknowledges the configuration, and reports the
+new tile epoch only after a complete fresh frame has been uploaded and
+presented. Repeated resize configurations supersede older pending recovery
+frames. After the exact acknowledgement, the server may resume the video mode
+that was selected before the planned resize without re-running automatic
+content thresholds. No wire field is added for this intent; it is server-side
+session state guarded by the existing configuration and presentation epochs.
+
 Input, selection, video, and audio sockets are bound to the control session by their channel-hello payload. A channel is accepted only when its session ID and connection token match the active control connection, the channel has not already been bound, and any negotiated codec/transport fields match. Established traffic remains channel-specific; for example, primary-selection messages are never valid on the control socket.
 
 

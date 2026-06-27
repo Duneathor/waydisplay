@@ -155,6 +155,26 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.planned_resize_resume
+        TARGET waydisplay_test_planned_resize_resume
+        SOURCES tests/test_planned_resize_resume.cpp
+        LIBRARIES waydisplay_server_runtime
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;video;lifecycle"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.resize_video_continuity
+        TARGET waydisplay_test_resize_video_continuity
+        SOURCES tests/test_resize_video_continuity.cpp
+        LIBRARIES waydisplay_client_runtime waydisplay_server_runtime
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "integration;client;server;video;lifecycle"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.video_feedback_protocol
         TARGET waydisplay_test_video_feedback_protocol
         SOURCES tests/test_video_feedback_protocol.cpp

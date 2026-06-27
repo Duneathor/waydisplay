@@ -351,6 +351,14 @@ that overload remains in video ownership, while hard decode/publication flags
 select tile fallback. Keep these tests in the dependency-light suite so recovery
 policy changes do not require FFmpeg or SDL hardware.
 
+`waydisplay.planned_resize_resume`, `waydisplay.render_planning`, and
+`waydisplay.resize_video_continuity` cover the complete planned-resize contract:
+rapid resizes supersede obsolete framebuffer-generation barriers, selected
+forced or automatic video resumes after the exact tile epoch, partial or stale
+replacement textures cannot hide the last valid frame, and the decode-rate
+controller settles near its measured safe ceiling without the former
+multiplicative sawtooth.
+
 ### Bandwidth and cadence policy tests
 
 `waydisplay.bandwidth_plan`, `waydisplay.server_tile_policy`, and
