@@ -73,6 +73,8 @@ No subsystem may grow an unbounded queue. Telemetry samples may always be droppe
 
 The stream controller applies health and tile/video ownership policy on the fixed health cadence; telemetry only snapshots and reports its results.
 
+Every connection is a hard policy boundary: interval feedback, input correlation, pressure history, bootstrap state, and recovery state are reset before the new connection identity is published. Every connection begins with tile ownership and a compositor-produced full refresh. Automatic and forced video both remain blocked until the client reports presentation of that exact content epoch. A video-to-tile handoff likewise completes only after the client reports the recovery epoch, so an unrelated or stale tile presentation cannot release the transition. Planned resize recovery may return directly to forced video after that acknowledgement; decode, publication, channel, and presentation failures retain the retry circuit breaker. Video-health classification uses both the current decode-queue depth and the maximum depth observed during the feedback interval so audio-synchronized frames are not mistaken for a stalled presentation pipeline merely because the queue drained just before telemetry was sampled. Audio-wait classification also requires an explicit client playback state. A buffering audio epoch may delay initial video for one bounded startup window; if no audio clock is established, the client relinquishes the gate, presents video, and reports the timeout so the server does not treat an indefinite hold as healthy.
+
 Capture service timing follows the effective adaptive FPS target and compositor refresh. The millisecond Wayland timer uses a bounded target-derived service interval, while an absolute nanosecond deadline remains the authoritative capture gate. Eventfd wakeups may accelerate queue service but cannot advance a capture deadline or exceed the configured FPS cap.
 
 The eventfd wake path is lock-free and may be called while the network mutex is held.
@@ -82,3 +84,11 @@ The stream-frame worker owns framebuffer comparison and full-frame video snapsho
 UDP receive-ring teardown is terminal: bounded cancellation is attempted first, then the ring is closed before the socket may be closed or reused. No receiver object survives disconnect or reconfiguration.
 
 Incremental TCP readers maintain two deadlines: an idle-progress deadline refreshed by every successful read, and a hard total frame lifetime that never moves. Slow but progressing frames remain valid without allowing an unbounded frame to monopolize a channel.
+
+
+Mode-transition diagnostics include bootstrap/recovery epochs, recovery class, wait duration, and retry cooldown. Client ownership logs include both the previous and accepted content owner/epoch so a frozen display can be correlated with the exact handoff that produced it.
+
+
+## Stream lifecycle scenario contract
+
+The test suite exercises complete ownership scenarios rather than only isolated transition predicates. Every connection begins tile-owned and must present the exact bootstrap content epoch before video can own the display, including forced-video sessions. Planned resize recovery may resume forced video immediately after the exact recovery epoch is presented; decoder, channel, or presentation failures use a retry circuit breaker. Reconnects rotate the connection identity and cannot consume presentation evidence from the previous session.

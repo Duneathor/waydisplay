@@ -1,6 +1,7 @@
 #include "content_order.hpp"
 
 #include "client_state.hpp"
+#include "waydisplay/wd_log.h"
 
 #include <algorithm>
 #include <mutex>
@@ -33,17 +34,17 @@ void reset_present_telemetry(ClientState& state) {
 } // namespace
 
 ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint64_t content_epoch, enum wd_client_content_owner owner) {
-    if (content_epoch == 0)
+    if (content_epoch == 0) [[unlikely]]
     {
         return ClientContentEpochDecision::Stale;
     }
 
     std::lock_guard<std::mutex> transition_lock(state.remote_content_mutex);
-    if (content_epoch < state.remote_content_epoch || (content_epoch == state.remote_content_epoch && owner != state.remote_content_owner))
+    if (content_epoch < state.remote_content_epoch || (content_epoch == state.remote_content_epoch && owner != state.remote_content_owner)) [[unlikely]]
     {
         return ClientContentEpochDecision::Stale;
     }
-    if (content_epoch == state.remote_content_epoch)
+    if (content_epoch == state.remote_content_epoch) [[likely]]
     {
         return ClientContentEpochDecision::Current;
     }
@@ -54,14 +55,21 @@ ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint6
         reset_pending_content_locked(state, owner);
     }
     reset_present_telemetry(state);
+    const uint64_t previous_epoch = state.remote_content_epoch;
+    const enum wd_client_content_owner previous_owner = state.remote_content_owner;
     state.remote_content_epoch = content_epoch;
     state.remote_content_owner = owner;
+    WD_LOG_DEBUG("remote content ownership: epoch=%llu->%llu owner=%s->%s", (unsigned long long)previous_epoch,
+                 (unsigned long long)content_epoch, previous_owner == WD_CLIENT_CONTENT_OWNER_VIDEO ? "video" : "tiles",
+                 owner == WD_CLIENT_CONTENT_OWNER_VIDEO ? "video" : "tiles");
     state.render_wake.signal();
     return ClientContentEpochDecision::Advanced;
 }
 
 void client_reset_content_epoch(ClientState& state, uint64_t content_epoch, enum wd_client_content_owner owner) {
     std::lock_guard<std::mutex> transition_lock(state.remote_content_mutex);
+    state.stats.tile_content_epoch_presented.store(0, std::memory_order_relaxed);
+    state.stats.video_content_epoch_presented.store(0, std::memory_order_relaxed);
     {
         std::scoped_lock dirty_generation_video_lock(state.dirty_rect_mutex, state.generation_mutex,
                                                         state.video_frame_mutex);
@@ -70,6 +78,8 @@ void client_reset_content_epoch(ClientState& state, uint64_t content_epoch, enum
     reset_present_telemetry(state);
     state.remote_content_epoch = content_epoch;
     state.remote_content_owner = owner;
+    WD_LOG_DEBUG("remote content ownership reset: epoch=%llu owner=%s", (unsigned long long)content_epoch,
+                 owner == WD_CLIENT_CONTENT_OWNER_VIDEO ? "video" : "tiles");
     state.render_wake.signal();
 }
 

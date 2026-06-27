@@ -206,6 +206,14 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->client_video_oldest_pts_usec     = src->client_video_oldest_pts_usec;
     dst->client_audio_video_delta_samples = src->client_audio_video_delta_samples;
     dst->client_tile_frames_presented += src->client_tile_frames_presented;
+    if (src->client_tile_content_epoch_presented > dst->client_tile_content_epoch_presented)
+    {
+        dst->client_tile_content_epoch_presented = src->client_tile_content_epoch_presented;
+    }
+    if (src->client_video_content_epoch_presented > dst->client_video_content_epoch_presented)
+    {
+        dst->client_video_content_epoch_presented = src->client_video_content_epoch_presented;
+    }
     dst->retx_req_rx += src->retx_req_rx;
     dst->retx_tiles_req += src->retx_tiles_req;
     dst->retx_req_ignored_live += src->retx_req_ignored_live;

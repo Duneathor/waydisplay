@@ -226,25 +226,25 @@ bool transfer_hw_frame_if_needed(ClientVideoDecoder* decoder, AVFrame** frame) {
 
 bool convert_decoder_frame(ClientVideoDecoder* decoder, const wd_video_frame_payload_header& header, ClientVideoFrameBuffer* output,
                            ClientDecodedVideoFrame* out_frame) {
-    if (!decoder || !decoder->frame || !output || !out_frame)
+    if (!decoder || !decoder->frame || !output || !out_frame) [[unlikely]]
     {
         return false;
     }
 
     AVFrame* src_frame = decoder->frame;
-    if (!transfer_hw_frame_if_needed(decoder, &src_frame))
+    if (!transfer_hw_frame_if_needed(decoder, &src_frame)) [[unlikely]]
     {
         return false;
     }
 
-    if (src_frame->width <= 0 || src_frame->height <= 0 || header.width == 0 || header.height == 0)
+    if (src_frame->width <= 0 || src_frame->height <= 0 || header.width == 0 || header.height == 0) [[unlikely]]
     {
         return false;
     }
 
     const uint16_t coded_width  = header.coded_width != 0 ? header.coded_width : static_cast<uint16_t>(src_frame->width);
     const uint16_t coded_height = header.coded_height != 0 ? header.coded_height : static_cast<uint16_t>(src_frame->height);
-    if (coded_width < header.width || coded_height < header.height || src_frame->width < coded_width || src_frame->height < coded_height)
+    if (coded_width < header.width || coded_height < header.height || src_frame->width < coded_width || src_frame->height < coded_height) [[unlikely]]
     {
         return false;
     }
@@ -257,7 +257,7 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const wd_video_frame_pay
     const auto src_format     = static_cast<AVPixelFormat>(src_frame->format);
     decoder->sws_ctx = sws_getCachedContext(decoder->sws_ctx, visible_width, visible_height, src_format, visible_width, visible_height,
                                             AV_PIX_FMT_YUV420P, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
-    if (!decoder->sws_ctx)
+    if (!decoder->sws_ctx) [[unlikely]]
     {
         return false;
     }
@@ -297,7 +297,7 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const wd_video_frame_pay
         nullptr,
     };
     const int dst_stride[4] = {static_cast<int>(y_pitch), static_cast<int>(uv_width), static_cast<int>(uv_width), 0};
-    if (sws_scale(decoder->sws_ctx, src_frame->data, src_frame->linesize, 0, visible_height, dst_slices, dst_stride) != visible_height)
+    if (sws_scale(decoder->sws_ctx, src_frame->data, src_frame->linesize, 0, visible_height, dst_slices, dst_stride) != visible_height) [[unlikely]]
     {
         return false;
     }
@@ -351,7 +351,7 @@ bool take_submitted_metadata(ClientVideoDecoder* decoder, wd_video_frame_payload
 }
 
 bool queue_decoder_frame(ClientVideoDecoder* decoder) {
-    if (!decoder || decoder->decoded_frames.size() >= WD_CLIENT_VIDEO_DECODED_QUEUE_CAPACITY)
+    if (!decoder || decoder->decoded_frames.size() >= WD_CLIENT_VIDEO_DECODED_QUEUE_CAPACITY) [[unlikely]]
     {
         return false;
     }
@@ -389,16 +389,16 @@ bool receive_decoder_frames(ClientVideoDecoder* decoder) {
     {
         av_frame_unref(decoder->frame);
         const int rc = avcodec_receive_frame(decoder->codec_ctx, decoder->frame);
-        if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
+        if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) [[likely]]
         {
             return true;
         }
-        if (rc < 0)
+        if (rc < 0) [[unlikely]]
         {
             mark_vaapi_auto_failed(decoder, "hardware frame receive failed");
             return false;
         }
-        if (!queue_decoder_frame(decoder))
+        if (!queue_decoder_frame(decoder)) [[unlikely]]
         {
             av_frame_unref(decoder->frame);
             return false;
@@ -554,7 +554,7 @@ bool client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* decoder
 
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {
     if (!decoder || (config.codec != WD_VIDEO_CODEC_H265 && config.codec != WD_VIDEO_CODEC_H264) || config.width == 0 ||
-        config.height == 0 || config.coded_width < config.width || config.coded_height < config.height)
+        config.height == 0 || config.coded_width < config.width || config.coded_height < config.height) [[unlikely]]
     {
         return false;
     }
@@ -566,7 +566,7 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
         return false;
     }
 
-    if (decoder_config_matches(decoder, config))
+    if (decoder_config_matches(decoder, config)) [[likely]]
     {
         return true;
     }
@@ -576,7 +576,7 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
     decoder->codec_ctx = avcodec_alloc_context3(decoder->codec);
     decoder->frame     = av_frame_alloc();
     decoder->packet    = av_packet_alloc();
-    if (!decoder->codec_ctx || !decoder->frame || !decoder->packet)
+    if (!decoder->codec_ctx || !decoder->frame || !decoder->packet) [[unlikely]]
     {
         release_decoder_backend(decoder);
         return false;
@@ -620,7 +620,7 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
     }
 #endif
 
-    if (avcodec_open2(decoder->codec_ctx, decoder->codec, nullptr) < 0)
+    if (avcodec_open2(decoder->codec_ctx, decoder->codec, nullptr) < 0) [[unlikely]]
     {
 #if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
         const bool retry_software =
@@ -656,7 +656,7 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
     }
 
     if (!decoder || !decoder->configured || (packet.header.codec != WD_VIDEO_CODEC_H265 && packet.header.codec != WD_VIDEO_CODEC_H264) ||
-        !packet.data || packet.header.data_size == 0)
+        !packet.data || packet.header.data_size == 0) [[unlikely]]
     {
         return false;
     }
@@ -669,7 +669,7 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
     }
 
     av_packet_unref(decoder->packet);
-    if (av_new_packet(decoder->packet, static_cast<int>(packet.header.data_size)) < 0)
+    if (av_new_packet(decoder->packet, static_cast<int>(packet.header.data_size)) < 0) [[unlikely]]
     {
         return false;
     }
@@ -677,7 +677,7 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
     const int64_t codec_pts = static_cast<int64_t>(packet.header.pts_usec);
     decoder->packet->pts    = codec_pts;
 
-    if (decoder->submitted_frames.size() >= WD_CLIENT_VIDEO_METADATA_QUEUE_CAPACITY)
+    if (decoder->submitted_frames.size() >= WD_CLIENT_VIDEO_METADATA_QUEUE_CAPACITY) [[unlikely]]
     {
         av_packet_unref(decoder->packet);
         return false;
@@ -688,7 +688,7 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
     for (int attempt = 0; attempt < 2 && !sent_packet; ++attempt)
     {
         int rc = avcodec_send_packet(decoder->codec_ctx, decoder->packet);
-        if (rc == 0)
+        if (rc == 0) [[likely]]
         {
             SubmittedFrameMetadata metadata{};
             metadata.header    = packet.header;
@@ -704,7 +704,7 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
             return false;
         }
 
-        if (!receive_decoder_frames(decoder))
+        if (!receive_decoder_frames(decoder)) [[unlikely]]
         {
             av_packet_unref(decoder->packet);
             return false;
@@ -712,7 +712,7 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
     }
 
     av_packet_unref(decoder->packet);
-    if (!sent_packet)
+    if (!sent_packet) [[unlikely]]
     {
         return false;
     }

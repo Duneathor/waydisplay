@@ -1,5 +1,20 @@
 # Building WayDisplay
 
+## Language baseline and branch hints
+
+WayDisplay requires C11 for C sources and C++20 for C++ sources. Supported GCC
+builds therefore need a compiler with complete support for the C++20 statement
+attributes used by the client hot paths. CMake configures C++ targets with
+`-std=c++20` and rejects compilers that cannot provide that language level.
+
+Use `[[likely]]` and `[[unlikely]]` only on branches with a stable runtime bias:
+steady-state packet/render success, or exceptional validation, allocation, I/O,
+and shutdown paths. Do not annotate policy choices whose frequency depends on
+content, link quality, or user configuration; PGO remains the preferred source
+of workload-specific branch probabilities. The `waydisplay.cpp20_branch_hints`
+test compiles both attributes and the build-profile contract verifies the
+C++20 compiler flag in every checked-in profile.
+
 ## GCC build profiles
 
 WayDisplay supports GCC and G++ only. The checked-in CMake presets provide four
@@ -221,6 +236,11 @@ New tests should be registered with the `waydisplay_add_test()` helper in
 and adds it to the build-time test dependencies, so no separate executable list
 needs to be maintained.
 
+Library-focused tests should link only the library under test unless another
+dependency is part of the test itself. This keeps transitive link contracts
+covered: for example, `waydisplay.client_runtime_linkage` verifies that the
+client runtime supplies its common logging and thread dependencies to consumers.
+
 The `tests` preset disables the optional SDL and wlroots executables so
 protocol, transition, repair, and planning tests do not depend on desktop
 development packages.
@@ -233,7 +253,9 @@ been easy to miss when only the dependency-light suite is compiled:
 cmake --preset tests-core
 cmake --build --preset tests-core
 
-# Real software codec, round-trip, and VAAPI tests when FFmpeg is installed.
+# Real software codec, resize round-trip, and VAAPI tests when FFmpeg is installed.
+# This preset treats warnings as errors so optional-only test sources receive the
+# same warning coverage as the dependency-light strict build.
 cmake --preset tests-codecs
 cmake --build --preset tests-codecs
 
@@ -291,3 +313,17 @@ ctest --preset tests-tsan
 ```
 
 The package-heavy SDL, wlroots, codec, VAAPI, and audio matrix is kept separate from required dependency-light checks.
+
+
+## Coverage and fuzzing
+
+Run the dependency-light coverage configuration with:
+
+```sh
+cmake --preset tests-coverage
+cmake --build --preset tests-coverage
+ctest --preset tests-coverage
+gcovr --root . --filter 'src/' --print-summary
+```
+
+Coverage-guided tile protocol and reassembly fuzzers are available with Clang by configuring `-DWAYDISPLAY_BUILD_FUZZERS=ON`. Fuzz binaries are not registered as ordinary CTest cases; CI or local fuzz jobs should provide a corpus and run duration explicitly. Every CTest receives a tier label (`unit`, `integration`, `stress`, `fuzz`, or `hardware`) in addition to subsystem labels. The `tests-full` preset requires both runtime executable targets so missing SDL3 or wlroots dependencies cannot silently reduce coverage.

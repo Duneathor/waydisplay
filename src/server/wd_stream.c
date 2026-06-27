@@ -177,8 +177,13 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->tile_recovery_refresh_sent        = false;
     policy->tile_recovery_wait_seconds        = 0;
     policy->video_retry_cooldown_seconds      = 0;
-    policy->video_auto_bootstrap_suppressed   = false;
-    policy->video_auto_bootstrap_seconds      = 0;
+    policy->video_bootstrap_pending         = false;
+    policy->video_bootstrap_refresh_started = false;
+    policy->video_bootstrap_refresh_sent    = false;
+    policy->video_bootstrap_wait_seconds    = 0;
+    policy->video_bootstrap_content_epoch   = 0;
+    policy->tile_recovery_content_epoch     = 0;
+    policy->video_recovery_class            = WD_VIDEO_RECOVERY_NONE;
     policy->frame_rate_good_seconds           = 0;
     policy->udp_rate_bytes_per_second         = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
     policy->udp_rate_floor_bytes_per_second   = WD_UDP_RATE_MIN_BYTES_PER_SECOND;
@@ -243,8 +248,13 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->tile_recovery_refresh_sent        = false;
     policy->tile_recovery_wait_seconds        = 0;
     policy->video_retry_cooldown_seconds      = 0;
-    policy->video_auto_bootstrap_suppressed   = false;
-    policy->video_auto_bootstrap_seconds      = 0;
+    policy->video_bootstrap_pending         = false;
+    policy->video_bootstrap_refresh_started = false;
+    policy->video_bootstrap_refresh_sent    = false;
+    policy->video_bootstrap_wait_seconds    = 0;
+    policy->video_bootstrap_content_epoch   = 0;
+    policy->tile_recovery_content_epoch     = 0;
+    policy->video_recovery_class            = WD_VIDEO_RECOVERY_NONE;
     policy->frame_rate_good_seconds           = 0;
     policy->link_good_seconds                 = 0;
     policy->link_loss_seconds                 = 0;
@@ -285,6 +295,23 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->multipacket_loss_cooldown_seconds = 0;
 
     wd_stream_policy_reset_tokens(policy);
+}
+
+void wd_stream_policy_begin_session(struct wd_stream_policy* policy, const struct wd_client_hello_payload* hello,
+                                    uint64_t bootstrap_content_epoch) {
+    if (!policy || !hello || bootstrap_content_epoch == 0)
+    {
+        return;
+    }
+    wd_stream_policy_apply_client_hello(policy, hello);
+    policy->tile_refresh_pending            = true;
+    policy->video_bootstrap_pending         = true;
+    policy->video_bootstrap_refresh_started = false;
+    policy->video_bootstrap_refresh_sent    = false;
+    policy->video_bootstrap_wait_seconds    = 0;
+    policy->video_bootstrap_content_epoch   = bootstrap_content_epoch;
+    policy->tile_recovery_content_epoch     = 0;
+    policy->video_recovery_class            = WD_VIDEO_RECOVERY_NONE;
 }
 
 const char* wd_stream_mode_name(enum wd_stream_mode mode) {
@@ -365,7 +392,8 @@ void wd_stream_advance_content_epoch_locked(struct wd_server* server, const char
                  reason ? reason : "ownership transition");
 }
 
-void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_stream_mode mode, const char* reason,
+void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_stream_mode mode,
+                                             enum wd_video_recovery_class recovery_class, const char* reason,
                                              double dirty_avg_pct, double dirty_peak_pct, double budget_pressure_pct,
                                              bool video_channel_connected, bool video_encoder_available) {
     if (!policy || policy->stream_mode == mode)
@@ -390,6 +418,8 @@ void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_s
         policy->tile_recovery_refresh_sent    = false;
         policy->tile_recovery_wait_seconds    = 0;
         policy->video_client_failure_seconds  = 0;
+        policy->tile_recovery_content_epoch    = 0;
+        policy->video_recovery_class           = recovery_class;
     }
     else if (mode != WD_STREAM_MODE_TILE_RECOVERY)
     {
@@ -405,13 +435,18 @@ void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_s
 
     if (wd_stream_mode_uses_video_frames(mode) && !wd_stream_mode_uses_video_frames(old_mode))
     {
+        policy->video_recovery_class = WD_VIDEO_RECOVERY_NONE;
         wd_stream_policy_restore_requested_capture_fps_locked(policy, "video mode entry");
     }
 
     WD_LOG_DEBUG("stream mode state: %s -> %s reason=%s dirty_avg_pct=%.1f dirty_peak_pct=%.1f budget_pressure_pct=%.1f video_channel=%s "
-                 "video_encoder=%s",
+                 "video_encoder=%s bootstrap=%s bootstrap_epoch=%llu recovery_class=%u recovery_epoch=%llu recovery_wait=%u retry_cooldown=%u",
                  wd_stream_mode_name(old_mode), wd_stream_mode_name(mode), reason ? reason : "unspecified", dirty_avg_pct, dirty_peak_pct,
-                 budget_pressure_pct, video_channel_connected ? "yes" : "no", video_encoder_available ? "yes" : "no");
+                 budget_pressure_pct, video_channel_connected ? "yes" : "no", video_encoder_available ? "yes" : "no",
+                 policy->video_bootstrap_pending ? "pending" : "complete",
+                 (unsigned long long)policy->video_bootstrap_content_epoch, (unsigned)policy->video_recovery_class,
+                 (unsigned long long)policy->tile_recovery_content_epoch, policy->tile_recovery_wait_seconds,
+                 policy->video_retry_cooldown_seconds);
 }
 
 void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const struct wd_stats* stats, uint16_t total_tiles,
@@ -429,21 +464,23 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
         return;
     }
 
-    if (policy->video_mode == WD_VIDEO_MODE_AUTO && policy->video_auto_bootstrap_suppressed)
+    if (policy->video_bootstrap_pending)
     {
         policy->video_candidate_seconds = 0;
-        const bool bootstrap_presented  = stats->client_tile_frames_presented != 0;
-        const bool bootstrap_timed_out  = policy->video_auto_bootstrap_seconds >= WD_STREAM_BOOTSTRAP_SUPPRESSION_TIMEOUT_SECONDS;
-        if (bootstrap_presented || bootstrap_timed_out)
+        const bool bootstrap_presented = policy->video_bootstrap_refresh_sent && policy->video_bootstrap_content_epoch != 0 &&
+                                         stats->client_tile_content_epoch_presented >= policy->video_bootstrap_content_epoch;
+        if (bootstrap_presented)
         {
-            WD_LOG_DEBUG("video auto selection resumed after bootstrap: reason=%s",
-                         bootstrap_presented ? "client tile presentation" : "timeout");
-            policy->video_auto_bootstrap_suppressed = false;
-            policy->video_auto_bootstrap_seconds    = 0;
+            WD_LOG_DEBUG("video selection enabled after bootstrap presentation: epoch=%llu",
+                         (unsigned long long)policy->video_bootstrap_content_epoch);
+            policy->video_bootstrap_pending         = false;
+            policy->video_bootstrap_refresh_started = false;
+            policy->video_bootstrap_refresh_sent    = false;
+            policy->video_bootstrap_wait_seconds    = 0;
         }
-        else if (policy->video_auto_bootstrap_seconds < UINT32_MAX)
+        else if (policy->video_bootstrap_refresh_sent && policy->video_bootstrap_wait_seconds < UINT32_MAX)
         {
-            policy->video_auto_bootstrap_seconds++;
+            policy->video_bootstrap_wait_seconds++;
         }
         return;
     }
@@ -485,7 +522,9 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
     const bool video_forced   = policy->video_mode == WD_VIDEO_MODE_FORCE;
     const bool video_disabled = policy->video_mode == WD_VIDEO_MODE_OFF;
     const bool video_entry_candidate =
-        !video_disabled && wd_video_entry_allowed(false, video_retry_cooldown_active ? 1u : 0u) && (video_forced || auto_entry.candidate);
+        !video_disabled && wd_video_entry_allowed(policy->video_bootstrap_pending, false, video_retry_cooldown_active ? 1u : 0u, video_forced,
+                               (enum wd_video_recovery_class)policy->video_recovery_class) &&
+        (video_forced || auto_entry.candidate);
 
     if (auto_entry.candidate && policy->stream_mode != WD_STREAM_MODE_VIDEO_ACTIVE)
     {
@@ -502,6 +541,7 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
         {
             wd_stream_policy_set_mode_locked(
                 policy, wd_stream_mode_video_owns_display(policy->stream_mode) ? WD_STREAM_MODE_TILE_RECOVERY : WD_STREAM_MODE_TILES,
+                wd_stream_mode_video_owns_display(policy->stream_mode) ? WD_VIDEO_RECOVERY_FAILURE : WD_VIDEO_RECOVERY_NONE,
                 video_disabled ? "video disabled" : "video unavailable", dirty_avg_pct, dirty_peak_pct, budget_pressure_pct,
                 video_channel_connected, video_encoder_available);
         }
@@ -525,13 +565,13 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
         const uint16_t enter_seconds = policy->video_enter_seconds != 0 ? policy->video_enter_seconds : WD_VIDEO_ENTER_SECONDS_DEFAULT;
         if (video_forced || policy->video_candidate_seconds >= enter_seconds)
         {
-            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_VIDEO_READY, video_forced ? "video forced" : "sustained tile cost",
+            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_VIDEO_READY, WD_VIDEO_RECOVERY_NONE, video_forced ? "video forced" : "sustained tile cost",
                                              dirty_avg_pct, dirty_peak_pct, budget_pressure_pct, video_channel_connected,
                                              video_encoder_available);
         }
         else
         {
-            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_VIDEO_CANDIDATE, "sustained tile cost observed", dirty_avg_pct,
+            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_VIDEO_CANDIDATE, WD_VIDEO_RECOVERY_NONE, "sustained tile cost observed", dirty_avg_pct,
                                              dirty_peak_pct, budget_pressure_pct, video_channel_connected, video_encoder_available);
         }
         return;
@@ -565,7 +605,7 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
 
     if (policy->tile_recovery_seconds >= exit_seconds)
     {
-        wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILE_RECOVERY, "tile exit criteria stable", dirty_avg_pct, dirty_peak_pct,
+        wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILE_RECOVERY, WD_VIDEO_RECOVERY_PLANNED, "tile exit criteria stable", dirty_avg_pct, dirty_peak_pct,
                                          budget_pressure_pct, video_channel_connected, video_encoder_available);
         policy->tile_recovery_seconds = 0;
     }
@@ -901,12 +941,17 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
     if (policy->stream_mode == WD_STREAM_MODE_TILE_RECOVERY)
     {
         const enum wd_tile_recovery_action recovery_action =
-            wd_tile_recovery_decide(policy->tile_recovery_refresh_sent, stats->client_tile_frames_presented,
-                                    policy->tile_recovery_wait_seconds, WD_STREAM_TILE_RECOVERY_TIMEOUT_SECONDS);
+            wd_tile_recovery_decide(policy->tile_recovery_refresh_sent, policy->tile_recovery_content_epoch,
+                                    stats->client_tile_content_epoch_presented, policy->tile_recovery_wait_seconds,
+                                    WD_STREAM_TILE_RECOVERY_TIMEOUT_SECONDS);
         if (recovery_action != WD_TILE_RECOVERY_WAIT)
         {
             policy->video_retry_cooldown_seconds = WD_STREAM_VIDEO_RETRY_COOLDOWN_SECONDS;
-            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILES,
+            if (recovery_action == WD_TILE_RECOVERY_COMPLETE_TIMEOUT)
+            {
+                policy->video_recovery_class = WD_VIDEO_RECOVERY_FAILURE;
+            }
+            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILES, WD_VIDEO_RECOVERY_NONE,
                                              recovery_action == WD_TILE_RECOVERY_COMPLETE_PRESENTED ? "client presented recovery tiles"
                                                                                                     : "tile recovery presentation timeout",
                                              0.0, 0.0, 0.0, true, true);
@@ -962,7 +1007,12 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
             .client_publish_failures    = stats->client_video_publish_failed,
             .client_need_keyframe_drops = stats->client_video_need_keyframe_drops,
             .client_audio_video_sync_holds    = stats->client_audio_video_sync_holds,
+            .client_decode_queue_drops         = stats->client_video_decode_queue_drops,
+            .client_audio_video_startup_timeouts = stats->client_audio_video_startup_timeouts,
+            .client_audio_video_startup_hold_ms  = stats->client_audio_video_startup_hold_ms,
+            .client_audio_playback_state         = stats->client_audio_playback_state,
             .client_queue_depth         = stats->client_video_queue_depth,
+            .client_queue_depth_max     = stats->client_video_queue_depth_max,
         };
         const enum wd_client_video_health_class video_health = wd_client_video_health_classify(&video_health_metrics);
         const bool                              client_video_failure =
@@ -982,7 +1032,7 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
 
         if (policy->video_client_failure_seconds >= WD_STREAM_VIDEO_CLIENT_FAILURE_SECONDS)
         {
-            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILE_RECOVERY,
+            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILE_RECOVERY, WD_VIDEO_RECOVERY_FAILURE,
                                              video_health == WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE
                                                  ? "client video decode failure"
                                                  : "client video presentation pipeline stalled",
@@ -2186,7 +2236,7 @@ static void wd_stream_note_mode_frame_locked(struct wd_net_state* net, uint16_t 
         return;
     }
 
-    if (net->stream_policy.video_auto_bootstrap_suppressed)
+    if (net->stream_policy.video_bootstrap_pending)
     {
         net->stats.stream_mode_bootstrap_suppressed_samples++;
         return;
@@ -3751,6 +3801,8 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
         }
 
         const bool recovering_from_video = net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY;
+        const bool bootstrap_refresh = net->stream_policy.video_bootstrap_pending &&
+                                       !net->stream_policy.video_bootstrap_refresh_started;
         if (recovering_from_video && net->video_tcp_fd >= 0 && net->video_tx)
         {
             (void)wd_stream_queue_video_control_frame_locked(server, WD_VIDEO_FRAME_END_OF_STREAM);
@@ -3764,8 +3816,20 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
         net->stream_policy.tile_recovery_refresh_started = recovering_from_video;
         net->stream_policy.tile_recovery_refresh_sent    = false;
         net->stream_policy.tile_recovery_wait_seconds    = 0;
-        WD_LOG_INFO("stream mode ownership: tile-recovery owner=tiles fresh_udp_tiles=full-refresh tile_repair=enabled video_eos=%s",
-                    recovering_from_video ? "sent" : "no");
+        if (recovering_from_video)
+        {
+            net->stream_policy.tile_recovery_content_epoch = net->content_epoch;
+        }
+        if (bootstrap_refresh)
+        {
+            net->stream_policy.video_bootstrap_refresh_started = true;
+            net->stream_policy.video_bootstrap_refresh_sent    = false;
+            net->stream_policy.video_bootstrap_wait_seconds    = 0;
+            net->stream_policy.video_bootstrap_content_epoch   = net->content_epoch;
+        }
+        WD_LOG_INFO("stream mode ownership: owner=tiles refresh=%s epoch=%llu video_eos=%s",
+                    recovering_from_video ? "recovery" : (bootstrap_refresh ? "bootstrap" : "full"),
+                    (unsigned long long)net->content_epoch, recovering_from_video ? "sent" : "no");
     }
 
     if (wd_stream_mode_video_owns_display(net->stream_policy.stream_mode))
@@ -4087,7 +4151,16 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
     {
         net->stream_policy.tile_recovery_refresh_sent = true;
         net->stream_policy.tile_recovery_wait_seconds = 0;
-        WD_LOG_INFO("tile recovery refresh transmitted; waiting for client presentation");
+        WD_LOG_INFO("tile recovery refresh transmitted; waiting for client presentation epoch=%llu",
+                    (unsigned long long)net->stream_policy.tile_recovery_content_epoch);
+    }
+    if (net->stream_policy.video_bootstrap_pending && net->stream_policy.video_bootstrap_refresh_started &&
+        !net->stream_policy.video_bootstrap_refresh_sent && !wd_stream_has_queued_framebuffer_work_locked(server))
+    {
+        net->stream_policy.video_bootstrap_refresh_sent = true;
+        net->stream_policy.video_bootstrap_wait_seconds = 0;
+        WD_LOG_INFO("bootstrap refresh transmitted; waiting for client presentation epoch=%llu",
+                    (unsigned long long)net->stream_policy.video_bootstrap_content_epoch);
     }
 
     pthread_mutex_unlock(&net->lock);

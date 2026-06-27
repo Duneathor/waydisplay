@@ -57,5 +57,16 @@ int main() {
     require(client_audio_device_playhead(48000, 52800, 0, 480) == 48000, "an empty mix should preserve the base sample");
     require(!client_audio_device_consumed(48000, 52800, mixed, 480), "queued mixed audio should remain unconsumed");
     require(client_audio_device_consumed(48000, 50400, mixed, 480), "played mixed audio should be reported consumed");
+
+    require(wd_client_audio_startup_gate_decide(false, false, true, 0, 1000) == WD_CLIENT_AUDIO_STARTUP_READY,
+            "disabled audio must not hold video");
+    require(wd_client_audio_startup_gate_decide(true, true, true, 0, 1000) == WD_CLIENT_AUDIO_STARTUP_READY,
+            "playing audio must not hold video startup");
+    require(wd_client_audio_startup_gate_decide(true, false, false, 0, 1000) == WD_CLIENT_AUDIO_STARTUP_READY,
+            "an audio epoch that relinquished clock ownership must not hold video");
+    require(wd_client_audio_startup_gate_decide(true, false, true, 999, 1000) == WD_CLIENT_AUDIO_STARTUP_HOLD,
+            "audio may hold video while its bounded startup window remains open");
+    require(wd_client_audio_startup_gate_decide(true, false, true, 1000, 1000) == WD_CLIENT_AUDIO_STARTUP_TIMEOUT,
+            "audio startup must release video at the configured bound");
     return EXIT_SUCCESS;
 }

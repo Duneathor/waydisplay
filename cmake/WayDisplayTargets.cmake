@@ -58,6 +58,7 @@ add_library(waydisplay_server_runtime STATIC
     src/server/wd_scene_policy.c
     src/server/wd_readback_regions.c
     src/server/wd_connection_identity.c
+    src/server/wd_channel_binding.c
     src/server/wd_audio_ring.c
     src/server/wd_audio_packetizer.c
 )
@@ -95,6 +96,7 @@ add_library(waydisplay_client_runtime STATIC
     src/client/selection_sync.cpp
     src/client/stream_ownership.c
     src/client/video_transition.c
+    src/client/video_packet_validation.c
     src/client/video_present_queue.cpp
 )
 
@@ -103,6 +105,14 @@ waydisplay_apply_common_warnings(waydisplay_client_runtime)
 target_include_directories(waydisplay_client_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/client
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+# Runtime sources use the common logging API directly.  Keep that dependency
+# on the library target so every executable linking the static runtime receives
+# wd_log_message and the rest of the common runtime transitively.
+target_link_libraries(waydisplay_client_runtime PUBLIC
+    waydisplay_common
+    Threads::Threads
 )
 
 add_library(waydisplay_client_tile_reassembly STATIC

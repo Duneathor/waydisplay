@@ -54,3 +54,18 @@ enum wd_client_audio_video_sync_decision wd_client_audio_video_sync_decide(uint6
                                                                             uint32_t sample_rate) {
     return wd_client_audio_video_sync_plan_compute(video_pts_usec, audio_playhead_samples, sample_rate).decision;
 }
+
+
+enum wd_client_audio_startup_gate_decision wd_client_audio_startup_gate_decide(bool configured, bool playing, bool waiting,
+                                                                                uint64_t wait_elapsed_ms,
+                                                                                uint32_t max_wait_ms) {
+    if (!configured || playing || !waiting)
+    {
+        return WD_CLIENT_AUDIO_STARTUP_READY;
+    }
+    if (max_wait_ms != 0 && wait_elapsed_ms >= max_wait_ms)
+    {
+        return WD_CLIENT_AUDIO_STARTUP_TIMEOUT;
+    }
+    return WD_CLIENT_AUDIO_STARTUP_HOLD;
+}

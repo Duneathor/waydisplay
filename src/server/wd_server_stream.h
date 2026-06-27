@@ -29,6 +29,8 @@ void     wd_stream_account_tcp_control_bytes_locked(struct wd_net_state* net, ui
 
 void wd_stream_policy_set_defaults(struct wd_stream_policy* policy);
 void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const struct wd_client_hello_payload* hello);
+void wd_stream_policy_begin_session(struct wd_stream_policy* policy, const struct wd_client_hello_payload* hello,
+                                    uint64_t bootstrap_content_epoch);
 void wd_stream_policy_set_udp_rate(struct wd_stream_policy* policy, uint64_t bytes_per_second);
 bool wd_stream_policy_should_render_now(struct wd_server* server, uint64_t now_ns);
 

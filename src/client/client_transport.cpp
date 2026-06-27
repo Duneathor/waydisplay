@@ -91,7 +91,7 @@ void log_udp_endpoint(const ClientState& state) {
 
 ClientAsyncTcpSender* create_client_tcp_sender(const char* label) {
     ClientAsyncTcpSender* sender = client_async_tcp_sender_create(WD_CLIENT_TCP_TX_RING_ENTRIES, WD_CLIENT_TCP_TX_PENDING_BYTES);
-    if (!sender)
+    if (!sender) [[unlikely]]
     {
         WD_LOG_ERROR("failed to create io_uring TCP sender for %s channel", label ? label : "unknown");
     }
@@ -118,11 +118,11 @@ size_t client_async_udp_packet_bytes(const wd_server_config_payload& config) {
 ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state, const wd_server_config_payload& config) {
     const size_t            packet_bytes = client_async_udp_packet_bytes(config);
     ClientAsyncUdpReceiver* receiver     = client_async_udp_receiver_create(state.session.transport.udp_fd, WD_CLIENT_UDP_RX_RING_ENTRIES, packet_bytes);
-    if (!receiver)
+    if (!receiver) [[unlikely]]
     {
         WD_LOG_ERROR("failed to create io_uring UDP receiver");
     }
-    else if (!client_async_udp_receiver_ready(receiver))
+    else if (!client_async_udp_receiver_ready(receiver)) [[unlikely]]
     {
         WD_LOG_ERROR("io_uring UDP receiver setup failed with outstanding receives; reconnect required");
     }
@@ -182,7 +182,7 @@ void destroy_client_udp_receiver(ClientState& state) {
 }
 
 ClientAsyncTcpSender* sender_for_fd(ClientState& state, int fd) {
-    if (fd < 0)
+    if (fd < 0) [[unlikely]]
     {
         return nullptr;
     }
@@ -202,7 +202,7 @@ ClientAsyncTcpSender* sender_for_fd(ClientState& state, int fd) {
 }
 
 bool client_send_tcp_message_queued(ClientState& state, int fd, uint16_t message_type, const void* payload, uint32_t payload_size) {
-    if (fd < 0)
+    if (fd < 0) [[unlikely]]
     {
         return false;
     }
@@ -323,7 +323,7 @@ bool set_socket_rcvbuf(int fd, int requested_bytes) {
         return false;
     }
 
-    if (::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &requested_bytes, sizeof(requested_bytes)) != 0)
+    if (::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &requested_bytes, sizeof(requested_bytes)) != 0) [[unlikely]]
     {
         WD_LOG_ERROR("setsockopt SO_RCVBUF failed: %s", std::strerror(errno));
         return false;
@@ -342,7 +342,7 @@ bool set_socket_rcvbuf(int fd, int requested_bytes) {
 
 bool open_udp_socket(ClientState& state) {
     state.session.transport.udp_fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-    if (state.session.transport.udp_fd < 0)
+    if (state.session.transport.udp_fd < 0) [[unlikely]]
     {
         WD_LOG_ERROR("socket UDP failed: %s", std::strerror(errno));
         return false;
@@ -353,7 +353,7 @@ bool open_udp_socket(ClientState& state) {
     bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     bind_addr.sin_port        = htons(state.client_udp_port);
 
-    if (::bind(state.session.transport.udp_fd, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) < 0)
+    if (::bind(state.session.transport.udp_fd, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) < 0) [[unlikely]]
     {
         WD_LOG_ERROR("bind UDP failed: %s", std::strerror(errno));
         ::close(state.session.transport.udp_fd);
@@ -381,7 +381,7 @@ bool connect_udp_socket_to_server(ClientState& state, const wd_server_config_pay
         WD_LOG_ERROR("invalid IPv4 address for UDP peer: %s", state.server_host.c_str());
         return false;
     }
-    if (::connect(state.session.transport.udp_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
+    if (::connect(state.session.transport.udp_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) [[unlikely]]
     {
         WD_LOG_ERROR("connect UDP peer failed: %s", std::strerror(errno));
         return false;
@@ -409,7 +409,7 @@ int connect_tcp_fd(const ClientState& state, const char* label) {
         return -1;
     }
 
-    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) [[unlikely]]
     {
         WD_LOG_ERROR("%s failed: %s", label ? label : "TCP socket", std::strerror(errno));
         ::close(fd);
@@ -421,7 +421,7 @@ int connect_tcp_fd(const ClientState& state, const char* label) {
 
 bool open_tcp_socket(ClientState& state) {
     state.session.transport.control_fd = connect_tcp_fd(state, "connect TCP");
-    if (state.session.transport.control_fd >= 0)
+    if (state.session.transport.control_fd >= 0) [[likely]]
     {
         log_tcp_channel_endpoint("control", state.session.transport.control_fd);
     }
@@ -439,7 +439,7 @@ bool open_input_tcp_socket(ClientState& state) {
     hello.session_id       = state.config.session_id;
     hello.connection_token = state.config.connection_token;
 
-    if (!wd_send_tcp_message(fd, WD_MSG_INPUT_CHANNEL_HELLO, &hello, sizeof(hello)))
+    if (!wd_send_tcp_message(fd, WD_MSG_INPUT_CHANNEL_HELLO, &hello, sizeof(hello))) [[unlikely]]
     {
         ::close(fd);
         return false;
@@ -469,7 +469,7 @@ bool open_selection_tcp_socket(ClientState& state) {
     hello.session_id       = state.config.session_id;
     hello.connection_token = state.config.connection_token;
 
-    if (!wd_send_tcp_message(fd, WD_MSG_SELECTION_CHANNEL_HELLO, &hello, sizeof(hello)))
+    if (!wd_send_tcp_message(fd, WD_MSG_SELECTION_CHANNEL_HELLO, &hello, sizeof(hello))) [[unlikely]]
     {
         ::close(fd);
         return false;
@@ -506,7 +506,7 @@ bool open_video_tcp_socket(ClientState& state) {
     hello.video_codecs     = state.video_codecs;
     hello.video_transport  = state.video_transport;
 
-    if (!wd_send_tcp_message(fd, WD_MSG_VIDEO_CHANNEL_HELLO, &hello, sizeof(hello)))
+    if (!wd_send_tcp_message(fd, WD_MSG_VIDEO_CHANNEL_HELLO, &hello, sizeof(hello))) [[unlikely]]
     {
         ::close(fd);
         return false;
@@ -540,7 +540,7 @@ bool open_audio_tcp_socket(ClientState& state) {
     hello.audio_codecs     = state.audio_codec;
     hello.audio_transport  = state.audio_transport;
 
-    if (!wd_send_tcp_message(fd, WD_MSG_AUDIO_CHANNEL_HELLO, &hello, sizeof(hello)))
+    if (!wd_send_tcp_message(fd, WD_MSG_AUDIO_CHANNEL_HELLO, &hello, sizeof(hello))) [[unlikely]]
     {
         ::close(fd);
         return false;

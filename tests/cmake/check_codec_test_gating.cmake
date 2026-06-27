@@ -12,6 +12,7 @@ foreach(_suffix IN ITEMS
         VIDEO_DECODER
         VIDEO_ENCODER_VAAPI
         VIDEO_DECODER_VAAPI
+        VIDEO_RESIZE_ROUNDTRIP
         VIDEO_CODEC_ROUNDTRIP)
     string(TOLOWER "${_suffix}" _test_suffix)
     set(_test_name "waydisplay.${_test_suffix}")

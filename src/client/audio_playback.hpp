@@ -18,7 +18,8 @@ bool     client_audio_playback_handle_packet(ClientAudioPlayback* playback, cons
 void     client_audio_playback_reset(ClientAudioPlayback* playback);
 bool     client_audio_playback_is_configured(ClientAudioPlayback* playback);
 bool     client_audio_playback_is_playing(ClientAudioPlayback* playback);
-bool     client_audio_playback_should_hold_video(ClientAudioPlayback* playback);
+bool     client_audio_playback_video_gate(ClientAudioPlayback* playback, uint64_t now_ns, uint32_t* hold_age_ms, bool* timed_out);
+uint8_t  client_audio_playback_state(ClientAudioPlayback* playback);
 bool     client_audio_playback_playhead_samples(ClientAudioPlayback* playback, uint64_t* playhead_samples);
 uint64_t client_audio_playback_underflows(ClientAudioPlayback* playback);
 uint64_t client_audio_playback_late_drops(ClientAudioPlayback* playback);

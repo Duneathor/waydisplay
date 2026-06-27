@@ -1327,6 +1327,7 @@ struct VideoPresentInfo {
     uint64_t frame_id       = 0;
     uint64_t pts_usec       = 0;
     uint64_t epoch          = 0;
+    uint64_t content_epoch  = 0;
     uint32_t retry_after_ms = 0;
 };
 
@@ -1366,8 +1367,20 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                 return VideoTextureUploadResult::Failed;
             }
 
-            uint64_t   audio_playhead_samples = 0;
-            const bool audio_waiting          = client_audio_playback_should_hold_video(state.session.audio_playback);
+            uint64_t audio_playhead_samples = 0;
+            uint32_t audio_startup_hold_ms   = 0;
+            bool     audio_startup_timed_out = false;
+            const bool audio_waiting = client_audio_playback_video_gate(state.session.audio_playback, wd_now_ns(),
+                                                                         &audio_startup_hold_ms, &audio_startup_timed_out);
+            state.stats.audio_video_startup_hold_ms.store(audio_waiting ? audio_startup_hold_ms : 0, std::memory_order_relaxed);
+            state.stats.audio_playback_state.store(client_audio_playback_state(state.session.audio_playback),
+                                                   std::memory_order_relaxed);
+            if (audio_startup_timed_out)
+            {
+                state.stats.audio_video_startup_timeouts.fetch_add(1, std::memory_order_relaxed);
+                WD_LOG_WARN("audio startup did not establish a presentation clock within %u ms; presenting video without audio sync",
+                            WD_CLIENT_AUDIO_VIDEO_STARTUP_HOLD_MAX_MS);
+            }
             if (client_audio_playback_playhead_samples(state.session.audio_playback, &audio_playhead_samples))
             {
                 const struct wd_client_audio_video_sync_plan sync =
@@ -1406,6 +1419,10 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
             present_info.pts_usec = selected.pts_usec;
             frame_epoch           = selected.epoch;
             present_info.epoch    = frame_epoch;
+            {
+                std::lock_guard<std::mutex> content_lock(state.remote_content_mutex);
+                present_info.content_epoch = state.remote_content_owner == WD_CLIENT_CONTENT_OWNER_VIDEO ? state.remote_content_epoch : 0;
+            }
             state.pending_video_frame_dirty.store(!state.video_present_queue.empty(), std::memory_order_release);
             break;
         }
@@ -1845,6 +1862,10 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
         if (!video_present.valid)
         {
             state.stats.tile_frames_presented.fetch_add(1, std::memory_order_relaxed);
+            if (tile_telemetry.content_epoch != 0)
+            {
+                record_atomic_max(state.stats.tile_content_epoch_presented, tile_telemetry.content_epoch);
+            }
         }
     }
     state.stats.sdl_present_samples.fetch_add(1, std::memory_order_relaxed);
@@ -1858,6 +1879,10 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
     {
         state.stats.video_frames_presented.fetch_add(1, std::memory_order_relaxed);
         state.stats.video_last_frame_id_presented.store(video_present.frame_id, std::memory_order_relaxed);
+        if (video_present.content_epoch != 0)
+        {
+            record_atomic_max(state.stats.video_content_epoch_presented, video_present.content_epoch);
+        }
         const uint64_t pts_ns = wd_media_local_deadline_ns(state.media_clock_local_origin_ns, video_present.pts_usec);
         if (state.media_clock_local_origin_ns != 0 && present_ns >= pts_ns)
         {

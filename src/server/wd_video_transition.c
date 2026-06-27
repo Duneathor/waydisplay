@@ -1,12 +1,16 @@
 #include "wd_video_transition.h"
 
-enum wd_tile_recovery_action wd_tile_recovery_decide(bool refresh_sent, uint64_t client_tile_frames_presented, uint32_t wait_seconds,
+#include "waydisplay/wd_config.h"
+#include "waydisplay/wd_protocol.h"
+
+enum wd_tile_recovery_action wd_tile_recovery_decide(bool refresh_sent, uint64_t required_content_epoch,
+                                                     uint64_t presented_content_epoch, uint32_t wait_seconds,
                                                      uint32_t timeout_seconds) {
-    if (!refresh_sent)
+    if (!refresh_sent || required_content_epoch == 0)
     {
         return WD_TILE_RECOVERY_WAIT;
     }
-    if (client_tile_frames_presented != 0)
+    if (presented_content_epoch >= required_content_epoch)
     {
         return WD_TILE_RECOVERY_COMPLETE_PRESENTED;
     }
@@ -17,8 +21,17 @@ enum wd_tile_recovery_action wd_tile_recovery_decide(bool refresh_sent, uint64_t
     return WD_TILE_RECOVERY_WAIT;
 }
 
-bool wd_video_entry_allowed(bool recovery_active, uint32_t retry_cooldown_seconds) {
-    return !recovery_active && retry_cooldown_seconds == 0;
+bool wd_video_entry_allowed(bool bootstrap_pending, bool recovery_active, uint32_t retry_cooldown_seconds, bool video_forced,
+                            enum wd_video_recovery_class recovery_class) {
+    if (bootstrap_pending || recovery_active)
+    {
+        return false;
+    }
+    if (retry_cooldown_seconds == 0)
+    {
+        return true;
+    }
+    return video_forced && recovery_class == WD_VIDEO_RECOVERY_PLANNED;
 }
 
 uint64_t wd_next_nonzero_epoch(uint64_t current_epoch) {
@@ -50,7 +63,8 @@ enum wd_client_video_health_class wd_client_video_health_classify(const struct w
     {
         return WD_CLIENT_VIDEO_HEALTH_IDLE;
     }
-    if (metrics->client_decode_failures != 0 || metrics->client_publish_failures != 0 || metrics->client_need_keyframe_drops != 0)
+    if (metrics->client_decode_failures != 0 || metrics->client_publish_failures != 0 || metrics->client_need_keyframe_drops != 0 ||
+        metrics->client_decode_queue_drops != 0)
     {
         return WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE;
     }
@@ -58,7 +72,11 @@ enum wd_client_video_health_class wd_client_video_health_classify(const struct w
     {
         return WD_CLIENT_VIDEO_HEALTH_NORMAL;
     }
-    if (metrics->client_frames_decoded != 0 && metrics->client_audio_video_sync_holds != 0 && metrics->client_queue_depth != 0)
+    if (metrics->client_frames_decoded != 0 && metrics->client_audio_video_sync_holds != 0 &&
+        metrics->client_audio_playback_state == WD_CLIENT_AUDIO_PLAYBACK_BUFFERING &&
+        metrics->client_audio_video_startup_timeouts == 0 &&
+        metrics->client_audio_video_startup_hold_ms <= WD_CLIENT_AUDIO_VIDEO_STARTUP_HOLD_MAX_MS &&
+        (metrics->client_queue_depth != 0 || metrics->client_queue_depth_max != 0))
     {
         return WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT;
     }

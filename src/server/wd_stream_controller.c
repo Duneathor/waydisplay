@@ -19,6 +19,10 @@ void wd_stream_controller_tick(struct wd_server* server) {
     if (video_owned_before != video_owned_after)
     {
         wd_stream_advance_content_epoch_locked(server, video_owned_after ? "video owns display" : "tiles own display");
+        if (!video_owned_after && net->stream_policy.stream_mode == WD_STREAM_MODE_TILE_RECOVERY)
+        {
+            net->stream_policy.tile_recovery_content_epoch = net->content_epoch;
+        }
     }
 
     pthread_mutex_unlock(&net->lock);

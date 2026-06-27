@@ -269,7 +269,7 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
         net->content_epoch                       = entry_plan.frame_content_epoch;
         net->input_correlation_inflight_sequence = 0;
         WD_LOG_INFO("stream content epoch: epoch=%llu reason=first video keyframe queued", (unsigned long long)net->content_epoch);
-        wd_stream_policy_set_mode_locked(&net->stream_policy, WD_STREAM_MODE_VIDEO_ACTIVE, "video keyframe queued", 0.0, 0.0, 0.0, true,
+        wd_stream_policy_set_mode_locked(&net->stream_policy, WD_STREAM_MODE_VIDEO_ACTIVE, WD_VIDEO_RECOVERY_NONE, "video keyframe queued", 0.0, 0.0, 0.0, true,
                                          true);
     }
 
@@ -501,6 +501,8 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
     if (net->stream_policy.stream_mode != WD_STREAM_MODE_TILES)
     {
         wd_stream_policy_set_mode_locked(&net->stream_policy, net->client_connected ? WD_STREAM_MODE_TILE_RECOVERY : WD_STREAM_MODE_TILES,
+                                         net->client_connected ? (resize ? WD_VIDEO_RECOVERY_PLANNED : WD_VIDEO_RECOVERY_FAILURE)
+                                                               : WD_VIDEO_RECOVERY_NONE,
                                          reason ? reason : "video reset", 0.0, 0.0, 0.0, net->video_tcp_fd >= 0,
                                          wd_video_encoder_available(net->video_encoder));
     }

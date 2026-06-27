@@ -199,11 +199,16 @@ struct ClientStats {
     std::atomic<uint64_t> video_present_latency_sum_ns{0};
     std::atomic<uint64_t> audio_video_sync_holds{0};
     std::atomic<uint64_t> audio_video_sync_drops{0};
+    std::atomic<uint64_t> audio_video_startup_timeouts{0};
+    std::atomic<uint32_t> audio_video_startup_hold_ms{0};
+    std::atomic<uint8_t>  audio_playback_state{WD_CLIENT_AUDIO_PLAYBACK_DISABLED};
     std::atomic<uint64_t> video_queue_overflow_drops{0};
     std::atomic<uint64_t> video_decode_queue_drops{0};
     std::atomic<uint64_t> video_queue_depth_max{0};
     std::atomic<int64_t>  audio_video_delta_samples{0};
     std::atomic<uint64_t> tile_frames_presented{0};
+    std::atomic<uint64_t> tile_content_epoch_presented{0};
+    std::atomic<uint64_t> video_content_epoch_presented{0};
     std::atomic<uint64_t> audio_messages_rx{0};
     std::atomic<uint64_t> audio_packets_rx{0};
     std::atomic<uint64_t> audio_bytes_rx{0};
@@ -335,6 +340,9 @@ struct ClientStatsSnapshot {
     uint64_t video_present_latency_sum_ns       = 0;
     uint64_t audio_video_sync_holds             = 0;
     uint64_t audio_video_sync_drops             = 0;
+    uint64_t audio_video_startup_timeouts        = 0;
+    uint32_t audio_video_startup_hold_ms         = 0;
+    uint8_t  audio_playback_state                = WD_CLIENT_AUDIO_PLAYBACK_DISABLED;
     uint64_t video_queue_overflow_drops         = 0;
     uint64_t video_decode_queue_drops           = 0;
     uint32_t video_queue_depth                  = 0;
@@ -342,6 +350,8 @@ struct ClientStatsSnapshot {
     uint64_t video_oldest_pts_usec              = 0;
     int64_t  audio_video_delta_samples          = 0;
     uint64_t tile_frames_presented              = 0;
+    uint64_t tile_content_epoch_presented        = 0;
+    uint64_t video_content_epoch_presented       = 0;
     uint64_t audio_messages_rx                  = 0;
     uint64_t audio_packets_rx                   = 0;
     uint64_t audio_bytes_rx                     = 0;

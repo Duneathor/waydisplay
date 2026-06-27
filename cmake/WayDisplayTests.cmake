@@ -17,7 +17,7 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
     set_tests_properties(waydisplay.cmake_build_profiles PROPERTIES
         TIMEOUT 120
-        LABELS "cmake;build"
+        LABELS "unit;cmake;build"
     )
 
     function(waydisplay_add_test)
@@ -83,13 +83,28 @@ if(WAYDISPLAY_BUILD_TESTS)
             set_tests_properties(${WAYDISPLAY_TEST_NAME} PROPERTIES
                 SKIP_RETURN_CODE ${WAYDISPLAY_TEST_SKIP_RETURN_CODE})
         endif()
-        if(WAYDISPLAY_TEST_LABELS)
-            set_tests_properties(${WAYDISPLAY_TEST_NAME} PROPERTIES
-                LABELS "${WAYDISPLAY_TEST_LABELS}")
+        set(_waydisplay_test_labels ${WAYDISPLAY_TEST_LABELS})
+        set(_waydisplay_has_tier FALSE)
+        foreach(_waydisplay_tier IN ITEMS unit integration stress fuzz hardware)
+            if(_waydisplay_tier IN_LIST _waydisplay_test_labels)
+                set(_waydisplay_has_tier TRUE)
+            endif()
+        endforeach()
+        if(NOT _waydisplay_has_tier)
+            list(PREPEND _waydisplay_test_labels unit)
         endif()
+        set_tests_properties(${WAYDISPLAY_TEST_NAME} PROPERTIES
+            LABELS "${_waydisplay_test_labels}")
         set_property(GLOBAL APPEND PROPERTY WAYDISPLAY_TEST_TARGETS
             ${WAYDISPLAY_TEST_TARGET})
     endfunction()
+
+    waydisplay_add_test(
+        NAME waydisplay.cpp20_branch_hints
+        TARGET waydisplay_test_cpp20_branch_hints
+        SOURCES tests/test_cpp20_branch_hints.cpp
+        LABELS "unit;build;cpp20"
+    )
 
     waydisplay_add_test(
         NAME waydisplay.client_config
@@ -111,6 +126,14 @@ if(WAYDISPLAY_BUILD_TESTS)
         TARGET waydisplay_test_client_config_matrix
         SOURCES tests/test_client_config_matrix.cpp
         LIBRARIES waydisplay_client_config
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.protocol_descriptor_matrix
+        TARGET waydisplay_test_protocol_descriptor_matrix
+        SOURCES tests/test_protocol_descriptor_matrix.cpp
+        LIBRARIES waydisplay_common
+        LABELS "unit;protocol;network"
     )
 
     waydisplay_add_test(
@@ -236,7 +259,16 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
     set_tests_properties(waydisplay.threaded_runtime_contracts PROPERTIES
         TIMEOUT 10
-        LABELS "cmake;lifecycle;threading"
+        LABELS "unit;cmake;lifecycle;threading"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.control_handshake_runtime
+        TARGET waydisplay_test_control_handshake_runtime
+        SOURCES tests/test_control_handshake_runtime.cpp
+        LIBRARIES waydisplay_common waydisplay_server_runtime
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "integration;network;protocol;server"
     )
 
     waydisplay_add_test(
@@ -288,8 +320,20 @@ if(WAYDISPLAY_BUILD_TESTS)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_io_uring_5_14_contract.cmake
     )
     set_tests_properties(waydisplay.io_uring_5_14_contract PROPERTIES
-        LABELS "cmake;io_uring"
+        LABELS "unit;cmake;io_uring"
         TIMEOUT 10
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.session_boundary_concurrency
+        TARGET waydisplay_test_session_boundary_concurrency
+        SOURCES tests/test_session_boundary_concurrency.cpp
+        LIBRARIES waydisplay_client_runtime waydisplay_server_runtime Threads::Threads
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "integration;lifecycle;network;threading;client;server"
+        TIMEOUT 30
     )
 
     waydisplay_add_test(
@@ -369,6 +413,17 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.audio_startup_integration
+        TARGET waydisplay_test_audio_startup_integration
+        SOURCES tests/test_audio_startup_integration.cpp
+        LIBRARIES waydisplay_client_runtime waydisplay_server_runtime
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "integration;audio;video;client;server;lifecycle"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.audio_video_sync
         TARGET waydisplay_test_audio_video_sync
         SOURCES tests/test_audio_video_sync.cpp
@@ -426,7 +481,7 @@ if(WAYDISPLAY_BUILD_TESTS)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_wlroots_scene_test_gating.cmake
     )
     set_tests_properties(waydisplay.wlroots_scene_test_gating PROPERTIES
-        LABELS "wayland;wlroots;cmake"
+        LABELS "unit;wayland;wlroots;cmake"
         TIMEOUT 10
     )
 
@@ -440,12 +495,18 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.client_runtime_linkage
+        TARGET waydisplay_test_client_runtime_linkage
+        SOURCES tests/test_client_runtime_linkage.cpp
+        LIBRARIES waydisplay_client_runtime
+        LABELS "client;linkage;lifecycle"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.render_planning
         TARGET waydisplay_test_render_planning
         SOURCES tests/test_render_planning.cpp
-        LIBRARIES
-            waydisplay_client_runtime
-            Threads::Threads
+        LIBRARIES waydisplay_client_runtime
     )
 
     waydisplay_add_test(
@@ -465,6 +526,17 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.stream_lifecycle_scenarios
+        TARGET waydisplay_test_stream_lifecycle_scenarios
+        SOURCES tests/test_stream_lifecycle_scenarios.cpp
+        LIBRARIES waydisplay_client_runtime waydisplay_server_runtime
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "integration;lifecycle;client;server;video"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.reconnect_render_lifecycle
         TARGET waydisplay_test_reconnect_render_lifecycle
         SOURCES tests/test_reconnect_render_lifecycle.cpp
@@ -472,6 +544,15 @@ if(WAYDISPLAY_BUILD_TESTS)
         LIBRARIES
             waydisplay_client_runtime
             waydisplay_server_runtime
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_packet_validation
+        TARGET waydisplay_test_video_packet_validation
+        SOURCES tests/test_video_packet_validation.cpp
+        LIBRARIES waydisplay_client_runtime
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+        LABELS "unit;client;video;protocol"
     )
 
     waydisplay_add_test(
@@ -566,6 +647,27 @@ if(WAYDISPLAY_BUILD_TESTS)
     if((WAYDISPLAY_HAVE_H265_SERVER_ENCODER OR WAYDISPLAY_HAVE_H264_SERVER_ENCODER) AND
        (WAYDISPLAY_HAVE_H265_CLIENT_DECODER OR WAYDISPLAY_HAVE_H264_CLIENT_DECODER))
         waydisplay_add_test(
+            NAME waydisplay.video_resize_roundtrip
+            TARGET waydisplay_test_video_resize_roundtrip
+            SOURCES tests/test_video_resize_roundtrip.cpp
+            LIBRARIES
+                waydisplay_video_encoder
+                waydisplay_video_decoder
+                waydisplay_client_runtime
+            SKIP_RETURN_CODE 77
+            LABELS "integration;video;codec;roundtrip;resize"
+            TIMEOUT 60
+        )
+
+        get_target_property(_waydisplay_video_resize_links
+            waydisplay_test_video_resize_roundtrip LINK_LIBRARIES)
+        if(NOT "waydisplay_client_runtime" IN_LIST _waydisplay_video_resize_links)
+            message(FATAL_ERROR
+                "waydisplay_test_video_resize_roundtrip must link "
+                "waydisplay_client_runtime for video packet validation")
+        endif()
+
+        waydisplay_add_test(
             NAME waydisplay.video_codec_roundtrip
             TARGET waydisplay_test_video_codec_roundtrip
             SOURCES tests/test_video_codec_roundtrip.cpp
@@ -583,6 +685,7 @@ if(WAYDISPLAY_BUILD_TESTS)
             video_decoder
             video_encoder_vaapi
             video_decoder_vaapi
+            video_resize_roundtrip
             video_codec_roundtrip)
         if(TARGET waydisplay_test_${_waydisplay_codec_test})
             set(_waydisplay_expect_${_waydisplay_codec_test} TRUE)
@@ -598,11 +701,27 @@ if(WAYDISPLAY_BUILD_TESTS)
             -DWAYDISPLAY_EXPECT_VIDEO_DECODER=${_waydisplay_expect_video_decoder}
             -DWAYDISPLAY_EXPECT_VIDEO_ENCODER_VAAPI=${_waydisplay_expect_video_encoder_vaapi}
             -DWAYDISPLAY_EXPECT_VIDEO_DECODER_VAAPI=${_waydisplay_expect_video_decoder_vaapi}
+            -DWAYDISPLAY_EXPECT_VIDEO_RESIZE_ROUNDTRIP=${_waydisplay_expect_video_resize_roundtrip}
             -DWAYDISPLAY_EXPECT_VIDEO_CODEC_ROUNDTRIP=${_waydisplay_expect_video_codec_roundtrip}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_codec_test_gating.cmake
     )
     set_tests_properties(waydisplay.codec_test_gating PROPERTIES
-        LABELS "video;codec;cmake"
+        LABELS "unit;video;codec;cmake"
+        TIMEOUT 10
+    )
+
+    add_test(
+        NAME waydisplay.runtime_target_gating
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_CLIENT_TARGET_EXISTS=$<BOOL:$<TARGET_EXISTS:waydisplay_client_sdl>>
+            -DWAYDISPLAY_SERVER_TARGET_EXISTS=$<BOOL:$<TARGET_EXISTS:waydisplay_server_wlroots>>
+            -DWAYDISPLAY_REQUIRE_RUNTIME_TARGETS=${WAYDISPLAY_REQUIRE_RUNTIME_TARGETS}
+            -DWAYDISPLAY_BUILD_CLIENT_SDL=${WAYDISPLAY_BUILD_CLIENT_SDL}
+            -DWAYDISPLAY_BUILD_WLROOTS_SERVER=${WAYDISPLAY_BUILD_WLROOTS_SERVER}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_runtime_target_gating.cmake
+    )
+    set_tests_properties(waydisplay.runtime_target_gating PROPERTIES
+        LABELS "unit;cmake;client;server"
         TIMEOUT 10
     )
 

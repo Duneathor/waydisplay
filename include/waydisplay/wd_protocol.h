@@ -332,6 +332,13 @@ enum wd_client_stats_flags {
 };
 #define WD_CLIENT_STATS_FLAG_MASK WD_CLIENT_STATS_RENDER_VISIBLE
 
+enum wd_client_audio_playback_state {
+    WD_CLIENT_AUDIO_PLAYBACK_DISABLED  = 0,
+    WD_CLIENT_AUDIO_PLAYBACK_BUFFERING = 1,
+    WD_CLIENT_AUDIO_PLAYBACK_PLAYING   = 2,
+    WD_CLIENT_AUDIO_PLAYBACK_STARVED   = 3,
+};
+
 struct wd_client_stats_payload {
     uint8_t  session_id;
     uint64_t connection_token;
@@ -400,6 +407,12 @@ struct wd_client_stats_payload {
     uint64_t video_oldest_pts_usec;
     int64_t  audio_video_delta_samples;
     uint64_t tile_frames_presented;
+    uint64_t tile_content_epoch_presented;
+    uint64_t video_content_epoch_presented;
+    uint64_t video_decode_queue_drops;
+    uint64_t audio_video_startup_timeouts;
+    uint32_t audio_video_startup_hold_ms;
+    uint8_t  audio_playback_state;
 };
 
 struct wd_input_channel_hello_payload {
@@ -883,7 +896,7 @@ static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_m
 static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
 static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
-static_assert(sizeof(struct wd_client_stats_payload) == 421, "unexpected wd_client_stats_payload size");
+static_assert(sizeof(struct wd_client_stats_payload) == 458, "unexpected wd_client_stats_payload size");
 static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
 static_assert(sizeof(struct wd_selection_channel_hello_payload) == 9, "unexpected wd_selection_channel_hello_payload size");
 static_assert(sizeof(struct wd_video_channel_hello_payload) == 15, "unexpected wd_video_channel_hello_payload size");
@@ -911,7 +924,7 @@ _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_
 _Static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 _Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
 _Static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
-_Static_assert(sizeof(struct wd_client_stats_payload) == 421, "unexpected wd_client_stats_payload size");
+_Static_assert(sizeof(struct wd_client_stats_payload) == 458, "unexpected wd_client_stats_payload size");
 _Static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_selection_channel_hello_payload) == 9, "unexpected wd_selection_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_video_channel_hello_payload) == 15, "unexpected wd_video_channel_hello_payload size");

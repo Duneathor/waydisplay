@@ -147,7 +147,8 @@
         "WAYDISPLAY_ENABLE_H264_CLIENT_DECODER": "ON",
         "WAYDISPLAY_ENABLE_H265_CLIENT_DECODER": "ON",
         "WAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER": "ON",
-        "WAYDISPLAY_REQUIRE_CODEC_TESTS": "ON"
+        "WAYDISPLAY_REQUIRE_CODEC_TESTS": "ON",
+        "WAYDISPLAY_WARNINGS_AS_ERRORS": "ON"
       }
     },
     {
@@ -181,7 +182,23 @@
       "name": "tests-full",
       "displayName": "WayDisplay full optional-backend test build",
       "inherits": "tests-base",
-      "binaryDir": "${sourceDir}/build-tests-full"
+      "binaryDir": "${sourceDir}/build-tests-full",
+      "cacheVariables": {
+        "WAYDISPLAY_REQUIRE_RUNTIME_TARGETS": "ON"
+      }
+    },
+    {
+      "name": "tests-coverage",
+      "displayName": "WayDisplay GCC coverage tests",
+      "inherits": "tests-core",
+      "binaryDir": "${sourceDir}/build-tests-coverage",
+      "cacheVariables": {
+        "WAYDISPLAY_RUN_TESTS_ON_BUILD": "OFF",
+        "CMAKE_C_FLAGS": "--coverage -O0 -g",
+        "CMAKE_CXX_FLAGS": "--coverage -O0 -g",
+        "CMAKE_EXE_LINKER_FLAGS": "--coverage",
+        "CMAKE_SHARED_LINKER_FLAGS": "--coverage"
+      }
     }
   ],
   "buildPresets": [
@@ -236,6 +253,10 @@
     {
       "name": "tests-full",
       "configurePreset": "tests-full"
+    },
+    {
+      "name": "tests-coverage",
+      "configurePreset": "tests-coverage"
     }
   ],
   "testPresets": [
@@ -298,6 +319,13 @@
     {
       "name": "tests-full",
       "configurePreset": "tests-full",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tests-coverage",
+      "configurePreset": "tests-coverage",
       "output": {
         "outputOnFailure": true
       }

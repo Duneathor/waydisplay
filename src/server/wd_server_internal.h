@@ -377,12 +377,18 @@ struct wd_stats {
     uint64_t client_audio_underflows;
     uint64_t client_audio_video_sync_holds;
     uint64_t client_audio_video_sync_drops;
+    uint64_t client_video_decode_queue_drops;
+    uint64_t client_audio_video_startup_timeouts;
+    uint32_t client_audio_video_startup_hold_ms;
+    uint8_t  client_audio_playback_state;
     uint64_t client_video_queue_overflow_drops;
     uint32_t client_video_queue_depth;
     uint32_t client_video_queue_depth_max;
     uint64_t client_video_oldest_pts_usec;
     int64_t  client_audio_video_delta_samples;
     uint64_t client_tile_frames_presented;
+    uint64_t client_tile_content_epoch_presented;
+    uint64_t client_video_content_epoch_presented;
 
     uint64_t retx_req_rx;
     uint64_t retx_tiles_req;
@@ -550,8 +556,13 @@ struct wd_stream_policy {
     bool                tile_recovery_refresh_sent;
     uint32_t            tile_recovery_wait_seconds;
     uint32_t            video_retry_cooldown_seconds;
-    bool                video_auto_bootstrap_suppressed;
-    uint32_t            video_auto_bootstrap_seconds;
+    bool                video_bootstrap_pending;
+    bool                video_bootstrap_refresh_started;
+    bool                video_bootstrap_refresh_sent;
+    uint32_t            video_bootstrap_wait_seconds;
+    uint64_t            video_bootstrap_content_epoch;
+    uint64_t            tile_recovery_content_epoch;
+    uint8_t             video_recovery_class;
 
     uint32_t frame_rate_good_seconds;
 

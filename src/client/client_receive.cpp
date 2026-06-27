@@ -34,7 +34,7 @@ bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, uint16_t tile_widt
     const uint16_t tiles_x     = wd_tiles_for_width_with_tile(state.config.width, tile_width);
     const uint16_t tiles_y     = wd_tiles_for_height_with_tile(state.config.height, tile_height);
     const uint32_t total_tiles = static_cast<uint32_t>(tiles_x) * static_cast<uint32_t>(tiles_y);
-    if (tile_width == 0 || tile_height == 0 || tiles_x == 0 || tiles_y == 0 || tile_id >= total_tiles)
+    if (tile_width == 0 || tile_height == 0 || tiles_x == 0 || tiles_y == 0 || tile_id >= total_tiles) [[unlikely]]
     {
         return false;
     }
@@ -45,7 +45,7 @@ bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, uint16_t tile_widt
     const uint32_t dst_y         = tile_y * tile_height;
     const size_t   expected_size = static_cast<size_t>(tile_width) * static_cast<size_t>(tile_height) * WD_BYTES_PER_PIXEL;
 
-    if (tile_bytes.size() < expected_size || dst_x >= state.config.width || dst_y >= state.config.height)
+    if (tile_bytes.size() < expected_size || dst_x >= state.config.width || dst_y >= state.config.height) [[unlikely]]
     {
         return false;
     }
@@ -173,7 +173,7 @@ bool client_has_pending_server_config(ClientState& state) {
 }
 
 bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, const uint8_t* packet, size_t packet_size) {
-    if (!packet || packet_size < WD_UDP_TILE_HEADER_MIN_SIZE)
+    if (!packet || packet_size < WD_UDP_TILE_HEADER_MIN_SIZE) [[unlikely]]
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         state.stats.udp_invalid_short.fetch_add(1, std::memory_order_relaxed);
@@ -181,7 +181,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
     }
 
     wd_udp_tile_packet_decoded udp_header{};
-    if (!wd_udp_tile_packet_decode(packet, packet_size, &udp_header))
+    if (!wd_udp_tile_packet_decode(packet, packet_size, &udp_header)) [[unlikely]]
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         state.stats.udp_invalid_header.fetch_add(1, std::memory_order_relaxed);
@@ -202,7 +202,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
         connection_token = state.config.connection_token;
     }
 
-    if (session_id == 0 || udp_header.session_id != session_id || udp_header.connection_token != connection_token)
+    if (session_id == 0 || udp_header.session_id != session_id || udp_header.connection_token != connection_token) [[unlikely]]
     {
         state.stats.udp_ignored_stale_session.fetch_add(1, std::memory_order_relaxed);
         return true;
@@ -210,7 +210,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
 
     const ClientContentEpochDecision content_decision =
         client_accept_content_epoch(state, udp_header.content_epoch, WD_CLIENT_CONTENT_OWNER_TILES);
-    if (content_decision == ClientContentEpochDecision::Stale)
+    if (content_decision == ClientContentEpochDecision::Stale) [[unlikely]]
     {
         state.stats.udp_ignored_stale_epoch.fetch_add(1, std::memory_order_relaxed);
         return true;
@@ -253,7 +253,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
     bool            wake_render = false;
     {
         std::lock_guard<std::mutex> content_lock(state.remote_content_mutex);
-        if (completed.content_epoch != state.remote_content_epoch || state.remote_content_owner != WD_CLIENT_CONTENT_OWNER_TILES)
+        if (completed.content_epoch != state.remote_content_epoch || state.remote_content_owner != WD_CLIENT_CONTENT_OWNER_TILES) [[unlikely]]
         {
             reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
             state.stats.udp_ignored_stale_session.fetch_add(1, std::memory_order_relaxed);
@@ -263,7 +263,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
         {
             std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
             if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_width, completed.tile_height, completed.tile_bytes,
-                                    dirty_rect))
+                                    dirty_rect)) [[unlikely]]
             {
                 reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
                 state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
@@ -276,7 +276,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
         {
             std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
             const bool                  dirty_was_empty = state.pending_dirty_tiles.dirty_tile_count() == 0;
-            if (!state.pending_dirty_tiles.mark_rect(dirty_rect))
+            if (!state.pending_dirty_tiles.mark_rect(dirty_rect)) [[unlikely]]
             {
                 state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
                 state.stats.udp_invalid_dirty_grid.fetch_add(1, std::memory_order_relaxed);
@@ -341,7 +341,7 @@ struct AsyncUdpDrainContext {
 
 bool handle_async_udp_packet(void* userdata, const uint8_t* packet, size_t packet_size) {
     auto* ctx = static_cast<AsyncUdpDrainContext*>(userdata);
-    if (!ctx || !ctx->state || !ctx->reassembler)
+    if (!ctx || !ctx->state || !ctx->reassembler) [[unlikely]]
     {
         return false;
     }
@@ -354,7 +354,7 @@ bool handle_async_udp_packet(void* userdata, const uint8_t* packet, size_t packe
 
 bool drain_udp(ClientState& state, TileReassembler& reassembler) {
     std::lock_guard<std::mutex> processing_lock(state.udp_processing_mutex);
-    if (!state.session.udp_receiver)
+    if (!state.session.udp_receiver) [[unlikely]]
     {
         return false;
     }
@@ -398,7 +398,7 @@ uint64_t client_udp_next_deadline_ns(ClientState& state, const TileReassembler& 
 
 ClientReceiveState* client_receive_state_create(ClientState& state) {
     auto* receive_state = new (std::nothrow) ClientReceiveState();
-    if (receive_state)
+    if (receive_state) [[likely]]
     {
         receive_state->observed_config_generation = state.client_config_generation.load(std::memory_order_acquire);
     }
@@ -426,7 +426,7 @@ bool client_receive_udp_service(ClientState& state, ClientReceiveState& receive_
         return true;
     }
 
-    if (!drain_udp(state, receive_state.reassembler))
+    if (!drain_udp(state, receive_state.reassembler)) [[unlikely]]
     {
         return false;
     }
@@ -443,7 +443,7 @@ bool client_receive_udp_service(ClientState& state, ClientReceiveState& receive_
         state.next_summary_promote_ns = now_ns + WD_CLIENT_SUMMARY_PROMOTE_INTERVAL_NS;
     }
 
-    if (!client_flush_retransmit_requests(state))
+    if (!client_flush_retransmit_requests(state)) [[unlikely]]
     {
         WD_LOG_ERROR("failed to send retransmit request");
         return false;

@@ -72,6 +72,8 @@ function(waydisplay_configure_profile profile output_var)
             "${profile} did not generate ${commands_file}")
     endif()
     file(READ "${commands_file}" commands)
+    waydisplay_require_text("${commands}" "-std=c++20"
+        "${profile} C++ language baseline")
     set(${output_var} "${commands}" PARENT_SCOPE)
 endfunction()
 

@@ -8,6 +8,7 @@
 #include "client_receive.hpp"
 #include "content_order.hpp"
 #include "video_decoder.hpp"
+#include "video_packet_validation.h"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_media_clock.h"
@@ -1288,48 +1289,29 @@ bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_
     }
 
     std::memcpy(&packet.header, payload, sizeof(packet.header));
-    if ((packet.header.codec != WD_VIDEO_CODEC_H265 && packet.header.codec != WD_VIDEO_CODEC_H264) ||
-        !wd_video_frame_payload_size_is_valid(&packet.header, payload_size))
+
+    struct wd_client_video_packet_expectation expected{};
     {
-        state.stats.video_invalid_frames_rx.fetch_add(1, std::memory_order_relaxed);
-        return false;
+        std::lock_guard<std::mutex> lock(state.config_mutex);
+        expected.session_id       = state.config.session_id;
+        expected.connection_token = state.config.connection_token;
+        expected.width            = state.config.width;
+        expected.height           = state.config.height;
     }
 
-    control_frame = (packet.header.flags & (WD_VIDEO_FRAME_END_OF_STREAM | WD_VIDEO_FRAME_RESIZE)) != 0;
+    const enum wd_client_video_packet_validation_result validation =
+        wd_client_video_packet_validate(&packet.header, payload_size, &expected, &control_frame);
     if (control_frame)
     {
         state.stats.video_control_frames_rx.fetch_add(1, std::memory_order_relaxed);
     }
-    if (packet.header.data_size == 0 && !control_frame)
+    if (validation != WD_CLIENT_VIDEO_PACKET_VALID)
     {
         state.stats.video_invalid_frames_rx.fetch_add(1, std::memory_order_relaxed);
-        return false;
-    }
-
-    uint8_t  session_id       = 0;
-    uint64_t connection_token = 0;
-    uint16_t width            = 0;
-    uint16_t height           = 0;
-    {
-        std::lock_guard<std::mutex> lock(state.config_mutex);
-        session_id       = state.config.session_id;
-        connection_token = state.config.connection_token;
-        width            = state.config.width;
-        height           = state.config.height;
-    }
-
-    if (packet.header.session_id != session_id || packet.header.connection_token != connection_token)
-    {
-        state.stats.video_invalid_frames_rx.fetch_add(1, std::memory_order_relaxed);
-        return false;
-    }
-
-    if (((packet.header.width != width || packet.header.height != height) || packet.header.coded_width < packet.header.width ||
-         packet.header.coded_height < packet.header.height) &&
-        !control_frame)
-    {
-        state.stats.video_invalid_frames_rx.fetch_add(1, std::memory_order_relaxed);
-        reset_video_decoder(state, "video frame geometry mismatch");
+        if (validation == WD_CLIENT_VIDEO_PACKET_INVALID_GEOMETRY)
+        {
+            reset_video_decoder(state, "video frame geometry mismatch");
+        }
         return false;
     }
 

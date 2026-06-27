@@ -47,3 +47,68 @@ require_absent("${network_reader}" "client_audio_decode_packet"
 read_source("src/client/client_async_udp.cpp" udp_source)
 require_absent("${udp_source}" "SocketStillOwned"
                "UDP ring teardown must not leave socket ownership unresolved")
+
+read_source("src/server/wd_server_net.c" server_net_source)
+string(FIND "${server_net_source}" "memset(&net->stats, 0, sizeof(net->stats));" session_stats_reset)
+string(FIND "${server_net_source}" "net->connection_token     = connection_token;" session_identity_start)
+if(session_stats_reset EQUAL -1 OR session_identity_start EQUAL -1 OR session_stats_reset GREATER session_identity_start)
+    message(FATAL_ERROR "client interval feedback must be reset before publishing a new connection identity")
+endif()
+string(FIND "${server_net_source}" "wd_stream_policy_begin_session(&net->stream_policy, &hello, net->content_epoch);" session_policy_begin)
+if(session_policy_begin EQUAL -1)
+    message(FATAL_ERROR "new connections must enter through the centralized stream-policy session boundary")
+endif()
+
+read_source("src/server/wd_stream.c" stream_source)
+string(FIND "${stream_source}" "void wd_stream_policy_begin_session" begin_session_start)
+string(FIND "${stream_source}" "const char* wd_stream_mode_name" begin_session_end)
+if(begin_session_start EQUAL -1 OR begin_session_end EQUAL -1 OR begin_session_end LESS begin_session_start)
+    message(FATAL_ERROR "could not locate wd_stream_policy_begin_session")
+endif()
+math(EXPR begin_session_length "${begin_session_end} - ${begin_session_start}")
+string(SUBSTRING "${stream_source}" ${begin_session_start} ${begin_session_length} begin_session_function)
+foreach(required_field
+        "tile_refresh_pending"
+        "video_bootstrap_pending"
+        "video_bootstrap_content_epoch"
+        "tile_recovery_content_epoch"
+        "video_recovery_class")
+    string(FIND "${begin_session_function}" "${required_field}" field_position)
+    if(field_position EQUAL -1)
+        message(FATAL_ERROR "stream-policy session boundary must initialize ${required_field}")
+    endif()
+endforeach()
+
+read_source("src/client/sdl_viewer.cpp" sdl_viewer_source)
+require_absent("${sdl_viewer_source}" "tile_content_epoch_presented.store"
+               "tile presentation acknowledgements must never regress")
+require_absent("${sdl_viewer_source}" "video_content_epoch_presented.store"
+               "video presentation acknowledgements must never regress")
+string(FIND "${sdl_viewer_source}" "record_atomic_max(state.stats.tile_content_epoch_presented" tile_epoch_max)
+string(FIND "${sdl_viewer_source}" "record_atomic_max(state.stats.video_content_epoch_presented" video_epoch_max)
+if(tile_epoch_max EQUAL -1 OR video_epoch_max EQUAL -1)
+    message(FATAL_ERROR "presented content epochs must be published monotonically")
+endif()
+
+read_source("src/client/content_order.cpp" content_order_source)
+string(FIND "${content_order_source}" "tile_content_epoch_presented.store(0" tile_epoch_reset)
+string(FIND "${content_order_source}" "video_content_epoch_presented.store(0" video_epoch_reset)
+if(tile_epoch_reset EQUAL -1 OR video_epoch_reset EQUAL -1)
+    message(FATAL_ERROR "a new client configuration must clear prior presentation acknowledgements")
+endif()
+
+read_source("cmake/WayDisplayTargets.cmake" targets_source)
+string(FIND "${targets_source}"
+       "target_link_libraries(waydisplay_client_runtime PUBLIC"
+       client_runtime_links_start)
+if(client_runtime_links_start EQUAL -1)
+    message(FATAL_ERROR "waydisplay_client_runtime must publish its runtime link dependencies")
+endif()
+string(SUBSTRING "${targets_source}" ${client_runtime_links_start} 256 client_runtime_links)
+foreach(required_dependency "waydisplay_common" "Threads::Threads")
+    string(FIND "${client_runtime_links}" "${required_dependency}" dependency_position)
+    if(dependency_position EQUAL -1)
+        message(FATAL_ERROR
+            "waydisplay_client_runtime must link ${required_dependency} transitively")
+    endif()
+endforeach()

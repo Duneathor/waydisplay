@@ -1,6 +1,8 @@
 #include "audio_playback.hpp"
 
 #include "audio_playback_clock.hpp"
+#include "audio_video_sync.h"
+#include "waydisplay/wd_time.h"
 #include "waydisplay/wd_log.h"
 
 #include <SDL3/SDL.h>
@@ -33,6 +35,7 @@ struct ClientAudioPlayback {
     bool                    configured              = false;
     bool                    playing                 = false;
     bool                    video_sync_waiting      = false;
+    uint64_t                video_sync_wait_started_ns = 0;
     uint64_t                expected_sequence       = 0;
     uint64_t                expected_pts_samples    = 0;
     bool                    have_expected_pts       = false;
@@ -139,6 +142,7 @@ bool handle_device_starvation_locked(ClientAudioPlayback* playback) {
     SDL_ClearAudioStream(playback->stream);
     playback->playing            = false;
     playback->video_sync_waiting = false;
+    playback->video_sync_wait_started_ns = 0;
     playback->underflows++;
     reset_device_clock_locked(playback);
     playback->playback_start_pts      = 0;
@@ -168,6 +172,7 @@ void destroy_stream_locked(ClientAudioPlayback* playback) {
     playback->configured              = false;
     playback->playing                 = false;
     playback->video_sync_waiting      = false;
+    playback->video_sync_wait_started_ns = 0;
     playback->expected_sequence       = 0;
     playback->expected_pts_samples    = 0;
     playback->have_expected_pts       = false;
@@ -217,6 +222,7 @@ void clear_for_output_gap_locked(ClientAudioPlayback* playback) {
     }
     playback->playing            = false;
     playback->video_sync_waiting = false;
+    playback->video_sync_wait_started_ns = 0;
     reset_device_clock_locked(playback);
     playback->playback_start_pts      = 0;
     playback->have_playback_start_pts = false;
@@ -236,6 +242,7 @@ void clear_for_discontinuity_locked(ClientAudioPlayback* playback) {
     (void)reset_decoder_locked(playback);
     playback->playing            = false;
     playback->video_sync_waiting = true;
+    playback->video_sync_wait_started_ns = wd_now_ns();
     reset_device_clock_locked(playback);
     playback->playback_start_pts      = 0;
     playback->have_playback_start_pts = false;
@@ -338,7 +345,8 @@ bool client_audio_playback_configure(ClientAudioPlayback* playback, const wd_aud
     playback->target_latency_ms  = target_latency_ms;
     playback->pre_skip_remaining = config.codec_delay_samples;
     playback->configured         = true;
-    playback->video_sync_waiting = true;
+    playback->video_sync_waiting      = true;
+    playback->video_sync_wait_started_ns = wd_now_ns();
     playback->decode_buffer.resize(static_cast<size_t>(OPUS_MAX_DECODE_SAMPLES) * config.channels);
     WD_LOG_INFO("audio playback configured: codec=opus rate=%u channels=%u frame_samples=%u bitrate=%u", config.sample_rate,
                 config.channels, config.frame_samples, config.target_bitrate);
@@ -387,6 +395,7 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback, const ui
         }
         playback->playing            = false;
         playback->video_sync_waiting = false;
+    playback->video_sync_wait_started_ns = 0;
         reset_device_clock_locked(playback);
         return true;
     }
@@ -468,6 +477,7 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback, const ui
             {
                 playback->playing            = true;
                 playback->video_sync_waiting = false;
+    playback->video_sync_wait_started_ns = 0;
             }
             else
             {
@@ -507,14 +517,47 @@ bool client_audio_playback_is_playing(ClientAudioPlayback* playback) {
     return playback->playing;
 }
 
-bool client_audio_playback_should_hold_video(ClientAudioPlayback* playback) {
+bool client_audio_playback_video_gate(ClientAudioPlayback* playback, uint64_t now_ns, uint32_t* hold_age_ms, bool* timed_out) {
+    if (hold_age_ms)
+        *hold_age_ms = 0;
+    if (timed_out)
+        *timed_out = false;
     if (!playback)
-    {
         return false;
-    }
+
     std::lock_guard<std::mutex> lock(playback->mutex);
     (void)handle_device_starvation_locked(playback);
-    return playback->configured && playback->video_sync_waiting;
+    const uint64_t elapsed_ms = playback->video_sync_wait_started_ns != 0 && now_ns > playback->video_sync_wait_started_ns
+                                    ? (now_ns - playback->video_sync_wait_started_ns) / WD_NSEC_PER_MSEC
+                                    : 0;
+    if (hold_age_ms)
+        *hold_age_ms = static_cast<uint32_t>(std::min<uint64_t>(elapsed_ms, UINT32_MAX));
+    const enum wd_client_audio_startup_gate_decision decision =
+        wd_client_audio_startup_gate_decide(playback->configured, playback->playing, playback->video_sync_waiting, elapsed_ms,
+                                            WD_CLIENT_AUDIO_VIDEO_STARTUP_HOLD_MAX_MS);
+    if (decision == WD_CLIENT_AUDIO_STARTUP_TIMEOUT)
+    {
+        playback->video_sync_waiting = false;
+        playback->video_sync_wait_started_ns = 0;
+        if (timed_out)
+            *timed_out = true;
+        return false;
+    }
+    return decision == WD_CLIENT_AUDIO_STARTUP_HOLD;
+}
+
+uint8_t client_audio_playback_state(ClientAudioPlayback* playback) {
+    if (!playback)
+        return WD_CLIENT_AUDIO_PLAYBACK_DISABLED;
+    std::lock_guard<std::mutex> lock(playback->mutex);
+    (void)handle_device_starvation_locked(playback);
+    if (!playback->configured)
+        return WD_CLIENT_AUDIO_PLAYBACK_DISABLED;
+    if (playback->playing)
+        return WD_CLIENT_AUDIO_PLAYBACK_PLAYING;
+    if (playback->video_sync_waiting)
+        return WD_CLIENT_AUDIO_PLAYBACK_BUFFERING;
+    return WD_CLIENT_AUDIO_PLAYBACK_STARVED;
 }
 
 bool client_audio_playback_playhead_samples(ClientAudioPlayback* playback, uint64_t* playhead_samples) {

@@ -76,18 +76,22 @@ void test_audio_held_video_survives_decode_and_recovery_cycle() {
     health.client_frames_seen      = 4;
     health.client_frames_decoded   = 4;
     health.client_audio_video_sync_holds = 1;
-    health.client_queue_depth      = static_cast<uint32_t>(queue.size());
+    health.client_audio_playback_state = WD_CLIENT_AUDIO_PLAYBACK_BUFFERING;
+    health.client_audio_video_startup_hold_ms = 500;
+    health.client_queue_depth      = 0;
+    health.client_queue_depth_max  = static_cast<uint32_t>(queue.size());
     require(wd_client_video_health_classify(&health) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
             "queued frames waiting for audio must not be classified as decoder failure");
 
-    require(wd_tile_recovery_decide(false, 0, 1, 5) == WD_TILE_RECOVERY_WAIT, "tile recovery should wait until its refresh has drained");
-    require(!wd_video_entry_allowed(true, 0), "forced video entry must remain blocked during tile recovery");
-    require(wd_tile_recovery_decide(true, 0, 4, 5) == WD_TILE_RECOVERY_WAIT,
+    require(wd_tile_recovery_decide(false, 11, 11, 1, 5) == WD_TILE_RECOVERY_WAIT, "tile recovery should wait until its refresh has drained");
+    require(!wd_video_entry_allowed(false, true, 0, true, WD_VIDEO_RECOVERY_PLANNED), "forced video entry must remain blocked during tile recovery");
+    require(wd_tile_recovery_decide(true, 11, 10, 4, 5) == WD_TILE_RECOVERY_WAIT,
             "tile recovery should remain sticky while awaiting client presentation");
-    require(wd_tile_recovery_decide(true, 1, 4, 5) == WD_TILE_RECOVERY_COMPLETE_PRESENTED,
+    require(wd_tile_recovery_decide(true, 11, 11, 4, 5) == WD_TILE_RECOVERY_COMPLETE_PRESENTED,
             "a client tile presentation should complete recovery");
-    require(!wd_video_entry_allowed(false, 1), "video should remain blocked during its post-recovery cooldown");
-    require(wd_video_entry_allowed(false, 0), "video may resume after recovery and cooldown complete");
+    require(!wd_video_entry_allowed(false, false, 1, false, WD_VIDEO_RECOVERY_PLANNED), "automatic video should remain blocked during its post-recovery cooldown");
+    require(wd_video_entry_allowed(false, false, 1, true, WD_VIDEO_RECOVERY_PLANNED), "forced video should resume immediately after recovery completes");
+    require(wd_video_entry_allowed(false, false, 0, false, WD_VIDEO_RECOVERY_NONE), "automatic video may resume after recovery and cooldown complete");
 
     const struct wd_client_audio_video_sync_plan due = wd_client_audio_video_sync_plan_compute(queue.front()->pts_usec, 48480, 48000);
     require(due.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT,
@@ -116,20 +120,32 @@ void test_bootstrap_refresh_does_not_trigger_video_selection() {
 void test_reconnect_telemetry_survives_protocol_copy() {
     wd_client_stats_payload sent{};
     sent.video_frames_decoded      = 23;
-    sent.audio_video_sync_holds    = 17;
+    sent.audio_video_sync_holds          = 17;
+    sent.video_decode_queue_drops         = 2;
+    sent.audio_video_startup_timeouts     = 1;
+    sent.audio_video_startup_hold_ms      = 750;
+    sent.audio_playback_state             = WD_CLIENT_AUDIO_PLAYBACK_BUFFERING;
     sent.video_queue_depth         = 3;
     sent.video_queue_depth_max     = 6;
     sent.video_oldest_pts_usec     = 1050000;
     sent.audio_video_delta_samples = 2400;
-    sent.tile_frames_presented     = 1;
+    sent.tile_frames_presented          = 1;
+    sent.tile_content_epoch_presented    = 12;
+    sent.video_content_epoch_presented   = 11;
 
     wd_client_stats_payload received{};
     std::memcpy(&received, &sent, sizeof(received));
     require(received.video_frames_decoded == sent.video_frames_decoded && received.audio_video_sync_holds == sent.audio_video_sync_holds &&
+                received.video_decode_queue_drops == sent.video_decode_queue_drops &&
+                received.audio_video_startup_timeouts == sent.audio_video_startup_timeouts &&
+                received.audio_video_startup_hold_ms == sent.audio_video_startup_hold_ms &&
+                received.audio_playback_state == sent.audio_playback_state &&
                 received.video_queue_depth == sent.video_queue_depth && received.video_queue_depth_max == sent.video_queue_depth_max &&
                 received.video_oldest_pts_usec == sent.video_oldest_pts_usec &&
                 received.audio_video_delta_samples == sent.audio_video_delta_samples &&
-                received.tile_frames_presented == sent.tile_frames_presented,
+                received.tile_frames_presented == sent.tile_frames_presented &&
+                received.tile_content_epoch_presented == sent.tile_content_epoch_presented &&
+                received.video_content_epoch_presented == sent.video_content_epoch_presented,
             "reconnect health and recovery telemetry should survive the wire payload");
 }
 

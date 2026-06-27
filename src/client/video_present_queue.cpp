@@ -6,7 +6,7 @@ namespace waydisplay {
 
 ClientVideoFrameBuffer ClientVideoPresentQueue::take_decode_buffer(bool& dropped_newest) {
     dropped_newest = false;
-    if (frames_.size() >= capacity_)
+    if (frames_.size() >= capacity_) [[unlikely]]
     {
         ClientVideoFrameBuffer buffer = std::move(frames_.back().buffer);
         frames_.pop_back();
@@ -21,7 +21,7 @@ ClientVideoFrameBuffer ClientVideoPresentQueue::take_decode_buffer(bool& dropped
 
 bool ClientVideoPresentQueue::push_decoded(ClientVideoFrameBuffer&& buffer, uint32_t width, uint32_t height, uint64_t frame_id,
                                            uint64_t pts_usec, uint64_t epoch) {
-    if (!buffer.valid() || buffer.width != width || buffer.height != height || frames_.size() >= capacity_)
+    if (!buffer.valid() || buffer.width != width || buffer.height != height || frames_.size() >= capacity_) [[unlikely]]
     {
         recycle(std::move(buffer));
         return false;
@@ -43,7 +43,7 @@ const ClientQueuedVideoFrame* ClientVideoPresentQueue::front() const {
 }
 
 ClientQueuedVideoFrame ClientVideoPresentQueue::pop_front() {
-    if (frames_.empty())
+    if (frames_.empty()) [[unlikely]]
     {
         return ClientQueuedVideoFrame{};
     }

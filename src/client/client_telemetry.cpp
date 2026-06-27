@@ -87,6 +87,9 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.video_present_latency_sum_ns += src.video_present_latency_sum_ns;
     dst.audio_video_sync_holds += src.audio_video_sync_holds;
     dst.audio_video_sync_drops += src.audio_video_sync_drops;
+    dst.audio_video_startup_timeouts += src.audio_video_startup_timeouts;
+    dst.audio_video_startup_hold_ms = src.audio_video_startup_hold_ms;
+    dst.audio_playback_state = src.audio_playback_state;
     dst.video_queue_overflow_drops += src.video_queue_overflow_drops;
     dst.video_decode_queue_drops += src.video_decode_queue_drops;
     dst.video_queue_depth         = src.video_queue_depth;
@@ -94,6 +97,8 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.video_oldest_pts_usec     = src.video_oldest_pts_usec;
     dst.audio_video_delta_samples = src.audio_video_delta_samples;
     dst.tile_frames_presented += src.tile_frames_presented;
+    dst.tile_content_epoch_presented  = std::max(dst.tile_content_epoch_presented, src.tile_content_epoch_presented);
+    dst.video_content_epoch_presented = std::max(dst.video_content_epoch_presented, src.video_content_epoch_presented);
     dst.audio_messages_rx += src.audio_messages_rx;
     dst.audio_packets_rx += src.audio_packets_rx;
     dst.audio_bytes_rx += src.audio_bytes_rx;
@@ -270,6 +275,9 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t video_present_latency_sum_ns       = logged.video_present_latency_sum_ns;
     const uint64_t audio_video_sync_holds             = logged.audio_video_sync_holds;
     const uint64_t audio_video_sync_drops             = logged.audio_video_sync_drops;
+    const uint64_t audio_video_startup_timeouts        = logged.audio_video_startup_timeouts;
+    const uint32_t audio_video_startup_hold_ms         = logged.audio_video_startup_hold_ms;
+    const uint8_t  audio_playback_state                = logged.audio_playback_state;
     const uint64_t video_queue_overflow_drops         = logged.video_queue_overflow_drops;
     const uint64_t video_decode_queue_drops           = logged.video_decode_queue_drops;
     const uint32_t video_queue_depth                  = logged.video_queue_depth;
@@ -350,7 +358,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
         WD_LOG_STATS(
             "[client audio/min] messages=%llu packets=%llu kib=%.1f decode_failed=%llu discontinuities=%llu late_drops=%llu "
             "underflows=%llu audio_decode_q_drops=%llu av_holds=%llu av_drops=%llu video_q=%u/%u q_overflow=%llu "
-            "video_decode_q_drops=%llu oldest_pts_us=%llu av_delta_samples=%lld playing=%s",
+            "video_decode_q_drops=%llu oldest_pts_us=%llu av_delta_samples=%lld startup_timeouts=%llu startup_hold_ms=%u audio_state=%u playing=%s",
             static_cast<unsigned long long>(audio_messages_rx), static_cast<unsigned long long>(audio_packets_rx),
             static_cast<double>(audio_bytes_rx) / 1024.0, static_cast<unsigned long long>(audio_decode_failed),
             static_cast<unsigned long long>(audio_discontinuities), static_cast<unsigned long long>(audio_late_drops),
@@ -359,7 +367,8 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
             static_cast<unsigned>(video_queue_depth), static_cast<unsigned>(video_queue_depth_max),
             static_cast<unsigned long long>(video_queue_overflow_drops),
             static_cast<unsigned long long>(video_decode_queue_drops), static_cast<unsigned long long>(video_oldest_pts_usec),
-            static_cast<long long>(audio_video_delta_samples),
+            static_cast<long long>(audio_video_delta_samples), static_cast<unsigned long long>(audio_video_startup_timeouts),
+            static_cast<unsigned>(audio_video_startup_hold_ms), static_cast<unsigned>(audio_playback_state),
             client_audio_playback_is_playing(state.session.audio_playback) ? "yes" : "no");
     }
 
@@ -625,6 +634,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t video_present_latency_sum_ns  = take_stat(state.stats.video_present_latency_sum_ns);
     const uint64_t audio_video_sync_holds        = take_stat(state.stats.audio_video_sync_holds);
     const uint64_t audio_video_sync_drops        = take_stat(state.stats.audio_video_sync_drops);
+    const uint64_t audio_video_startup_timeouts   = take_stat(state.stats.audio_video_startup_timeouts);
+    const uint32_t audio_video_startup_hold_ms    = state.stats.audio_video_startup_hold_ms.load(std::memory_order_relaxed);
+    const uint8_t  audio_playback_state           = state.stats.audio_playback_state.load(std::memory_order_relaxed);
     const uint64_t video_queue_overflow_drops    = take_stat(state.stats.video_queue_overflow_drops);
     const uint64_t video_decode_queue_drops      = take_stat(state.stats.video_decode_queue_drops);
     const uint32_t video_queue_depth_max =
@@ -638,7 +650,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         video_oldest_pts_usec                = oldest ? oldest->pts_usec : 0;
     }
     const int64_t  audio_video_delta_samples = state.stats.audio_video_delta_samples.load(std::memory_order_relaxed);
-    const uint64_t tile_frames_presented     = take_stat(state.stats.tile_frames_presented);
+    const uint64_t tile_frames_presented           = take_stat(state.stats.tile_frames_presented);
+    const uint64_t tile_content_epoch_presented     = state.stats.tile_content_epoch_presented.load(std::memory_order_relaxed);
+    const uint64_t video_content_epoch_presented    = state.stats.video_content_epoch_presented.load(std::memory_order_relaxed);
     const uint64_t audio_messages_rx         = take_stat(state.stats.audio_messages_rx);
     const uint64_t audio_packets_rx          = take_stat(state.stats.audio_packets_rx);
     const uint64_t audio_bytes_rx            = take_stat(state.stats.audio_bytes_rx);
@@ -780,6 +794,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.video_present_latency_sum_ns       = video_present_latency_sum_ns;
     sample.audio_video_sync_holds             = audio_video_sync_holds;
     sample.audio_video_sync_drops             = audio_video_sync_drops;
+    sample.audio_video_startup_timeouts        = audio_video_startup_timeouts;
+    sample.audio_video_startup_hold_ms         = audio_video_startup_hold_ms;
+    sample.audio_playback_state                = audio_playback_state;
     sample.video_queue_overflow_drops         = video_queue_overflow_drops;
     sample.video_decode_queue_drops           = video_decode_queue_drops;
     sample.video_queue_depth                  = video_queue_depth;
@@ -787,6 +804,8 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.video_oldest_pts_usec              = video_oldest_pts_usec;
     sample.audio_video_delta_samples          = audio_video_delta_samples;
     sample.tile_frames_presented              = tile_frames_presented;
+    sample.tile_content_epoch_presented        = tile_content_epoch_presented;
+    sample.video_content_epoch_presented       = video_content_epoch_presented;
     sample.audio_messages_rx                  = audio_messages_rx;
     sample.audio_packets_rx                   = audio_packets_rx;
     sample.audio_bytes_rx                     = audio_bytes_rx;
@@ -863,7 +882,7 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         video_publish_failed != 0 || video_control_frames_rx != 0 || video_invalid_frames_rx != 0 || video_stale_frames_dropped != 0 ||
         video_need_keyframe_drops != 0 || video_decoder_resets != 0 || audio_messages_rx != 0 || audio_packets_rx != 0 ||
         audio_decode_failed != 0 || audio_decode_queue_drops != 0 || audio_discontinuities != 0 || audio_late_drops != 0 || audio_video_sync_holds != 0 ||
-        audio_video_sync_drops != 0 || video_queue_depth != 0 || video_queue_overflow_drops != 0 || video_decode_queue_drops != 0 || tile_frames_presented != 0;
+        audio_video_sync_drops != 0 || audio_video_startup_timeouts != 0 || video_queue_depth != 0 || video_queue_overflow_drops != 0 || video_decode_queue_drops != 0 || tile_frames_presented != 0;
 
     if (feedback_activity)
     {
@@ -926,12 +945,18 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         feedback.audio_underflows              = audio_underflows;
         feedback.audio_video_sync_holds        = audio_video_sync_holds;
         feedback.audio_video_sync_drops        = audio_video_sync_drops;
+        feedback.video_decode_queue_drops       = video_decode_queue_drops;
+        feedback.audio_video_startup_timeouts   = audio_video_startup_timeouts;
+        feedback.audio_video_startup_hold_ms    = audio_video_startup_hold_ms;
+        feedback.audio_playback_state           = audio_playback_state;
         feedback.video_queue_overflow_drops    = video_queue_overflow_drops;
         feedback.video_queue_depth             = video_queue_depth;
         feedback.video_queue_depth_max         = video_queue_depth_max;
         feedback.video_oldest_pts_usec         = video_oldest_pts_usec;
         feedback.audio_video_delta_samples     = audio_video_delta_samples;
         feedback.tile_frames_presented         = tile_frames_presented;
+        feedback.tile_content_epoch_presented   = tile_content_epoch_presented;
+        feedback.video_content_epoch_presented  = video_content_epoch_presented;
         if (feedback.session_id != 0)
         {
             client_send_stats(state, feedback);

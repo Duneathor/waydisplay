@@ -1,6 +1,7 @@
 #pragma once
 
 #include "wd_server_internal.h"
+#include "wd_video_transition.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -56,7 +57,8 @@ void        wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy,
 bool     wd_stream_mode_video_owns_display(enum wd_stream_mode mode);
 uint16_t wd_stream_policy_effective_fps_locked(const struct wd_stream_policy* policy);
 void     wd_stream_advance_content_epoch_locked(struct wd_server* server, const char* reason);
-void     wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_stream_mode mode, const char* reason,
+void     wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_stream_mode mode,
+                                           enum wd_video_recovery_class recovery_class, const char* reason,
                                           double dirty_avg_pct, double dirty_peak_pct, double budget_pressure_pct,
                                           bool video_channel_connected, bool video_encoder_available);
 

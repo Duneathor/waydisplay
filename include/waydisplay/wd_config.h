@@ -387,6 +387,7 @@ extern "C" {
 #define WD_CLIENT_DEFAULT_TARGET_FPS               WD_DEFAULT_CAPTURE_FPS
 #define WD_CLIENT_RESIZE_DEBOUNCE_NS               150000000ull
 #define WD_CLIENT_FRAME_DELAY_MS                   8
+#define WD_CLIENT_AUDIO_VIDEO_STARTUP_HOLD_MAX_MS  1000u
 #define WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_THRESHOLD 256u
 #define WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_PERCENT   60u
 /* Render-planning calibration.  Fixed costs are elapsed nanoseconds rather

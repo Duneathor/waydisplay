@@ -30,8 +30,21 @@ The conceptual state order is:
 4. generation and retransmit state
 5. video-frame and presentation telemetry state
 
-No thread may call SDL while holding a producer-state mutex. The receive worker may signal `ClientRenderWake`, but only the render thread consumes and presents frames. Audio synchronization may discard or adjust audio, but it must not hold the video presentation path indefinitely.
+No thread may call SDL while holding a producer-state mutex. The receive worker may signal `ClientRenderWake`, but only the render thread consumes and presents frames. Audio synchronization may discard or adjust audio, but it must not hold the video presentation path indefinitely. Initial audio buffering may gate video for at most `WD_CLIENT_AUDIO_VIDEO_STARTUP_HOLD_MAX_MS`; after that bound, video presents without an audio master clock until playback becomes established.
 
 ## Queue policy
 
 All cross-thread queues are bounded. Producers must discard obsolete generations and epochs before expensive processing and again before publication. Telemetry is always lower priority than control, input, retransmit, and media traffic and may be sampled approximately or dropped.
+
+
+A reconnect is a generation boundary. The network thread clears session-scoped feedback and input-correlation state while holding the network mutex, advances the connection/content identities, then requests a compositor-owned full refresh. Asynchronous frame and tile completions carry those identities and may not update the new session when they complete late.
+
+
+## Session-boundary concurrency tests
+
+The test suite must exercise shutdown while every client channel is blocked in a socket read, immediate reconnect with descriptor reuse, late completion identities from a previous connection, and concurrent stream-ownership transitions. Completion callbacks may update connection state only when connection, configuration, content, and framebuffer generations all match the current session.
+
+
+## Media transition integration tests
+
+Video codec integration tests reconfigure encoder and decoder across grow, odd-dimension, and shrink transitions. Each new content epoch must begin with a keyframe and old-resolution packets must be rejected. Audio/video integration tests hold the oldest decoded frame only for the bounded startup interval, verify that late audio can subsequently become clock master, and ensure queue pressure cannot overwrite an audio-held presentation head.

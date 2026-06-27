@@ -65,6 +65,37 @@ jobs:
       - name: Test
         run: ${{ matrix.environment }} ctest --preset ${{ matrix.preset }}
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install coverage dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake gcc g++ make pkg-config libzstd-dev liburing-dev gcovr
+      - name: Configure
+        run: cmake --preset tests-coverage
+      - name: Build and test
+        run: cmake --build --preset tests-coverage --parallel 2 && ctest --preset tests-coverage
+      - name: Report coverage
+        run: gcovr --root . --filter 'src/' --exclude 'tests/' --print-summary --xml-pretty -o build-tests-coverage/coverage.xml
+
+  codecs:
+    name: Codec and resize round-trip tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install codec dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          cmake gcc g++ make pkg-config libzstd-dev liburing-dev
+          libavcodec-dev libavutil-dev libswscale-dev
+      - name: Configure strict codec tests
+        run: cmake --preset tests-codecs
+      - name: Build and test
+        run: cmake --build --preset tests-codecs --parallel 2
+
   runtime-backends:
     name: Required SDL, wlroots 0.19, codec, and audio build
     runs-on: ubuntu-24.04
@@ -75,10 +106,17 @@ jobs:
         run: >-
           sudo apt-get update && sudo apt-get install -y
           cmake gcc g++ make pkg-config git meson ninja-build
-          libzstd-dev liburing-dev libsdl2-dev libwayland-dev wayland-protocols libxkbcommon-dev
+          libzstd-dev liburing-dev libwayland-dev wayland-protocols libxkbcommon-dev
           libpixman-1-dev libdrm-dev libgbm-dev libinput-dev libseat-dev libudev-dev
           libdisplay-info-dev libliftoff-dev libavcodec-dev libavutil-dev libswscale-dev
           libopus-dev libpipewire-0.3-dev
+      - name: Build SDL3
+        run: |
+          git clone --depth 1 --branch release-3.2.0 https://github.com/libsdl-org/SDL.git /tmp/SDL
+          cmake -S /tmp/SDL -B /tmp/SDL/build -DCMAKE_BUILD_TYPE=Release -DSDL_TEST_LIBRARY=OFF
+          cmake --build /tmp/SDL/build --parallel 2
+          sudo cmake --install /tmp/SDL/build
+          pkg-config --modversion sdl3
       - name: Build pinned wlroots 0.19
         run: |
           git clone --depth 1 --branch 0.19.0 https://gitlab.freedesktop.org/wlroots/wlroots.git /tmp/wlroots
@@ -89,6 +127,9 @@ jobs:
           sudo meson install -C /tmp/wlroots/build
           pkg-config --modversion wlroots-0.19
       - name: Configure full runtime build
-        run: cmake --preset tests-full -DWAYDISPLAY_ENABLE_XWAYLAND=OFF
+        run: >-
+          cmake --preset tests-full
+          -DWAYDISPLAY_ENABLE_XWAYLAND=OFF
+          -DWAYDISPLAY_WARNINGS_AS_ERRORS=ON
       - name: Build and test
         run: cmake --build --preset tests-full --parallel 2

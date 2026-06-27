@@ -254,14 +254,14 @@ void clear_entry_retx_inflight(ClientState& state, uint16_t tile_id, uint8_t til
 
 TilePacketValidationResult packet_header_validation_result(const wd_udp_tile_packet_decoded& header, size_t packet_size,
                                                            uint16_t udp_payload_target, const wd_server_config_payload& config) {
-    if (header.session_id != config.session_id || header.connection_token != config.connection_token)
+    if (header.session_id != config.session_id || header.connection_token != config.connection_token) [[unlikely]]
     {
         return TilePacketValidationResult::Identity;
     }
 
     uint16_t tile_width  = 0;
     uint16_t tile_height = 0;
-    if (!tile_dimensions_from_header(header, tile_width, tile_height))
+    if (!tile_dimensions_from_header(header, tile_width, tile_height)) [[unlikely]]
     {
         return TilePacketValidationResult::Geometry;
     }
@@ -269,13 +269,13 @@ TilePacketValidationResult packet_header_validation_result(const wd_udp_tile_pac
     const uint16_t packet_tiles_x     = wd_tiles_for_width_with_tile(config.width, tile_width);
     const uint16_t packet_tiles_y     = wd_tiles_for_height_with_tile(config.height, tile_height);
     const uint32_t packet_total_tiles = static_cast<uint32_t>(packet_tiles_x) * static_cast<uint32_t>(packet_tiles_y);
-    if (packet_tiles_x == 0 || packet_tiles_y == 0 || header.tile_id >= packet_total_tiles || packet_total_tiles > UINT16_MAX)
+    if (packet_tiles_x == 0 || packet_tiles_y == 0 || header.tile_id >= packet_total_tiles || packet_total_tiles > UINT16_MAX) [[unlikely]]
     {
         return TilePacketValidationResult::Geometry;
     }
 
     if (header.tile_pkt_count == 0 || header.tile_pkt_id >= header.tile_pkt_count || header.payload_size == 0 ||
-        header.tile_payload_size == 0)
+        header.tile_payload_size == 0) [[unlikely]]
     {
         return TilePacketValidationResult::Fragment;
     }
@@ -294,7 +294,7 @@ TilePacketValidationResult packet_header_validation_result(const wd_udp_tile_pac
         return TilePacketValidationResult::Fragment;
     }
 
-    if (!wd_udp_tile_fragment_layout_valid(&header, packet_size, udp_payload_target, header.tile_payload_size))
+    if (!wd_udp_tile_fragment_layout_valid(&header, packet_size, udp_payload_target, header.tile_payload_size)) [[unlikely]]
     {
         return TilePacketValidationResult::Fragment;
     }
@@ -328,7 +328,7 @@ void TileReassembler::reset() {
 }
 
 bool TileReassembler::configure_entry_slots(const wd_server_config_payload& config) {
-    if (entry_frame_width_ == config.width && entry_frame_height_ == config.height && entry_frame_width_ != 0)
+    if (entry_frame_width_ == config.width && entry_frame_height_ == config.height && entry_frame_width_ != 0) [[likely]]
     {
         return true;
     }
@@ -339,7 +339,7 @@ bool TileReassembler::configure_entry_slots(const wd_server_config_payload& conf
     {
         uint16_t tile_width  = 0;
         uint16_t tile_height = 0;
-        if (!wd_tile_dimensions_for_size_code(tile_size, &tile_width, &tile_height))
+        if (!wd_tile_dimensions_for_size_code(tile_size, &tile_width, &tile_height)) [[unlikely]]
         {
             return false;
         }
@@ -347,7 +347,7 @@ bool TileReassembler::configure_entry_slots(const wd_server_config_payload& conf
         const uint32_t tiles_x     = wd_tiles_for_width_with_tile(config.width, tile_width);
         const uint32_t tiles_y     = wd_tiles_for_height_with_tile(config.height, tile_height);
         const uint32_t total_tiles = tiles_x * tiles_y;
-        if (tiles_x == 0 || tiles_y == 0 || total_tiles > UINT16_MAX)
+        if (tiles_x == 0 || tiles_y == 0 || total_tiles > UINT16_MAX) [[unlikely]]
         {
             return false;
         }
@@ -367,7 +367,7 @@ bool TileReassembler::configure_entry_slots(const wd_server_config_payload& conf
 }
 
 size_t TileReassembler::find_entry_index(uint8_t tile_size, uint16_t tile_id) const {
-    if (tile_size >= entry_slots_by_size_.size() || tile_id >= entry_slots_by_size_[tile_size].size())
+    if (tile_size >= entry_slots_by_size_.size() || tile_id >= entry_slots_by_size_[tile_size].size()) [[unlikely]]
     {
         return SIZE_MAX;
     }
@@ -571,7 +571,7 @@ void TileReassembler::evict_entry_for_budget(ClientState& state, size_t entry_in
 }
 
 bool TileReassembler::ensure_budget(ClientState& state, size_t payload_size) {
-    if (payload_size > max_active_payload_bytes_)
+    if (payload_size > max_active_payload_bytes_) [[unlikely]]
     {
         state.stats.reassembly_budget_drops.fetch_add(1, std::memory_order_relaxed);
         return false;
@@ -589,7 +589,7 @@ bool TileReassembler::ensure_budget(ClientState& state, size_t payload_size) {
         }
         evict_entry_for_budget(state, oldest_index);
     }
-    if (active_entries_.size() >= max_active_entries_ || active_payload_bytes_ + payload_size > max_active_payload_bytes_)
+    if (active_entries_.size() >= max_active_entries_ || active_payload_bytes_ + payload_size > max_active_payload_bytes_) [[unlikely]]
     {
         state.stats.reassembly_budget_drops.fetch_add(1, std::memory_order_relaxed);
         return false;
@@ -636,7 +636,7 @@ void TileReassembler::expire_stale_entries(ClientState& state) {
 CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint8_t* packet, size_t packet_size) {
     CompletedTile completed{};
 
-    if (!packet || packet_size < WD_UDP_TILE_HEADER_MIN_SIZE)
+    if (!packet || packet_size < WD_UDP_TILE_HEADER_MIN_SIZE) [[unlikely]]
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         state.stats.udp_invalid_short.fetch_add(1, std::memory_order_relaxed);
@@ -644,7 +644,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
     }
 
     wd_udp_tile_packet_decoded header{};
-    if (!wd_udp_tile_packet_decode(packet, packet_size, &header))
+    if (!wd_udp_tile_packet_decode(packet, packet_size, &header)) [[unlikely]]
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         state.stats.udp_invalid_header.fetch_add(1, std::memory_order_relaxed);
@@ -659,7 +659,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
 
     uint16_t packet_tile_width  = 0;
     uint16_t packet_tile_height = 0;
-    if (!tile_dimensions_from_header(header, packet_tile_width, packet_tile_height))
+    if (!tile_dimensions_from_header(header, packet_tile_width, packet_tile_height)) [[unlikely]]
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         state.stats.udp_invalid_geometry.fetch_add(1, std::memory_order_relaxed);
@@ -670,7 +670,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         static_cast<size_t>(packet_tile_width) * static_cast<size_t>(packet_tile_height) * WD_BYTES_PER_PIXEL;
 
     const TilePacketValidationResult validation = validate_tile_packet_header(header, packet_size, udp_payload_target, state.config);
-    if (validation != TilePacketValidationResult::Valid)
+    if (validation != TilePacketValidationResult::Valid) [[unlikely]]
     {
         if (validation == TilePacketValidationResult::Identity)
         {
@@ -714,7 +714,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         }
     }
 
-    if (!configure_entry_slots(state.config))
+    if (!configure_entry_slots(state.config)) [[unlikely]]
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         return completed;
@@ -748,12 +748,12 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
             remove_entry(entry_index);
         }
 
-        if (!ensure_budget(state, header.tile_payload_size))
+        if (!ensure_budget(state, header.tile_payload_size)) [[unlikely]]
         {
             return completed;
         }
         entry_index = activate_entry(header.tile_size, header.tile_id);
-        if (entry_index == SIZE_MAX)
+        if (entry_index == SIZE_MAX) [[unlikely]]
         {
             state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
             return completed;
@@ -823,7 +823,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
     Entry& entry = active_entries_[entry_index];
     if (header.tile_pkt_id == 0)
     {
-        if (entry.first_fragment_metadata_seen && entry.input_sequence != header.input_sequence)
+        if (entry.first_fragment_metadata_seen && entry.input_sequence != header.input_sequence) [[unlikely]]
         {
             state.stats.tile_fragment_conflicts.fetch_add(1, std::memory_order_relaxed);
             state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
@@ -835,7 +835,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         entry.input_sequence               = header.input_sequence;
     }
     if (entry.packet_count != header.tile_pkt_count || entry.compressed_size != header.tile_payload_size ||
-        entry.compressed_payload != wd_udp_tile_packet_is_compressed(&header))
+        entry.compressed_payload != wd_udp_tile_packet_is_compressed(&header)) [[unlikely]]
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
         return completed;
@@ -846,7 +846,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
 
     const size_t   bitmap_word = header.tile_pkt_id >> 6u;
     const uint64_t bitmap_mask = 1ull << (header.tile_pkt_id & 63u);
-    if ((entry.received_bitmap[bitmap_word] & bitmap_mask) == 0)
+    if ((entry.received_bitmap[bitmap_word] & bitmap_mask) == 0) [[likely]]
     {
         std::memcpy(entry.compressed.data() + offset, payload, header.payload_size);
         entry.received_bitmap[bitmap_word] |= bitmap_mask;
@@ -873,7 +873,7 @@ CompletedTile TileReassembler::process_udp_packet(ClientState& state, const uint
         const bool ok = wd_zstd_decompress(entry.compressed.data(), entry.compressed.size(), completed.tile_bytes.data(),
                                            completed.tile_bytes.size(), uncompressed_tile_bytes);
 
-        if (!ok)
+        if (!ok) [[unlikely]]
         {
             WD_LOG_ERROR("failed to decompress tile %u generation %llu", entry.tile_id, static_cast<unsigned long long>(entry.generation));
             state.stats.tile_decompress_failures.fetch_add(1, std::memory_order_relaxed);

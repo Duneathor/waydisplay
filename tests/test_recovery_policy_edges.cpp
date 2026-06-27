@@ -18,18 +18,25 @@ void require(bool condition, const char* message) {
 }
 
 void test_tile_recovery_completion_matrix() {
-    require(wd_tile_recovery_decide(false, 1, 99, 1) == WD_TILE_RECOVERY_WAIT, "recovery cannot complete before refresh transmission");
-    require(wd_tile_recovery_decide(true, 1, 0, 10) == WD_TILE_RECOVERY_COMPLETE_PRESENTED,
+    require(wd_tile_recovery_decide(false, 7, 7, 99, 1) == WD_TILE_RECOVERY_WAIT, "recovery cannot complete before refresh transmission");
+    require(wd_tile_recovery_decide(true, 7, 7, 0, 10) == WD_TILE_RECOVERY_COMPLETE_PRESENTED,
             "first presented tile frame should complete recovery");
-    require(wd_tile_recovery_decide(true, 0, 9, 10) == WD_TILE_RECOVERY_WAIT, "recovery should wait below timeout without presentation");
-    require(wd_tile_recovery_decide(true, 0, 10, 10) == WD_TILE_RECOVERY_COMPLETE_TIMEOUT,
+    require(wd_tile_recovery_decide(true, 7, 6, 9, 10) == WD_TILE_RECOVERY_WAIT, "recovery should wait below timeout without presentation");
+    require(wd_tile_recovery_decide(true, 7, 6, 0, 10) == WD_TILE_RECOVERY_WAIT,
+            "a presentation from the prior content epoch must not complete recovery");
+    require(!wd_video_entry_allowed(true, false, 0, true, WD_VIDEO_RECOVERY_NONE),
+            "forced video must wait for the initial tile bootstrap presentation");
+    require(!wd_video_entry_allowed(false, false, 1, true, WD_VIDEO_RECOVERY_FAILURE),
+            "forced video must respect the circuit breaker after a pipeline failure");
+    require(wd_tile_recovery_decide(true, 7, 6, 10, 10) == WD_TILE_RECOVERY_COMPLETE_TIMEOUT,
             "recovery should complete at the timeout boundary");
-    require(wd_tile_recovery_decide(true, 0, UINT32_MAX, 0) == WD_TILE_RECOVERY_WAIT, "zero timeout should disable timeout completion");
+    require(wd_tile_recovery_decide(true, 7, 6, UINT32_MAX, 0) == WD_TILE_RECOVERY_WAIT, "zero timeout should disable timeout completion");
 
-    require(wd_video_entry_allowed(false, 0), "video entry should be allowed when recovery and cooldown are clear");
-    require(!wd_video_entry_allowed(true, 0), "active tile recovery should block video entry");
-    require(!wd_video_entry_allowed(false, 1), "retry cooldown should block video entry");
-    require(!wd_video_entry_allowed(true, 1), "combined recovery and cooldown should block video entry");
+    require(wd_video_entry_allowed(false, false, 0, false, WD_VIDEO_RECOVERY_NONE), "video entry should be allowed when recovery and cooldown are clear");
+    require(!wd_video_entry_allowed(false, true, 0, true, WD_VIDEO_RECOVERY_PLANNED), "active tile recovery should block video entry");
+    require(!wd_video_entry_allowed(false, false, 1, false, WD_VIDEO_RECOVERY_PLANNED), "retry cooldown should block automatic video entry");
+    require(wd_video_entry_allowed(false, false, 1, true, WD_VIDEO_RECOVERY_PLANNED), "forced video should bypass the post-recovery retry cooldown");
+    require(!wd_video_entry_allowed(false, true, 1, true, WD_VIDEO_RECOVERY_PLANNED), "active tile recovery should block even forced video entry");
 }
 
 void test_video_epoch_plan_commit_guards() {
@@ -83,13 +90,24 @@ void test_client_video_health_precedence() {
     metrics.client_frames_presented = 0;
     metrics.client_frames_decoded   = 2;
     metrics.client_audio_video_sync_holds = 3;
+    metrics.client_audio_playback_state = WD_CLIENT_AUDIO_PLAYBACK_BUFFERING;
+    metrics.client_audio_video_startup_hold_ms = 500;
     metrics.client_queue_depth      = 1;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
             "decoded queued frames held by audio should not be a pipeline failure");
 
-    metrics.client_queue_depth = 0;
+    metrics.client_queue_depth     = 0;
+    metrics.client_queue_depth_max = 3;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
+            "an interval queue peak should preserve audio-wait classification after the queue drains");
+
+    metrics.client_audio_video_startup_timeouts = 1;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
-            "audio holds without a queued frame should not explain a presentation stall");
+            "an expired audio startup gate must not conceal a video presentation stall");
+
+    metrics.client_queue_depth_max = 0;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
+            "audio holds without current or interval queued frames should not explain a presentation stall");
     metrics.client_frames_decoded = 0;
     metrics.client_frames_seen    = 1;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
@@ -105,6 +123,24 @@ void test_client_video_health_precedence() {
                 std::strcmp(wd_client_video_health_name(WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE), "decode-failure") == 0 &&
                 std::strcmp(wd_client_video_health_name(static_cast<wd_client_video_health_class>(99)), "unknown") == 0,
             "health names should cover every public class and unknown values");
+}
+
+
+void test_connection_mode_transition_matrix() {
+    require(!wd_video_entry_allowed(true, false, 0, true, WD_VIDEO_RECOVERY_NONE),
+            "forced video must wait for the exact bootstrap presentation");
+    require(!wd_video_entry_allowed(false, true, 0, true, WD_VIDEO_RECOVERY_PLANNED),
+            "forced video must not interrupt an active planned recovery");
+    require(wd_video_entry_allowed(false, false, 5, true, WD_VIDEO_RECOVERY_PLANNED),
+            "forced video may resume immediately after an acknowledged planned resize recovery");
+    require(!wd_video_entry_allowed(false, false, 5, true, WD_VIDEO_RECOVERY_FAILURE),
+            "forced video must respect the circuit breaker after a real pipeline failure");
+    require(wd_video_entry_allowed(false, false, 0, true, WD_VIDEO_RECOVERY_FAILURE),
+            "forced video may retry after the failure cooldown expires");
+    require(wd_tile_recovery_decide(true, 42, 41, 4, 5) == WD_TILE_RECOVERY_WAIT,
+            "a stale presentation cannot complete recovery");
+    require(wd_tile_recovery_decide(true, 42, 42, 4, 5) == WD_TILE_RECOVERY_COMPLETE_PRESENTED,
+            "the exact recovery epoch completes recovery");
 }
 
 void test_scheduler_argument_and_round_robin_edges() {
@@ -176,6 +212,7 @@ int main() {
     test_tile_recovery_completion_matrix();
     test_video_epoch_plan_commit_guards();
     test_client_video_health_precedence();
+    test_connection_mode_transition_matrix();
     test_scheduler_argument_and_round_robin_edges();
     test_scheduler_starvation_ties_forget_and_heap_pruning();
     return 0;

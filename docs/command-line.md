@@ -22,7 +22,7 @@ waydisplay-client <server_ipv4> <tcp_port> <client_udp_port> [options]
 | `--rate-kib <N>` | Upper bound for adaptive tile traffic | Connection-specific bandwidth cap. |
 | `--no-vsync` | Disable SDL present-vsync | Local renderer troubleshooting and latency testing. |
 | `--no-audio` | Disable audio negotiation/playback | Local capability and session preference. |
-| `--video <auto|off|force>` | Coarse video-stream policy | Useful for compatibility and diagnosis. |
+| `--video <auto|off|force>` | Coarse video-stream policy | `force` bypasses automatic content thresholds, but not initial bootstrap, active recovery, or failure backoff. A successfully presented planned resize recovery may return directly to forced video. |
 | `--video-codec <auto|h264|h265>` | Acceptable video codecs | Hardware/driver compatibility. |
 | `--video-hwdecode <off|auto|vaapi>` | Decoder backend policy | Hardware/driver compatibility. |
 | `--help`, `-h` | Print usage | Standard interface. |

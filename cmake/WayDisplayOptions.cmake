@@ -1,6 +1,8 @@
 option(WAYDISPLAY_BUILD_CLIENT_SDL "Build the SDL WayDisplay client" ON)
 option(WAYDISPLAY_BUILD_WLROOTS_SERVER "Build the wlroots headless compositor server" ON)
 option(WAYDISPLAY_BUILD_TESTS "Build WayDisplay unit tests" ON)
+option(WAYDISPLAY_BUILD_FUZZERS "Build coverage-guided libFuzzer targets" OFF)
+option(WAYDISPLAY_REQUIRE_RUNTIME_TARGETS "Fail tests when requested SDL/wlroots runtime targets are unavailable" OFF)
 option(WAYDISPLAY_RUN_TESTS_ON_BUILD "Run CTest as part of the default build" ON)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(_waydisplay_default_log_level DEBUG)

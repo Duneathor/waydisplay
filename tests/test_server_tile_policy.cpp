@@ -176,15 +176,15 @@ void test_delivery_status_waits_for_seal_and_reports_failure() {
 }
 
 void test_tile_recovery_waits_for_client_presentation() {
-    require(wd_tile_recovery_decide(false, 1, 20, 5) == WD_TILE_RECOVERY_WAIT, "recovery cannot finish before the full refresh is sent");
-    require(wd_tile_recovery_decide(true, 1, 0, 5) == WD_TILE_RECOVERY_COMPLETE_PRESENTED,
+    require(wd_tile_recovery_decide(false, 9, 9, 20, 5) == WD_TILE_RECOVERY_WAIT, "recovery cannot finish before the full refresh is sent");
+    require(wd_tile_recovery_decide(true, 9, 9, 0, 5) == WD_TILE_RECOVERY_COMPLETE_PRESENTED,
             "client tile presentation should complete recovery");
-    require(wd_tile_recovery_decide(true, 0, 4, 5) == WD_TILE_RECOVERY_WAIT, "recovery should remain sticky before its timeout");
-    require(wd_tile_recovery_decide(true, 0, 5, 5) == WD_TILE_RECOVERY_COMPLETE_TIMEOUT,
+    require(wd_tile_recovery_decide(true, 9, 8, 4, 5) == WD_TILE_RECOVERY_WAIT, "recovery should remain sticky before its timeout");
+    require(wd_tile_recovery_decide(true, 9, 8, 5, 5) == WD_TILE_RECOVERY_COMPLETE_TIMEOUT,
             "recovery should have a bounded acknowledgement timeout");
-    require(!wd_video_entry_allowed(true, 0), "video entry must be blocked while tile recovery is active");
-    require(!wd_video_entry_allowed(false, 1), "video entry must respect the post-recovery cooldown");
-    require(wd_video_entry_allowed(false, 0), "video entry may resume after recovery and cooldown");
+    require(!wd_video_entry_allowed(false, true, 0, true, WD_VIDEO_RECOVERY_PLANNED), "video entry must be blocked while tile recovery is active");
+    require(!wd_video_entry_allowed(false, false, 1, false, WD_VIDEO_RECOVERY_PLANNED), "video entry must respect the post-recovery cooldown");
+    require(wd_video_entry_allowed(false, false, 0, false, WD_VIDEO_RECOVERY_NONE), "video entry may resume after recovery and cooldown");
 }
 
 void test_video_health_distinguishes_audio_wait_from_failure() {
@@ -194,9 +194,16 @@ void test_video_health_distinguishes_audio_wait_from_failure() {
     metrics.client_frames_seen      = 60;
     metrics.client_frames_decoded   = 60;
     metrics.client_audio_video_sync_holds = 2;
+    metrics.client_audio_playback_state = WD_CLIENT_AUDIO_PLAYBACK_BUFFERING;
+    metrics.client_audio_video_startup_hold_ms = 500;
     metrics.client_queue_depth      = 3;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
             "decoded frames queued behind audio should not be a video failure");
+
+    metrics.client_audio_video_startup_timeouts = 1;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
+            "audio startup timeout should expose a presentation stall");
+    metrics.client_audio_video_startup_timeouts = 0;
 
     metrics.client_audio_video_sync_holds = 0;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
