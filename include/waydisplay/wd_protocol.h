@@ -56,6 +56,7 @@ enum wd_message_type {
     WD_MSG_AUDIO_CHANNEL_HELLO     = 25,
     WD_MSG_AUDIO_CONFIG            = 26,
     WD_MSG_AUDIO_PACKET            = 27,
+    WD_MSG_VIDEO_FEEDBACK          = 28,
 };
 
 enum wd_protocol_error_code {
@@ -90,9 +91,10 @@ enum wd_compression_mode {
 
 enum wd_client_capability {
     WD_CLIENT_CAP_VIDEO_STREAM = 1u << 0,
-    WD_CLIENT_CAP_AUDIO_STREAM = 1u << 1,
+    WD_CLIENT_CAP_AUDIO_STREAM  = 1u << 1,
+    WD_CLIENT_CAP_VIDEO_FEEDBACK = 1u << 2,
 };
-#define WD_CLIENT_CAP_MASK (WD_CLIENT_CAP_VIDEO_STREAM | WD_CLIENT_CAP_AUDIO_STREAM)
+#define WD_CLIENT_CAP_MASK (WD_CLIENT_CAP_VIDEO_STREAM | WD_CLIENT_CAP_AUDIO_STREAM | WD_CLIENT_CAP_VIDEO_FEEDBACK)
 
 enum wd_video_codec {
     WD_VIDEO_CODEC_H265 = 1u << 0,
@@ -126,6 +128,26 @@ enum wd_video_mode {
     WD_VIDEO_MODE_AUTO  = 0,
     WD_VIDEO_MODE_OFF   = 1,
     WD_VIDEO_MODE_FORCE = 2,
+};
+
+
+enum wd_video_feedback_flags {
+    WD_VIDEO_FEEDBACK_NEEDS_KEYFRAME    = 1u << 0,
+    WD_VIDEO_FEEDBACK_DECODE_OVERLOAD   = 1u << 1,
+    WD_VIDEO_FEEDBACK_DECODE_FAILURE    = 1u << 2,
+    WD_VIDEO_FEEDBACK_PUBLISH_FAILURE   = 1u << 3,
+    WD_VIDEO_FEEDBACK_PRESENTATION_STALL = 1u << 4,
+    WD_VIDEO_FEEDBACK_AUDIO_SYNC_HOLD   = 1u << 5,
+};
+#define WD_VIDEO_FEEDBACK_FLAG_MASK (WD_VIDEO_FEEDBACK_NEEDS_KEYFRAME | WD_VIDEO_FEEDBACK_DECODE_OVERLOAD | \
+                                     WD_VIDEO_FEEDBACK_DECODE_FAILURE | WD_VIDEO_FEEDBACK_PUBLISH_FAILURE | \
+                                     WD_VIDEO_FEEDBACK_PRESENTATION_STALL | WD_VIDEO_FEEDBACK_AUDIO_SYNC_HOLD)
+
+enum wd_video_decoder_phase {
+    WD_VIDEO_DECODER_PHASE_TILES = 0,
+    WD_VIDEO_DECODER_PHASE_AWAITING_KEYFRAME = 1,
+    WD_VIDEO_DECODER_PHASE_VIDEO = 2,
+    WD_VIDEO_DECODER_PHASE_RECOVERING = 3,
 };
 
 enum wd_video_frame_flags {
@@ -228,9 +250,10 @@ struct wd_client_hello_payload {
 
 enum wd_server_capability {
     WD_SERVER_CAP_VIDEO_STREAM = 1u << 0,
-    WD_SERVER_CAP_AUDIO_STREAM = 1u << 1,
+    WD_SERVER_CAP_AUDIO_STREAM  = 1u << 1,
+    WD_SERVER_CAP_VIDEO_FEEDBACK = 1u << 2,
 };
-#define WD_SERVER_CAP_MASK (WD_SERVER_CAP_VIDEO_STREAM | WD_SERVER_CAP_AUDIO_STREAM)
+#define WD_SERVER_CAP_MASK (WD_SERVER_CAP_VIDEO_STREAM | WD_SERVER_CAP_AUDIO_STREAM | WD_SERVER_CAP_VIDEO_FEEDBACK)
 
 struct wd_server_config_payload {
     /* Stable for the lifetime of one control/UDP transport connection. */
@@ -413,6 +436,14 @@ struct wd_client_stats_payload {
     uint64_t audio_video_startup_timeouts;
     uint32_t audio_video_startup_hold_ms;
     uint8_t  audio_playback_state;
+    uint64_t video_last_frame_id_decoded;
+    uint32_t video_decode_queue_depth;
+    uint32_t video_decode_queue_depth_max;
+    uint16_t video_decode_queue_capacity;
+    uint8_t  video_decoder_phase;
+    uint8_t  video_waiting_keyframe;
+    uint32_t audio_video_sync_hold_current_ms;
+    uint32_t audio_video_sync_hold_max_ms;
 };
 
 struct wd_input_channel_hello_payload {
@@ -867,6 +898,26 @@ struct wd_display_resize_payload {
     uint16_t height;
 };
 
+
+struct wd_video_feedback_payload {
+    uint8_t  session_id;
+    uint64_t connection_token;
+    uint64_t content_epoch;
+    uint64_t sequence;
+    uint32_t flags;
+    uint8_t  decoder_phase;
+    uint8_t  reserved[3];
+    uint64_t last_frame_id_rx;
+    uint64_t last_frame_id_decoded;
+    uint64_t last_frame_id_presented;
+    uint16_t decode_queue_depth;
+    uint16_t decode_queue_capacity;
+    uint16_t present_queue_depth;
+    uint16_t present_queue_capacity;
+    uint32_t presentation_stall_ms;
+    uint32_t audio_sync_hold_ms;
+};
+
 struct wd_config_applied_payload {
     uint8_t  session_id;
     uint64_t connection_token;
@@ -896,7 +947,7 @@ static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_m
 static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
 static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
-static_assert(sizeof(struct wd_client_stats_payload) == 458, "unexpected wd_client_stats_payload size");
+static_assert(sizeof(struct wd_client_stats_payload) == 486, "unexpected wd_client_stats_payload size");
 static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
 static_assert(sizeof(struct wd_selection_channel_hello_payload) == 9, "unexpected wd_selection_channel_hello_payload size");
 static_assert(sizeof(struct wd_video_channel_hello_payload) == 15, "unexpected wd_video_channel_hello_payload size");
@@ -907,6 +958,7 @@ static_assert(sizeof(struct wd_video_frame_payload_header) == 51, "unexpected wd
 static_assert(sizeof(struct wd_selection_payload_header) == 15, "unexpected wd_selection_payload_header size");
 static_assert(sizeof(struct wd_cursor_shape_payload) == 11, "unexpected wd_cursor_shape_payload size");
 static_assert(sizeof(struct wd_display_resize_payload) == 13, "unexpected wd_display_resize_payload size");
+static_assert(sizeof(struct wd_video_feedback_payload) == 73, "unexpected wd_video_feedback_payload size");
 static_assert(sizeof(struct wd_config_applied_payload) == 17, "unexpected wd_config_applied_payload size");
 #else
 _Static_assert(sizeof(struct wd_tcp_header) == WD_TCP_HEADER_WIRE_SIZE, "unexpected wd_tcp_header size");
@@ -924,7 +976,7 @@ _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_
 _Static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 _Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
 _Static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
-_Static_assert(sizeof(struct wd_client_stats_payload) == 458, "unexpected wd_client_stats_payload size");
+_Static_assert(sizeof(struct wd_client_stats_payload) == 486, "unexpected wd_client_stats_payload size");
 _Static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_selection_channel_hello_payload) == 9, "unexpected wd_selection_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_video_channel_hello_payload) == 15, "unexpected wd_video_channel_hello_payload size");
@@ -935,6 +987,7 @@ _Static_assert(sizeof(struct wd_video_frame_payload_header) == 51, "unexpected w
 _Static_assert(sizeof(struct wd_selection_payload_header) == 15, "unexpected wd_selection_payload_header size");
 _Static_assert(sizeof(struct wd_cursor_shape_payload) == 11, "unexpected wd_cursor_shape_payload size");
 _Static_assert(sizeof(struct wd_display_resize_payload) == 13, "unexpected wd_display_resize_payload size");
+_Static_assert(sizeof(struct wd_video_feedback_payload) == 73, "unexpected wd_video_feedback_payload size");
 _Static_assert(sizeof(struct wd_config_applied_payload) == 17, "unexpected wd_config_applied_payload size");
 #endif
 

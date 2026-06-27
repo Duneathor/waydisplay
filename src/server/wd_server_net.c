@@ -1153,6 +1153,10 @@ static void wd_server_fill_config(struct wd_server* server, uint8_t session_id, 
     if (server->net.video_stream_negotiated)
     {
         cfg->capabilities |= WD_SERVER_CAP_VIDEO_STREAM;
+        if (server->net.video_feedback_negotiated)
+        {
+            cfg->capabilities |= WD_SERVER_CAP_VIDEO_FEEDBACK;
+        }
         cfg->video_codecs    = server->net.video_codecs;
         cfg->video_transport = server->net.video_transport;
     }
@@ -1541,6 +1545,7 @@ void* wd_net_thread_main(void* arg) {
                 ? wd_video_encoder_choose_codec(net->video_encoder, hello.video_codecs)
                 : 0;
         const bool client_video_tcp = selected_video_codec != 0;
+        const bool client_video_feedback = client_video_tcp && (hello.capabilities & WD_CLIENT_CAP_VIDEO_FEEDBACK) != 0;
         const bool client_audio_tcp = (hello.capabilities & WD_CLIENT_CAP_AUDIO_STREAM) != 0 &&
                                       (hello.audio_codecs & WD_AUDIO_CODEC_OPUS) != 0 && hello.audio_transport == WD_AUDIO_TRANSPORT_TCP &&
                                       hello.audio_max_channels >= 1 && net->audio_stream && wd_audio_stream_ready(net->audio_stream);
@@ -1611,6 +1616,7 @@ void* wd_net_thread_main(void* arg) {
         pthread_mutex_lock(&net->lock);
         net->udp_payload_target      = selected_udp_payload;
         net->video_stream_negotiated = client_video_tcp;
+        net->video_feedback_negotiated = client_video_feedback;
         net->video_codecs            = client_video_tcp ? selected_video_codec : 0;
         net->video_transport         = client_video_tcp ? WD_VIDEO_TRANSPORT_TCP : 0;
         net->audio_stream_negotiated = client_audio_tcp;
@@ -2287,6 +2293,45 @@ void* wd_net_thread_main(void* arg) {
                     }
                     pthread_mutex_unlock(&net->lock);
                 }
+                else if (type == WD_MSG_VIDEO_FEEDBACK && payload_size == sizeof(struct wd_video_feedback_payload))
+                {
+                    struct wd_video_feedback_payload feedback;
+                    memcpy(&feedback, payload, sizeof(feedback));
+                    pthread_mutex_lock(&net->lock);
+                    if (net->video_feedback_negotiated && feedback.session_id == cfg.session_id &&
+                        feedback.connection_token == cfg.connection_token && feedback.content_epoch == net->content_epoch &&
+                        feedback.sequence != 0 && feedback.sequence > net->stream_policy.video_feedback_sequence &&
+                        feedback.flags != 0 && (feedback.flags & ~WD_VIDEO_FEEDBACK_FLAG_MASK) == 0 &&
+                        feedback.decoder_phase <= WD_VIDEO_DECODER_PHASE_RECOVERING)
+                    {
+                        net->stream_policy.video_feedback_pending                  = true;
+                        net->stream_policy.video_feedback_flags                   |= feedback.flags;
+                        net->stream_policy.video_feedback_sequence                 = feedback.sequence;
+                        net->stream_policy.video_feedback_last_frame_id_rx         = feedback.last_frame_id_rx;
+                        net->stream_policy.video_feedback_last_frame_id_decoded    = feedback.last_frame_id_decoded;
+                        net->stream_policy.video_feedback_last_frame_id_presented  = feedback.last_frame_id_presented;
+                        net->stream_policy.video_feedback_decode_queue_depth       = feedback.decode_queue_depth;
+                        net->stream_policy.video_feedback_decode_queue_capacity    = feedback.decode_queue_capacity;
+                        net->stream_policy.video_feedback_present_queue_depth      = feedback.present_queue_depth;
+                        net->stream_policy.video_feedback_present_queue_capacity   = feedback.present_queue_capacity;
+                        net->stream_policy.video_feedback_presentation_stall_ms    = feedback.presentation_stall_ms;
+                        net->stream_policy.video_feedback_audio_sync_hold_ms       = feedback.audio_sync_hold_ms;
+                        net->stream_policy.video_feedback_decoder_phase            = feedback.decoder_phase;
+                        WD_LOG_DEBUG(
+                            "video feedback accepted: epoch=%llu sequence=%llu flags=0x%x phase=%u "
+                            "last_rx=%llu last_decoded=%llu last_presented=%llu decode_q=%u/%u present_q=%u/%u "
+                            "stall_ms=%u av_hold_ms=%u",
+                            (unsigned long long)feedback.content_epoch, (unsigned long long)feedback.sequence,
+                            (unsigned)feedback.flags, (unsigned)feedback.decoder_phase,
+                            (unsigned long long)feedback.last_frame_id_rx,
+                            (unsigned long long)feedback.last_frame_id_decoded,
+                            (unsigned long long)feedback.last_frame_id_presented,
+                            (unsigned)feedback.decode_queue_depth, (unsigned)feedback.decode_queue_capacity,
+                            (unsigned)feedback.present_queue_depth, (unsigned)feedback.present_queue_capacity,
+                            (unsigned)feedback.presentation_stall_ms, (unsigned)feedback.audio_sync_hold_ms);
+                    }
+                    pthread_mutex_unlock(&net->lock);
+                }
                 else if (type == WD_MSG_CLIENT_STATS && payload_size == sizeof(struct wd_client_stats_payload))
                 {
                     struct wd_client_stats_payload cs;
@@ -2294,7 +2339,12 @@ void* wd_net_thread_main(void* arg) {
 
                     if (cs.session_id == cfg.session_id && cs.connection_token == cfg.connection_token &&
                         (cs.flags & ~WD_CLIENT_STATS_FLAG_MASK) == 0 &&
-                        cs.audio_playback_state <= WD_CLIENT_AUDIO_PLAYBACK_STARVED)
+                        cs.audio_playback_state <= WD_CLIENT_AUDIO_PLAYBACK_STARVED &&
+                        cs.video_decoder_phase <= WD_VIDEO_DECODER_PHASE_RECOVERING &&
+                        cs.video_waiting_keyframe <= 1 &&
+                        (cs.video_decode_queue_capacity == 0 ||
+                         (cs.video_decode_queue_depth <= cs.video_decode_queue_capacity &&
+                          cs.video_decode_queue_depth_max <= cs.video_decode_queue_capacity)))
                     {
                         pthread_mutex_lock(&net->lock);
                         net->stats.client_stats_rx++;
@@ -2349,6 +2399,10 @@ void* wd_net_thread_main(void* arg) {
                         {
                             net->stats.client_video_last_frame_id_rx = cs.video_last_frame_id_rx;
                         }
+                        if (cs.video_last_frame_id_decoded > net->stats.client_video_last_frame_id_decoded)
+                        {
+                            net->stats.client_video_last_frame_id_decoded = cs.video_last_frame_id_decoded;
+                        }
                         if (cs.video_last_frame_id_presented > net->stats.client_video_last_frame_id_presented)
                         {
                             net->stats.client_video_last_frame_id_presented = cs.video_last_frame_id_presented;
@@ -2365,6 +2419,19 @@ void* wd_net_thread_main(void* arg) {
                         net->stats.client_audio_video_sync_holds += cs.audio_video_sync_holds;
                         net->stats.client_audio_video_sync_drops += cs.audio_video_sync_drops;
                         net->stats.client_video_decode_queue_drops += cs.video_decode_queue_drops;
+                        net->stats.client_video_decode_queue_depth = cs.video_decode_queue_depth;
+                        if (cs.video_decode_queue_depth_max > net->stats.client_video_decode_queue_depth_max)
+                        {
+                            net->stats.client_video_decode_queue_depth_max = cs.video_decode_queue_depth_max;
+                        }
+                        net->stats.client_video_decode_queue_capacity = cs.video_decode_queue_capacity;
+                        net->stats.client_video_decoder_phase = cs.video_decoder_phase;
+                        net->stats.client_video_waiting_keyframe = cs.video_waiting_keyframe;
+                        net->stats.client_audio_video_sync_hold_current_ms = cs.audio_video_sync_hold_current_ms;
+                        if (cs.audio_video_sync_hold_max_ms > net->stats.client_audio_video_sync_hold_max_ms)
+                        {
+                            net->stats.client_audio_video_sync_hold_max_ms = cs.audio_video_sync_hold_max_ms;
+                        }
                         net->stats.client_audio_video_startup_timeouts += cs.audio_video_startup_timeouts;
                         net->stats.client_audio_video_startup_hold_ms = cs.audio_video_startup_hold_ms;
                         net->stats.client_audio_playback_state = cs.audio_playback_state;
@@ -2467,6 +2534,7 @@ void* wd_net_thread_main(void* arg) {
         net->config_update_sent_ns = 0;
         wd_stream_video_reset_locked(server, "client disconnected", false, false);
         net->video_stream_negotiated = false;
+        net->video_feedback_negotiated = false;
         net->video_codecs            = 0;
         net->video_transport         = 0;
         net->audio_stream_negotiated = false;
@@ -2498,6 +2566,11 @@ void* wd_net_thread_main(void* arg) {
 
         pthread_mutex_unlock(&net->lock);
         wd_server_wake_input(server);
+
+        if (!wd_server_request_display_mode(server, server->display_width, server->display_height, WD_SERVER_IDLE_REFRESH_HZ))
+        {
+            WD_LOG_WARN("failed to restore idle output refresh to %u Hz after disconnect", WD_SERVER_IDLE_REFRESH_HZ);
+        }
 
         wd_audio_stream_stop(net->audio_stream);
         close(tcp_fd);

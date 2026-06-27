@@ -1136,7 +1136,7 @@ bool wd_server_request_display_size(struct wd_server* server, uint32_t width, ui
     uint16_t refresh_hz = (uint16_t)((server->output_refresh_mhz + 500u) / 1000u);
     if (refresh_hz < WD_SERVER_MIN_REFRESH_HZ)
     {
-        refresh_hz = WD_SERVER_DEFAULT_REFRESH_HZ;
+        refresh_hz = WD_SERVER_IDLE_REFRESH_HZ;
     }
     return wd_server_request_display_mode(server, width, height, refresh_hz);
 }
@@ -1541,7 +1541,7 @@ static bool wd_server_init(struct wd_server* server, const struct wd_server_conf
     server->video_encoder_backend = config->video_encoder_backend;
     server->output_scale          = config->output_scale;
     server->output_refresh_mhz =
-        (uint32_t)(config->output_refresh_hz != 0 ? config->output_refresh_hz : WD_SERVER_DEFAULT_REFRESH_HZ) * 1000u;
+        (uint32_t)WD_SERVER_IDLE_REFRESH_HZ * 1000u;
 #if WAYDISPLAY_ENABLE_XWAYLAND
     server->enable_xwayland = config->enable_xwayland;
 #else

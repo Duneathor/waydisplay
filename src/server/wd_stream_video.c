@@ -88,7 +88,8 @@ static bool wd_stream_video_job_current_locked(const struct wd_server* server, c
            net->session_id == job->config.session_id && net->connection_token == job->config.connection_token &&
            net->content_epoch == job->source_content_epoch && net->video_tcp_fd == job->video_tcp_fd && net->video_stream_negotiated &&
            net->video_tx &&
-           (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY || net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE);
+           (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY || net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE ||
+            net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_RECOVERING);
 }
 
 static void wd_stream_video_worker_process(struct wd_video_worker* worker, struct wd_video_worker_job* job) {
@@ -237,7 +238,7 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
         return;
     }
 
-    if (job->request_keyframe && !entry_plan.commit_on_queue)
+    if (job->request_keyframe && (header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
     {
         free(payload);
         net->stats.video_encode_failed++;
@@ -262,6 +263,16 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
         net->stats.video_keyframes_tx++;
     }
     net->stats.video_tcp_bytes_tx += payload_size;
+
+    if (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_RECOVERING &&
+        (header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0)
+    {
+        net->stream_policy.video_recovery_keyframe_queued = true;
+        net->stream_policy.video_recovery_keyframe_id     = header.frame_id;
+        net->stream_policy.video_recovery_wait_seconds    = 0;
+        WD_LOG_INFO("video recovery keyframe queued: frame=%llu attempt=%u/%u", (unsigned long long)header.frame_id,
+                    net->stream_policy.video_recovery_attempts, WD_STREAM_VIDEO_RECOVERY_MAX_ATTEMPTS);
+    }
 
     if (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY &&
         wd_video_entry_plan_can_commit(&entry_plan, net->content_epoch, true))
@@ -523,7 +534,8 @@ bool wd_stream_video_snapshot_needed(struct wd_server* server, uint64_t now_ns) 
     pthread_mutex_lock(&net->lock);
     const bool needed = net->video_worker &&
                         (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY ||
-                         net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE) &&
+                         net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE ||
+                         net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_RECOVERING) &&
                         net->video_stream_negotiated && net->video_tcp_fd >= 0 && net->video_tx &&
                         wd_video_encoder_available(net->video_encoder) &&
                         wd_stream_video_frame_due_locked(&net->stream_policy, now_ns);
@@ -541,7 +553,9 @@ bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint6
     struct wd_net_state*    net    = &server->net;
     struct wd_video_worker* worker = net->video_worker;
     if (!worker ||
-        (net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_READY && net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_ACTIVE) ||
+        (net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_READY &&
+         net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_ACTIVE &&
+         net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_RECOVERING) ||
         !net->video_stream_negotiated || net->video_tcp_fd < 0 || !net->video_tx || !wd_video_encoder_available(net->video_encoder))
     {
         return false;
@@ -586,7 +600,9 @@ bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint6
     config.bitrate_kib_per_second = wd_stream_video_bitrate_kib_locked(&net->stream_policy);
     config.codec                  = net->video_codecs != 0 ? net->video_codecs : WD_VIDEO_CODEC_H265;
 
-    const bool request_keyframe = net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY;
+    const bool request_keyframe = net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY ||
+                                  (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_RECOVERING &&
+                                   !net->stream_policy.video_recovery_keyframe_queued);
 
     pthread_mutex_lock(&worker->lock);
     if (worker->stop)

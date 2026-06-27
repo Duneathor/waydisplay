@@ -98,6 +98,7 @@ add_library(waydisplay_client_runtime STATIC
     src/client/stream_ownership.c
     src/client/video_transition.c
     src/client/video_packet_validation.c
+    src/client/video_decode_queue_policy.c
     src/client/video_present_queue.cpp
 )
 

@@ -216,6 +216,15 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->video_candidate_seconds           = 0;
     policy->tile_recovery_seconds             = 0;
     policy->video_client_failure_seconds      = 0;
+    policy->video_client_failure_class        = WD_CLIENT_VIDEO_HEALTH_IDLE;
+    policy->video_frame_rate_good_seconds     = 0;
+    policy->video_feedback_pending             = false;
+    policy->video_feedback_flags               = 0;
+    policy->video_feedback_sequence            = 0;
+    policy->video_recovery_attempts             = 0;
+    policy->video_recovery_wait_seconds         = 0;
+    policy->video_recovery_keyframe_queued      = false;
+    policy->video_recovery_keyframe_id          = 0;
     policy->tile_refresh_pending              = false;
     policy->tile_recovery_refresh_started     = false;
     policy->tile_recovery_refresh_sent        = false;
@@ -280,6 +289,15 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->video_candidate_seconds           = 0;
     policy->tile_recovery_seconds             = 0;
     policy->video_client_failure_seconds      = 0;
+    policy->video_client_failure_class        = WD_CLIENT_VIDEO_HEALTH_IDLE;
+    policy->video_frame_rate_good_seconds     = 0;
+    policy->video_feedback_pending             = false;
+    policy->video_feedback_flags               = 0;
+    policy->video_feedback_sequence            = 0;
+    policy->video_recovery_attempts             = 0;
+    policy->video_recovery_wait_seconds         = 0;
+    policy->video_recovery_keyframe_queued      = false;
+    policy->video_recovery_keyframe_id          = 0;
     policy->tile_refresh_pending              = false;
     policy->tile_recovery_refresh_started     = false;
     policy->tile_recovery_refresh_sent        = false;
@@ -354,6 +372,8 @@ const char* wd_stream_mode_name(enum wd_stream_mode mode) {
         return "video-ready";
     case WD_STREAM_MODE_VIDEO_ACTIVE:
         return "video-active";
+    case WD_STREAM_MODE_VIDEO_RECOVERING:
+        return "video-recovering";
     case WD_STREAM_MODE_TILE_RECOVERY:
         return "tile-recovery";
     default:
@@ -362,15 +382,48 @@ const char* wd_stream_mode_name(enum wd_stream_mode mode) {
 }
 
 static bool wd_stream_mode_uses_video_frames(enum wd_stream_mode mode) {
-    return mode == WD_STREAM_MODE_VIDEO_READY || mode == WD_STREAM_MODE_VIDEO_ACTIVE;
+    return mode == WD_STREAM_MODE_VIDEO_READY || mode == WD_STREAM_MODE_VIDEO_ACTIVE || mode == WD_STREAM_MODE_VIDEO_RECOVERING;
 }
 
 bool wd_stream_mode_video_owns_display(enum wd_stream_mode mode) {
-    return mode == WD_STREAM_MODE_VIDEO_ACTIVE;
+    return mode == WD_STREAM_MODE_VIDEO_ACTIVE || mode == WD_STREAM_MODE_VIDEO_RECOVERING;
 }
 
 const char* wd_stream_mode_owner_name(enum wd_stream_mode mode) {
     return wd_stream_mode_video_owns_display(mode) ? "video" : "tiles";
+}
+
+static void wd_stream_log_video_health_decision_locked(const struct wd_stream_policy* policy, const struct wd_stats* stats,
+                                                       enum wd_client_video_health_class health, uint32_t streak_seconds,
+                                                       uint32_t feedback_flags, const char* action) {
+    if (!policy || !stats || !action)
+    {
+        return;
+    }
+
+    WD_LOG_WARN(
+        "video health decision: action=%s class=%s streak=%u tx=%llu reports=%llu seen=%llu decoded=%llu presented=%llu "
+        "last_rx=%llu last_decoded=%llu last_presented=%llu decode_failed=%llu publish_failed=%llu keyframe_drops=%llu "
+        "decode_q=%u/%u/%u present_q=%u/%u phase=%u wait_keyframe=%u av_hold_ms=%u/%u audio_state=%u "
+        "feedback_seq=%llu feedback_flags=0x%x feedback_decode_q=%u/%u feedback_present_q=%u/%u active_fps=%u requested_fps=%u",
+        action, wd_client_video_health_name(health), (unsigned)streak_seconds,
+        (unsigned long long)stats->video_frames_tx, (unsigned long long)stats->client_stats_rx,
+        (unsigned long long)(stats->client_video_data_frames_rx + stats->client_video_frames_rx),
+        (unsigned long long)stats->client_video_frames_decoded, (unsigned long long)stats->client_video_frames_presented,
+        (unsigned long long)stats->client_video_last_frame_id_rx,
+        (unsigned long long)stats->client_video_last_frame_id_decoded,
+        (unsigned long long)stats->client_video_last_frame_id_presented,
+        (unsigned long long)stats->client_video_decode_failed, (unsigned long long)stats->client_video_publish_failed,
+        (unsigned long long)stats->client_video_need_keyframe_drops, (unsigned)stats->client_video_decode_queue_depth,
+        (unsigned)stats->client_video_decode_queue_depth_max, (unsigned)stats->client_video_decode_queue_capacity,
+        (unsigned)stats->client_video_queue_depth, (unsigned)stats->client_video_queue_depth_max,
+        (unsigned)stats->client_video_decoder_phase, (unsigned)stats->client_video_waiting_keyframe,
+        (unsigned)stats->client_audio_video_sync_hold_current_ms, (unsigned)stats->client_audio_video_sync_hold_max_ms,
+        (unsigned)stats->client_audio_playback_state, (unsigned long long)policy->video_feedback_sequence,
+        (unsigned)feedback_flags, (unsigned)policy->video_feedback_decode_queue_depth,
+        (unsigned)policy->video_feedback_decode_queue_capacity, (unsigned)policy->video_feedback_present_queue_depth,
+        (unsigned)policy->video_feedback_present_queue_capacity, (unsigned)policy->adaptive_capture_fps,
+        (unsigned)policy->requested_capture_fps);
 }
 
 static void wd_stream_policy_restore_requested_capture_fps_locked(struct wd_stream_policy* policy, const char* reason) {
@@ -987,6 +1040,70 @@ static void wd_stream_policy_update_tile_media_rate_locked(struct wd_stream_poli
     }
 }
 
+static void wd_stream_policy_update_video_frame_rate_locked(struct wd_stream_policy* policy, struct wd_stats* stats,
+                                                              enum wd_client_video_health_class health) {
+    if (!policy || !stats)
+    {
+        return;
+    }
+    const uint16_t current_fps = wd_stream_policy_effective_fps_locked(policy);
+    uint64_t average_decode_ns = 0;
+    if (stats->client_video_decode_samples != 0)
+    {
+        average_decode_ns = stats->client_video_decode_sum_ns / stats->client_video_decode_samples;
+    }
+    const uint16_t safe_decode_fps = wd_video_safe_decode_fps(average_decode_ns, policy->requested_capture_fps,
+                                                              WD_STREAM_VIDEO_DECODE_HEADROOM_PERCENT);
+    const bool overload = health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED ||
+                          stats->client_video_queue_overflow_drops != 0 ||
+                          (safe_decode_fps != 0 && safe_decode_fps < current_fps);
+    if (overload)
+    {
+        policy->video_frame_rate_good_seconds = 0;
+        wd_stream_policy_update_frame_rate_locked(policy, stats, true,
+                                                  health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED,
+                                                  health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED
+                                                      ? "client video decode queue overload"
+                                                      : "client video decode time");
+        if (safe_decode_fps >= WD_STREAM_FPS_MIN && policy->adaptive_capture_fps > safe_decode_fps)
+        {
+            const uint16_t old_fps = policy->adaptive_capture_fps;
+            policy->adaptive_capture_fps = safe_decode_fps;
+            wd_frame_pacing_reset(&policy->frame_pacing);
+            WD_LOG_DEBUG("stream video cadence capped by decode time: %u -> %u fps", old_fps, safe_decode_fps);
+        }
+        return;
+    }
+    if (health != WD_CLIENT_VIDEO_HEALTH_NORMAL || stats->client_video_frames_presented == 0 ||
+        current_fps >= policy->requested_capture_fps)
+    {
+        policy->video_frame_rate_good_seconds = 0;
+        return;
+    }
+    if (++policy->video_frame_rate_good_seconds < WD_STREAM_VIDEO_FPS_GOOD_SECONDS_TO_INCREASE)
+    {
+        return;
+    }
+    policy->video_frame_rate_good_seconds = 0;
+    uint32_t next = (uint32_t)current_fps + 1u;
+    const uint32_t percent = (uint32_t)current_fps * WD_STREAM_FPS_INCREASE_PERCENT / 100u;
+    if (percent > next)
+    {
+        next = percent;
+    }
+    if (next > policy->requested_capture_fps)
+    {
+        next = policy->requested_capture_fps;
+    }
+    if (next != current_fps)
+    {
+        policy->adaptive_capture_fps = (uint16_t)next;
+        wd_frame_pacing_reset(&policy->frame_pacing);
+        stats->frame_rate_upshifts++;
+        WD_LOG_DEBUG("stream video cadence up: %u -> %u fps after sustained decoder health", current_fps, (unsigned)next);
+    }
+}
+
 void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, struct wd_stats* stats) {
     if (!policy || !stats)
     {
@@ -1061,6 +1178,80 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
 
     if (video_frame_mode)
     {
+        const uint32_t immediate_feedback_flags = policy->video_feedback_flags;
+        policy->video_feedback_pending = false;
+        policy->video_feedback_flags   = 0;
+
+        const enum wd_video_feedback_action immediate_feedback_action =
+            wd_video_feedback_action_classify(immediate_feedback_flags);
+        if (policy->stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE &&
+            immediate_feedback_action == WD_VIDEO_FEEDBACK_ACTION_FALLBACK_TILES)
+        {
+            wd_stream_log_video_health_decision_locked(policy, stats, WD_CLIENT_VIDEO_HEALTH_HARD_FAILURE, 1,
+                                                       immediate_feedback_flags, "fallback-tiles");
+            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILE_RECOVERY, WD_VIDEO_RECOVERY_FAILURE,
+                                             "client reported a hard video failure", 0.0, 0.0, 0.0, true, true);
+            return;
+        }
+
+        if (policy->stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE &&
+            immediate_feedback_action == WD_VIDEO_FEEDBACK_ACTION_RECOVER_IN_VIDEO)
+        {
+            wd_stream_policy_update_frame_rate_locked(policy, stats, true, true, "immediate client decoder overload");
+            policy->video_frame_rate_good_seconds   = 0;
+            policy->video_recovery_attempts        = 1;
+            policy->video_recovery_wait_seconds    = 0;
+            policy->video_recovery_keyframe_queued = false;
+            policy->video_recovery_keyframe_id     = 0;
+            wd_stream_log_video_health_decision_locked(policy, stats, WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED, 1,
+                                                       immediate_feedback_flags, "recover-in-video");
+            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_VIDEO_RECOVERING, WD_VIDEO_RECOVERY_FAILURE,
+                                             "client decoder overloaded; recovering in video", 0.0, 0.0, 0.0, true, true);
+            return;
+        }
+
+        if (policy->stream_mode == WD_STREAM_MODE_VIDEO_RECOVERING)
+        {
+            const enum wd_video_recovery_action action = wd_video_recovery_decide(
+                policy->video_recovery_keyframe_queued, policy->video_recovery_keyframe_id,
+                stats->client_video_last_frame_id_presented, policy->video_recovery_wait_seconds,
+                WD_STREAM_VIDEO_RECOVERY_TIMEOUT_SECONDS, policy->video_recovery_attempts,
+                WD_STREAM_VIDEO_RECOVERY_MAX_ATTEMPTS);
+            if (action == WD_VIDEO_RECOVERY_ACTION_PRESENTED)
+            {
+                wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_VIDEO_ACTIVE, WD_VIDEO_RECOVERY_NONE,
+                                                 "client presented recovery keyframe", 0.0, 0.0, 0.0, true, true);
+                policy->video_recovery_attempts        = 0;
+                policy->video_recovery_wait_seconds    = 0;
+                policy->video_recovery_keyframe_queued = false;
+                policy->video_recovery_keyframe_id     = 0;
+            }
+            else if (action == WD_VIDEO_RECOVERY_ACTION_RETRY_KEYFRAME)
+            {
+                policy->video_recovery_attempts++;
+                policy->video_recovery_wait_seconds    = 0;
+                policy->video_recovery_keyframe_queued = false;
+                policy->video_recovery_keyframe_id     = 0;
+                WD_LOG_WARN("video recovery keyframe retry: attempt=%u/%u", policy->video_recovery_attempts,
+                            WD_STREAM_VIDEO_RECOVERY_MAX_ATTEMPTS);
+            }
+            else if (action == WD_VIDEO_RECOVERY_ACTION_FALLBACK_TILES)
+            {
+                wd_stream_log_video_health_decision_locked(policy, stats, WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
+                                                           policy->video_recovery_wait_seconds, 0, "fallback-tiles");
+                wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILE_RECOVERY, WD_VIDEO_RECOVERY_FAILURE,
+                                                 "video recovery keyframe was not presented", 0.0, 0.0, 0.0, true, true);
+                policy->video_recovery_attempts = 0;
+                policy->video_recovery_wait_seconds = 0;
+            }
+            else if (policy->video_recovery_wait_seconds < UINT32_MAX)
+            {
+                policy->video_recovery_wait_seconds++;
+            }
+            policy->video_client_failure_seconds = 0;
+            return;
+        }
+
         const struct wd_client_video_health_metrics video_health_metrics = {
             .server_frames_tx           = stats->video_frames_tx,
             .client_reports             = stats->client_stats_rx,
@@ -1072,36 +1263,54 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
             .client_need_keyframe_drops = stats->client_video_need_keyframe_drops,
             .client_audio_video_sync_holds    = stats->client_audio_video_sync_holds,
             .client_decode_queue_drops         = stats->client_video_decode_queue_drops,
+            .client_decode_queue_depth         = stats->client_video_decode_queue_depth,
+            .client_decode_queue_depth_max     = stats->client_video_decode_queue_depth_max,
+            .client_decode_queue_capacity      = stats->client_video_decode_queue_capacity,
             .client_audio_video_startup_timeouts = stats->client_audio_video_startup_timeouts,
             .client_audio_video_startup_hold_ms  = stats->client_audio_video_startup_hold_ms,
             .client_audio_playback_state         = stats->client_audio_playback_state,
             .client_queue_depth         = stats->client_video_queue_depth,
             .client_queue_depth_max     = stats->client_video_queue_depth_max,
+            .client_audio_video_sync_hold_current_ms = stats->client_audio_video_sync_hold_current_ms,
         };
         const enum wd_client_video_health_class video_health = wd_client_video_health_classify(&video_health_metrics);
-        const bool                              client_video_failure =
-            video_health == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL || video_health == WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE;
+        wd_stream_policy_update_video_frame_rate_locked(policy, stats, video_health);
 
-        if (client_video_failure)
+        if (video_health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED ||
+            video_health == WD_CLIENT_VIDEO_HEALTH_AWAITING_KEYFRAME)
         {
-            if (policy->video_client_failure_seconds < UINT32_MAX)
-            {
-                policy->video_client_failure_seconds++;
-            }
-        }
-        else
-        {
+            policy->video_recovery_attempts        = 1;
+            policy->video_recovery_wait_seconds    = 0;
+            policy->video_recovery_keyframe_queued = false;
+            policy->video_recovery_keyframe_id     = 0;
+            wd_stream_log_video_health_decision_locked(policy, stats, video_health, 1, 0, "recover-in-video");
+            wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_VIDEO_RECOVERING, WD_VIDEO_RECOVERY_FAILURE,
+                                             wd_client_video_health_name(video_health), 0.0, 0.0, 0.0, true, true);
             policy->video_client_failure_seconds = 0;
+            policy->video_client_failure_class   = WD_CLIENT_VIDEO_HEALTH_IDLE;
+            return;
         }
+
+        const struct wd_video_health_streak failure_streak = wd_video_health_streak_update(
+            (struct wd_video_health_streak){
+                .health  = (enum wd_client_video_health_class)policy->video_client_failure_class,
+                .seconds = policy->video_client_failure_seconds,
+            },
+            video_health);
+        policy->video_client_failure_class   = (uint8_t)failure_streak.health;
+        policy->video_client_failure_seconds = failure_streak.seconds;
 
         if (policy->video_client_failure_seconds >= WD_STREAM_VIDEO_CLIENT_FAILURE_SECONDS)
         {
+            wd_stream_log_video_health_decision_locked(policy, stats, video_health,
+                                                       policy->video_client_failure_seconds, 0, "fallback-tiles");
             wd_stream_policy_set_mode_locked(policy, WD_STREAM_MODE_TILE_RECOVERY, WD_VIDEO_RECOVERY_FAILURE,
-                                             video_health == WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE
-                                                 ? "client video decode failure"
+                                             video_health == WD_CLIENT_VIDEO_HEALTH_HARD_FAILURE
+                                                 ? "client video hard failure"
                                                  : "client video presentation pipeline stalled",
                                              0.0, 0.0, 0.0, true, true);
             policy->video_client_failure_seconds = 0;
+            policy->video_client_failure_class   = WD_CLIENT_VIDEO_HEALTH_IDLE;
             return;
         }
 
@@ -1109,10 +1318,6 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
         policy->link_loss_seconds                 = 0;
         policy->link_good_seconds                 = 0;
         policy->client_render_pressure_seconds    = 0;
-        if (policy->adaptive_capture_fps != policy->requested_capture_fps)
-        {
-            wd_stream_policy_restore_requested_capture_fps_locked(policy, "video mode frame pacing");
-        }
         return;
     }
 

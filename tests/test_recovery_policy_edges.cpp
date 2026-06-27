@@ -72,16 +72,16 @@ void test_client_video_health_precedence() {
 
     metrics.client_decode_failures  = 1;
     metrics.client_frames_presented = 1;
-    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE,
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_HARD_FAILURE,
             "decoder failure should take precedence over presentation");
     metrics.client_decode_failures  = 0;
     metrics.client_publish_failures = 1;
-    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE,
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_HARD_FAILURE,
             "publish failure should classify as decoder pipeline failure");
     metrics.client_publish_failures    = 0;
     metrics.client_need_keyframe_drops = 1;
-    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE,
-            "keyframe drops should classify as decoder failure");
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AWAITING_KEYFRAME,
+            "keyframe dependency drops should classify as awaiting-keyframe recovery");
 
     metrics.client_need_keyframe_drops = 0;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_NORMAL,
@@ -92,6 +92,7 @@ void test_client_video_health_precedence() {
     metrics.client_audio_video_sync_holds = 3;
     metrics.client_audio_playback_state = WD_CLIENT_AUDIO_PLAYBACK_BUFFERING;
     metrics.client_audio_video_startup_hold_ms = 500;
+    metrics.client_audio_video_sync_hold_current_ms = 500;
     metrics.client_queue_depth      = 1;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
             "decoded queued frames held by audio should not be a pipeline failure");
@@ -101,9 +102,19 @@ void test_client_video_health_precedence() {
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
             "an interval queue peak should preserve audio-wait classification after the queue drains");
 
-    metrics.client_audio_video_startup_timeouts = 1;
+    metrics.client_audio_playback_state = WD_CLIENT_AUDIO_PLAYBACK_PLAYING;
+    metrics.client_audio_video_sync_hold_current_ms = 1500;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
+            "a bounded playing-state audio hold should not be classified as a video stall");
+    metrics.client_audio_video_sync_hold_current_ms = WD_CLIENT_AUDIO_VIDEO_PLAYING_HOLD_MAX_MS + 1;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
-            "an expired audio startup gate must not conceal a video presentation stall");
+            "an excessive playing-state hold must stop concealing a video stall");
+    metrics.client_audio_playback_state = WD_CLIENT_AUDIO_PLAYBACK_BUFFERING;
+
+    metrics.client_audio_video_startup_timeouts = 1;
+    metrics.client_audio_video_sync_hold_current_ms = 0;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
+            "an expired startup gate with no active hold must expose a video presentation stall");
 
     metrics.client_queue_depth_max = 0;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
@@ -116,11 +127,26 @@ void test_client_video_health_precedence() {
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_IDLE,
             "no observed client video activity should remain idle");
 
+    metrics.client_decode_queue_capacity = 4;
+    metrics.client_decode_queue_depth_max = 4;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED,
+            "a saturated compressed decode queue should request recovery before a drop is reported");
+    metrics.client_decode_queue_depth_max = 0;
+    metrics.client_decode_queue_drops = 1;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED,
+            "compressed decode queue drops should request in-place overload recovery");
+    require(wd_video_safe_decode_fps(34000000ull, 30, 85) == 25,
+            "34ms software decode should cap a 30fps request near 25fps with headroom");
+    require(wd_video_safe_decode_fps(10000000ull, 30, 85) == 30,
+            "fast decode should retain the requested ceiling");
+
     require(std::strcmp(wd_client_video_health_name(WD_CLIENT_VIDEO_HEALTH_IDLE), "idle") == 0 &&
                 std::strcmp(wd_client_video_health_name(WD_CLIENT_VIDEO_HEALTH_NORMAL), "normal") == 0 &&
                 std::strcmp(wd_client_video_health_name(WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT), "audio-wait") == 0 &&
                 std::strcmp(wd_client_video_health_name(WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL), "pipeline-stall") == 0 &&
-                std::strcmp(wd_client_video_health_name(WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE), "decode-failure") == 0 &&
+                std::strcmp(wd_client_video_health_name(WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED), "decoder-overloaded") == 0 &&
+                std::strcmp(wd_client_video_health_name(WD_CLIENT_VIDEO_HEALTH_AWAITING_KEYFRAME), "awaiting-keyframe") == 0 &&
+                std::strcmp(wd_client_video_health_name(WD_CLIENT_VIDEO_HEALTH_HARD_FAILURE), "hard-failure") == 0 &&
                 std::strcmp(wd_client_video_health_name(static_cast<wd_client_video_health_class>(99)), "unknown") == 0,
             "health names should cover every public class and unknown values");
 }

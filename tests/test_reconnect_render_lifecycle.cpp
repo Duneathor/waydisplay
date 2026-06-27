@@ -78,6 +78,7 @@ void test_audio_held_video_survives_decode_and_recovery_cycle() {
     health.client_audio_video_sync_holds = 1;
     health.client_audio_playback_state = WD_CLIENT_AUDIO_PLAYBACK_BUFFERING;
     health.client_audio_video_startup_hold_ms = 500;
+    health.client_audio_video_sync_hold_current_ms = 500;
     health.client_queue_depth      = 0;
     health.client_queue_depth_max  = static_cast<uint32_t>(queue.size());
     require(wd_client_video_health_classify(&health) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
@@ -122,6 +123,14 @@ void test_reconnect_telemetry_survives_protocol_copy() {
     sent.video_frames_decoded      = 23;
     sent.audio_video_sync_holds          = 17;
     sent.video_decode_queue_drops         = 2;
+    sent.video_last_frame_id_decoded       = 21;
+    sent.video_decode_queue_depth          = 2;
+    sent.video_decode_queue_depth_max      = 4;
+    sent.video_decode_queue_capacity       = 4;
+    sent.video_decoder_phase               = WD_VIDEO_DECODER_PHASE_AWAITING_KEYFRAME;
+    sent.video_waiting_keyframe            = 1;
+    sent.audio_video_sync_hold_current_ms  = 1200;
+    sent.audio_video_sync_hold_max_ms      = 1800;
     sent.audio_video_startup_timeouts     = 1;
     sent.audio_video_startup_hold_ms      = 750;
     sent.audio_playback_state             = WD_CLIENT_AUDIO_PLAYBACK_BUFFERING;
@@ -137,6 +146,14 @@ void test_reconnect_telemetry_survives_protocol_copy() {
     std::memcpy(&received, &sent, sizeof(received));
     require(received.video_frames_decoded == sent.video_frames_decoded && received.audio_video_sync_holds == sent.audio_video_sync_holds &&
                 received.video_decode_queue_drops == sent.video_decode_queue_drops &&
+                received.video_last_frame_id_decoded == sent.video_last_frame_id_decoded &&
+                received.video_decode_queue_depth == sent.video_decode_queue_depth &&
+                received.video_decode_queue_depth_max == sent.video_decode_queue_depth_max &&
+                received.video_decode_queue_capacity == sent.video_decode_queue_capacity &&
+                received.video_decoder_phase == sent.video_decoder_phase &&
+                received.video_waiting_keyframe == sent.video_waiting_keyframe &&
+                received.audio_video_sync_hold_current_ms == sent.audio_video_sync_hold_current_ms &&
+                received.audio_video_sync_hold_max_ms == sent.audio_video_sync_hold_max_ms &&
                 received.audio_video_startup_timeouts == sent.audio_video_startup_timeouts &&
                 received.audio_video_startup_hold_ms == sent.audio_video_startup_hold_ms &&
                 received.audio_playback_state == sent.audio_playback_state &&

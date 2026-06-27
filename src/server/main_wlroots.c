@@ -21,7 +21,6 @@ static void usage(const char* argv0) {
             "  --app <command>                 Command launched in the compositor, default %s\n"
             "  --size <WxH>                    Virtual output size, default %ux%u\n"
             "  --scale <N>                     Output scale, default %.2f\n"
-            "  --refresh-hz <N>                Pre-connection refresh fallback, default %u\n"
             "  --renderer <auto|gles2|vulkan|pixman>\n"
             "  --video-encoder <auto|software|vaapi>\n"
             "  --help, -h                      Show this help\n\n"
@@ -30,7 +29,7 @@ static void usage(const char* argv0) {
             "  %s --listen 0.0.0.0 --port %u --app %s\n"
             "  %s --scale 1.25 --size 1366x768 --app konsole\n",
             argv0, WD_SERVER_DEFAULT_LISTEN_IPV4, WD_DEFAULT_TCP_PORT, WD_SERVER_DEFAULT_APP_COMMAND, WD_DISPLAY_WIDTH, WD_DISPLAY_HEIGHT,
-            WD_SERVER_DEFAULT_OUTPUT_SCALE, WD_SERVER_DEFAULT_REFRESH_HZ, argv0, WD_DEFAULT_TCP_PORT, WD_SERVER_DEFAULT_APP_COMMAND, argv0);
+            WD_SERVER_DEFAULT_OUTPUT_SCALE, argv0, WD_DEFAULT_TCP_PORT, WD_SERVER_DEFAULT_APP_COMMAND, argv0);
 }
 
 int main(int argc, char** argv) {
@@ -68,7 +67,6 @@ int main(int argc, char** argv) {
         .listen_address                 = options.listen_address,
         .app_command                    = options.app_command,
         .output_scale                   = options.output_scale,
-        .output_refresh_hz              = options.output_refresh_hz,
         .display_width                  = options.display_width,
         .display_height                 = options.display_height,
         .tile_width                     = WD_TILE_WIDTH,

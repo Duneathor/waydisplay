@@ -24,6 +24,7 @@ bool client_send_config_applied(ClientState& state, uint8_t session_id, uint64_t
 void client_promote_deferred_summary_retransmits(ClientState& state);
 bool client_flush_retransmit_requests(ClientState& state);
 bool client_send_stats(ClientState& state, const wd_client_stats_payload& stats);
+bool client_send_video_feedback(ClientState& state, uint32_t flags, uint16_t decode_queue_depth, uint16_t decode_queue_capacity);
 void client_reap_async_sends(ClientState& state);
 void client_reap_async_udp_receives(ClientState& state);
 bool client_reconfigure_udp_transport_locked(ClientState& state, const wd_server_config_payload& config);

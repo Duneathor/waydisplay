@@ -26,3 +26,22 @@ The dispatch descriptor table is the canonical route and size policy for every m
 
 
 Client video packet validation is shared between the production receive loop and unit tests. Non-control frames must match the active session identity and configured visible geometry, and coded dimensions cannot be smaller than visible dimensions. Resize/end-of-stream controls may announce transition geometry with an empty payload; ordinary empty frames are invalid.
+
+## Immediate video feedback
+
+Clients that advertise `WD_CLIENT_CAP_VIDEO_FEEDBACK` and receive
+`WD_SERVER_CAP_VIDEO_FEEDBACK` may send `WD_MSG_VIDEO_FEEDBACK` on the
+established control channel. The fixed payload identifies the current content
+epoch, decoder phase, receive/decode/presentation progress, compressed decode
+queue and decoded presentation queue depths, continuous stall/hold ages, and
+typed recovery flags. Feedback is monotonic by sequence and stale session or
+content-epoch reports are ignored. It supplements, rather than replaces, the
+periodic aggregate client statistics.
+
+`NEEDS_KEYFRAME` and `DECODE_OVERLOAD` request in-place video recovery.
+`DECODE_FAILURE` and `PUBLISH_FAILURE` are hard failures and permit immediate
+tile recovery. `PRESENTATION_STALL` and `AUDIO_SYNC_HOLD` are diagnostic state
+signals; they do not by themselves change ownership. When several flags are
+combined, hard failure takes precedence over overload. The server acknowledges
+recovery indirectly by queuing and transmitting a new keyframe; successful
+presentation of that exact frame completes recovery.

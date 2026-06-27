@@ -34,7 +34,19 @@ No thread may call SDL while holding a producer-state mutex. The receive worker 
 
 ## Queue policy
 
-All cross-thread queues are bounded. Producers must discard obsolete generations and epochs before expensive processing and again before publication. Telemetry is always lower priority than control, input, retransmit, and media traffic and may be sampled approximately or dropped.
+All cross-thread queues are bounded. The compressed video decode-input queue and
+the decoded presentation queue have different failure semantics: overflowing
+the compressed queue invalidates interframe dependencies and requests a fresh
+keyframe, while presentation pressure drops/replaces decoded frames without
+resetting the codec. Their telemetry, capacities, and recovery actions must not
+be conflated.
+
+Producers must discard obsolete generations and epochs before expensive
+processing and again before publication. Immediate video feedback is generated
+only after releasing decoder/queue mutexes; the asynchronous control send may
+therefore acquire configuration and content-identity locks without reversing
+the media lock order. Telemetry is always lower priority than control, input,
+retransmit, and media traffic and may be sampled approximately or dropped.
 
 
 A reconnect is a generation boundary. The network thread clears session-scoped feedback and input-correlation state while holding the network mutex, advances the connection/content identities, then requests a compositor-owned full refresh. Asynchronous frame and tile completions carry those identities and may not update the new session when they complete late.

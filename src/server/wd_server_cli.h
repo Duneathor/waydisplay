@@ -22,7 +22,6 @@ struct wd_server_cli_options {
     double         output_scale;
     uint32_t       display_width;
     uint32_t       display_height;
-    uint16_t       output_refresh_hz;
     const char*    renderer_name;
     const char*    video_encoder_backend;
 };

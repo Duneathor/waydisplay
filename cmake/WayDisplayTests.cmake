@@ -137,6 +137,43 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.video_adaptive_cadence
+        TARGET waydisplay_test_video_adaptive_cadence
+        SOURCES tests/test_video_adaptive_cadence.cpp
+        LIBRARIES waydisplay_server_runtime
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;video;lifecycle"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_inplace_recovery
+        TARGET waydisplay_test_video_inplace_recovery
+        SOURCES tests/test_video_inplace_recovery.cpp
+        LIBRARIES waydisplay_server_runtime
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;video;lifecycle"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_feedback_protocol
+        TARGET waydisplay_test_video_feedback_protocol
+        SOURCES tests/test_video_feedback_protocol.cpp
+        LIBRARIES waydisplay_common
+        LABELS "unit;protocol;video;network"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_scrub_recovery
+        TARGET waydisplay_test_video_scrub_recovery
+        SOURCES tests/test_video_scrub_recovery.cpp
+        LIBRARIES waydisplay_client_runtime waydisplay_server_runtime
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "integration;client;server;video;lifecycle"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.tile_protocol
         TARGET waydisplay_test_tile_protocol
         SOURCES tests/test_tile_protocol.cpp

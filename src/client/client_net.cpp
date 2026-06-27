@@ -8,6 +8,7 @@
 #include "client_receive.hpp"
 #include "content_order.hpp"
 #include "video_decoder.hpp"
+#include "video_decode_queue_policy.h"
 #include "video_packet_validation.h"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
@@ -48,8 +49,24 @@ constexpr uint64_t RETRANSMIT_GRACE_MIN_NS           = WD_LINK_RETRANSMIT_INFLIG
 constexpr uint64_t RETRANSMIT_GRACE_DEFAULT_NS       = WD_LINK_RETRANSMIT_INFLIGHT_DEFAULT_NS;
 constexpr uint64_t RETRANSMIT_GRACE_MAX_NS           = WD_LINK_RETRANSMIT_INFLIGHT_MAX_NS;
 constexpr uint64_t MTU_PROBE_SERVER_STARTUP_DELAY_NS = WD_NET_PROBE_STARTUP_DELAY_MS * WD_NSEC_PER_MSEC;
-constexpr size_t CLIENT_VIDEO_DECODE_QUEUE_CAPACITY = 4;
+constexpr size_t CLIENT_VIDEO_DECODE_QUEUE_CAPACITY = WD_CLIENT_VIDEO_DECODE_INPUT_QUEUE_CAPACITY;
 constexpr size_t CLIENT_AUDIO_DECODE_QUEUE_CAPACITY = 32;
+
+struct DeferredVideoFeedback {
+    ClientState& state;
+    uint32_t     flags = 0;
+
+    ~DeferredVideoFeedback() noexcept {
+        if (flags == 0)
+        {
+            return;
+        }
+        const uint16_t depth = static_cast<uint16_t>(
+            std::min<uint32_t>(state.stats.video_decode_queue_depth.load(std::memory_order_relaxed), UINT16_MAX));
+        (void)client_send_video_feedback(state, flags, depth,
+                                         static_cast<uint16_t>(CLIENT_VIDEO_DECODE_QUEUE_CAPACITY));
+    }
+};
 
 const char* video_mode_name(uint8_t mode) {
     switch (mode)
@@ -489,7 +506,7 @@ bool receive_server_config(ClientState& state) {
     const uint32_t advertised_video_codecs = video_allowed ? (supported_video_codecs & requested_video_codecs) : 0;
     const bool     video_decoder_available = advertised_video_codecs != 0;
     const bool     audio_available = !state.stream_config.disable_audio && state.session.audio_playback && client_audio_playback_available();
-    hello.capabilities             = video_decoder_available ? WD_CLIENT_CAP_VIDEO_STREAM : 0;
+    hello.capabilities             = video_decoder_available ? (WD_CLIENT_CAP_VIDEO_STREAM | WD_CLIENT_CAP_VIDEO_FEEDBACK) : 0;
     if (audio_available)
     {
         hello.capabilities |= WD_CLIENT_CAP_AUDIO_STREAM;
@@ -619,6 +636,8 @@ bool receive_server_config(ClientState& state) {
                                     state.config.video_transport == WD_VIDEO_TRANSPORT_TCP;
     state.video_codecs            = state.video_stream_negotiated ? state.config.video_codecs : 0;
     state.video_transport         = state.video_stream_negotiated ? state.config.video_transport : 0;
+    state.video_feedback_negotiated = state.video_stream_negotiated &&
+                                      (state.config.capabilities & WD_SERVER_CAP_VIDEO_FEEDBACK) != 0;
     state.audio_stream_negotiated = !state.stream_config.disable_audio && (state.config.capabilities & WD_SERVER_CAP_AUDIO_STREAM) != 0 &&
                                     state.config.audio_codec == WD_AUDIO_CODEC_OPUS &&
                                     state.config.audio_transport == WD_AUDIO_TRANSPORT_TCP && state.session.audio_playback != nullptr;
@@ -1193,8 +1212,6 @@ void reset_video_decoder(ClientState& state, const char* reason,
     state.session.video_decoder_needs_keyframe = next_phase != WD_CLIENT_VIDEO_PHASE_VIDEO;
     state.session.video_phase                  = next_phase;
     state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
-    state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
-    state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
     if (reason)
     {
         WD_LOG_INFO("video decoder reset: reason=%s", reason);
@@ -1395,8 +1412,9 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
 }
 
 void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
-    ClientVideoPacket packet{};
-    bool              control_frame = false;
+    DeferredVideoFeedback feedback{state};
+    ClientVideoPacket     packet{};
+    bool                  control_frame = false;
     if (!video_payload_to_packet(state, payload, payload_size, packet, control_frame))
     {
         return;
@@ -1424,8 +1442,6 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         {
             client_video_decoder_reset(state.session.video_decoder);
             state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
-            state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
-            state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
             WD_LOG_INFO("video decoder reset: reason=%s", resize          ? "video resize"
                                                           : end_of_stream ? "video end-of-stream"
                                                                           : "video content epoch advanced");
@@ -1473,8 +1489,6 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         const auto                  reset_decoder_locked = [&state](const char* reason) {
             client_video_decoder_reset(state.session.video_decoder);
             state.stats.video_decoder_resets.fetch_add(1, std::memory_order_relaxed);
-            state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
-            state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
             state.session.video_decoder_needs_keyframe = true;
             state.session.video_phase                  = WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME;
             WD_LOG_INFO("video decoder reset: reason=%s", reason);
@@ -1502,6 +1516,9 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
             state.session.video_decoder_needs_keyframe = true;
             state.session.video_phase                  = WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME;
             state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
+            feedback.flags = WD_VIDEO_FEEDBACK_NEEDS_KEYFRAME | WD_VIDEO_FEEDBACK_DECODE_FAILURE;
+            WD_LOG_WARN("video decoder configure failed: frame=%llu action=request-keyframe",
+                        (unsigned long long)packet.header.frame_id);
             return;
         }
 
@@ -1533,6 +1550,9 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         if (!decoded)
         {
             state.stats.video_decode_failed.fetch_add(1, std::memory_order_relaxed);
+            feedback.flags = WD_VIDEO_FEEDBACK_NEEDS_KEYFRAME | WD_VIDEO_FEEDBACK_DECODE_FAILURE;
+            WD_LOG_WARN("video decode failed: frame=%llu keyframe=%s action=reset-and-request-keyframe",
+                        (unsigned long long)packet.header.frame_id, keyframe ? "yes" : "no");
             reset_decoder_locked("video decode failed");
             return;
         }
@@ -1542,9 +1562,13 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
             if (frame.format != ClientVideoPixelFormat::None)
             {
                 state.stats.video_frames_decoded.fetch_add(1, std::memory_order_relaxed);
+                state.stats.video_last_frame_id_decoded.store(frame.frame_id, std::memory_order_relaxed);
                 if (!publish_decoded_video_frame(state, state.session.video_decoder, frame))
                 {
                     state.stats.video_publish_failed.fetch_add(1, std::memory_order_relaxed);
+                    feedback.flags = WD_VIDEO_FEEDBACK_NEEDS_KEYFRAME | WD_VIDEO_FEEDBACK_PUBLISH_FAILURE;
+                    WD_LOG_WARN("decoded video publish failed: frame=%llu action=reset-and-request-keyframe",
+                                (unsigned long long)frame.frame_id);
                     reset_decoder_locked("decoded frame publish failed");
                     return;
                 }
@@ -1663,30 +1687,46 @@ bool enqueue_video_message(ClientState& state, wd_tcp_message& message) {
         return false;
     }
 
-    const uint16_t flags      = video_packet_flags(message);
-    const bool     keyframe   = (flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
-    const bool     control    = (flags & (WD_VIDEO_FRAME_END_OF_STREAM | WD_VIDEO_FRAME_RESIZE)) != 0;
-    const bool     reset_decoder_before = keyframe && state.session.video_decode_wait_keyframe;
-    if (keyframe || control)
+    const uint16_t flags    = video_packet_flags(message);
+    const bool     keyframe = (flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
+    const bool     control  = (flags & (WD_VIDEO_FRAME_END_OF_STREAM | WD_VIDEO_FRAME_RESIZE)) != 0;
+    const uint16_t depth    = static_cast<uint16_t>(std::min<size_t>(state.session.video_decode_queue.size(), UINT16_MAX));
+    const struct wd_client_video_decode_queue_plan plan = wd_client_video_decode_queue_plan_compute(
+        depth, static_cast<uint32_t>(CLIENT_VIDEO_DECODE_QUEUE_CAPACITY), state.session.video_decode_wait_keyframe,
+        keyframe, control);
+
+    if (plan.clear_queue)
     {
         clear_media_queue(state.session.video_decode_queue);
-        state.session.video_decode_wait_keyframe = !keyframe;
+        state.stats.video_decode_queue_depth.store(0, std::memory_order_relaxed);
     }
-    else if (state.session.video_decode_wait_keyframe)
+    state.session.video_decode_wait_keyframe = plan.wait_for_keyframe;
+
+    if (plan.action == WD_CLIENT_VIDEO_DECODE_QUEUE_DROP_UNTIL_KEYFRAME)
     {
         state.stats.video_decode_queue_drops.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
-    else if (state.session.video_decode_queue.size() >= CLIENT_VIDEO_DECODE_QUEUE_CAPACITY)
+    if (plan.action == WD_CLIENT_VIDEO_DECODE_QUEUE_RECOVER_OVERFLOW)
     {
-        clear_media_queue(state.session.video_decode_queue);
-        state.session.video_decode_wait_keyframe = true;
         state.stats.video_decode_queue_drops.fetch_add(1, std::memory_order_relaxed);
+        WD_LOG_WARN("video decode queue overflow: depth=%u capacity=%u action=flush-and-request-keyframe", depth,
+                    static_cast<unsigned>(CLIENT_VIDEO_DECODE_QUEUE_CAPACITY));
+        (void)client_send_video_feedback(state, WD_VIDEO_FEEDBACK_NEEDS_KEYFRAME | WD_VIDEO_FEEDBACK_DECODE_OVERLOAD,
+                                         depth, static_cast<uint16_t>(CLIENT_VIDEO_DECODE_QUEUE_CAPACITY));
         return true;
     }
 
     state.session.video_decode_queue.push_back(
-        ClientMediaPacket{message.message_type, message.payload, message.payload_size, reset_decoder_before});
+        ClientMediaPacket{message.message_type, message.payload, message.payload_size, plan.reset_decoder_before});
+    const uint32_t decode_depth = static_cast<uint32_t>(state.session.video_decode_queue.size());
+    state.stats.video_decode_queue_depth.store(decode_depth, std::memory_order_relaxed);
+    uint32_t decode_max = state.stats.video_decode_queue_depth_max.load(std::memory_order_relaxed);
+    while (decode_depth > decode_max &&
+           !state.stats.video_decode_queue_depth_max.compare_exchange_weak(decode_max, decode_depth, std::memory_order_relaxed,
+                                                                           std::memory_order_relaxed))
+    {
+    }
     message.payload      = nullptr;
     message.payload_size = 0;
     state.session.video_decode_ready.notify_one();
@@ -1892,6 +1932,10 @@ bool pop_media_packet(ClientState& state, std::deque<ClientMediaPacket>& queue, 
     }
     out = queue.front();
     queue.pop_front();
+    if (&queue == &state.session.video_decode_queue)
+    {
+        state.stats.video_decode_queue_depth.store(static_cast<uint32_t>(queue.size()), std::memory_order_relaxed);
+    }
     return true;
 }
 
@@ -1987,6 +2031,7 @@ bool start_client_media_workers(ClientState& state) {
 void clear_video_decode_queue(ClientState& state) {
     std::lock_guard<std::mutex> lock(state.session.media_queue_mutex);
     clear_media_queue(state.session.video_decode_queue);
+    state.stats.video_decode_queue_depth.store(0, std::memory_order_relaxed);
     state.session.video_decode_wait_keyframe = false;
 }
 
@@ -2253,6 +2298,9 @@ bool client_connect(ClientState& state, const char* server_host, uint16_t tcp_po
         client_disconnect(state);
         return false;
     }
+    state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
+    state.stats.video_last_frame_id_decoded.store(0, std::memory_order_relaxed);
+    state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
     client_reset_content_epoch(state, state.config.content_epoch, WD_CLIENT_CONTENT_OWNER_TILES);
 
     {
@@ -2560,6 +2608,41 @@ bool client_send_config_applied(ClientState& state, uint8_t session_id, uint64_t
     }
     applied.config_epoch = config_epoch;
     return client_send_tcp_message_queued(state, state.session.transport.control_fd, WD_MSG_CONFIG_APPLIED, &applied, sizeof(applied));
+}
+
+bool client_send_video_feedback(ClientState& state, uint32_t flags, uint16_t decode_queue_depth, uint16_t decode_queue_capacity) {
+    if (!state.video_feedback_negotiated || flags == 0 || (flags & ~WD_VIDEO_FEEDBACK_FLAG_MASK) != 0)
+    {
+        return false;
+    }
+    wd_video_feedback_payload feedback{};
+    {
+        std::lock_guard<std::mutex> lock(state.config_mutex);
+        feedback.session_id       = state.config.session_id;
+        feedback.connection_token = state.config.connection_token;
+    }
+    {
+        std::lock_guard<std::mutex> lock(state.remote_content_mutex);
+        feedback.content_epoch = state.remote_content_epoch;
+    }
+    feedback.sequence = state.video_feedback_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+    feedback.flags    = flags;
+    {
+        std::lock_guard<std::mutex> lock(state.session.video_decoder_mutex);
+        feedback.decoder_phase = static_cast<uint8_t>(state.session.video_phase);
+    }
+    feedback.last_frame_id_rx        = state.stats.video_last_frame_id_rx.load(std::memory_order_relaxed);
+    feedback.last_frame_id_decoded   = state.stats.video_last_frame_id_decoded.load(std::memory_order_relaxed);
+    feedback.last_frame_id_presented = state.stats.video_last_frame_id_presented.load(std::memory_order_relaxed);
+    feedback.decode_queue_depth      = decode_queue_depth;
+    feedback.decode_queue_capacity   = decode_queue_capacity;
+    {
+        std::lock_guard<std::mutex> lock(state.video_frame_mutex);
+        feedback.present_queue_depth    = static_cast<uint16_t>(std::min<size_t>(state.video_present_queue.size(), UINT16_MAX));
+        feedback.present_queue_capacity = static_cast<uint16_t>(state.video_present_queue.capacity());
+    }
+    feedback.audio_sync_hold_ms = state.stats.audio_video_sync_hold_current_ms.load(std::memory_order_relaxed);
+    return client_send_tcp_message_queued(state, state.session.transport.control_fd, WD_MSG_VIDEO_FEEDBACK, &feedback, sizeof(feedback));
 }
 
 bool client_send_stats(ClientState& state, const wd_client_stats_payload& stats) {

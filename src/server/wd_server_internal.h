@@ -369,6 +369,7 @@ struct wd_stats {
     uint64_t client_video_invalid_frames_rx;
     uint64_t client_video_stale_frames_dropped;
     uint64_t client_video_last_frame_id_rx;
+    uint64_t client_video_last_frame_id_decoded;
     uint64_t client_video_last_frame_id_presented;
     uint64_t client_video_present_latency_samples;
     uint64_t client_video_present_latency_sum_ns;
@@ -382,6 +383,13 @@ struct wd_stats {
     uint64_t client_audio_video_sync_holds;
     uint64_t client_audio_video_sync_drops;
     uint64_t client_video_decode_queue_drops;
+    uint32_t client_video_decode_queue_depth;
+    uint32_t client_video_decode_queue_depth_max;
+    uint16_t client_video_decode_queue_capacity;
+    uint8_t  client_video_decoder_phase;
+    uint8_t  client_video_waiting_keyframe;
+    uint32_t client_audio_video_sync_hold_current_ms;
+    uint32_t client_audio_video_sync_hold_max_ms;
     uint64_t client_audio_video_startup_timeouts;
     uint32_t client_audio_video_startup_hold_ms;
     uint8_t  client_audio_playback_state;
@@ -512,7 +520,8 @@ enum wd_stream_mode {
     WD_STREAM_MODE_VIDEO_CANDIDATE = 1,
     WD_STREAM_MODE_VIDEO_READY     = 2,
     WD_STREAM_MODE_VIDEO_ACTIVE    = 3,
-    WD_STREAM_MODE_TILE_RECOVERY   = 4,
+    WD_STREAM_MODE_VIDEO_RECOVERING = 4,
+    WD_STREAM_MODE_TILE_RECOVERY   = 5,
 };
 
 struct wd_stats_log_state {
@@ -564,6 +573,25 @@ struct wd_stream_policy {
     uint32_t            video_candidate_seconds;
     uint32_t            tile_recovery_seconds;
     uint32_t            video_client_failure_seconds;
+    uint8_t             video_client_failure_class;
+    uint32_t            video_frame_rate_good_seconds;
+    uint32_t            video_recovery_attempts;
+    uint32_t            video_recovery_wait_seconds;
+    bool                video_recovery_keyframe_queued;
+    uint64_t            video_recovery_keyframe_id;
+    bool                video_feedback_pending;
+    uint32_t            video_feedback_flags;
+    uint64_t            video_feedback_sequence;
+    uint64_t            video_feedback_last_frame_id_rx;
+    uint64_t            video_feedback_last_frame_id_decoded;
+    uint64_t            video_feedback_last_frame_id_presented;
+    uint16_t            video_feedback_decode_queue_depth;
+    uint16_t            video_feedback_decode_queue_capacity;
+    uint16_t            video_feedback_present_queue_depth;
+    uint16_t            video_feedback_present_queue_capacity;
+    uint32_t            video_feedback_presentation_stall_ms;
+    uint32_t            video_feedback_audio_sync_hold_ms;
+    uint8_t             video_feedback_decoder_phase;
     bool                tile_refresh_pending;
     bool                tile_recovery_refresh_started;
     bool                tile_recovery_refresh_sent;
@@ -753,6 +781,7 @@ struct wd_net_state {
     uint64_t       config_update_sent_ns;
 
     bool     video_stream_negotiated;
+    bool     video_feedback_negotiated;
     uint32_t video_codecs;
     uint16_t video_transport;
 

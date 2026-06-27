@@ -90,16 +90,18 @@ void test_server_health_distinguishes_bounded_wait_from_timeout() {
     metrics.client_audio_video_sync_holds = 4;
     metrics.client_audio_playback_state = WD_CLIENT_AUDIO_PLAYBACK_BUFFERING;
     metrics.client_audio_video_startup_hold_ms = 500;
+    metrics.client_audio_video_sync_hold_current_ms = 500;
     metrics.client_queue_depth_max = 3;
     CHECK(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT);
 
     metrics.client_audio_video_startup_timeouts = 1;
     metrics.client_audio_video_startup_hold_ms = 1000;
+    metrics.client_audio_video_sync_hold_current_ms = 0;
     CHECK(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL);
 
     metrics.client_audio_video_startup_timeouts = 0;
     metrics.client_decode_queue_drops = 1;
-    CHECK(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE);
+    CHECK(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED);
 }
 
 } // namespace

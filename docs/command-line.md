@@ -60,19 +60,21 @@ waydisplay-server [options]
 | `--app <command>` | Application launched inside the compositor | Launch-specific. |
 | `--size <WxH>` | Virtual output dimensions | Session-specific. |
 | `--scale <N>` | Virtual output scale | Session/display-specific. |
-| `--refresh-hz <N>` | Pre-connection output refresh fallback | Used while no client has supplied `--fps`; each accepted client request becomes authoritative for that session. |
 | `--renderer <auto|gles2|vulkan|pixman>` | wlroots renderer selection | Hardware/driver compatibility. |
 | `--video-encoder <auto|software|vaapi>` | Encoder backend selection | Hardware/driver compatibility. |
 | `--help`, `-h` | Print usage | Standard interface. |
 
 ### Frame cadence ownership
 
-The server's `--refresh-hz` initializes the headless output before the first
-connection so applications always see a valid mode. During handshake, the
-client's normalized `--fps` value becomes the output refresh, capture ceiling,
-and client presentation cap. A later connection may select a different rate;
-the compositor applies it before publishing that connection's configuration.
-Live display-size requests preserve the active client-selected cadence.
+`WD_SERVER_IDLE_REFRESH_HZ` in `wd_config.h` initializes the headless output
+before the first connection and is restored after disconnect. During handshake,
+the client's normalized `--fps` value becomes the output refresh, capture
+ceiling, and client presentation cap. A later connection may select a different
+rate; the compositor applies it before publishing that connection's
+configuration. Live display-size requests preserve the active client-selected
+cadence. There is no server-side refresh-rate option: change
+`WD_SERVER_IDLE_REFRESH_HZ` only when the pre-connection product default itself
+needs to change.
 
 ### Configuration-only
 

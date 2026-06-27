@@ -161,7 +161,6 @@ enum wd_server_cli_parse_result wd_server_cli_parse_args(int argc, char* const* 
     options->output_scale          = WD_SERVER_DEFAULT_OUTPUT_SCALE;
     options->display_width         = WD_DISPLAY_WIDTH;
     options->display_height        = WD_DISPLAY_HEIGHT;
-    options->output_refresh_hz     = WD_SERVER_DEFAULT_REFRESH_HZ;
     options->renderer_name         = WD_SERVER_DEFAULT_RENDERER;
     options->video_encoder_backend = WD_SERVER_DEFAULT_VIDEO_ENCODER_BACKEND;
     if (!wd_server_cli_parse_ipv4(WD_SERVER_DEFAULT_LISTEN_IPV4, &options->listen_address))
@@ -230,16 +229,6 @@ enum wd_server_cli_parse_result wd_server_cli_parse_args(int argc, char* const* 
             {
                 wd_server_cli_set_error(error_message, error_message_size, "invalid --scale value; expected %.2f through %.2f",
                                         WD_SERVER_MIN_OUTPUT_SCALE, WD_SERVER_MAX_OUTPUT_SCALE);
-                return WD_SERVER_CLI_ERROR;
-            }
-        }
-        else if (strcmp(argument, "--refresh-hz") == 0)
-        {
-            if (++i >= argc ||
-                !wd_server_cli_parse_u16(argv[i], WD_SERVER_MIN_REFRESH_HZ, WD_SERVER_MAX_REFRESH_HZ, &options->output_refresh_hz))
-            {
-                wd_server_cli_set_error(error_message, error_message_size, "invalid --refresh-hz value; expected %u through %u",
-                                        WD_SERVER_MIN_REFRESH_HZ, WD_SERVER_MAX_REFRESH_HZ);
                 return WD_SERVER_CLI_ERROR;
             }
         }

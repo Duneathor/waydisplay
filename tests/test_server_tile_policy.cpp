@@ -234,13 +234,15 @@ void test_video_health_distinguishes_audio_wait_from_failure() {
     metrics.client_audio_video_sync_holds = 2;
     metrics.client_audio_playback_state = WD_CLIENT_AUDIO_PLAYBACK_BUFFERING;
     metrics.client_audio_video_startup_hold_ms = 500;
+    metrics.client_audio_video_sync_hold_current_ms = 500;
     metrics.client_queue_depth      = 3;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AUDIO_WAIT,
             "decoded frames queued behind audio should not be a video failure");
 
     metrics.client_audio_video_startup_timeouts = 1;
+    metrics.client_audio_video_sync_hold_current_ms = 0;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL,
-            "audio startup timeout should expose a presentation stall");
+            "audio startup timeout should expose a presentation stall after the active hold is released");
     metrics.client_audio_video_startup_timeouts = 0;
 
     metrics.client_audio_video_sync_holds = 0;
@@ -248,7 +250,7 @@ void test_video_health_distinguishes_audio_wait_from_failure() {
             "decoded frames with no presentation explanation should be a stall");
 
     metrics.client_decode_failures = 1;
-    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_DECODE_FAILURE,
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_HARD_FAILURE,
             "explicit decoder errors should dominate health classification");
 
     metrics.client_decode_failures  = 0;

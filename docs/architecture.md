@@ -150,3 +150,38 @@ paused during video ownership. Forced video bypasses content thresholds only;
 it still requires the client's selected control mode, successful negotiation,
 a connected video channel, an encoder, completed bootstrap/recovery, and any
 failure cooldown required by the recovery class.
+
+### In-place video recovery
+
+The compressed decode-input queue and the decoded presentation queue are
+separate bounded resources. A transient compressed-queue overflow discards the
+now-undecodable dependency chain, sends immediate typed feedback, and waits for
+a replacement keyframe. The server keeps video ownership, enters
+`video-recovering`, requests that keyframe from the encoder, and waits for
+presentation of the exact recovery frame. The last valid video texture remains
+visible; no video EOS or tile ownership transition occurs for the bounded
+recovery attempts.
+
+Typed feedback distinguishes transient overload from a hard decoder or
+publication failure. Overload and keyframe dependency loss recover in place.
+A hard failure, closed video transport, or exhausted recovery attempts transfers
+ownership to a full tile recovery. Presentation-stall and hard-failure streaks
+are tracked independently so unrelated one-second samples cannot combine into a
+false fallback.
+
+### Video cadence is adaptive below the client ceiling
+
+The client `--fps` request is a ceiling, not a promise that every video frame
+will be encoded at that rate. Decode-input overload or average decode time that
+leaves less than the configured headroom immediately lowers video capture and
+encoder cadence. Cadence rises only after ten healthy presentation intervals.
+Compositor refresh remains at the client-selected session cadence while video
+capture may run below it. Tile pressure, video overload, and presentation
+health use independent streaks.
+
+Every recovery decision emits the complete causal sample: feedback flags and
+sequence, receive/decode/presentation progress, compressed and presentation
+queue occupancy, decoder phase, keyframe wait state, A/V hold age, audio state,
+and active/requested FPS. This log is the authoritative explanation for a
+video-to-tile transition; the bandwidth-plan reset that follows is a consequence
+of ownership changing, not the cause.

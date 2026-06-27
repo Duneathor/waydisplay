@@ -95,7 +95,6 @@ static void test_parse_defaults(void) {
     CHECK(options.tcp_port == WD_DEFAULT_TCP_PORT);
     CHECK(options.display_width == WD_DISPLAY_WIDTH);
     CHECK(options.display_height == WD_DISPLAY_HEIGHT);
-    CHECK(options.output_refresh_hz == WD_SERVER_DEFAULT_REFRESH_HZ);
     CHECK(options.output_scale == WD_SERVER_DEFAULT_OUTPUT_SCALE);
     CHECK(strcmp(options.app_command, WD_SERVER_DEFAULT_APP_COMMAND) == 0);
     CHECK(strcmp(options.renderer_name, WD_SERVER_DEFAULT_RENDERER) == 0);
@@ -107,7 +106,7 @@ static void test_parse_defaults(void) {
 
 static void test_retained_arguments(void) {
     char* argv[] = {MUTABLE_ARG("server"),  MUTABLE_ARG("--listen"), MUTABLE_ARG("0.0.0.0"),      MUTABLE_ARG("--port"), MUTABLE_ARG("5500"),       MUTABLE_ARG("--app"),  MUTABLE_ARG("weston-terminal"), MUTABLE_ARG("--size"),  MUTABLE_ARG("1920x1080"),
-                    MUTABLE_ARG("--scale"), MUTABLE_ARG("1.25"), MUTABLE_ARG("--refresh-hz"), MUTABLE_ARG("75"),
+                    MUTABLE_ARG("--scale"), MUTABLE_ARG("1.25"),
                     MUTABLE_ARG("--renderer"), MUTABLE_ARG("vulkan"), MUTABLE_ARG("--video-encoder"), MUTABLE_ARG("software")};
     struct wd_server_cli_options options;
     CHECK(parse_args(sizeof(argv) / sizeof(argv[0]), argv, &options) == WD_SERVER_CLI_OK);
@@ -116,7 +115,6 @@ static void test_retained_arguments(void) {
     CHECK(strcmp(options.app_command, "weston-terminal") == 0);
     CHECK(options.display_width == 1920 && options.display_height == 1080);
     CHECK(options.output_scale == 1.25);
-    CHECK(options.output_refresh_hz == 75);
     CHECK(strcmp(options.renderer_name, "vulkan") == 0);
     CHECK(strcmp(options.video_encoder_backend, "software") == 0);
 }
@@ -129,8 +127,9 @@ static void test_removed_arguments(void) {
     char*        no_xwayland[]   = {MUTABLE_ARG("server"), MUTABLE_ARG("--no-xwayland")};
     char*        xdg_dialog[]    = {MUTABLE_ARG("server"), MUTABLE_ARG("--xdg-dialog")};
     char*        no_xdg_dialog[] = {MUTABLE_ARG("server"), MUTABLE_ARG("--no-xdg-dialog")};
-    char**       removed[]       = {tile_size, wan_tiles, compression, xwayland, no_xwayland, xdg_dialog, no_xdg_dialog};
-    const size_t counts[]        = {3, 2, 3, 2, 2, 2, 2};
+    char*        refresh_hz[]    = {MUTABLE_ARG("server"), MUTABLE_ARG("--refresh-hz"), MUTABLE_ARG("75")};
+    char**       removed[]       = {tile_size, wan_tiles, compression, xwayland, no_xwayland, xdg_dialog, no_xdg_dialog, refresh_hz};
+    const size_t counts[]        = {3, 2, 3, 2, 2, 2, 2, 3};
 
     for (size_t i = 0; i < sizeof(removed) / sizeof(removed[0]); ++i)
     {

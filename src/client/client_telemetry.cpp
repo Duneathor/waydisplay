@@ -82,6 +82,7 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.video_invalid_frames_rx += src.video_invalid_frames_rx;
     dst.video_stale_frames_dropped += src.video_stale_frames_dropped;
     dst.video_last_frame_id_rx        = std::max(dst.video_last_frame_id_rx, src.video_last_frame_id_rx);
+    dst.video_last_frame_id_decoded   = std::max(dst.video_last_frame_id_decoded, src.video_last_frame_id_decoded);
     dst.video_last_frame_id_presented = std::max(dst.video_last_frame_id_presented, src.video_last_frame_id_presented);
     dst.video_present_latency_samples += src.video_present_latency_samples;
     dst.video_present_latency_sum_ns += src.video_present_latency_sum_ns;
@@ -92,6 +93,13 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.audio_playback_state = src.audio_playback_state;
     dst.video_queue_overflow_drops += src.video_queue_overflow_drops;
     dst.video_decode_queue_drops += src.video_decode_queue_drops;
+    dst.video_decode_queue_depth   = src.video_decode_queue_depth;
+    dst.video_decode_queue_depth_max = std::max(dst.video_decode_queue_depth_max, src.video_decode_queue_depth_max);
+    dst.video_decode_queue_capacity = src.video_decode_queue_capacity;
+    dst.video_decoder_phase = src.video_decoder_phase;
+    dst.video_waiting_keyframe = src.video_waiting_keyframe;
+    dst.audio_video_sync_hold_current_ms = src.audio_video_sync_hold_current_ms;
+    dst.audio_video_sync_hold_max_ms = std::max(dst.audio_video_sync_hold_max_ms, src.audio_video_sync_hold_max_ms);
     dst.video_queue_depth         = src.video_queue_depth;
     dst.video_queue_depth_max     = std::max(dst.video_queue_depth_max, src.video_queue_depth_max);
     dst.video_oldest_pts_usec     = src.video_oldest_pts_usec;
@@ -270,6 +278,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t video_invalid_frames_rx            = logged.video_invalid_frames_rx;
     const uint64_t video_stale_frames_dropped         = logged.video_stale_frames_dropped;
     const uint64_t video_last_frame_id_rx             = logged.video_last_frame_id_rx;
+    const uint64_t video_last_frame_id_decoded        = logged.video_last_frame_id_decoded;
     const uint64_t video_last_frame_id_presented      = logged.video_last_frame_id_presented;
     const uint64_t video_present_latency_samples      = logged.video_present_latency_samples;
     const uint64_t video_present_latency_sum_ns       = logged.video_present_latency_sum_ns;
@@ -280,6 +289,13 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint8_t  audio_playback_state                = logged.audio_playback_state;
     const uint64_t video_queue_overflow_drops         = logged.video_queue_overflow_drops;
     const uint64_t video_decode_queue_drops           = logged.video_decode_queue_drops;
+    const uint32_t video_decode_queue_depth           = logged.video_decode_queue_depth;
+    const uint32_t video_decode_queue_depth_max       = logged.video_decode_queue_depth_max;
+    const uint16_t video_decode_queue_capacity        = logged.video_decode_queue_capacity;
+    const uint8_t  video_decoder_phase                = logged.video_decoder_phase;
+    const uint8_t  video_waiting_keyframe             = logged.video_waiting_keyframe;
+    const uint32_t audio_video_sync_hold_current_ms   = logged.audio_video_sync_hold_current_ms;
+    const uint32_t audio_video_sync_hold_max_ms       = logged.audio_video_sync_hold_max_ms;
     const uint32_t video_queue_depth                  = logged.video_queue_depth;
     const uint32_t video_queue_depth_max              = logged.video_queue_depth_max;
     const uint64_t video_oldest_pts_usec              = logged.video_oldest_pts_usec;
@@ -358,7 +374,8 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
         WD_LOG_STATS(
             "[client audio/min] messages=%llu packets=%llu kib=%.1f decode_failed=%llu discontinuities=%llu late_drops=%llu "
             "underflows=%llu audio_decode_q_drops=%llu av_holds=%llu av_drops=%llu video_q=%u/%u q_overflow=%llu "
-            "video_decode_q_drops=%llu oldest_pts_us=%llu av_delta_samples=%lld startup_timeouts=%llu startup_hold_ms=%u audio_state=%u playing=%s",
+            "video_decode_q=%u/%u/%u video_decode_q_drops=%llu phase=%u wait_keyframe=%u oldest_pts_us=%llu "
+            "av_delta_samples=%lld av_hold_ms=%u/%u startup_timeouts=%llu startup_hold_ms=%u audio_state=%u playing=%s",
             static_cast<unsigned long long>(audio_messages_rx), static_cast<unsigned long long>(audio_packets_rx),
             static_cast<double>(audio_bytes_rx) / 1024.0, static_cast<unsigned long long>(audio_decode_failed),
             static_cast<unsigned long long>(audio_discontinuities), static_cast<unsigned long long>(audio_late_drops),
@@ -366,8 +383,12 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
             static_cast<unsigned long long>(audio_video_sync_holds), static_cast<unsigned long long>(audio_video_sync_drops),
             static_cast<unsigned>(video_queue_depth), static_cast<unsigned>(video_queue_depth_max),
             static_cast<unsigned long long>(video_queue_overflow_drops),
-            static_cast<unsigned long long>(video_decode_queue_drops), static_cast<unsigned long long>(video_oldest_pts_usec),
-            static_cast<long long>(audio_video_delta_samples), static_cast<unsigned long long>(audio_video_startup_timeouts),
+            static_cast<unsigned>(video_decode_queue_depth), static_cast<unsigned>(video_decode_queue_depth_max),
+            static_cast<unsigned>(video_decode_queue_capacity), static_cast<unsigned long long>(video_decode_queue_drops),
+            static_cast<unsigned>(video_decoder_phase), static_cast<unsigned>(video_waiting_keyframe),
+            static_cast<unsigned long long>(video_oldest_pts_usec), static_cast<long long>(audio_video_delta_samples),
+            static_cast<unsigned>(audio_video_sync_hold_current_ms), static_cast<unsigned>(audio_video_sync_hold_max_ms),
+            static_cast<unsigned long long>(audio_video_startup_timeouts),
             static_cast<unsigned>(audio_video_startup_hold_ms), static_cast<unsigned>(audio_playback_state),
             client_audio_playback_is_playing(state.session.audio_playback) ? "yes" : "no");
     }
@@ -457,7 +478,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     {
         WD_LOG_STATS("[client video/min] messages=%llu data=%llu legacy_rx=%llu decoded=%llu presented=%llu tile_presented=%llu "
                      "control=%llu invalid=%llu stale_drop=%llu kib=%.1f decode_avg_ms=%.2f present_age_avg_ms=%.2f decode_failed=%llu "
-                     "publish_failed=%llu need_keyframe_drops=%llu resets=%llu last_rx=%llu last_presented=%llu",
+                     "publish_failed=%llu need_keyframe_drops=%llu resets=%llu last_rx=%llu last_decoded=%llu last_presented=%llu",
                      static_cast<unsigned long long>(video_messages_rx), static_cast<unsigned long long>(video_data_frames_rx),
                      static_cast<unsigned long long>(video_frames_rx), static_cast<unsigned long long>(video_frames_decoded),
                      static_cast<unsigned long long>(video_frames_presented), static_cast<unsigned long long>(tile_frames_presented),
@@ -467,6 +488,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                      static_cast<unsigned long long>(video_decode_failed), static_cast<unsigned long long>(video_publish_failed),
                      static_cast<unsigned long long>(video_need_keyframe_drops), static_cast<unsigned long long>(video_decoder_resets),
                      static_cast<unsigned long long>(video_last_frame_id_rx),
+                     static_cast<unsigned long long>(video_last_frame_id_decoded),
                      static_cast<unsigned long long>(video_last_frame_id_presented));
     }
 
@@ -629,6 +651,7 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t video_invalid_frames_rx       = take_stat(state.stats.video_invalid_frames_rx);
     const uint64_t video_stale_frames_dropped    = take_stat(state.stats.video_stale_frames_dropped);
     const uint64_t video_last_frame_id_rx        = state.stats.video_last_frame_id_rx.load(std::memory_order_relaxed);
+    const uint64_t video_last_frame_id_decoded   = state.stats.video_last_frame_id_decoded.load(std::memory_order_relaxed);
     const uint64_t video_last_frame_id_presented = state.stats.video_last_frame_id_presented.load(std::memory_order_relaxed);
     const uint64_t video_present_latency_samples = take_stat(state.stats.video_present_latency_samples);
     const uint64_t video_present_latency_sum_ns  = take_stat(state.stats.video_present_latency_sum_ns);
@@ -639,6 +662,21 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint8_t  audio_playback_state           = state.stats.audio_playback_state.load(std::memory_order_relaxed);
     const uint64_t video_queue_overflow_drops    = take_stat(state.stats.video_queue_overflow_drops);
     const uint64_t video_decode_queue_drops      = take_stat(state.stats.video_decode_queue_drops);
+    const uint32_t video_decode_queue_depth = state.stats.video_decode_queue_depth.load(std::memory_order_relaxed);
+    const uint32_t video_decode_queue_depth_max = state.stats.video_decode_queue_depth_max.exchange(0, std::memory_order_relaxed);
+    const uint16_t video_decode_queue_capacity = static_cast<uint16_t>(WD_CLIENT_VIDEO_DECODE_INPUT_QUEUE_CAPACITY);
+    uint8_t video_decoder_phase = 0;
+    uint8_t video_waiting_keyframe = 0;
+    {
+        std::lock_guard<std::mutex> lock(state.session.video_decoder_mutex);
+        video_decoder_phase = static_cast<uint8_t>(state.session.video_phase);
+    }
+    {
+        std::lock_guard<std::mutex> lock(state.session.media_queue_mutex);
+        video_waiting_keyframe = state.session.video_decode_wait_keyframe ? 1u : 0u;
+    }
+    const uint32_t audio_video_sync_hold_current_ms = state.stats.audio_video_sync_hold_current_ms.load(std::memory_order_relaxed);
+    const uint32_t audio_video_sync_hold_max_ms = state.stats.audio_video_sync_hold_max_ms.exchange(0, std::memory_order_relaxed);
     const uint32_t video_queue_depth_max =
         static_cast<uint32_t>(std::min<uint64_t>(take_stat(state.stats.video_queue_depth_max), UINT32_MAX));
     uint32_t video_queue_depth     = 0;
@@ -789,6 +827,7 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.video_invalid_frames_rx            = video_invalid_frames_rx;
     sample.video_stale_frames_dropped         = video_stale_frames_dropped;
     sample.video_last_frame_id_rx             = video_last_frame_id_rx;
+    sample.video_last_frame_id_decoded        = video_last_frame_id_decoded;
     sample.video_last_frame_id_presented      = video_last_frame_id_presented;
     sample.video_present_latency_samples      = video_present_latency_samples;
     sample.video_present_latency_sum_ns       = video_present_latency_sum_ns;
@@ -799,6 +838,13 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.audio_playback_state                = audio_playback_state;
     sample.video_queue_overflow_drops         = video_queue_overflow_drops;
     sample.video_decode_queue_drops           = video_decode_queue_drops;
+    sample.video_decode_queue_depth           = video_decode_queue_depth;
+    sample.video_decode_queue_depth_max       = video_decode_queue_depth_max;
+    sample.video_decode_queue_capacity        = video_decode_queue_capacity;
+    sample.video_decoder_phase                = video_decoder_phase;
+    sample.video_waiting_keyframe             = video_waiting_keyframe;
+    sample.audio_video_sync_hold_current_ms   = audio_video_sync_hold_current_ms;
+    sample.audio_video_sync_hold_max_ms       = audio_video_sync_hold_max_ms;
     sample.video_queue_depth                  = video_queue_depth;
     sample.video_queue_depth_max              = video_queue_depth_max;
     sample.video_oldest_pts_usec              = video_oldest_pts_usec;
@@ -933,6 +979,7 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         feedback.video_invalid_frames_rx       = video_invalid_frames_rx;
         feedback.video_stale_frames_dropped    = video_stale_frames_dropped;
         feedback.video_last_frame_id_rx        = video_last_frame_id_rx;
+        feedback.video_last_frame_id_decoded   = video_last_frame_id_decoded;
         feedback.video_last_frame_id_presented = video_last_frame_id_presented;
         feedback.video_present_latency_samples = video_present_latency_samples;
         feedback.video_present_latency_sum_ns  = video_present_latency_sum_ns;
@@ -946,6 +993,13 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         feedback.audio_video_sync_holds        = audio_video_sync_holds;
         feedback.audio_video_sync_drops        = audio_video_sync_drops;
         feedback.video_decode_queue_drops       = video_decode_queue_drops;
+        feedback.video_decode_queue_depth       = video_decode_queue_depth;
+        feedback.video_decode_queue_depth_max   = video_decode_queue_depth_max;
+        feedback.video_decode_queue_capacity    = video_decode_queue_capacity;
+        feedback.video_decoder_phase            = video_decoder_phase;
+        feedback.video_waiting_keyframe          = video_waiting_keyframe;
+        feedback.audio_video_sync_hold_current_ms = audio_video_sync_hold_current_ms;
+        feedback.audio_video_sync_hold_max_ms     = audio_video_sync_hold_max_ms;
         feedback.audio_video_startup_timeouts   = audio_video_startup_timeouts;
         feedback.audio_video_startup_hold_ms    = audio_video_startup_hold_ms;
         feedback.audio_playback_state           = audio_playback_state;

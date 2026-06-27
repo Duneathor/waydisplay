@@ -86,6 +86,11 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
         return fail(ClientConfigValidationError::InvalidCapabilities, out_error);
     }
     const bool audio = (config.capabilities & WD_SERVER_CAP_AUDIO_STREAM) != 0;
+    const bool feedback = (config.capabilities & WD_SERVER_CAP_VIDEO_FEEDBACK) != 0;
+    if (feedback && !video)
+    {
+        return fail(ClientConfigValidationError::InvalidCapabilities, out_error);
+    }
     const bool audio_fields_valid =
         config.audio_codec == WD_AUDIO_CODEC_OPUS && config.audio_transport == WD_AUDIO_TRANSPORT_TCP &&
         config.audio_sample_rate == WD_AUDIO_SAMPLE_RATE_DEFAULT && config.audio_channels != 0 &&

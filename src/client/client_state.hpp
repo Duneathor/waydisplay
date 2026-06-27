@@ -194,16 +194,22 @@ struct ClientStats {
     std::atomic<uint64_t> video_invalid_frames_rx{0};
     std::atomic<uint64_t> video_stale_frames_dropped{0};
     std::atomic<uint64_t> video_last_frame_id_rx{0};
+    std::atomic<uint64_t> video_last_frame_id_decoded{0};
     std::atomic<uint64_t> video_last_frame_id_presented{0};
     std::atomic<uint64_t> video_present_latency_samples{0};
     std::atomic<uint64_t> video_present_latency_sum_ns{0};
     std::atomic<uint64_t> audio_video_sync_holds{0};
+    std::atomic<uint64_t> audio_video_sync_hold_start_ns{0};
+    std::atomic<uint32_t> audio_video_sync_hold_current_ms{0};
+    std::atomic<uint32_t> audio_video_sync_hold_max_ms{0};
     std::atomic<uint64_t> audio_video_sync_drops{0};
     std::atomic<uint64_t> audio_video_startup_timeouts{0};
     std::atomic<uint32_t> audio_video_startup_hold_ms{0};
     std::atomic<uint8_t>  audio_playback_state{WD_CLIENT_AUDIO_PLAYBACK_DISABLED};
     std::atomic<uint64_t> video_queue_overflow_drops{0};
     std::atomic<uint64_t> video_decode_queue_drops{0};
+    std::atomic<uint32_t> video_decode_queue_depth{0};
+    std::atomic<uint32_t> video_decode_queue_depth_max{0};
     std::atomic<uint64_t> video_queue_depth_max{0};
     std::atomic<int64_t>  audio_video_delta_samples{0};
     std::atomic<uint64_t> tile_frames_presented{0};
@@ -335,6 +341,7 @@ struct ClientStatsSnapshot {
     uint64_t video_invalid_frames_rx            = 0;
     uint64_t video_stale_frames_dropped         = 0;
     uint64_t video_last_frame_id_rx             = 0;
+    uint64_t video_last_frame_id_decoded        = 0;
     uint64_t video_last_frame_id_presented      = 0;
     uint64_t video_present_latency_samples      = 0;
     uint64_t video_present_latency_sum_ns       = 0;
@@ -345,6 +352,13 @@ struct ClientStatsSnapshot {
     uint8_t  audio_playback_state                = WD_CLIENT_AUDIO_PLAYBACK_DISABLED;
     uint64_t video_queue_overflow_drops         = 0;
     uint64_t video_decode_queue_drops           = 0;
+    uint32_t video_decode_queue_depth           = 0;
+    uint32_t video_decode_queue_depth_max       = 0;
+    uint16_t video_decode_queue_capacity        = 0;
+    uint8_t  video_decoder_phase                = 0;
+    uint8_t  video_waiting_keyframe             = 0;
+    uint32_t audio_video_sync_hold_current_ms   = 0;
+    uint32_t audio_video_sync_hold_max_ms       = 0;
     uint32_t video_queue_depth                  = 0;
     uint32_t video_queue_depth_max              = 0;
     uint64_t video_oldest_pts_usec              = 0;
@@ -448,9 +462,11 @@ struct ClientState {
 
     ClientStreamConfig stream_config;
 
-    bool     video_stream_negotiated = false;
+    bool     video_stream_negotiated   = false;
+    bool     video_feedback_negotiated = false;
     uint32_t video_codecs            = 0;
     uint16_t video_transport         = 0;
+    std::atomic<uint64_t> video_feedback_sequence{0};
 
     bool     audio_stream_negotiated = false;
     uint32_t audio_codec             = 0;

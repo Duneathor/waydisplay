@@ -136,6 +136,7 @@ void test_typed_protocol_dispatch() {
         WD_MSG_CLIENT_STATS,           WD_MSG_LINK_PROBE_PING,        WD_MSG_LINK_PROBE_PONG,
         WD_MSG_VIDEO_CHANNEL_HELLO,    WD_MSG_VIDEO_FRAME,            WD_MSG_CONFIG_APPLIED,
         WD_MSG_AUDIO_CHANNEL_HELLO,    WD_MSG_AUDIO_CONFIG,           WD_MSG_AUDIO_PACKET,
+        WD_MSG_VIDEO_FEEDBACK,
     };
     for (const uint16_t message_type : message_types)
     {
@@ -171,6 +172,12 @@ void test_typed_protocol_dispatch() {
     require(!wd_protocol_message_allowed(WD_MSG_VIDEO_FRAME, WD_PROTOCOL_CHANNEL_VIDEO, WD_PROTOCOL_PHASE_ESTABLISHED,
                                          WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_video_frame_payload_header)),
             "video frame should be rejected in the reverse direction");
+    require(wd_protocol_message_allowed(WD_MSG_VIDEO_FEEDBACK, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                        WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_video_feedback_payload)),
+            "video feedback should be legal on established client control");
+    require(!wd_protocol_message_allowed(WD_MSG_VIDEO_FEEDBACK, WD_PROTOCOL_CHANNEL_VIDEO, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                         WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_video_feedback_payload)),
+            "video feedback should be rejected on the video channel");
     require(!wd_protocol_message_allowed(WD_MSG_AUDIO_PACKET, WD_PROTOCOL_CHANNEL_AUDIO, WD_PROTOCOL_PHASE_ESTABLISHED,
                                          WD_PROTOCOL_SERVER_TO_CLIENT,
                                          sizeof(wd_audio_packet_payload_header) + WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES + 1u),

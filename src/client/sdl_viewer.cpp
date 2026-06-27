@@ -42,6 +42,28 @@ constexpr uint16_t WD_POINTER_MOD_SHIFT = 1u << 1;
 constexpr uint16_t WD_POINTER_MOD_CTRL  = 1u << 2;
 constexpr uint16_t WD_POINTER_MOD_SUPER = 1u << 3;
 
+uint32_t update_audio_video_hold_duration(ClientState& state, bool holding) {
+    if (!holding)
+    {
+        state.stats.audio_video_sync_hold_start_ns.store(0, std::memory_order_relaxed);
+        state.stats.audio_video_sync_hold_current_ms.store(0, std::memory_order_relaxed);
+        return 0;
+    }
+    const uint64_t now_ns = wd_now_ns();
+    uint64_t start_ns = state.stats.audio_video_sync_hold_start_ns.load(std::memory_order_relaxed);
+    if (start_ns == 0)
+    {
+        state.stats.audio_video_sync_hold_start_ns.compare_exchange_strong(start_ns, now_ns, std::memory_order_relaxed);
+        start_ns = state.stats.audio_video_sync_hold_start_ns.load(std::memory_order_relaxed);
+    }
+    const uint32_t current_ms = now_ns >= start_ns ? static_cast<uint32_t>(std::min<uint64_t>((now_ns - start_ns) / WD_NSEC_PER_MSEC, UINT32_MAX)) : 0;
+    state.stats.audio_video_sync_hold_current_ms.store(current_ms, std::memory_order_relaxed);
+    uint32_t maximum = state.stats.audio_video_sync_hold_max_ms.load(std::memory_order_relaxed);
+    while (current_ms > maximum && !state.stats.audio_video_sync_hold_max_ms.compare_exchange_weak(maximum, current_ms, std::memory_order_relaxed,
+                                                                                                    std::memory_order_relaxed)) {}
+    return current_ms;
+}
+
 uint16_t client_local_present_fps(const ClientState& state) {
     uint16_t fps = state.stream_config.target_fps;
     if (fps == 0)
@@ -1388,9 +1410,16 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                 state.stats.audio_video_delta_samples.store(sync.delta_samples, std::memory_order_relaxed);
                 if (sync.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_HOLD)
                 {
-                    present_info.retry_after_ms = sync.retry_after_ms;
+                    const uint32_t hold_ms = update_audio_video_hold_duration(state, true);
                     state.stats.audio_video_sync_holds.fetch_add(1, std::memory_order_relaxed);
-                    return VideoTextureUploadResult::Held;
+                    if (hold_ms <= WD_CLIENT_AUDIO_VIDEO_PLAYING_HOLD_MAX_MS)
+                    {
+                        present_info.retry_after_ms = sync.retry_after_ms;
+                        return VideoTextureUploadResult::Held;
+                    }
+                    WD_LOG_WARN("audio/video sync hold exceeded %u ms; temporarily presenting video without audio clock",
+                                WD_CLIENT_AUDIO_VIDEO_PLAYING_HOLD_MAX_MS);
+                    update_audio_video_hold_duration(state, false);
                 }
                 if (sync.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_DROP)
                 {
@@ -1407,11 +1436,17 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                 /* Hold only while an audio epoch is establishing its initial
                  * jitter buffer. After starvation, audio relinquishes the
                  * master clock until playback has rebuffered. */
-                present_info.retry_after_ms = WD_CLIENT_FRAME_DELAY_MS;
+                const uint32_t hold_ms = update_audio_video_hold_duration(state, true);
                 state.stats.audio_video_sync_holds.fetch_add(1, std::memory_order_relaxed);
-                return VideoTextureUploadResult::Held;
+                if (hold_ms <= WD_CLIENT_AUDIO_VIDEO_PLAYING_HOLD_MAX_MS)
+                {
+                    present_info.retry_after_ms = WD_CLIENT_FRAME_DELAY_MS;
+                    return VideoTextureUploadResult::Held;
+                }
+                update_audio_video_hold_duration(state, false);
             }
 
+            update_audio_video_hold_duration(state, false);
             ClientQueuedVideoFrame selected = state.video_present_queue.pop_front();
             std::swap(frame, selected.buffer);
             state.video_present_queue.recycle(std::move(selected.buffer));

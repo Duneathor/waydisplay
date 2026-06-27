@@ -329,6 +329,17 @@ gcovr --root . --filter 'src/' --print-summary
 Coverage-guided tile protocol and reassembly fuzzers are available with Clang by configuring `-DWAYDISPLAY_BUILD_FUZZERS=ON`. Fuzz binaries are not registered as ordinary CTest cases; CI or local fuzz jobs should provide a corpus and run duration explicitly. Every CTest receives a tier label (`unit`, `integration`, `stress`, `fuzz`, or `hardware`) in addition to subsystem labels. The `tests-full` preset requires both runtime executable targets so missing SDL3 or wlroots dependencies cannot silently reduce coverage.
 
 
+### Video scrub and recovery tests
+
+`waydisplay.video_feedback_protocol`, `waydisplay.video_inplace_recovery`,
+`waydisplay.video_adaptive_cadence`, and `waydisplay.video_scrub_recovery`
+cover the production feedback descriptor, transient-overload recovery,
+cause-specific health streaks, bounded keyframe retries, and client-FPS ceiling.
+The scrub test intentionally fills the compressed decode-input queue and proves
+that overload remains in video ownership, while hard decode/publication flags
+select tile fallback. Keep these tests in the dependency-light suite so recovery
+policy changes do not require FFmpeg or SDL hardware.
+
 ### Bandwidth and cadence policy tests
 
 `waydisplay.bandwidth_plan`, `waydisplay.server_tile_policy`, and
