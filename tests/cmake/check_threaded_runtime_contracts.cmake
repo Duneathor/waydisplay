@@ -113,6 +113,21 @@ endforeach()
 require_absent("${stream_source}"
                "wd_stream_policy_update_frame_rate_locked(policy, stats, true, true, \"immediate client decoder overload\")"
                "decoder overload must use the video-specific cadence controller")
+
+string(FIND "${stream_source}" "static uint64_t wd_stream_tile_byte_budget_locked" tile_budget_start)
+string(FIND "${stream_source}" "static void wd_stream_consume_tile_bytes_locked" tile_budget_end)
+if(tile_budget_start EQUAL -1 OR tile_budget_end EQUAL -1 OR tile_budget_end LESS tile_budget_start)
+    message(FATAL_ERROR "could not locate wd_stream_tile_byte_budget_locked")
+endif()
+math(EXPR tile_budget_length "${tile_budget_end} - ${tile_budget_start}")
+string(SUBSTRING "${stream_source}" ${tile_budget_start} ${tile_budget_length} tile_budget_function)
+string(FIND "${tile_budget_function}" "wd_now_ns()" tile_budget_clock)
+if(tile_budget_clock EQUAL -1)
+    message(FATAL_ERROR "tile-budget checks must sample the monotonic clock at the point of use")
+endif()
+require_absent("${tile_budget_function}" "bool repair, uint64_t"
+               "tile-budget checks must not accept caller-owned timestamp snapshots")
+
 foreach(required_video_contract
         "planned_recovery_resume_video"
         "tile_recovery_framebuffer_generation"

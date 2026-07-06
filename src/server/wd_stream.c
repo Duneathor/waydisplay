@@ -1889,12 +1889,16 @@ static void wd_stream_class_refund_locked(struct wd_stream_policy* policy,
                                wd_stream_byte_burst_cap_for_rate(rate));
 }
 
-static uint64_t wd_stream_tile_byte_budget_locked(struct wd_net_state* net, bool repair, uint64_t now_ns) {
+static uint64_t wd_stream_tile_byte_budget_locked(struct wd_net_state* net, bool repair) {
     if (!net)
     {
         return 0;
     }
-    const bool allow_borrow = repair ? net->dirty_queue_count == 0 : net->retransmit_queue_count == 0;
+    /* Budget checks within one send pass are interleaved with encoding and
+     * packet submission. Sample the monotonic clock here so an outer loop cannot
+     * reuse a timestamp older than a per-result check and reset the bucket. */
+    const uint64_t now_ns      = wd_now_ns();
+    const bool     allow_borrow = repair ? net->dirty_queue_count == 0 : net->retransmit_queue_count == 0;
     return wd_stream_class_budget_locked(&net->stream_policy,
                                          repair ? WD_STREAM_BANDWIDTH_REPAIR : WD_STREAM_BANDWIDTH_FRESH,
                                          repair ? WD_STREAM_BANDWIDTH_FRESH : WD_STREAM_BANDWIDTH_REPAIR,
@@ -3913,7 +3917,7 @@ static void wd_stream_clear_retransmit_request_locked(struct wd_server* server, 
     }
 }
 
-static void wd_stream_send_retransmits_locked(struct wd_server* server, uint64_t now) {
+static void wd_stream_send_retransmits_locked(struct wd_server* server) {
     if (!server)
     {
         return;
@@ -3927,7 +3931,7 @@ static void wd_stream_send_retransmits_locked(struct wd_server* server, uint64_t
 
     while (net->retransmit_queue_count > 0)
     {
-        uint64_t token_budget = wd_stream_tile_byte_budget_locked(net, true, now);
+        uint64_t token_budget = wd_stream_tile_byte_budget_locked(net, true);
         if (token_budget == 0)
         {
             break;
@@ -4061,7 +4065,7 @@ static void wd_stream_send_retransmits_locked(struct wd_server* server, uint64_t
                 }
 
                 const uint64_t send_now              = wd_now_ns();
-                uint64_t       current_budget        = wd_stream_tile_byte_budget_locked(net, true, send_now);
+                uint64_t       current_budget        = wd_stream_tile_byte_budget_locked(net, true);
                 const bool     current_network_happy = !wd_stream_client_reporting_tile_loss_locked(&net->stream_policy, &net->stats);
                 if (!wd_stream_candidate_allowed_for_region_locked(server, &result->candidate, current_budget, current_network_happy,
                                                                    retx_input_sequence != 0))
@@ -4299,12 +4303,12 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
     const bool client_loss = wd_stream_client_reporting_tile_loss_locked(&net->stream_policy, &net->stats);
     if (client_loss && net->retransmit_queue_count > 0)
     {
-        wd_stream_send_retransmits_locked(server, now);
+        wd_stream_send_retransmits_locked(server);
     }
 
     while (net->dirty_region_count > 0)
     {
-        const uint64_t remaining_byte_budget = wd_stream_tile_byte_budget_locked(net, false, now);
+        const uint64_t remaining_byte_budget = wd_stream_tile_byte_budget_locked(net, false);
         const uint64_t tile_input_sequence   = wd_input_correlation_select(net->input_since_last_fresh_tile, net->last_input_sequence,
                                                                            net->input_correlation_inflight_sequence);
         /* Only require enough tokens for the smallest guaranteed-progress
@@ -4442,7 +4446,7 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
 
                 const uint64_t send_now              = wd_now_ns();
                 const uint64_t send_input_sequence   = pending_input_sequence;
-                const uint64_t current_budget        = wd_stream_tile_byte_budget_locked(net, false, send_now);
+                const uint64_t current_budget        = wd_stream_tile_byte_budget_locked(net, false);
                 const bool     current_network_happy = !wd_stream_client_reporting_tile_loss_locked(&net->stream_policy, &net->stats);
                 if (!wd_stream_candidate_allowed_for_region_locked(server, &result->candidate, current_budget, current_network_happy,
                                                                    send_input_sequence != 0))
@@ -4539,7 +4543,7 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
 
     if (!wd_stream_mode_video_owns_display(net->stream_policy.stream_mode))
     {
-        wd_stream_send_retransmits_locked(server, now);
+        wd_stream_send_retransmits_locked(server);
     }
     if (net->udp_tx)
     {

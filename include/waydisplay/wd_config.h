@@ -239,11 +239,11 @@ extern "C" {
 #define WD_AUDIO_TARGET_LATENCY_MS_MIN      10u
 #define WD_AUDIO_TARGET_LATENCY_MS_MAX      400u
 #define WD_AUDIO_BITRATE_DEFAULT            128000u
-#define WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT  50u
+#define WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT  30u
 #define WD_VIDEO_MIN_DIRTY_PERCENT_MAX      100u
 #define WD_VIDEO_ENTER_SECONDS_DEFAULT      3u
 #define WD_VIDEO_ENTER_SECONDS_MAX          60u
-#define WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT 20u
+#define WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT 15u
 #define WD_VIDEO_EXIT_DIRTY_PERCENT_MAX     100u
 #define WD_VIDEO_EXIT_SECONDS_DEFAULT       30u
 #define WD_VIDEO_EXIT_SECONDS_MAX           300u
@@ -293,13 +293,13 @@ extern "C" {
  * Software threads bound CPU parallelism.  GOP controls keyframe cadence.
  * VAAPI probe settings test capability cheaply; pool/async depth control the
  * number of hardware surfaces and queued operations. */
-#define WD_VIDEO_ENCODER_FALLBACK_FPS            30u
-#define WD_VIDEO_ENCODER_SOFTWARE_THREADS        2u
+#define WD_VIDEO_ENCODER_FALLBACK_FPS            60u
+#define WD_VIDEO_ENCODER_SOFTWARE_THREADS        4u
 #define WD_VIDEO_ENCODER_GOP_SECONDS             1u
-#define WD_VIDEO_ENCODER_VAAPI_PROBE_FPS         30u
+#define WD_VIDEO_ENCODER_VAAPI_PROBE_FPS         60u
 #define WD_VIDEO_ENCODER_VAAPI_PROBE_BITRATE_KIB 2048u
-#define WD_VIDEO_ENCODER_VAAPI_PROBE_POOL_SIZE   2u
-#define WD_VIDEO_ENCODER_VAAPI_FRAME_POOL_SIZE   4u
+#define WD_VIDEO_ENCODER_VAAPI_PROBE_POOL_SIZE   4u
+#define WD_VIDEO_ENCODER_VAAPI_FRAME_POOL_SIZE   8u
 #define WD_VIDEO_ENCODER_VAAPI_ASYNC_DEPTH       "1"
 #define WD_VIDEO_ENCODER_VAAPI_PROBE_WIDTH        256u
 #define WD_VIDEO_ENCODER_VAAPI_PROBE_HEIGHT       256u
@@ -309,7 +309,7 @@ extern "C" {
 #define WD_VIDEO_ENCODER_SOFTWARE_TUNE             "zerolatency"
 #define WD_VIDEO_ENCODER_FORCE_IDR_OPTION          "1"
 #define WD_VIDEO_ENCODER_H264_PRIVATE_PARAMS       "repeat-headers=1:sliced-threads=1"
-#define WD_VIDEO_ENCODER_H265_PRIVATE_PARAMS       "repeat-headers=1:log-level=error:pools=none:frame-threads=1"
+#define WD_VIDEO_ENCODER_H265_PRIVATE_PARAMS       "repeat-headers=1:log-level=warn:pools=none:frame-threads=1"
 #define WD_VIDEO_ENCODER_VAAPI_AUD_OPTION          "1"
 #define WD_VIDEO_SCALER_USE_FAST_BILINEAR          1
 #define WD_CLIENT_VIDEO_DECODER_THREADS            1u
@@ -327,7 +327,7 @@ extern "C" {
 #define WD_UDP_RATE_MAX_BYTES_PER_SECOND      (1000ull * 1024ull * 1024ull * 1024ull)
 #define WD_UDP_THROUGHPUT_SAFETY_PERCENT      85u
 #define WD_VIDEO_DEFAULT_BITRATE_KIB_PER_SECOND      8192u
-#define WD_VIDEO_DERIVED_BITRATE_MAX_KIB_PER_SECOND  50000u
+#define WD_VIDEO_DERIVED_BITRATE_MAX_KIB_PER_SECOND  100000u
 #define WD_CLIENT_VIDEO_HWDECODE_AUTO                0u
 #define WD_CLIENT_VIDEO_HWDECODE_OFF                 1u
 #define WD_CLIENT_VIDEO_HWDECODE_VAAPI               2u
@@ -338,15 +338,15 @@ extern "C" {
  * chosen per dirty region from the supported ladder rather than by a CLI mode. */
 #define WD_WIRE_TILE_MAX_WIDTH                               128u
 #define WD_WIRE_TILE_MAX_HEIGHT                              64u
-#define WD_STREAM_LINK_LOSS_SECONDS_TO_DECREASE              1u
+#define WD_STREAM_LINK_LOSS_SECONDS_TO_DECREASE              2u
 #define WD_STREAM_LINK_GOOD_SECONDS_TO_INCREASE              4u
 #define WD_STREAM_RATE_PRESSURE_DECREASE_PERCENT             65u
 #define WD_STREAM_RATE_INCREASE_PERCENT                      125u
 #define WD_STREAM_RATE_INCREASE_MIN_BYTES                    (64ull * 1024ull)
 #define WD_STREAM_CLIENT_COMPLETION_MIN_PACKETS              4u
 #define WD_STREAM_CLIENT_COMPLETION_LOSS_PERCENT             35u
-#define WD_STREAM_CLIENT_RENDER_FPS_PRESSURE_PERCENT         70u
-#define WD_STREAM_CLIENT_RENDER_PRESSURE_SECONDS_TO_DECREASE 3u
+#define WD_STREAM_CLIENT_RENDER_FPS_PRESSURE_PERCENT         85u
+#define WD_STREAM_CLIENT_RENDER_PRESSURE_SECONDS_TO_DECREASE 5u
 #define WD_STREAM_MULTIPACKET_LOSS_COOLDOWN_SECONDS          2u
 #define WD_STREAM_TILE_RECOVERY_TIMEOUT_SECONDS              5u
 #define WD_STREAM_VIDEO_RETRY_COOLDOWN_SECONDS               5u
@@ -369,15 +369,15 @@ extern "C" {
 #define WD_STREAM_DIRTY_REGION_STARVATION_NS           (100ull * WD_NSEC_PER_MSEC)
 #define WD_STREAM_TILE_COMPRESSION_MIN_SAVINGS_BYTES   64u
 #define WD_STREAM_TILE_COMPRESSION_MIN_SAVINGS_PERCENT 3u
-#define WD_STREAM_VIDEO_CLIENT_FAILURE_SECONDS         3u
-#define WD_STREAM_VIDEO_RECOVERY_TIMEOUT_SECONDS        3u
-#define WD_STREAM_VIDEO_RECOVERY_MAX_ATTEMPTS           2u
+#define WD_STREAM_VIDEO_CLIENT_FAILURE_SECONDS         4u
+#define WD_STREAM_VIDEO_RECOVERY_TIMEOUT_SECONDS        4u
+#define WD_STREAM_VIDEO_RECOVERY_MAX_ATTEMPTS           3u
 #define WD_STREAM_VIDEO_DECODE_HEADROOM_PERCENT          85u
 #define WD_STREAM_VIDEO_DECODE_EWMA_NEW_NUMERATOR         1u
 #define WD_STREAM_VIDEO_DECODE_EWMA_DENOMINATOR           4u
-#define WD_STREAM_VIDEO_FPS_DEADBAND                       2u
-#define WD_STREAM_VIDEO_OVERLOAD_DECREASE_PERCENT         75u
-#define WD_STREAM_VIDEO_FPS_INCREASE_STEP                  1u
+#define WD_STREAM_VIDEO_FPS_DEADBAND                       3u
+#define WD_STREAM_VIDEO_OVERLOAD_DECREASE_PERCENT         90u
+#define WD_STREAM_VIDEO_FPS_INCREASE_STEP                  3u
 #define WD_STREAM_VIDEO_FPS_GOOD_SECONDS_TO_INCREASE      15u
 
 /* Connection-level bandwidth allocations. Percentages are nominal class
