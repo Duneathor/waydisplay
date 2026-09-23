@@ -9,6 +9,7 @@
 #include "content_order.hpp"
 #include "video_decoder.hpp"
 #include "video_decode_queue_policy.h"
+#include "video_keyframe_recovery.h"
 #include "video_packet_validation.h"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
@@ -1432,12 +1433,16 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
     const bool                    end_of_stream = (packet.header.flags & WD_VIDEO_FRAME_END_OF_STREAM) != 0;
     const bool                    keyframe      = (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
     struct wd_client_video_transition_decision transition{};
+    bool expect_fresh_keyframe = false;
     {
         std::lock_guard<std::mutex> lock(state.session.video_decoder_mutex);
+        expect_fresh_keyframe = state.session.video_decoder_needs_keyframe ||
+                                state.session.video_phase != WD_CLIENT_VIDEO_PHASE_VIDEO;
         transition = wd_client_video_transition_decide(
             state.session.video_phase,
             content_decision == ClientContentEpochDecision::Advanced && content_owner == WD_CLIENT_CONTENT_OWNER_VIDEO,
             end_of_stream, resize, keyframe, packet.header.data_size != 0);
+        expect_fresh_keyframe = expect_fresh_keyframe || transition.reset_decoder;
         if (transition.reset_decoder)
         {
             client_video_decoder_reset(state.session.video_decoder);
@@ -1497,6 +1502,21 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         {
             state.stats.video_need_keyframe_drops.fetch_add(1, std::memory_order_relaxed);
             return;
+        }
+
+        if (expect_fresh_keyframe && keyframe)
+        {
+            const auto validation = wd_client_video_keyframe_validate(packet.header.codec, packet.data, packet.header.data_size);
+            if (validation != WD_CLIENT_VIDEO_KEYFRAME_VALID)
+            {
+                state.stats.video_invalid_frames_rx.fetch_add(1, std::memory_order_relaxed);
+                feedback.flags = WD_VIDEO_FEEDBACK_NEEDS_KEYFRAME;
+                WD_LOG_WARN("rejecting video recovery keyframe: frame=%llu codec=%s bytes=%u reason=%s",
+                            (unsigned long long)packet.header.frame_id, video_codec_name(packet.header.codec),
+                            packet.header.data_size, wd_client_video_keyframe_result_name(validation));
+                reset_decoder_locked("invalid video recovery keyframe");
+                return;
+            }
         }
 
         ClientVideoDecoderConfig config{};
@@ -1691,6 +1711,33 @@ bool enqueue_video_message(ClientState& state, wd_tcp_message& message) {
     const bool     keyframe = (flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
     const bool     control  = (flags & (WD_VIDEO_FRAME_END_OF_STREAM | WD_VIDEO_FRAME_RESIZE)) != 0;
     const uint16_t depth    = static_cast<uint16_t>(std::min<size_t>(state.session.video_decode_queue.size(), UINT16_MAX));
+
+    if (state.session.video_decode_wait_keyframe && keyframe && !control)
+    {
+        /* Do not clear a recovering queue or stop waiting merely because an
+         * unusable packet claims to be a keyframe. The decoder is freshly
+         * reset and has no VPS/SPS/PPS (or H.264 SPS/PPS) to fall back on. */
+        wd_video_frame_payload_header header{};
+        auto validation = WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM;
+        if (message.payload && message.payload_size >= sizeof(header))
+        {
+            std::memcpy(&header, message.payload, sizeof(header));
+            if (wd_video_frame_payload_size_is_valid(&header, message.payload_size))
+            {
+                validation = wd_client_video_keyframe_validate(header.codec, message.payload + sizeof(header), header.data_size);
+            }
+        }
+        if (validation != WD_CLIENT_VIDEO_KEYFRAME_VALID)
+        {
+            state.stats.video_invalid_frames_rx.fetch_add(1, std::memory_order_relaxed);
+            state.stats.video_decode_queue_drops.fetch_add(1, std::memory_order_relaxed);
+            WD_LOG_WARN("dropping invalid queued video recovery keyframe: bytes=%u reason=%s", message.payload_size,
+                        wd_client_video_keyframe_result_name(validation));
+            (void)client_send_video_feedback(state, WD_VIDEO_FEEDBACK_NEEDS_KEYFRAME, depth,
+                                             static_cast<uint16_t>(CLIENT_VIDEO_DECODE_QUEUE_CAPACITY));
+            return true;
+        }
+    }
     const struct wd_client_video_decode_queue_plan plan = wd_client_video_decode_queue_plan_compute(
         depth, static_cast<uint32_t>(CLIENT_VIDEO_DECODE_QUEUE_CAPACITY), state.session.video_decode_wait_keyframe,
         keyframe, control);

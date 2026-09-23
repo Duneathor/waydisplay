@@ -102,6 +102,12 @@ void test_control_and_keyframe_queue_semantics() {
     CHECK(first_keyframe.clear_queue);
     CHECK(!first_keyframe.wait_for_keyframe);
     CHECK(first_keyframe.reset_decoder_before);
+
+    const auto mixed_control = wd_client_video_decode_queue_plan_compute(2, 4, false, true, true);
+    CHECK(mixed_control.action == WD_CLIENT_VIDEO_DECODE_QUEUE_ENQUEUE);
+    CHECK(mixed_control.clear_queue);
+    CHECK(mixed_control.wait_for_keyframe);
+    CHECK(!mixed_control.reset_decoder_before);
 }
 
 } // namespace

@@ -1,3 +1,4 @@
+#include "video_keyframe_recovery.h"
 #include "video_decoder.hpp"
 #include "waydisplay/wd_protocol.h"
 #include "wd_video_encoder.h"
@@ -120,7 +121,11 @@ bool run_codec(uint32_t codec) {
         CHECK(wd_video_frame_payload_size_is_valid(&encoded.header,
                                                    static_cast<uint32_t>(sizeof(encoded.header)) + encoded.header.data_size));
         previous_frame_id = encoded.header.frame_id;
-        saw_keyframe      = saw_keyframe || (encoded.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
+        if ((encoded.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0)
+        {
+            CHECK(wd_client_video_keyframe_validate(codec, encoded.data, encoded.header.data_size) == WD_CLIENT_VIDEO_KEYFRAME_VALID);
+        }
+        saw_keyframe = saw_keyframe || (encoded.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
 
         ClientVideoPacket packet{};
         packet.header = encoded.header;
@@ -192,6 +197,7 @@ bool run_codec(uint32_t codec) {
         {
             CHECK(encoded.header.frame_id == 1);
             CHECK((encoded.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0);
+            CHECK(wd_client_video_keyframe_validate(codec, encoded.data, encoded.header.data_size) == WD_CLIENT_VIDEO_KEYFRAME_VALID);
             saw_new_epoch_keyframe = true;
         }
         submitted_headers.push_back(encoded.header);

@@ -19,8 +19,10 @@ cmake_install.cmake
 *~
 .DS_Store
 
-# Arch makepkg outputs when building from repository root
-/src/
+# Arch makepkg outputs when building from repository root.
+# Do not ignore /src/: it contains the project's tracked source, and doing
+# so hides newly added source files from git add and status.
+/src/build-*/
 /pkg/
 /*.pkg.tar.*
 /packaging/arch/waydisplay-src.tar.gz

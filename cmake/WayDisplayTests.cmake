@@ -224,6 +224,16 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.video_keyframe_recovery
+        TARGET waydisplay_test_video_keyframe_recovery
+        SOURCES tests/test_video_keyframe_recovery.cpp
+        LIBRARIES waydisplay_client_runtime
+        COMPILE_DEFINITIONS
+            WAYDISPLAY_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+        LABELS "unit;client;video;codec;lifecycle"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.tile_protocol
         TARGET waydisplay_test_tile_protocol
         SOURCES tests/test_tile_protocol.cpp
@@ -783,6 +793,7 @@ if(WAYDISPLAY_BUILD_TESTS)
             LIBRARIES
                 waydisplay_video_encoder
                 waydisplay_video_decoder
+                waydisplay_client_runtime
             SKIP_RETURN_CODE 77
             LABELS "video;codec;roundtrip"
             TIMEOUT 30

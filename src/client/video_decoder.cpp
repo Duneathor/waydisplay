@@ -396,7 +396,10 @@ bool receive_decoder_frames(ClientVideoDecoder* decoder) {
         }
         if (rc < 0) [[unlikely]]
         {
-            mark_vaapi_auto_failed(decoder, "hardware frame receive failed");
+            if (rc != AVERROR_INVALIDDATA)
+            {
+                mark_vaapi_auto_failed(decoder, "hardware frame receive failed");
+            }
             return false;
         }
         if (!queue_decoder_frame(decoder)) [[unlikely]]
@@ -700,7 +703,12 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
         }
         if (rc != AVERROR(EAGAIN))
         {
-            mark_vaapi_auto_failed(decoder, "hardware packet submit failed");
+            /* INVALIDDATA is a bitstream error, not evidence that VAAPI is
+             * broken. Keep hardware decode available for the next keyframe. */
+            if (rc != AVERROR_INVALIDDATA)
+            {
+                mark_vaapi_auto_failed(decoder, "hardware packet submit failed");
+            }
             av_packet_unref(decoder->packet);
             return false;
         }

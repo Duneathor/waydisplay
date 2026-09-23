@@ -9,11 +9,19 @@ struct wd_client_video_decode_queue_plan wd_client_video_decode_queue_plan_compu
         .reset_decoder_before = false,
     };
 
-    if (keyframe || control_frame)
+    if (control_frame)
+    {
+        /* End-of-stream/resize always invalidates decoder references, even
+         * if an invalid mixed-flags packet also claims to be a keyframe. */
+        plan.clear_queue       = true;
+        plan.wait_for_keyframe = true;
+        return plan;
+    }
+    if (keyframe)
     {
         plan.clear_queue          = true;
-        plan.wait_for_keyframe    = !keyframe;
-        plan.reset_decoder_before = keyframe && waiting_for_keyframe;
+        plan.wait_for_keyframe    = false;
+        plan.reset_decoder_before = waiting_for_keyframe;
         return plan;
     }
 
