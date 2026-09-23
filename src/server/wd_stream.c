@@ -15,6 +15,7 @@
 #include "wd_stream_pipeline_internal.h"
 #include "wd_tile_policy.h"
 #include "wd_video_encoder.h"
+#include "video_encode_pacing.h"
 #include "wd_video_transition.h"
 
 #include <errno.h>
@@ -220,6 +221,8 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->video_frame_rate_good_seconds     = 0;
     policy->video_decode_ewma_ns              = 0;
     policy->video_decode_safe_fps             = 0;
+    policy->video_encode_ewma_ns              = 0;
+    policy->video_encode_pacing_samples       = 0;
     policy->video_feedback_pending             = false;
     policy->video_feedback_flags               = 0;
     policy->video_feedback_sequence            = 0;
@@ -267,6 +270,8 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
 
     policy->requested_capture_fps = fps;
     policy->adaptive_capture_fps  = fps;
+    policy->video_encode_ewma_ns = 0;
+    policy->video_encode_pacing_samples = 0;
     policy->stream_mode           = WD_STREAM_MODE_TILES;
     policy->video_mode            = hello->video_mode <= WD_VIDEO_MODE_FORCE ? hello->video_mode : WD_VIDEO_MODE_AUTO;
     policy->video_min_dirty_percent =
@@ -512,6 +517,11 @@ void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_s
     const enum wd_bandwidth_mode new_bandwidth_mode =
         wd_stream_mode_uses_video_frames(mode) ? WD_BANDWIDTH_MODE_VIDEO : WD_BANDWIDTH_MODE_TILES;
     policy->stream_mode = mode;
+    if (old_bandwidth_mode != new_bandwidth_mode)
+    {
+        policy->video_encode_ewma_ns = 0;
+        policy->video_encode_pacing_samples = 0;
+    }
     wd_stream_policy_rebuild_bandwidth_plan_locked(policy, new_bandwidth_mode);
     if (old_bandwidth_mode != new_bandwidth_mode)
     {
@@ -871,6 +881,14 @@ uint16_t wd_stream_policy_effective_fps_locked(const struct wd_stream_policy* po
 
 uint16_t wd_stream_policy_capture_pacing_fps_locked(const struct wd_stream_policy* policy, uint16_t output_refresh_hz) {
     uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
+
+    if (policy && policy->stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE)
+    {
+        /* Limit redundant readback/copy work, not the negotiated framerate:
+         * changing config.target_fps would repeatedly reopen libaom. */
+        fps = wd_video_encode_pacing_cap(fps, policy->video_encode_ewma_ns,
+                                         policy->video_encode_pacing_samples);
+    }
 
     if (policy && !policy->client_render_visible && fps > WD_STREAM_HIDDEN_CLIENT_FPS)
     {

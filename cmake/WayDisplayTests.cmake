@@ -132,6 +132,22 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.video_encode_pacing
+        TARGET waydisplay_test_video_encode_pacing
+        SOURCES tests/test_video_encode_pacing.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;video;av1;performance"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.av1_tile_policy
+        TARGET waydisplay_test_av1_tile_policy
+        SOURCES tests/test_av1_tiles.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;video;av1;performance"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.video_trace
         TARGET waydisplay_test_video_trace
         SOURCES tests/test_video_trace.c tests/test_video_trace.cpp

@@ -1,5 +1,6 @@
 #include "wd_video_encoder.h"
 #include "wd_hevc_annexb.h"
+#include "video_av1_tiles.h"
 
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
@@ -451,6 +452,21 @@ static bool wd_video_encoder_configure_software(struct wd_video_encoder* encoder
         (void)av_opt_set(encoder->codec_ctx->priv_data, "cpu-used", "8", 0);
         (void)av_opt_set(encoder->codec_ctx->priv_data, "lag-in-frames", "0", 0);
         (void)av_opt_set(encoder->codec_ctx->priv_data, "row-mt", "1", 0);
+        /* `cpu-used=8` is the maximum accepted by FFmpeg's libaom wrapper.
+         * At desktop resolutions, split the frame into tiles so row-mt can
+         * use multiple encoder threads; keep tiny fixtures single-tile.
+         * Old libaom builds that reject the tiling option retain the
+         * existing defaults rather than losing software AV1 entirely. */
+        const char* tiles = wd_video_av1_software_tiles(config->width, config->height);
+        const int tiles_rc = av_opt_set(encoder->codec_ctx->priv_data, "tiles", tiles, 0);
+        if (tiles_rc < 0)
+        {
+            WD_LOG_DEBUG("AV1 software tile layout %s unavailable; using libaom default", tiles);
+        }
+        else
+        {
+            WD_LOG_DEBUG("AV1 software encoder: realtime cpu-used=8 threads=%u tiles=%s row-mt=1", WD_VIDEO_ENCODER_SOFTWARE_THREADS, tiles);
+        }
     }
     else if (encoder->codec_ctx->priv_data)
     {

@@ -6,6 +6,7 @@
 #include "wd_async_tcp.h"
 #include "wd_video_encoder.h"
 #include "wd_video_transition.h"
+#include "video_encode_pacing.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -146,6 +147,7 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     const uint64_t                       encode_start_ns = wd_now_ns();
     bool                                 encoded         = false;
     bool                                 no_output       = false;
+    bool                                 software_av1    = false;
     bool                                 payload_invalid = false;
     uint8_t*                             payload         = NULL;
     uint32_t                             payload_size    = 0;
@@ -159,6 +161,8 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     {
         encoded   = wd_video_encoder_encode_xrgb8888(net->video_encoder, &input, &packet);
         no_output = encoded && (!packet.data || packet.header.data_size == 0);
+        software_av1 = job->config.codec == WD_VIDEO_CODEC_AV1 &&
+                       strcmp(wd_video_encoder_backend_name(net->video_encoder), "libaom-av1") == 0;
         if (encoded && !no_output)
         {
             header                  = packet.header;
@@ -234,6 +238,17 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
         net->stats.video_worker_stale_drops++;
         pthread_mutex_unlock(&net->lock);
         return;
+    }
+
+    if (software_av1 && net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE &&
+        (header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0 && encode_ns != 0)
+    {
+        net->stream_policy.video_encode_ewma_ns = wd_video_encode_pacing_ewma(
+            net->stream_policy.video_encode_ewma_ns, encode_ns);
+        if (net->stream_policy.video_encode_pacing_samples < WD_VIDEO_ENCODE_PACING_WARMUP_SAMPLES)
+        {
+            net->stream_policy.video_encode_pacing_samples++;
+        }
     }
 
     wd_async_tcp_sender_reap(net->video_tx);

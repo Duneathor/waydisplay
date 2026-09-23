@@ -583,6 +583,8 @@ struct wd_stream_policy {
     uint32_t            video_frame_rate_good_seconds;
     uint64_t            video_decode_ewma_ns;
     uint16_t            video_decode_safe_fps;
+    uint64_t            video_encode_ewma_ns;
+    uint32_t            video_encode_pacing_samples;
     uint32_t            video_recovery_attempts;
     uint32_t            video_recovery_wait_seconds;
     bool                video_recovery_keyframe_queued;

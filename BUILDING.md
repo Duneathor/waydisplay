@@ -449,7 +449,25 @@ waydisplay-client 192.168.0.183 5000 6000 --video-codec av1 --video-decode auto
 ```
 
 For a software encoder test, replace the server's `vaapi` with `software`;
-software AV1 can be substantially slower than hardware. AV1 VA-API encoding
+software AV1 can be substantially slower than hardware. Software AV1 uses
+libaom realtime `cpu-used=8` (the FFmpeg wrapper's highest supported speed)
+with four encoder threads, zero lookahead, and row-based multithreading.
+At desktop resolutions it now selects `2x1` or `2x2` AV1 tiles to expose
+more parallel work; smaller images use `1x1`. More tiles can increase bitrate
+at equal visual quality, and this is **not** a guarantee of 60 fps.
+Compare `video-stream/min` `frame_attempts` and `encode_ms` before/after,
+and check `client-video/min` decoded/presented plus audio underflows. The
+first keyframe may still be substantially slower than subsequent frames.
+After four non-keyframe software-AV1 samples, video-active capture pacing
+is also capped using the encoder's measured moving-average frame time with
+15% headroom. This avoids repeatedly rendering and copying 60 snapshots/s
+when the encoder is handling around 13. **It does not change negotiated FPS,
+encoder configuration, stream timestamps, decoder cadence, or the tiles path.**
+The cap resets on tiles/video bandwidth-mode transitions, and ignores slow
+startup and periodic keyframes. `state` STATS reports the actual
+`capture_pacing_fps`; compare it with `video-stream/min` `frame_attempts`,
+`frames_tx`, `encode_ms`, and superseded frames before/after.
+AV1 VA-API encoding
 and AV1 Profile 0 VA-API decoding are separate device capabilities: a server
 may encode AV1 on its GPU even when the client's GPU cannot decode it. With
 `--video-decode auto`, WayDisplay checks the selected libva device and uses
