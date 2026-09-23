@@ -105,7 +105,7 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
     {
         return VaapiDecodeResult::Failed;
     }
-    if (!waydisplay::client_video_decoder_configure(decoder, decoder_config(codec, WD_CLIENT_VIDEO_DECODE_VAAPI)))
+    if (!waydisplay::client_video_decoder_configure(decoder, decoder_config(codec, WD_CLIENT_VIDEO_DECODER_VAAPI)))
     {
         /* FFmpeg advertising VAAPI is not evidence that this device supports
          * AV1 Profile 0 decode. Configuration probes the selected libva
@@ -206,7 +206,7 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
     return produced_output_count != 0 ? VaapiDecodeResult::Passed : VaapiDecodeResult::Failed;
 }
 
-/* A hardware-only test may skip unsupported AV1, but --video-decode auto
+/* A hardware-only test may skip unsupported AV1, but --video-decoder auto
  * still needs to produce pictures from that exact AV1 stream in software. */
 bool decode_av1_in_software(uint8_t decode_mode) {
     const std::vector<uint8_t> fixture = read_fixture("video_keyframe_128x128.obu");
@@ -310,7 +310,7 @@ int main() {
         {
             return 1;
         }
-        if (result == VaapiDecodeResult::Unsupported && !decode_av1_in_software(WD_CLIENT_VIDEO_DECODE_AUTO))
+        if (result == VaapiDecodeResult::Unsupported && !decode_av1_in_software(WD_CLIENT_VIDEO_DECODER_AUTO))
         {
             return 1;
         }
@@ -319,7 +319,7 @@ int main() {
 
     /* Software must remain software even when this GPU exposes AV1 VAAPI:
      * FFmpeg's native AV1 decoder lists several hardware pixel formats. */
-    if ((supported & WD_VIDEO_CODEC_AV1) != 0 && !decode_av1_in_software(WD_CLIENT_VIDEO_DECODE_SOFTWARE))
+    if ((supported & WD_VIDEO_CODEC_AV1) != 0 && !decode_av1_in_software(WD_CLIENT_VIDEO_DECODER_SOFTWARE))
     {
         return 1;
     }

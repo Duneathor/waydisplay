@@ -94,15 +94,15 @@ struct ClientSessionRuntime {
 };
 
 struct ClientStreamConfig {
-    uint16_t target_fps                   = WD_CLIENT_DEFAULT_TARGET_FPS;
-    uint32_t udp_rate_cap_kib_per_second   = 0;
+    uint16_t requested_session_fps                   = WD_CLIENT_DEFAULT_SESSION_FPS;
+    uint32_t link_cap_kib_per_second   = 0;
     uint8_t  video_mode                   = WD_VIDEO_MODE_AUTO;
     uint8_t  video_min_dirty_percent      = WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT;
     uint16_t video_enter_seconds          = WD_VIDEO_ENTER_SECONDS_DEFAULT;
     uint8_t  video_exit_dirty_percent     = WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT;
     uint16_t video_exit_seconds           = WD_VIDEO_EXIT_SECONDS_DEFAULT;
     uint32_t video_bitrate_kib_per_second = 0;
-    uint8_t  video_decode_mode            = WD_CLIENT_VIDEO_DECODE_AUTO;
+    uint8_t  video_decoder_mode            = WD_CLIENT_VIDEO_DECODER_AUTO;
     uint32_t video_codec_mask             = WD_VIDEO_CODEC_H265;
     bool     disable_vsync                = false;
     bool     disable_audio                = false;
@@ -437,6 +437,7 @@ struct ClientStatsSnapshot {
 
 struct ClientStatsLogState {
     ClientStatsSnapshot totals{};
+    uint64_t            previous_observation_ns = 0;
     uint64_t            prev_timeout_ms          = 0;
     uint64_t            prev_udp_gap_pressure_ms = 0;
 };

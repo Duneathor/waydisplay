@@ -37,6 +37,7 @@
 #include "wd_server_stream.h"
 #include "wd_tile_policy.h"
 #include "wd_bandwidth_plan.h"
+#include "wd_compositor_capture.h"
 
 enum wd_compositor_request {
     WD_COMPOSITOR_REQUEST_FULL_REFRESH = 1u << 0,
@@ -112,6 +113,9 @@ struct wd_view {
     struct wlr_scene_rect* xwayland_close_rect;
     struct wlr_scene_rect* xwayland_maximize_rect;
     struct wlr_scene_rect* xwayland_minimize_rect;
+    uint16_t xwayland_decoration_cached_width;
+    bool xwayland_decoration_cached_visible;
+    bool xwayland_decoration_layout_valid;
 #endif
     struct wlr_xdg_toplevel_icon_v1* toplevel_icon;
 
@@ -293,6 +297,13 @@ struct wd_stats {
     uint64_t tcp_video_channel_accepted;
     uint64_t tcp_video_channel_closed;
 
+    /* Count only readbacks observed while video is selected. Preflight
+     * outcomes below are disjoint and sum to video_snapshot_considered. */
+    uint64_t video_snapshot_considered;
+    uint64_t video_snapshot_preflight_accepted;
+    uint64_t video_snapshot_unavailable;
+    uint64_t video_snapshot_pending_send;
+    uint64_t video_snapshot_publish_pending_send;
     uint64_t video_frames_published;
     uint64_t video_frames_superseded;
     uint64_t video_worker_stale_drops;
@@ -331,6 +342,7 @@ struct wd_stats {
     uint64_t server_scene_damage_promotions;
     uint64_t server_render_idle_results;
     uint64_t server_render_failed_results;
+    struct wd_compositor_capture_stats compositor_capture;
 
     uint64_t client_stats_rx;
     uint64_t client_udp_packets_rx;
@@ -527,7 +539,7 @@ enum wd_stream_mode {
 struct wd_stats_log_state {
     struct wd_stats     totals;
     bool                have_prev_state;
-    uint16_t            prev_requested_capture_fps;
+    uint16_t            prev_requested_session_fps;
     uint16_t            prev_adaptive_capture_fps;
     uint16_t            prev_capture_pacing_fps;
     uint16_t            prev_compositor_refresh_hz;
@@ -566,7 +578,7 @@ struct wd_stats_log_state {
 };
 
 struct wd_stream_policy {
-    uint16_t requested_capture_fps;
+    uint16_t requested_session_fps;
     uint16_t adaptive_capture_fps;
 
     enum wd_stream_mode stream_mode;
@@ -622,7 +634,6 @@ struct wd_stream_policy {
     uint32_t frame_rate_good_seconds;
 
     struct wd_frame_pacing_state frame_pacing;
-    uint64_t                     last_video_frame_send_ns;
 
     uint64_t safe_link_bytes_per_second;
     uint64_t recent_link_bytes_per_second;
@@ -867,6 +878,8 @@ struct wd_server {
     bool*                             damage_tiles;
     uint32_t                          damage_tile_count;
     struct wd_stream_frame_worker*    stream_frame_worker;
+    /* Compositor thread only: snapshot once per health tick. */
+    struct wd_compositor_capture_stats     compositor_capture;
 
     struct wlr_xdg_shell*                    xdg_shell;
     struct wlr_xdg_decoration_manager_v1*    xdg_decoration_manager;

@@ -12,16 +12,17 @@ enum class ClientCliParseResult {
 };
 
 struct ClientCliOptions {
+    bool        verbose                    = false;
     std::string server_host;
     uint16_t    tcp_port                   = 0;
     uint16_t    client_udp_port            = 0;
     uint16_t    desired_width              = 0;
     uint16_t    desired_height             = 0;
-    uint16_t    target_fps                 = 0;
-    uint32_t    udp_rate_cap_kib_per_second = 0;
+    uint16_t    requested_session_fps                 = 0;
+    uint32_t    link_cap_kib_per_second = 0;
     uint8_t     video_mode                 = 0;
     uint32_t    video_codec_mask           = 0;
-    uint8_t     video_decode_mode          = 0;
+    uint8_t     video_decoder_mode          = 0;
     bool        disable_vsync              = false;
     bool        disable_audio              = false;
 };

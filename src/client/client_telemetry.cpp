@@ -4,6 +4,7 @@
 #include "client_net.hpp"
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_time.h"
+#include "waydisplay/wd_video_observation.h"
 
 #include <algorithm>
 #include <climits>
@@ -262,7 +263,6 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t tcp_async_partial                  = logged.tcp_async_partial;
     const uint64_t tcp_async_coalesced                = logged.tcp_async_coalesced;
     const uint64_t tcp_async_inflight_max             = logged.tcp_async_inflight_max;
-    const uint64_t video_frames_rx                    = logged.video_frames_rx;
     const uint64_t video_bytes_rx                     = logged.video_bytes_rx;
     const uint64_t video_frames_decoded               = logged.video_frames_decoded;
     const uint64_t video_frames_presented             = logged.video_frames_presented;
@@ -372,7 +372,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     if (audio_messages_rx != 0 || state.audio_stream_negotiated)
     {
         WD_LOG_STATS(
-            "[client audio/min] messages=%llu packets=%llu kib=%.1f decode_failed=%llu discontinuities=%llu late_drops=%llu "
+            "client-audio/interval: messages=%llu packets=%llu kib=%.1f decode_failed=%llu discontinuities=%llu late_drops=%llu "
             "underflows=%llu audio_decode_q_drops=%llu av_holds=%llu av_drops=%llu video_q=%u/%u q_overflow=%llu "
             "video_decode_q=%u/%u/%u video_decode_q_drops=%llu phase=%u wait_keyframe=%u oldest_pts_us=%llu "
             "av_delta_samples=%lld av_hold_ms=%u/%u startup_timeouts=%llu startup_hold_ms=%u audio_state=%u playing=%s",
@@ -398,7 +398,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                               udp_async_submit_failed != 0 || udp_async_cancels != 0 || udp_async_inflight_max != 0;
     if (udp_activity)
     {
-        WD_LOG_STATS("[client udp/min] pkts=%llu kib=%.1f completed=%llu invalid=%llu probe=%llu stale_session=%llu old_gen=%llu "
+        WD_LOG_STATS("client-udp/interval: pkts=%llu kib=%.1f completed=%llu invalid=%llu probe=%llu stale_session=%llu old_gen=%llu "
                      "async_recv_submitted=%llu async_recv_completed=%llu async_recv_failed=%llu async_recv_submit_failed=%llu "
                      "async_recv_cancels=%llu async_recv_inflight_max=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f "
                      "kib_per_tile=%.2f compressed_kib_per_tile=%.2f pkts_per_tile=%.2f",
@@ -418,7 +418,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     if (invalid != 0 || logged.stale_epoch != 0)
     {
         WD_LOG_STATS(
-            "[client udp-invalid/min] short=%llu header=%llu geometry=%llu fragment=%llu blit=%llu dirty_grid=%llu stale_epoch=%llu",
+            "client-udp-invalid/interval: short=%llu header=%llu geometry=%llu fragment=%llu blit=%llu dirty_grid=%llu stale_epoch=%llu",
             static_cast<unsigned long long>(logged.invalid_short), static_cast<unsigned long long>(logged.invalid_header),
             static_cast<unsigned long long>(logged.invalid_geometry), static_cast<unsigned long long>(logged.invalid_fragment),
             static_cast<unsigned long long>(logged.invalid_blit), static_cast<unsigned long long>(logged.invalid_dirty_grid),
@@ -427,7 +427,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
 
     if (udp_async_posted != 0 || udp_async_retired != 0 || udp_async_receiver_generations != 0 || udp_async_accounting_errors != 0)
     {
-        WD_LOG_STATS("[client udp-async/min] submitted=%llu retired=%llu inflight=%llu prepared=%llu accounted=%llu generations=%llu "
+        WD_LOG_STATS("client-udp-async/interval: submitted=%llu retired=%llu inflight=%llu prepared=%llu accounted=%llu generations=%llu "
                      "drained_reconfig=%llu cancelled_reconfig=%llu accounting_errors=%llu",
                      static_cast<unsigned long long>(udp_async_posted), static_cast<unsigned long long>(udp_async_retired),
                      static_cast<unsigned long long>(udp_async_inflight_current),
@@ -446,7 +446,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     if (repair_activity)
     {
         WD_LOG_STATS(
-            "[client repair/min] summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu summary_throttled=%llu "
+            "client-repair/interval: summaries=%llu retx_req=%llu summary_retx_tiles=%llu summary_deferred=%llu summary_throttled=%llu "
             "stale_drop=%llu pressure_deferred=%llu summary_promote=%llu summary_scan=%llu summary_candidates=%llu partial_timeouts=%llu "
             "missing_pkts=%llu partial_retx=%llu summary_to_retx_avg_ms=%.2f retx_response_avg_ms=%.2f",
             static_cast<unsigned long long>(summaries), static_cast<unsigned long long>(retx),
@@ -463,7 +463,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                                 selection_channel_events != 0 || tcp_async_coalesced != 0;
     if (input_activity)
     {
-        WD_LOG_STATS("[client input/min] keys=%llu pointer_queued=%llu pointer_coalesced=%llu input_events_queued=%llu input_channel=%llu "
+        WD_LOG_STATS("client-input/interval: keys=%llu pointer_queued=%llu pointer_coalesced=%llu input_events_queued=%llu input_channel=%llu "
                      "selection_channel=%llu",
                      static_cast<unsigned long long>(keys), static_cast<unsigned long long>(pointer),
                      static_cast<unsigned long long>(tcp_async_coalesced), static_cast<unsigned long long>(input_events),
@@ -476,11 +476,22 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                                        video_need_keyframe_drops != 0 || video_decoder_resets != 0 || tile_frames_presented != 0;
     if (client_video_activity)
     {
-        WD_LOG_STATS("[client video/min] messages=%llu data=%llu legacy_rx=%llu decoded=%llu presented=%llu tile_presented=%llu "
+        const uint64_t now_ns = wd_now_ns();
+        const uint64_t elapsed_ns = state.stats_log.previous_observation_ns && now_ns > state.stats_log.previous_observation_ns
+                                        ? now_ns - state.stats_log.previous_observation_ns : 0;
+        WD_LOG_STATS("client-video-cadence/interval: elapsed_s=%.3f rx_fps=%.2f decode_fps=%.2f "
+                     "present_fps=%.2f wire_mbit_per_sec=%.3f tile_presented=%llu",
+                     static_cast<double>(elapsed_ns) / 1000000000.0,
+                     wd_video_rate_per_sec(video_data_frames_rx, elapsed_ns),
+                     wd_video_rate_per_sec(video_frames_decoded, elapsed_ns),
+                     wd_video_rate_per_sec(video_frames_presented, elapsed_ns),
+                     wd_video_payload_mbit_per_sec(video_bytes_rx, elapsed_ns),
+                     static_cast<unsigned long long>(tile_frames_presented));
+        WD_LOG_STATS("client-video/interval: messages=%llu data=%llu decoded=%llu presented=%llu tile_presented=%llu "
                      "control=%llu invalid=%llu stale_drop=%llu kib=%.1f decode_avg_ms=%.2f present_age_avg_ms=%.2f decode_failed=%llu "
                      "publish_failed=%llu need_keyframe_drops=%llu resets=%llu last_rx=%llu last_decoded=%llu last_presented=%llu",
                      static_cast<unsigned long long>(video_messages_rx), static_cast<unsigned long long>(video_data_frames_rx),
-                     static_cast<unsigned long long>(video_frames_rx), static_cast<unsigned long long>(video_frames_decoded),
+                     static_cast<unsigned long long>(video_frames_decoded),
                      static_cast<unsigned long long>(video_frames_presented), static_cast<unsigned long long>(tile_frames_presented),
                      static_cast<unsigned long long>(video_control_frames_rx), static_cast<unsigned long long>(video_invalid_frames_rx),
                      static_cast<unsigned long long>(video_stale_frames_dropped), static_cast<double>(video_bytes_rx) / 1024.0,
@@ -497,7 +508,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     if (tcp_async_activity)
     {
         WD_LOG_STATS(
-            "[client tcp_async/min] queued=%llu completed=%llu failed=%llu overflow=%llu partial=%llu coalesced=%llu inflight_max=%llu",
+            "client-tcp-async/interval: queued=%llu completed=%llu failed=%llu overflow=%llu partial=%llu coalesced=%llu inflight_max=%llu",
             static_cast<unsigned long long>(tcp_async_queued), static_cast<unsigned long long>(tcp_async_completed),
             static_cast<unsigned long long>(tcp_async_failed), static_cast<unsigned long long>(tcp_async_overflow),
             static_cast<unsigned long long>(tcp_async_partial), static_cast<unsigned long long>(tcp_async_coalesced),
@@ -510,7 +521,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
                                   tile_present_samples != 0 || input_to_present_samples != 0 || input_seq_present_samples != 0;
     if (latency_activity)
     {
-        WD_LOG_STATS("[client latency/min] tile_assembly_avg_ms=%.2f reassembly_timeout_ms=%llu udp_gap_pressure_ms=%llu "
+        WD_LOG_STATS("client-latency/interval: tile_assembly_avg_ms=%.2f reassembly_timeout_ms=%llu udp_gap_pressure_ms=%llu "
                      "timeout_updates=%llu tile_present_avg_ms=%.2f input_to_present_avg_ms=%.2f input_seq_to_present_avg_ms=%.2f",
                      avg_ms(tile_assembly_sum_ns, tile_assembly_samples), static_cast<unsigned long long>(timeout_ms),
                      static_cast<unsigned long long>(udp_gap_pressure_ms), static_cast<unsigned long long>(timeout_updates),
@@ -523,7 +534,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     if (sdl_render_frames != 0 || sdl_texture_upload_samples != 0 || sdl_present_samples != 0)
     {
         WD_LOG_STATS(
-            "[client render/min] frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu video_full=%llu "
+            "client-render/interval: frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu video_full=%llu "
             "texture_locks=%llu texture_updates=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu "
             "cost_full=%llu model_update_us=%.2f model_lock_us=%.2f model_pixel_ns=%.3f source_mpix=%.2f upload_mpix=%.2f "
             "video_upload_mpix=%.2f snapshot_mpix=%.2f snapshot_avg_ms=%.2f snapshot_max_ms=%.2f fb_direct=%llu fb_staged=%llu "
@@ -548,6 +559,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
             static_cast<double>(sdl_texture_upload_max_ns) / 1000000.0, avg_ms(sdl_present_sum_ns, sdl_present_samples),
             static_cast<double>(sdl_present_max_ns) / 1000000.0);
     }
+    state.stats_log.previous_observation_ns = wd_now_ns();
 }
 
 } // namespace
@@ -582,6 +594,10 @@ bool take_input_timestamp(ClientState& state, uint64_t sequence, uint64_t& times
 }
 
 void sample_client_stats(ClientState& state, bool log_stats) {
+    if (state.stats_log.previous_observation_ns == 0)
+    {
+        state.stats_log.previous_observation_ns = wd_now_ns();
+    }
     client_reap_async_sends(state);
 
     const uint64_t udp_packets                   = take_stat(state.stats.udp_packets_rx);

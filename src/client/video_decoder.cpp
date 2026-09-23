@@ -677,7 +677,7 @@ bool client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* decoder
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {
     if (!decoder || (config.codec != WD_VIDEO_CODEC_H265 && config.codec != WD_VIDEO_CODEC_H264 && config.codec != WD_VIDEO_CODEC_AV1) || config.width == 0 ||
         config.height == 0 || config.coded_width < config.width || config.coded_height < config.height ||
-        config.decode_mode == WD_CLIENT_VIDEO_DECODE_OFF || config.decode_mode > WD_CLIENT_VIDEO_DECODE_OFF) [[unlikely]]
+        config.decode_mode == WD_CLIENT_VIDEO_DECODER_OFF || config.decode_mode > WD_CLIENT_VIDEO_DECODER_OFF) [[unlikely]]
     {
         return false;
     }
@@ -688,8 +688,8 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
     if (config.codec == WD_VIDEO_CODEC_AV1)
     {
         const AVCodec* hardware_decoder = avcodec_find_decoder_by_name("av1");
-        const bool needs_software = config.decode_mode == WD_CLIENT_VIDEO_DECODE_SOFTWARE ||
-                                    (config.decode_mode == WD_CLIENT_VIDEO_DECODE_AUTO &&
+        const bool needs_software = config.decode_mode == WD_CLIENT_VIDEO_DECODER_SOFTWARE ||
+                                    (config.decode_mode == WD_CLIENT_VIDEO_DECODER_AUTO &&
                                      (decoder->vaapi_auto_disabled || !hardware_decoder || !WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER));
         decoder->codec = needs_software ? find_av1_software_decoder() : hardware_decoder;
         if (!decoder->codec)
@@ -731,9 +731,9 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
      * modes from choosing hardware formats and gates native AV1 VAAPI. */
     decoder->codec_ctx->opaque     = decoder;
     decoder->codec_ctx->get_format = select_decoder_hw_format;
-    decoder->vaapi_required = config.decode_mode == WD_CLIENT_VIDEO_DECODE_VAAPI;
+    decoder->vaapi_required = config.decode_mode == WD_CLIENT_VIDEO_DECODER_VAAPI;
     decoder->vaapi_requested =
-        config.decode_mode != WD_CLIENT_VIDEO_DECODE_SOFTWARE && (decoder->vaapi_required || !decoder->vaapi_auto_disabled);
+        config.decode_mode != WD_CLIENT_VIDEO_DECODER_SOFTWARE && (decoder->vaapi_required || !decoder->vaapi_auto_disabled);
     if (decoder->vaapi_requested)
     {
         char selected_device[PATH_MAX] = {};
@@ -779,7 +779,7 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
         }
     }
 #else
-    if (config.decode_mode == WD_CLIENT_VIDEO_DECODE_VAAPI)
+    if (config.decode_mode == WD_CLIENT_VIDEO_DECODER_VAAPI)
     {
         release_decoder_backend(decoder);
         return false;

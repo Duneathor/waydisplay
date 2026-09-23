@@ -2,7 +2,7 @@
 
 WayDisplay is an experimental low-latency remote display system for Linux. The server runs a headless wlroots compositor and streams tiles, video, audio, clipboard data, and input events to an SDL client.
 
-Planned output resizes use an exact tile recovery frame while retaining the last visible client surface, then resume whichever video mode was previously selected. Video decode cadence adapts below the client-requested FPS ceiling without changing the compositor session cadence.
+Planned output resizes use an exact tile recovery frame while retaining the last visible client surface, then resume whichever video mode was previously selected. Server capture pacing may adapt below the client-requested FPS ceiling without changing the compositor session cadence.
 
 The project is not deployed and the protocol is intentionally unstable. Protocol compatibility may be broken whenever doing so improves latency, throughput, or maintainability.
 
@@ -29,6 +29,7 @@ waydisplay-client
 ```
 
 See [BUILDING.md](BUILDING.md) for dependencies, profiles, feature switches, tests, and installation.
+See [video quality and cadence](docs/video-quality.md) for controlled A/B comparisons and measured frame rates.
 
 On Arch Linux, use the root-level local `PKGBUILD` to install dependencies,
 build both runtime binaries, run tests, and install the package directly from
@@ -50,23 +51,27 @@ replacing its empty source list with reproducible, pinned sources.
 Start the server first:
 
 ```sh
-./build-native/waydisplay-server --app konsole
+./build-native/waydisplay-server
 ```
 
-`konsole` is the default app and must be installed on the server; use `--app`
+`konsole` is the default app and must be installed on the server; use `--launch-command`
 to choose another command.
 
-Then connect the client using the address and ports selected for that server:
+Then connect using the server address; TCP port 5000 and local UDP port 6000 are defaults:
 
 ```sh
-./build-native/waydisplay-client 127.0.0.1 5000 6000
+./build-native/waydisplay-client 127.0.0.1
 ```
 
 For a remote host, use that server's reachable IPv4 address instead of
-`127.0.0.1`; bind it with `--listen` on a trusted network. The client prefers
+`127.0.0.1`; the default server listens on `0.0.0.0`, so use it only on a
+trusted network. Override the listener using `--listen-ipv4` when needed.
+Both commands are quiet by default (errors only). Add `-v` or `--verbose` on
+each endpoint to see routine diagnostics; `--help` shows all options.
+The client prefers
 H.265; `--video-codec h264` selects H.264 and `--video-codec av1`
 selects AV1 explicitly where both peers support it. Both `--video-encoder`
-(server) and `--video-decode` (client) accept `off|auto|software|vaapi`,
+(server) and `--video-decoder` (client) accept `off|auto|software|vaapi`,
 defaulting to `auto`.
 
 **Ctrl+Alt+right-click** in the client opens a launcher menu. **LAUNCH DEFAULT**
@@ -92,6 +97,7 @@ Memory safety, bounded queues, parser limits, and nonblocking network progress r
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Naming and telemetry conventions](docs/naming.md)
 - [Protocol](docs/protocol.md)
 - [Threading contract](docs/threading.md)
 - [Security model](SECURITY.md)

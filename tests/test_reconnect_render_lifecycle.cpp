@@ -109,7 +109,7 @@ void test_bootstrap_refresh_does_not_trigger_video_selection() {
     metrics.dirty_coverage_per_mille_peak = 1000;
     metrics.tile_wire_bytes               = 10u * 1024u * 1024u;
     metrics.tile_budget_bytes_per_second  = 10u * 1024u * 1024u;
-    metrics.requested_capture_fps         = 60;
+    metrics.requested_session_fps         = 60;
     metrics.adaptive_capture_fps          = 60;
     metrics.minimum_dirty_percent         = 60;
 

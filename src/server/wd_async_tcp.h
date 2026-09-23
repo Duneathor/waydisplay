@@ -8,6 +8,18 @@ extern "C" {
 #endif
 
 struct wd_async_tcp_sender;
+struct wd_async_tcp_message;
+
+/* A prepared message owns its complete TCP wire buffer. Caller fills the
+ * payload, then either discards it or transfers ownership to the sender.
+ * send_prepared consumes it on BOTH success and failure; never access the
+ * payload after the call. No borrowed pointers survive io_uring completion. */
+struct wd_async_tcp_message* wd_async_tcp_prepare_message(uint16_t message_type, uint32_t payload_size,
+                                                          void** out_payload);
+void wd_async_tcp_discard_prepared_message(struct wd_async_tcp_message* msg);
+bool wd_async_tcp_send_prepared_message(struct wd_async_tcp_sender* sender, int fd,
+                                        struct wd_async_tcp_message* msg);
+
 
 typedef void (*wd_async_tcp_complete_fn)(void* user_data, bool success);
 

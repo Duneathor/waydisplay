@@ -29,6 +29,11 @@ enum wd_log_level {
     WD_LOG_LEVEL_DEBUG = WD_LOG_LEVEL_VALUE_DEBUG,
 };
 
+/* Quiet by default: only errors. Main configures this before starting workers. */
+void wd_log_set_verbose(bool verbose);
+bool wd_log_is_verbose(void);
+bool wd_log_would_log(enum wd_log_level level);
+
 void wd_log_message(enum wd_log_level level, const char* fmt, ...) WD_PRINTF_FORMAT(2, 3);
 void wd_log_message_va(enum wd_log_level level, const char* fmt, va_list args) WD_PRINTF_FORMAT(2, 0);
 bool wd_log_rate_limit_should_log(uint64_t* last_log_ns, uint64_t now_ns, uint64_t interval_ns);
@@ -48,19 +53,19 @@ bool wd_log_rate_limit_should_log(uint64_t* last_log_ns, uint64_t now_ns, uint64
 #endif
 
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_WARN
-#define WD_LOG_WARN(...) wd_log_message(WD_LOG_LEVEL_WARN, __VA_ARGS__)
+#define WD_LOG_WARN(...) do { if (wd_log_would_log(WD_LOG_LEVEL_WARN)) wd_log_message(WD_LOG_LEVEL_WARN, __VA_ARGS__); } while (0)
 #else
 #define WD_LOG_WARN(...) ((void)0)
 #endif
 
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_INFO
-#define WD_LOG_INFO(...) wd_log_message(WD_LOG_LEVEL_INFO, __VA_ARGS__)
+#define WD_LOG_INFO(...) do { if (wd_log_would_log(WD_LOG_LEVEL_INFO)) wd_log_message(WD_LOG_LEVEL_INFO, __VA_ARGS__); } while (0)
 #else
 #define WD_LOG_INFO(...) ((void)0)
 #endif
 
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_STATS
-#define WD_LOG_STATS(...) wd_log_message(WD_LOG_LEVEL_STATS, __VA_ARGS__)
+#define WD_LOG_STATS(...) do { if (wd_log_would_log(WD_LOG_LEVEL_STATS)) wd_log_message(WD_LOG_LEVEL_STATS, __VA_ARGS__); } while (0)
 #else
 /* Compile and type-check disabled log arguments without evaluating them.
  * They remain references for -Wunused-* (including log-only helpers), while
@@ -69,7 +74,7 @@ bool wd_log_rate_limit_should_log(uint64_t* last_log_ns, uint64_t now_ns, uint64
 #endif
 
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_DEBUG
-#define WD_LOG_DEBUG(...) wd_log_message(WD_LOG_LEVEL_DEBUG, __VA_ARGS__)
+#define WD_LOG_DEBUG(...) do { if (wd_log_would_log(WD_LOG_LEVEL_DEBUG)) wd_log_message(WD_LOG_LEVEL_DEBUG, __VA_ARGS__); } while (0)
 #else
 #define WD_LOG_DEBUG(...) do { if (0) wd_log_message(WD_LOG_LEVEL_DEBUG, __VA_ARGS__); } while (0)
 #endif

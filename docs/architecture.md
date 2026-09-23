@@ -7,7 +7,7 @@ WayDisplay has two processes:
 - `waydisplay-server` runs a headless wlroots compositor, captures damage, chooses tile or video transport, captures audio, and accepts client input.
 - `waydisplay-client` receives media and state, performs decode and reassembly, presents through SDL, and sends local input and clipboard updates.
 
-The protocol is version `0`. There are no compatibility guarantees while the software remains undeployed. For per-frame media debugging, use [HEVC diagnostics](video-hevc-troubleshooting.md); its sampled traces require a DEBUG build and are not used for protocol decisions.
+The protocol is version `0`. There are no compatibility guarantees while the software remains undeployed. For media failures, use [HEVC diagnostics](video-hevc-troubleshooting.md) and the interval health/cadence counters; there is no per-frame packet trace.
 
 ## Design priorities
 
@@ -134,7 +134,7 @@ as a UDP rate, because video, audio, and control use TCP transports.
 ### Automatic tile/video selection
 
 Automatic entry evaluates dirty coverage across every sampled frame, not only
-frames that changed. Sustained average coverage of 50% selects video directly.
+frames that changed. Sustained average coverage of 30% selects video directly.
 Lower-coverage workloads may also select video when estimated fresh-tile wire
 demand reaches 85% of the fresh-tile allocation. The estimate combines the
 observed wire cost per covered base tile, the all-frame dirty average, the
@@ -143,7 +143,7 @@ bytes are retained only as an observed-pressure signal.
 
 While automatic video owns the display, the compositor still records cheap
 damage coverage metadata. A return to tiles requires this average to remain at
-or below 20% for 30 seconds. Dormant tile queues, repair backlog, and tile-budget
+or below 15% for 30 seconds. Dormant tile queues, repair backlog, and tile-budget
 blocking are intentionally not exit requirements because those producers are
 paused during video ownership. Forced video bypasses content thresholds only;
 it still requires the client's selected control mode, successful negotiation,
@@ -189,7 +189,7 @@ false fallback.
 
 ### Video cadence is adaptive below the client ceiling
 
-The client `--fps` request is a ceiling, not a promise that every video frame
+The client `--session-fps` request is a ceiling, not a promise that every video frame
 will be encoded at that rate. Decode-input overload or average decode time that
 leaves less than the configured headroom immediately lowers video capture and
 encoder cadence. Cadence rises one FPS at a time only after the configured sustained-health interval.
@@ -203,3 +203,43 @@ queue occupancy, decoder phase, keyframe wait state, A/V hold age, audio state,
 and active/requested FPS. This log is the authoritative explanation for a
 video-to-tile transition; the bandwidth-plan reset that follows is a consequence
 of ownership changing, not the cause.
+
+## Video-owned framebuffer shadow
+
+While video owns the display, the frame worker skips tile/shadow framebuffer
+comparison and invalidates the shadow. Auto mode continues to sample compositor
+**damage metadata** for its exit decision; it does not need a tile diff. On a
+video-to-tile handoff the compositor must provide a new full-refresh frame
+before the tile pipeline can publish a generation. Video-ready (before the
+first keyframe) remains tile-owned and retains normal tile diffing. A mode
+change racing with a skipped analysis requests another full frame instead of
+mistaking the skipped analysis for an unchanged image.
+
+## Video snapshot preflight
+
+Before copying the CPU framebuffer into a video snapshot, the frame worker
+checks whether an encoded video frame is still queued with the async TCP
+sender. A backpressured frame is not copied. The final publication check under
+the network lock still runs because the sender can become busy while the
+snapshot is being copied. After encoding, another pending-message check and
+keyframe rearm are required to protect interframe decoder references.
+
+## Owned video TCP buffers
+
+The video worker prepares a complete async TCP wire allocation and copies the
+encoded access unit into it once. The TCP sender takes ownership on enqueue;
+its normal partial-send, completion, drop, cancel, and shutdown paths release
+the same allocation. A failed enqueue consumes the prepared allocation too.
+Other control-message senders retain their existing copy-based API.
+
+## Xwayland decoration work
+
+Repeated Xwayland buffer commits no longer reapply unchanged titlebar geometry
+and enabled state. First scene association, late map requests that create nodes,
+fullscreen transitions, window width changes, and reassociation invalidate or
+change the cached layout. Each content commit still propagates damage; a
+stable decoration layout does **not** mean the game drew an unchanged picture.
+`compositor-capture/interval` reports decoration layout updates and reuses.
+`x11_committed_bounds_mpix` is a sum of buffer bounding areas, **not** actual
+changed-pixel area or a per-Wine-process metric. Do not interpret it as a
+damage-rectangle estimate or use it to suppress render/readback.

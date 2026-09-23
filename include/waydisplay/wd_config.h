@@ -77,6 +77,7 @@ extern "C" {
  * payload and socket-buffer sizes cap memory and datagram behavior.  Probe
  * target/duration control how much traffic is spent estimating link capacity. */
 #define WD_DEFAULT_TCP_PORT              5000u
+#define WD_CLIENT_DEFAULT_UDP_PORT       6000u
 #define WD_TCP_HANDSHAKE_TIMEOUT_MS      3000L
 #define WD_TCP_CONNECTED_SEND_TIMEOUT_MS 3000L
 #define WD_TCP_FRAME_IDLE_TIMEOUT_NS      (3000ull * WD_NSEC_PER_MSEC)
@@ -319,8 +320,8 @@ extern "C" {
  * reserves link headroom.  Video bitrate 0 in a request means derive from the
  * link; WD_VIDEO_DEFAULT_* is the fallback when a fixed estimate is required.
  * Hardware-decode values are enum-compatible client policy modes. */
-#define WD_DEFAULT_CAPTURE_FPS                       60u
-#define WD_MAX_REASONABLE_FPS                        240u
+#define WD_DEFAULT_SESSION_FPS                       60u
+#define WD_MAX_SESSION_FPS                        240u
 #define WD_STREAM_TOKEN_BURST_DIVISOR                4u
 #define WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND  (1024ull * 1024ull)
 #define WD_UDP_RATE_MIN_BYTES_PER_SECOND      (25ull * 1024ull)
@@ -328,10 +329,10 @@ extern "C" {
 #define WD_UDP_THROUGHPUT_SAFETY_PERCENT      85u
 #define WD_VIDEO_DEFAULT_BITRATE_KIB_PER_SECOND      8192u
 #define WD_VIDEO_DERIVED_BITRATE_MAX_KIB_PER_SECOND  100000u
-#define WD_CLIENT_VIDEO_DECODE_AUTO      0u
-#define WD_CLIENT_VIDEO_DECODE_SOFTWARE  1u
-#define WD_CLIENT_VIDEO_DECODE_VAAPI     2u
-#define WD_CLIENT_VIDEO_DECODE_OFF       3u
+#define WD_CLIENT_VIDEO_DECODER_AUTO      0u
+#define WD_CLIENT_VIDEO_DECODER_SOFTWARE  1u
+#define WD_CLIENT_VIDEO_DECODER_VAAPI     2u
+#define WD_CLIENT_VIDEO_DECODER_OFF       3u
 
 /* Stream adaptation and link-health policy.
  * Loss/pressure streaks reduce rate or FPS; sustained good periods increase
@@ -441,7 +442,7 @@ extern "C" {
  * choose dirty rectangles versus bounding/full uploads.  Decoder queue
  * capacities are ordered metadata >= decoded >= present.  Context-menu and
  * wheel values are local UI geometry, not protocol policy. */
-#define WD_CLIENT_DEFAULT_TARGET_FPS               WD_DEFAULT_CAPTURE_FPS
+#define WD_CLIENT_DEFAULT_SESSION_FPS               WD_DEFAULT_SESSION_FPS
 #define WD_CLIENT_RESIZE_DEBOUNCE_NS               150000000ull
 #define WD_CLIENT_FRAME_DELAY_MS                   8
 #define WD_CLIENT_AUDIO_VIDEO_STARTUP_HOLD_MAX_MS  1000u
@@ -593,6 +594,8 @@ extern "C" {
 #endif
 
 WD_CONFIG_STATIC_ASSERT(WD_DEFAULT_TCP_PORT > 0u && WD_DEFAULT_TCP_PORT <= UINT16_MAX, "default TCP port must fit uint16_t");
+WD_CONFIG_STATIC_ASSERT(WD_CLIENT_DEFAULT_UDP_PORT > 0u && WD_CLIENT_DEFAULT_UDP_PORT <= UINT16_MAX,
+                        "default client UDP port must fit uint16_t");
 WD_CONFIG_STATIC_ASSERT(WD_ASYNC_MIN_RING_ENTRIES > 0u && WD_SERVER_CONTROL_TX_RING_ENTRIES >= WD_ASYNC_MIN_RING_ENTRIES &&
                             WD_SERVER_VIDEO_TX_RING_ENTRIES >= WD_ASYNC_MIN_RING_ENTRIES &&
                             WD_CLIENT_TCP_TX_RING_ENTRIES >= WD_ASYNC_MIN_RING_ENTRIES,
@@ -658,7 +661,7 @@ WD_CONFIG_STATIC_ASSERT(WD_BANDWIDTH_TILE_FRESH_PERCENT + WD_BANDWIDTH_TILE_REPA
                             "tile bandwidth classes must consume exactly the safe-link budget");
 WD_CONFIG_STATIC_ASSERT(WD_VIDEO_EXIT_DIRTY_PERCENT_DEFAULT < WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT,
                         "automatic video exit must remain below the entry threshold");
-WD_CONFIG_STATIC_ASSERT(WD_MAX_REASONABLE_FPS <= WD_SERVER_MAX_REFRESH_HZ,
+WD_CONFIG_STATIC_ASSERT(WD_MAX_SESSION_FPS <= WD_SERVER_MAX_REFRESH_HZ,
                         "client-selected cadence must fit the compositor refresh range");
 WD_CONFIG_STATIC_ASSERT(WD_UDP_RATE_MIN_BYTES_PER_SECOND <= WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND &&
                             WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND <= WD_UDP_RATE_MAX_BYTES_PER_SECOND,
@@ -699,7 +702,7 @@ WD_CONFIG_STATIC_ASSERT(WD_AUDIO_ENCODER_SIGNAL_MODE <= 2u,
 WD_CONFIG_STATIC_ASSERT(WD_STREAM_VIDEO_DECODE_EWMA_NEW_NUMERATOR > 0u &&
                             WD_STREAM_VIDEO_DECODE_EWMA_NEW_NUMERATOR < WD_STREAM_VIDEO_DECODE_EWMA_DENOMINATOR,
                         "video decode EWMA must retain both old and new samples");
-WD_CONFIG_STATIC_ASSERT(WD_STREAM_VIDEO_FPS_DEADBAND < WD_MAX_REASONABLE_FPS &&
+WD_CONFIG_STATIC_ASSERT(WD_STREAM_VIDEO_FPS_DEADBAND < WD_MAX_SESSION_FPS &&
                             WD_STREAM_VIDEO_OVERLOAD_DECREASE_PERCENT > 0u &&
                             WD_STREAM_VIDEO_OVERLOAD_DECREASE_PERCENT < 100u,
                         "video cadence hysteresis and overload reduction must be bounded");

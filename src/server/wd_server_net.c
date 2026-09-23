@@ -182,7 +182,7 @@ static bool wd_receive_client_hello(int tcp_fd, const struct sockaddr_in* peer_a
         WD_LOG_ERROR("rejected client hello payload peer=%s udp_port=%u capture_fps=%u desired=%ux%u capabilities=0x%x "
                      "video_codecs=0x%x video_transport=%u video_mode=%u audio_codecs=0x%x audio_transport=%u "
                      "audio_channels=%u audio_latency_ms=%u",
-                     peer, hello->client_udp_port, hello->requested_capture_fps, hello->desired_width, hello->desired_height,
+                     peer, hello->client_udp_port, hello->requested_session_fps, hello->desired_width, hello->desired_height,
                      hello->capabilities, hello->video_codecs, hello->video_transport, hello->video_mode,
                      hello->audio_codecs, hello->audio_transport, hello->audio_max_channels,
                      hello->audio_target_latency_ms);
@@ -1530,7 +1530,7 @@ void* wd_net_thread_main(void* arg) {
             continue;
         }
 
-        const uint16_t requested_refresh_hz = wd_frame_rate_normalize_client_request(hello.requested_capture_fps);
+        const uint16_t requested_refresh_hz = wd_frame_rate_normalize_client_request(hello.requested_session_fps);
         const uint32_t requested_width       = hello.desired_width != 0 ? hello.desired_width : server->display_width;
         const uint32_t requested_height      = hello.desired_height != 0 ? hello.desired_height : server->display_height;
         if ((hello.desired_width == 0) != (hello.desired_height == 0) ||
@@ -1827,7 +1827,7 @@ void* wd_net_thread_main(void* arg) {
                         client_video_tcp ? wd_video_codec_name(selected_video_codec) : "none", client_video_tcp ? "tcp" : "none",
                         audio_tcp_fd >= 0 ? "yes" : "no", client_audio_tcp ? "yes" : "no", client_audio_tcp ? "opus" : "none",
                         server->display_width, server->display_height, server->tile_width, server->tile_height, requested_refresh_hz,
-                        hello.udp_rate_cap_kib_per_second, (unsigned long long)(net->stream_policy.tile_media_bytes_per_second / 1024ull));
+                        hello.link_cap_kib_per_second, (unsigned long long)(net->stream_policy.tile_media_bytes_per_second / 1024ull));
 
             if (input_tcp_fd >= 0)
             {

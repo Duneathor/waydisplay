@@ -93,6 +93,7 @@ static void test_parse_defaults(void) {
     struct wd_server_cli_options options;
     CHECK(parse_args(sizeof(argv) / sizeof(argv[0]), argv, &options) == WD_SERVER_CLI_OK);
     CHECK(options.tcp_port == WD_DEFAULT_TCP_PORT);
+    CHECK(!options.verbose);
     CHECK(options.display_width == WD_DISPLAY_WIDTH);
     CHECK(options.display_height == WD_DISPLAY_HEIGHT);
     CHECK(options.output_scale == WD_SERVER_DEFAULT_OUTPUT_SCALE);
@@ -105,9 +106,9 @@ static void test_parse_defaults(void) {
 }
 
 static void test_retained_arguments(void) {
-    char* argv[] = {MUTABLE_ARG("server"),  MUTABLE_ARG("--listen"), MUTABLE_ARG("0.0.0.0"),      MUTABLE_ARG("--port"), MUTABLE_ARG("5500"),       MUTABLE_ARG("--app"),  MUTABLE_ARG("weston-terminal"), MUTABLE_ARG("--size"),  MUTABLE_ARG("1920x1080"),
-                    MUTABLE_ARG("--scale"), MUTABLE_ARG("1.25"),
-                    MUTABLE_ARG("--renderer"), MUTABLE_ARG("vulkan"), MUTABLE_ARG("--video-encoder"), MUTABLE_ARG("software")};
+    char* argv[] = {MUTABLE_ARG("server"),  MUTABLE_ARG("--listen-ipv4"), MUTABLE_ARG("0.0.0.0"),      MUTABLE_ARG("--tcp-port"), MUTABLE_ARG("5500"),       MUTABLE_ARG("--launch-command"),  MUTABLE_ARG("weston-terminal"), MUTABLE_ARG("--display-size"),  MUTABLE_ARG("1920x1080"),
+                    MUTABLE_ARG("--output-scale"), MUTABLE_ARG("1.25"),
+                    MUTABLE_ARG("--compositor-renderer"), MUTABLE_ARG("vulkan"), MUTABLE_ARG("--video-encoder"), MUTABLE_ARG("software")};
     struct wd_server_cli_options options;
     CHECK(parse_args(sizeof(argv) / sizeof(argv[0]), argv, &options) == WD_SERVER_CLI_OK);
     CHECK(options.listen_address.s_addr == htonl(INADDR_ANY));
@@ -117,6 +118,14 @@ static void test_retained_arguments(void) {
     CHECK(options.output_scale == 1.25);
     CHECK(strcmp(options.renderer_name, "vulkan") == 0);
     CHECK(strcmp(options.video_encoder_backend, "software") == 0);
+}
+
+static void test_verbose(void) {
+    char* short_args[] = {MUTABLE_ARG("server"), MUTABLE_ARG("-v")};
+    char* long_args[] = {MUTABLE_ARG("server"), MUTABLE_ARG("--verbose")};
+    struct wd_server_cli_options options;
+    CHECK(parse_args(2, short_args, &options) == WD_SERVER_CLI_OK && options.verbose);
+    CHECK(parse_args(2, long_args, &options) == WD_SERVER_CLI_OK && options.verbose);
 }
 
 static void test_encoder_modes(void) {
@@ -144,8 +153,15 @@ static void test_removed_arguments(void) {
     char*        xdg_dialog[]    = {MUTABLE_ARG("server"), MUTABLE_ARG("--xdg-dialog")};
     char*        no_xdg_dialog[] = {MUTABLE_ARG("server"), MUTABLE_ARG("--no-xdg-dialog")};
     char*        refresh_hz[]    = {MUTABLE_ARG("server"), MUTABLE_ARG("--refresh-hz"), MUTABLE_ARG("75")};
-    char**       removed[]       = {tile_size, wan_tiles, compression, xwayland, no_xwayland, xdg_dialog, no_xdg_dialog, refresh_hz};
-    const size_t counts[]        = {3, 2, 3, 2, 2, 2, 2, 3};
+    char*        old_listen[]    = {MUTABLE_ARG("server"), MUTABLE_ARG("--listen"), MUTABLE_ARG("0.0.0.0")};
+    char*        old_port[]      = {MUTABLE_ARG("server"), MUTABLE_ARG("--port"), MUTABLE_ARG("5000")};
+    char*        old_app[]       = {MUTABLE_ARG("server"), MUTABLE_ARG("--app"), MUTABLE_ARG("konsole")};
+    char*        old_size[]      = {MUTABLE_ARG("server"), MUTABLE_ARG("--size"), MUTABLE_ARG("800x600")};
+    char*        old_scale[]     = {MUTABLE_ARG("server"), MUTABLE_ARG("--scale"), MUTABLE_ARG("1.0")};
+    char*        old_renderer[]  = {MUTABLE_ARG("server"), MUTABLE_ARG("--renderer"), MUTABLE_ARG("auto")};
+    char**       removed[]       = {tile_size, wan_tiles, compression, xwayland, no_xwayland, xdg_dialog, no_xdg_dialog, refresh_hz,
+                                    old_listen, old_port, old_app, old_size, old_scale, old_renderer};
+    const size_t counts[]        = {3, 2, 3, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3};
 
     for (size_t i = 0; i < sizeof(removed) / sizeof(removed[0]); ++i)
     {
@@ -156,9 +172,9 @@ static void test_removed_arguments(void) {
 
 static void test_help_and_errors(void) {
     char*                        help[]             = {MUTABLE_ARG("server"), MUTABLE_ARG("--help")};
-    char*                        missing_app[]      = {MUTABLE_ARG("server"), MUTABLE_ARG("--app")};
-    char*                        invalid_renderer[] = {MUTABLE_ARG("server"), MUTABLE_ARG("--renderer"), MUTABLE_ARG("metal")};
-    char*                        invalid_size[]     = {MUTABLE_ARG("server"), MUTABLE_ARG("--size"), MUTABLE_ARG("4097x2160")};
+    char*                        missing_app[]      = {MUTABLE_ARG("server"), MUTABLE_ARG("--launch-command")};
+    char*                        invalid_renderer[] = {MUTABLE_ARG("server"), MUTABLE_ARG("--compositor-renderer"), MUTABLE_ARG("metal")};
+    char*                        invalid_size[]     = {MUTABLE_ARG("server"), MUTABLE_ARG("--display-size"), MUTABLE_ARG("4097x2160")};
     struct wd_server_cli_options options;
     CHECK(parse_args(2, help, &options) == WD_SERVER_CLI_HELP);
     CHECK(parse_args(2, missing_app, &options) == WD_SERVER_CLI_ERROR);
@@ -174,6 +190,7 @@ int main(void) {
     test_tile_grid_overflow_checks();
     test_parse_defaults();
     test_retained_arguments();
+    test_verbose();
     test_encoder_modes();
     test_removed_arguments();
     test_help_and_errors();

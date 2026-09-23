@@ -2,30 +2,20 @@
 
 #include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_time.h"
-#include "waydisplay/wd_video_trace.h"
 #include "wd_async_tcp.h"
 #include "wd_video_encoder.h"
 #include "wd_video_transition.h"
 #include "video_encode_pacing.h"
+#include "video_encoder_clock.h"
+#include "video_snapshot_admission.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-static bool wd_stream_video_frame_due_locked(const struct wd_stream_policy* policy, uint64_t now_ns) {
-    if (!policy)
-    {
-        return false;
-    }
-
-    uint16_t fps = wd_stream_policy_effective_fps_locked(policy);
-    if (fps == 0)
-    {
-        fps = WD_DEFAULT_CAPTURE_FPS;
-    }
-
-    const uint64_t interval_ns = WD_NSEC_PER_SEC / fps;
-    return policy->last_video_frame_send_ns == 0 || now_ns - policy->last_video_frame_send_ns >= interval_ns;
+/* Rate-limit repeated backpressure warnings; this is not a per-frame trace. */
+static bool wd_stream_video_drop_log_sample(uint64_t frame_id) {
+    return frame_id != 0 && (frame_id <= 8u || (frame_id % 128u) == 0);
 }
 
 uint32_t wd_stream_video_bitrate_kib_locked(const struct wd_stream_policy* policy) {
@@ -150,6 +140,8 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     bool                                 software_av1    = false;
     bool                                 payload_invalid = false;
     uint8_t*                             payload         = NULL;
+    void*                                prepared_payload = NULL;
+    struct wd_async_tcp_message*         prepared        = NULL;
     uint32_t                             payload_size    = 0;
     struct wd_video_frame_payload_header header;
     memset(&header, 0, sizeof(header));
@@ -191,7 +183,9 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
             }
             else
             {
-                payload = malloc((size_t)payload_size64);
+                prepared = wd_async_tcp_prepare_message(WD_MSG_VIDEO_FRAME, (uint32_t)payload_size64,
+                                                        &prepared_payload);
+                payload = prepared_payload;
                 if (!payload)
                 {
                     payload_invalid = true;
@@ -208,19 +202,13 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     pthread_mutex_unlock(&net->video_encoder_lock);
 
     const uint64_t encode_ns = wd_now_ns() - encode_start_ns;
-    /* Fingerprint only a bounded sample and do the scan outside net->lock.
-     * Match epoch/frame/hash with the client's receive trace. */
-    const bool trace_packet = encoded && !no_output && !payload_invalid && payload &&
-                              wd_video_trace_debug_sample(header.frame_id);
-    const uint64_t trace_hash = trace_packet ? wd_video_trace_hash(payload + sizeof(header), header.data_size) : 0;
-    const uint64_t trace_prefix = trace_packet ? wd_video_trace_prefix(payload + sizeof(header), header.data_size) : 0;
 
     pthread_mutex_lock(&net->lock);
     net->stats.video_encode_ns += encode_ns;
 
     if (!encoded || payload_invalid)
     {
-        free(payload);
+        wd_async_tcp_discard_prepared_message(prepared);
         net->stats.video_encode_failed++;
         pthread_mutex_unlock(&net->lock);
         return;
@@ -234,7 +222,7 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
 
     if (!wd_stream_video_job_current_locked(server, job))
     {
-        free(payload);
+        wd_async_tcp_discard_prepared_message(prepared);
         net->stats.video_worker_stale_drops++;
         pthread_mutex_unlock(&net->lock);
         return;
@@ -260,14 +248,14 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
         pthread_mutex_lock(&net->video_encoder_lock);
         (void)wd_video_encoder_request_keyframe(net->video_encoder);
         pthread_mutex_unlock(&net->video_encoder_lock);
-        if (wd_video_trace_sample(header.frame_id))
+        if (wd_stream_video_drop_log_sample(header.frame_id))
         {
             /* Keep the recovery event visible in INFO without hashing bytes. */
             WD_LOG_WARN("video encoded frame dropped: epoch=%llu frame=%llu codec=%u key=%u bytes=%u reason=pending-tcp rearm=keyframe",
                         (unsigned long long)header.content_epoch, (unsigned long long)header.frame_id, header.codec,
                         (unsigned)((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0), header.data_size);
         }
-        free(payload);
+        wd_async_tcp_discard_prepared_message(prepared);
         net->stats.video_keyframe_skipped_pending++;
         pthread_mutex_unlock(&net->lock);
         return;
@@ -275,14 +263,14 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
 
     if (job->request_keyframe && (header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
     {
-        free(payload);
+        wd_async_tcp_discard_prepared_message(prepared);
         net->stats.video_encode_failed++;
         pthread_mutex_unlock(&net->lock);
         return;
     }
 
-    const bool queued = wd_async_tcp_send_message(net->video_tx, net->video_tcp_fd, WD_MSG_VIDEO_FRAME, payload, payload_size);
-    free(payload);
+    /* Transfers the prepared wire buffer on success; consumes it on error. */
+    const bool queued = wd_async_tcp_send_prepared_message(net->video_tx, net->video_tcp_fd, prepared);
 
     if (!queued)
     {
@@ -292,14 +280,6 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
         return;
     }
 
-    if (trace_packet)
-    {
-        WD_LOG_DEBUG("video trace stage=server-send epoch=%llu frame=%llu codec=%u key=%u bytes=%u prefix=%016llx hash=%016llx encode_ms=%.2f queue_ms=%.2f",
-                    (unsigned long long)header.content_epoch, (unsigned long long)header.frame_id, header.codec,
-                    (unsigned)((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0), header.data_size,
-                    (unsigned long long)trace_prefix, (unsigned long long)trace_hash,
-                    (double)encode_ns / 1000000.0, (double)(wd_now_ns() - job->published_ns) / 1000000.0);
-    }
     net->stats.video_frames_tx++;
     if ((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0)
     {
@@ -558,7 +538,6 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
     pthread_mutex_lock(&net->video_encoder_lock);
     wd_video_encoder_reset(net->video_encoder);
     pthread_mutex_unlock(&net->video_encoder_lock);
-    net->stream_policy.last_video_frame_send_ns = 0;
     net->stream_policy.video_candidate_seconds  = 0;
     net->stream_policy.tile_recovery_seconds    = 0;
     if (resize)
@@ -632,7 +611,7 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
     }
 }
 
-bool wd_stream_video_snapshot_needed(struct wd_server* server, uint64_t now_ns) {
+bool wd_stream_video_snapshot_needed(struct wd_server* server) {
     if (!server || !server->framebuffer_xrgb8888)
     {
         return false;
@@ -640,13 +619,36 @@ bool wd_stream_video_snapshot_needed(struct wd_server* server, uint64_t now_ns) 
 
     struct wd_net_state* net = &server->net;
     pthread_mutex_lock(&net->lock);
-    const bool needed = net->video_worker &&
-                        (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY ||
-                         net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE ||
-                         net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_RECOVERING) &&
-                        net->video_stream_negotiated && net->video_tcp_fd >= 0 && net->video_tx &&
-                        wd_video_encoder_available(net->video_encoder) &&
-                        wd_stream_video_frame_due_locked(&net->stream_policy, now_ns);
+    const bool owns_video = net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY ||
+                            net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_ACTIVE ||
+                            net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_RECOVERING;
+    if (!owns_video)
+    {
+        pthread_mutex_unlock(&net->lock);
+        return false;
+    }
+
+    net->stats.video_snapshot_considered++;
+    const bool available = net->video_worker && net->video_stream_negotiated && net->video_tcp_fd >= 0 &&
+                           net->video_tx && wd_video_encoder_available(net->video_encoder);
+    bool pending_send = false;
+    if (available)
+    {
+        wd_async_tcp_sender_reap(net->video_tx);
+        pending_send = wd_async_tcp_sender_has_message_type(net->video_tx, WD_MSG_VIDEO_FRAME);
+    }
+    const enum wd_video_snapshot_decision decision =
+        wd_video_snapshot_preflight_decide(available, pending_send);
+    switch (decision)
+    {
+    case WD_VIDEO_SNAPSHOT_ACCEPT: net->stats.video_snapshot_preflight_accepted++; break;
+    case WD_VIDEO_SNAPSHOT_UNAVAILABLE: net->stats.video_snapshot_unavailable++; break;
+    case WD_VIDEO_SNAPSHOT_PENDING_SEND:
+        net->stats.video_snapshot_pending_send++;
+        net->stats.video_keyframe_skipped_pending++;
+        break;
+    }
+    const bool needed = decision == WD_VIDEO_SNAPSHOT_ACCEPT;
     pthread_mutex_unlock(&net->lock);
     return needed;
 }
@@ -673,11 +675,7 @@ bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint6
     if (wd_async_tcp_sender_has_message_type(net->video_tx, WD_MSG_VIDEO_FRAME))
     {
         net->stats.video_keyframe_skipped_pending++;
-        return false;
-    }
-
-    if (!wd_stream_video_frame_due_locked(&net->stream_policy, now_ns))
-    {
+        net->stats.video_snapshot_publish_pending_send++;
         return false;
     }
 
@@ -704,7 +702,9 @@ bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint6
     config.content_epoch          = net->content_epoch;
     config.width                  = (uint16_t)width;
     config.height                 = (uint16_t)height;
-    config.target_fps             = wd_stream_policy_effective_fps_locked(&net->stream_policy);
+    /* Keep the codec context/GOP clock stable while adaptive capture FPS varies.
+     * A new session, epoch, resolution, codec or bitrate still reconfigures. */
+    config.target_fps             = wd_video_encoder_nominal_fps(net->stream_policy.requested_session_fps);
     config.bitrate_kib_per_second = wd_stream_video_bitrate_kib_locked(&net->stream_policy);
     config.codec                  = net->video_codecs != 0 ? net->video_codecs : WD_VIDEO_CODEC_H265;
 
@@ -749,8 +749,5 @@ bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint6
     net->stats.video_publish_copy_ns += snapshot->copy_ns;
     snapshot->copy_ns = 0;
 
-    /* This timestamp paces capture/publication, not TCP completion. The worker
-     * may discard an older pending frame when a fresher one arrives. */
-    net->stream_policy.last_video_frame_send_ns = now_ns;
     return true;
 }

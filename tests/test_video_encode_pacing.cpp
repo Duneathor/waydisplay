@@ -1,9 +1,16 @@
 #include "video_encode_pacing.h"
+#include "video_encoder_clock.h"
 
 #include <cassert>
 #include <cstdint>
 
 int main() {
+    // Capture can move 60 -> 57 -> 51 -> 45 without changing FFmpeg's clock.
+    assert(wd_video_encoder_nominal_fps(60) == 60);
+    assert(wd_video_encoder_nominal_fps(0) == WD_DEFAULT_SESSION_FPS);
+    assert(wd_video_encoder_nominal_fps(30) == 30);
+    assert(wd_video_encoder_nominal_fps(UINT16_MAX) == WD_MAX_SESSION_FPS);
+
     assert(wd_video_encode_pacing_cap(60, 0, 0) == 60);
     assert(wd_video_encode_pacing_cap(60, UINT64_C(77000000), 3) == 60);
     assert(wd_video_encode_pacing_cap(60, UINT64_C(77000000), 4) == 11);

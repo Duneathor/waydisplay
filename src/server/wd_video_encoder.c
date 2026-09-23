@@ -1,10 +1,10 @@
 #include "wd_video_encoder.h"
 #include "wd_hevc_annexb.h"
 #include "video_av1_tiles.h"
+#include "video_vaapi_quality_policy.h"
 
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
-#include "waydisplay/wd_video_trace.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -516,7 +516,8 @@ static bool wd_video_encoder_configure_software(struct wd_video_encoder* encoder
     return true;
 }
 
-static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config) {
+static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config,
+                                              bool quality_mode) {
     if (!wd_video_encoder_ensure_vaapi_device(encoder) || (wd_video_encoder_detect_vaapi_codecs(encoder) & config->codec) == 0)
     {
         return false;
@@ -565,14 +566,36 @@ static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, c
         {
             (void)av_opt_set(encoder->codec_ctx->priv_data, "aud", WD_VIDEO_ENCODER_VAAPI_AUD_OPTION, 0);
         }
+        if (quality_mode)
+        {
+            /* For a generous link, prefer predictable near-lossless HEVC
+             * quantization over auto VA-API rate control at ~800 Mbit/s.
+             * Do not pair constant QP with a contradictory bit-rate target. */
+            encoder->codec_ctx->bit_rate = 0;
+            if (av_opt_set(encoder->codec_ctx->priv_data, "rc_mode", "CQP", 0) < 0 ||
+                av_opt_set_int(encoder->codec_ctx->priv_data, "qp", WD_VIDEO_HEVC_VAAPI_HIGH_BANDWIDTH_QP, 0) < 0)
+            {
+                WD_LOG_WARN("HEVC VAAPI quality mode unsupported by FFmpeg; retrying ordinary rate control");
+                wd_video_encoder_release_backend(encoder);
+                return false;
+            }
+        }
     }
 
     rc = avcodec_open2(encoder->codec_ctx, codec, NULL);
     if (rc < 0)
     {
-        wd_video_encoder_log_av_error("failed to open VAAPI video encoder", rc);
+        if (!quality_mode)
+        {
+            wd_video_encoder_log_av_error("failed to open VAAPI video encoder", rc);
+        }
         wd_video_encoder_release_backend(encoder);
         return false;
+    }
+    if (quality_mode)
+    {
+        WD_LOG_INFO("HEVC VAAPI quality mode: rc=CQP qp=%d requested_budget_kib_per_sec=%u",
+                    WD_VIDEO_HEVC_VAAPI_HIGH_BANDWIDTH_QP, config->bitrate_kib_per_second);
     }
 
     encoder->upload_frame->format = AV_PIX_FMT_NV12;
@@ -624,15 +647,6 @@ static bool wd_video_encoder_copy_packet(struct wd_video_encoder* encoder, const
             WD_LOG_WARN("VAAPI HEVC encoder emitted a packet without a valid Annex-B start code; rejecting frame");
             encoder->keyframe_requested = true;
             return false;
-        }
-        /* Some VA-API drivers need this for nearly every dependent frame.
-         * Keep the fix on every packet, but sample its diagnostic at the
-         * same frame IDs as the other DEBUG-only video trace stages. */
-        if (repaired > 0 && wd_video_trace_debug_sample(encoder->next_frame_id))
-        {
-            WD_LOG_DEBUG("video trace stage=server-hevc-repair epoch=%llu frame=%llu prefixes=%d",
-                         (unsigned long long)encoder->config.content_epoch,
-                         (unsigned long long)encoder->next_frame_id, repaired);
         }
     }
 
@@ -709,7 +723,7 @@ bool wd_video_encoder_create(struct wd_video_encoder** out_encoder, const char* 
     encoder->active_backend = WD_VIDEO_ENCODER_BACKEND_NONE;
 
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER || WAYDISPLAY_HAVE_AV1_SERVER_ENCODER
-    av_log_set_level(AV_LOG_WARNING);
+    av_log_set_level(wd_log_is_verbose() ? AV_LOG_WARNING : AV_LOG_ERROR);
     if (preference != WD_VIDEO_ENCODER_PREFERENCE_OFF && preference != WD_VIDEO_ENCODER_PREFERENCE_SOFTWARE)
     {
         (void)wd_video_encoder_ensure_vaapi_device(encoder);
@@ -870,7 +884,13 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
         (encoder->preference == WD_VIDEO_ENCODER_PREFERENCE_VAAPI || (encoder->vaapi_failed_codecs & config->codec) == 0))
     {
         vaapi_attempted = true;
-        configured      = wd_video_encoder_configure_vaapi(encoder, config);
+        const bool prefer_quality = wd_video_hevc_vaapi_prefer_quality(config->codec, config->bitrate_kib_per_second);
+        configured = wd_video_encoder_configure_vaapi(encoder, config, prefer_quality);
+        if (!configured && prefer_quality)
+        {
+            WD_LOG_WARN("HEVC VAAPI quality mode unavailable; retrying ordinary VAAPI rate control");
+            configured = wd_video_encoder_configure_vaapi(encoder, config, false);
+        }
         if (configured)
         {
             encoder->vaapi_failed_codecs &= ~config->codec;

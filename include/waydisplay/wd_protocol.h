@@ -197,7 +197,7 @@ struct wd_client_hello_payload {
      * applies the normalized value to compositor output refresh and remote
      * capture pacing; the client uses the same value as its presentation cap.
      */
-    uint16_t requested_capture_fps;
+    uint16_t requested_session_fps;
 
     /*
      * Requested remote display size.
@@ -211,7 +211,7 @@ struct wd_client_hello_payload {
      * 0 means use the server throughput probe. Nonzero values act as a cap
      * and do not raise the server-selected throughput-probe ceiling.
      */
-    uint32_t udp_rate_cap_kib_per_second;
+    uint32_t link_cap_kib_per_second;
 
     /* Bitmask from enum wd_client_capability. */
     uint32_t capabilities;

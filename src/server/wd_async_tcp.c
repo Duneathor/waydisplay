@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <liburing.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -219,6 +220,89 @@ static struct wd_async_tcp_message* wd_async_tcp_message_create(int fd, uint16_t
     }
 
     return msg;
+}
+
+struct wd_async_tcp_message* wd_async_tcp_prepare_message(uint16_t message_type, uint32_t payload_size,
+                                                          void** out_payload) {
+    if (!out_payload)
+    {
+        return NULL;
+    }
+    *out_payload = NULL;
+    const uint64_t total_size64 = (uint64_t)WD_TCP_HEADER_WIRE_SIZE + payload_size;
+    if (total_size64 > SIZE_MAX - sizeof(struct wd_async_tcp_message))
+    {
+        return NULL;
+    }
+    const size_t total_size = (size_t)total_size64;
+    struct wd_async_tcp_message* msg = calloc(1, sizeof(*msg) + total_size);
+    if (!msg)
+    {
+        return NULL;
+    }
+    msg->fd           = -1;
+    msg->message_type = message_type;
+    msg->total_size   = total_size;
+    *out_payload      = msg->bytes + WD_TCP_HEADER_WIRE_SIZE;
+    return msg;
+}
+
+void wd_async_tcp_discard_prepared_message(struct wd_async_tcp_message* msg) {
+    free(msg);
+}
+
+/* The allocated bytes are already in their final io_uring-owned storage.
+ * Validate the populated payload before encoding the TCP header and handing
+ * the message to the normal completion/cancellation queue. */
+bool wd_async_tcp_send_prepared_message(struct wd_async_tcp_sender* sender, int fd,
+                                        struct wd_async_tcp_message* msg) {
+    if (!msg)
+    {
+        return false;
+    }
+    if (!sender || !sender->ring_ready || fd < 0)
+    {
+        free(msg);
+        return false;
+    }
+
+    wd_async_tcp_sender_reap(sender);
+    const uint32_t payload_size = (uint32_t)(msg->total_size - WD_TCP_HEADER_WIRE_SIZE);
+    const void* payload = msg->bytes + WD_TCP_HEADER_WIRE_SIZE;
+    uint32_t wire_size = 0;
+    if (!wd_protocol_payload_wire_size(msg->message_type, payload, payload_size, &wire_size) || wire_size != payload_size)
+    {
+        sender->failed++;
+        free(msg);
+        return false;
+    }
+    if (!wd_async_tcp_can_enqueue(sender->pending_bytes, msg->total_size, sender->max_pending_bytes))
+    {
+        sender->overflows++;
+        sender->failed++;
+        free(msg);
+        return false;
+    }
+    struct wd_tcp_header header = {0};
+    header.magic            = WD_TCP_MAGIC;
+    header.protocol_version = WD_PROTOCOL_VERSION;
+    header.message_type     = msg->message_type;
+    header.payload_size     = payload_size;
+    if (!wd_tcp_header_encode(msg->bytes, &header))
+    {
+        sender->failed++;
+        free(msg);
+        return false;
+    }
+    msg->fd = fd;
+    wd_async_tcp_pending_add(sender, msg);
+    bool just_enqueued_failed = false;
+    if (!wd_async_tcp_try_start_head(sender, msg, &just_enqueued_failed) && just_enqueued_failed)
+    {
+        return false;
+    }
+    sender->queued++;
+    return true;
 }
 
 bool wd_async_tcp_sender_create(struct wd_async_tcp_sender** out_sender, uint32_t entries) {

@@ -23,7 +23,7 @@ struct wd_video_auto_entry_metrics {
     uint64_t estimated_tile_demand_bytes_per_second;
     uint64_t tile_budget_bytes_per_second;
     uint64_t send_pressure_events;
-    uint16_t requested_capture_fps;
+    uint16_t requested_session_fps;
     uint16_t adaptive_capture_fps;
     uint8_t  minimum_dirty_percent;
     bool     selection_suppressed;

@@ -6,11 +6,11 @@
 uint16_t wd_frame_rate_normalize_client_request(uint16_t requested_fps) {
     if (requested_fps == 0)
     {
-        return WD_DEFAULT_CAPTURE_FPS;
+        return WD_DEFAULT_SESSION_FPS;
     }
-    if (requested_fps > WD_MAX_REASONABLE_FPS)
+    if (requested_fps > WD_MAX_SESSION_FPS)
     {
-        return WD_MAX_REASONABLE_FPS;
+        return WD_MAX_SESSION_FPS;
     }
     return requested_fps;
 }

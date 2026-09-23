@@ -1,9 +1,24 @@
 #include "waydisplay/wd_log.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+
+static atomic_int g_log_ceiling = ATOMIC_VAR_INIT(WD_LOG_LEVEL_VALUE_ERROR);
+
+void wd_log_set_verbose(bool verbose) {
+    atomic_store_explicit(&g_log_ceiling, verbose ? WAYDISPLAY_LOG_LEVEL : WD_LOG_LEVEL_VALUE_ERROR, memory_order_relaxed);
+}
+
+bool wd_log_is_verbose(void) {
+    return atomic_load_explicit(&g_log_ceiling, memory_order_relaxed) > WD_LOG_LEVEL_VALUE_ERROR;
+}
+
+bool wd_log_would_log(enum wd_log_level level) {
+    return (int)level <= atomic_load_explicit(&g_log_ceiling, memory_order_relaxed);
+}
 
 static const char* wd_log_level_name(enum wd_log_level level) {
     switch (level)
@@ -52,6 +67,10 @@ static bool wd_log_format_timestamp(char* buffer, size_t buffer_size) {
 }
 
 void wd_log_message_va(enum wd_log_level level, const char* fmt, va_list args) {
+    if (!wd_log_would_log(level))
+    {
+        return;
+    }
     char       timestamp[32];
     const bool have_timestamp = wd_log_format_timestamp(timestamp, sizeof(timestamp));
 

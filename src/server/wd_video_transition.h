@@ -100,6 +100,10 @@ struct wd_client_video_health_metrics {
     uint32_t client_audio_video_sync_hold_current_ms;
 };
 
+/* Presentation-queue replacement is not a compressed-decoder failure.
+ * Decrease capture rate only for repeated replacements in an interval. */
+bool wd_video_present_overflow_pressure(uint64_t replaced, uint64_t frames_presented);
+
 enum wd_client_video_health_class wd_client_video_health_classify(const struct wd_client_video_health_metrics* metrics);
 const char*                       wd_client_video_health_name(enum wd_client_video_health_class health);
 

@@ -109,9 +109,9 @@ struct wd_video_auto_entry_result wd_video_auto_entry_evaluate(const struct wd_v
     const bool observed_pressure = metrics->tile_budget_bytes_per_second != 0 &&
                                    result.tile_budget_percent >= WD_TILE_AUTO_ENTRY_WIRE_PRESSURE_PERCENT;
     const bool fps_suppressed =
-        metrics->requested_capture_fps != 0 &&
+        metrics->requested_session_fps != 0 &&
         (uint32_t)metrics->adaptive_capture_fps * 100u <
-            (uint32_t)metrics->requested_capture_fps * WD_TILE_AUTO_ENTRY_FPS_PRESSURE_PERCENT;
+            (uint32_t)metrics->requested_session_fps * WD_TILE_AUTO_ENTRY_FPS_PRESSURE_PERCENT;
     const bool queue_pressure = metrics->send_pressure_events != 0;
 
     result.candidate = !metrics->selection_suppressed && sustained_motion &&

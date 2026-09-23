@@ -30,6 +30,14 @@ int main() {
         recovering_fps = wd_video_cadence_upshift_target(recovering_fps, 30, 30, 2, 1);
     }
     CHECK(recovering_fps == 30);
+    // A few already-decoded pictures replaced before display are not decoder overload.
+    CHECK(!wd_video_present_overflow_pressure(0, 3000));
+    CHECK(!wd_video_present_overflow_pressure(2, 3000));
+    CHECK(!wd_video_present_overflow_pressure(5, 3000));
+    CHECK(wd_video_present_overflow_pressure(4, 60));
+    CHECK(wd_video_present_overflow_pressure(8, 100));
+    CHECK(!wd_video_present_overflow_pressure(3, 0));
+    CHECK(wd_video_present_overflow_pressure(4, 0));
     wd_client_video_health_metrics m{};
     m.server_frames_tx=1; m.client_reports=1; m.client_decode_queue_drops=1;
     CHECK(wd_client_video_health_classify(&m)==WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED);

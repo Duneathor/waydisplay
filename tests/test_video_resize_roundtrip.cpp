@@ -68,7 +68,7 @@ bool configure(wd_video_encoder* encoder, waydisplay::ClientVideoDecoder* decode
     decoder_config.coded_height = coded(height);
     decoder_config.target_fps = 30;
     decoder_config.codec = codec;
-    decoder_config.decode_mode = WD_CLIENT_VIDEO_DECODE_SOFTWARE;
+    decoder_config.decode_mode = WD_CLIENT_VIDEO_DECODER_SOFTWARE;
     CHECK(waydisplay::client_video_decoder_configure(decoder, decoder_config));
     return true;
 }

@@ -14,7 +14,6 @@
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
-#include "waydisplay/wd_video_trace.h"
 
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -66,18 +65,18 @@ uint32_t update_audio_video_hold_duration(ClientState& state, bool holding) {
 }
 
 uint16_t client_local_present_fps(const ClientState& state) {
-    uint16_t fps = state.stream_config.target_fps;
+    uint16_t fps = state.stream_config.requested_session_fps;
     if (fps == 0)
     {
-        fps = WD_CLIENT_DEFAULT_TARGET_FPS;
+        fps = WD_CLIENT_DEFAULT_SESSION_FPS;
     }
     if (fps < WD_STREAM_FPS_MIN)
     {
         fps = WD_STREAM_FPS_MIN;
     }
-    if (fps > WD_MAX_REASONABLE_FPS)
+    if (fps > WD_MAX_SESSION_FPS)
     {
-        fps = WD_MAX_REASONABLE_FPS;
+        fps = WD_MAX_SESSION_FPS;
     }
     return fps;
 }
@@ -1153,7 +1152,9 @@ SDL_Texture* create_frame_texture(SDL_Renderer* renderer, uint32_t width, uint32
 SDL_Texture* create_video_texture(SDL_Renderer* renderer, uint32_t width, uint32_t height) {
     SDL_Texture* texture =
         SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, static_cast<int>(width), static_cast<int>(height));
-    if (texture && !SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_LINEAR))
+    /* Preserve the same sharp pixel mapping as lossless tile presentation.
+     * Linear chroma/video scaling made desktop text look softer on resize. */
+    if (texture && !SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST))
     {
         log_sdl_warning("SDL_SetTextureScaleMode(video)");
     }
@@ -1579,24 +1580,11 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                         sync.decision, static_cast<uint32_t>(state.video_present_queue.size())))
                 {
                     ClientQueuedVideoFrame dropped = state.video_present_queue.pop_front();
-                    if (wd_video_trace_debug_sample(dropped.frame_id))
-                    {
-                        WD_LOG_DEBUG("video trace stage=client-discard frame=%llu reason=audio-sync",
-                                    (unsigned long long)dropped.frame_id);
-                    }
                     state.video_present_queue.recycle(std::move(dropped.buffer));
                     state.stats.audio_video_sync_drops.fetch_add(1, std::memory_order_relaxed);
                     dropped_for_audio = true;
                     state.pending_video_frame_dirty.store(!state.video_present_queue.empty(), std::memory_order_release);
                     continue;
-                }
-                if (sync.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_DROP && wd_video_trace_debug_sample(queued->frame_id))
-                {
-                    WD_LOG_DEBUG("video trace stage=client-sync-late frame=%llu pts_usec=%llu audio_samples=%llu delta_ms=%.1f present_depth=%zu action=present-only-frame",
-                                (unsigned long long)queued->frame_id, (unsigned long long)queued->pts_usec,
-                                (unsigned long long)audio_playhead_samples,
-                                (double)sync.delta_samples * 1000.0 / WD_AUDIO_SAMPLE_RATE_DEFAULT,
-                                state.video_present_queue.size());
                 }
             }
             else if (audio_waiting)
@@ -1633,11 +1621,6 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
 
     if (!wd_client_stream_ownership_is_current(&state.stream_ownership, frame_epoch, WD_CLIENT_CONTENT_OWNER_VIDEO))
     {
-        if (wd_video_trace_debug_sample(present_info.frame_id))
-        {
-            WD_LOG_DEBUG("video trace stage=client-discard frame=%llu epoch=%llu reason=stale-owner",
-                        (unsigned long long)present_info.frame_id, (unsigned long long)frame_epoch);
-        }
         return VideoTextureUploadResult::Stale;
     }
 
@@ -1657,12 +1640,6 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
         WD_LOG_WARN("video texture upload failed: frame=%llu reason=%s",
                     (unsigned long long)present_info.frame_id, SDL_GetError());
         return VideoTextureUploadResult::Failed;
-    }
-    if (wd_video_trace_debug_sample(present_info.frame_id))
-    {
-        WD_LOG_DEBUG("video trace stage=client-upload frame=%llu epoch=%llu upload_ms=%.2f",
-                    (unsigned long long)present_info.frame_id, (unsigned long long)present_info.content_epoch,
-                    (double)(wd_now_ns() - started_ns) / 1000000.0);
     }
 
     state.stats.sdl_texture_full_uploads.fetch_add(1, std::memory_order_relaxed);
@@ -2093,12 +2070,6 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
 
     if (video_present.valid)
     {
-        if (wd_video_trace_debug_sample(video_present.frame_id))
-        {
-            WD_LOG_DEBUG("video trace stage=client-present frame=%llu epoch=%llu present_ms=%.2f",
-                        (unsigned long long)video_present.frame_id, (unsigned long long)video_present.content_epoch,
-                        (double)present_elapsed_ns / 1000000.0);
-        }
         state.stats.video_frames_presented.fetch_add(1, std::memory_order_relaxed);
         state.stats.video_last_frame_id_presented.store(video_present.frame_id, std::memory_order_relaxed);
         if (video_present.content_epoch != 0)
@@ -2305,6 +2276,9 @@ int run_sdl_viewer(ClientState& state) {
                 pending_resize_height   = 0;
                 pending_resize_since_ns = 0;
 
+                WD_LOG_INFO("display resize requested: source=sdl-window size=%ux%u debounce_ms=%u",
+                            (unsigned)last_requested_width, (unsigned)last_requested_height,
+                            (unsigned)(WD_CLIENT_RESIZE_DEBOUNCE_NS / 1000000ull));
                 if (!client_send_display_resize(state, last_requested_width, last_requested_height))
                 {
                     WD_LOG_ERROR("failed to send display resize request");

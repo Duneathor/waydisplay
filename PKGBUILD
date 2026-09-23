@@ -4,7 +4,7 @@
 
 pkgname=waydisplay
 pkgver=0.1.0
-pkgrel=20
+pkgrel=44
 pkgdesc='Low-latency remote Wayland display (SDL3 client and wlroots compositor)'
 arch=('x86_64')
 license=('AGPL-3.0-only')
@@ -63,8 +63,8 @@ prepare() {
 # Build a separate Debug test tree so check() runs meaningful assertions.
 _configure_waydisplay() {
   local tree=$1 profile=$2 tests=$3
-  # INFO is the lightweight production default. Opt in to the full
-  # runtime DEBUG/STAT logs with WAYDISPLAY_PACKAGE_LOG_LEVEL=DEBUG makepkg -sif.
+  # INFO is the lightweight production compile-time ceiling. Use -v at
+  # runtime to show compiled-in diagnostics (including STATS/DEBUG builds).
   # The Debug CTest tree always retains DEBUG regardless of this override.
   local release_log_level=${WAYDISPLAY_PACKAGE_LOG_LEVEL:-INFO}
   case $release_log_level in

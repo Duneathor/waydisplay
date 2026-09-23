@@ -68,6 +68,21 @@ static int test_tcp_forced_teardown(void) {
     CHECK(wd_async_tcp_send_message_ex(sender, sockets[0], WD_MSG_VIDEO_FRAME, payload, payload_size, tcp_complete, &probe));
     free(payload);
 
+    /* Prepared video messages own their wire buffer through a pending send,
+     * including a sender shutdown with an in-flight message ahead of them. */
+    void* prepared_payload = NULL;
+    struct wd_async_tcp_message* prepared = wd_async_tcp_prepare_message(WD_MSG_VIDEO_FRAME, payload_size,
+                                                                         &prepared_payload);
+    CHECK(prepared != NULL && prepared_payload != NULL);
+    memset(prepared_payload, 0, payload_size);
+    ((struct wd_video_frame_payload_header*)prepared_payload)->data_size = TEST_VIDEO_BYTES;
+    CHECK(wd_async_tcp_send_prepared_message(sender, sockets[0], prepared));
+
+    void* malformed_prepared_payload = NULL;
+    prepared = wd_async_tcp_prepare_message(WD_MSG_SERVER_CONFIG, sizeof(malformed_payload), &malformed_prepared_payload);
+    CHECK(prepared != NULL && malformed_prepared_payload != NULL);
+    CHECK(!wd_async_tcp_send_prepared_message(sender, sockets[0], prepared));
+
     wd_async_tcp_sender_destroy(sender);
     CHECK(probe.calls == 1);
     CHECK(!probe.success);

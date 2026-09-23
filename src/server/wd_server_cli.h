@@ -16,6 +16,7 @@ enum wd_server_cli_parse_result {
 };
 
 struct wd_server_cli_options {
+    bool           verbose;
     const char*    app_command;
     struct in_addr listen_address;
     uint16_t       tcp_port;

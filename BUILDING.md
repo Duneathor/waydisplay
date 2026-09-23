@@ -29,16 +29,15 @@ single-purpose build profiles:
 
 `WAYDISPLAY_LOG_LEVEL` is the CMake logging build option. It accepts `OFF`,
 `ERROR`, `WARN`, `INFO`, `STATS`, or `DEBUG`; each level includes all levels to
-its left. Periodic client and server telemetry uses `STATS`. Sampled per-frame
-`video trace stage=…` lines use `DEBUG` and are compiled out of normal `INFO`
-and `STATS` builds, including packet hashing. Warnings about failed decoding,
-queue overflow, video health, and encoded-frame drops remain visible at `WARN`.
+its left. Periodic client and server telemetry uses `STATS`, visible with `-v`.
+The per-frame packet-stage logger has been removed, including from DEBUG builds. Decode failures,
+queue overflow, video health, and encoded-frame drops remain available at `WARN`
+with `-v`; errors remain visible even in quiet mode.
 
 ```sh
 cmake --preset native -DWAYDISPLAY_LOG_LEVEL=STATS
 ```
 
-For a traced native CMake build, set `-DWAYDISPLAY_LOG_LEVEL=DEBUG` instead.
 The package-specific `WAYDISPLAY_PACKAGE_LOG_LEVEL` setting is described below;
 it is not a runtime flag and does not affect CMake builds directly.
 
@@ -139,8 +138,11 @@ WAYDISPLAY_PACKAGE_LOG_LEVEL=DEBUG makepkg -sif
 ```
 
 Normal `makepkg -sif` switches Release back to `INFO` and removes routine
-per-frame traces. The separate Debug test build always uses `DEBUG`; this
-setting does not enable the tests' DEBUG logging in installed Release binaries.
+per-frame traces. At runtime, both executables are quiet by default
+(errors only); pass `-v` or `--verbose` **on each endpoint** to enable the
+levels present in that build. A STATS or DEBUG package therefore still needs
+`-v` to show its stats or sampled trace messages. The separate Debug test
+build always uses `DEBUG`; it does not change installed Release binaries.
 See [HEVC troubleshooting](docs/video-hevc-troubleshooting.md) for interpreting
 matching server/client frame hashes, stages, and recovery warnings.
 
@@ -153,17 +155,17 @@ A full build needs SDL3 with Vulkan support for the client and wlroots/Wayland
 development packages for the compositor server.
 
 ## Network exposure
-To listen on a specific IPv4 interface, pass `--listen`:
+To listen on a specific IPv4 interface, pass `--listen-ipv4`:
 
 ```sh
 # Local machine only:
-waydisplay-server --listen 127.0.0.1 --port 5000 --app konsole
+waydisplay-server --listen-ipv4 127.0.0.1 --tcp-port 5000 --launch-command konsole
 
 # All IPv4 interfaces; use only on a trusted network:
-waydisplay-server --listen 0.0.0.0 --port 5000 --app konsole
+waydisplay-server --listen-ipv4 0.0.0.0 --tcp-port 5000 --launch-command konsole
 ```
 
-`--listen` accepts an IPv4 address, not a hostname or an address-and-port pair.
+`--listen-ipv4` accepts an IPv4 address, not a hostname or an address-and-port pair.
 The connection token associates WayDisplay transport channels; it is not remote
 user authentication or transport encryption.
 
@@ -188,7 +190,7 @@ cmake --build build
 ```
 
 The client defaults to H.265. Use `--video-codec auto` to advertise both H.265
-and H.264 (unchanged for existing peers), or `--video-codec h264`,
+and H.264, or `--video-codec h264`,
 `--video-codec h265`, or `--video-codec av1` to select a specific codec.
 AV1 is opt-in, not part of `--video-codec auto`. In automatic server mode,
 codec negotiation prefers a codec supported by
@@ -199,16 +201,14 @@ encoder first and falls back to `libx264`/`libx265`/`libaom-av1` when the select
 not supported by an automatically discovered VA device. Select a backend explicitly with:
 
 ```sh
-waydisplay-server --video-encoder vaapi --app konsole
-waydisplay-server --video-encoder software --app konsole
-waydisplay-server --video-encoder off --app konsole  # tiles only
+waydisplay-server --video-encoder vaapi --launch-command konsole
+waydisplay-server --video-encoder software --launch-command konsole
+waydisplay-server --video-encoder off --launch-command konsole  # tiles only
 ```
 
-The client uses `--video-decode <off|auto|software|vaapi>` (default `auto`).
+The client uses `--video-decoder <off|auto|software|vaapi>` (default `auto`).
 `off` does not advertise the encoded-video channel; `software` decodes video
-without attempting VA-API. The old `--video-hwdecode` spelling is rejected;
-its former `off` behavior is `--video-decode software`. `--video off` remains
-the coarse video-policy switch.
+without attempting VA-API. `--video-mode off` is the coarse video-policy switch.
 
 
 The first VA-API implementation still converts XRGB to NV12 in system memory
@@ -239,9 +239,9 @@ budget and adapts that byte rate and render cadence from feedback. For shared
 or known-constrained links, the client can request a cap below the probe:
 
 ```sh
-waydisplay-client <server> 5000 6000 --rate-kib 4096
+waydisplay-client <server> --link-cap-kib-per-sec 4096
 # or a more conservative shared-link cap:
-waydisplay-client <server> 5000 6000 --rate-kib 2048
+waydisplay-client <server> --link-cap-kib-per-sec 2048
 ```
 
 The requested budget is a cap: the server will not raise its throughput-probed
@@ -258,7 +258,7 @@ region from the client framebuffer.
 
 The cost model treats one texture lock as roughly 128K copied pixels. Runtime
 telemetry exposes `texture_locks`, `bounds_uploads`, `cost_full`, `source_mpix`,
-and `upload_mpix` in `[client render/min]`. Compare `source_mpix` with
+and `upload_mpix` in `client-render/interval:`. Compare `source_mpix` with
 `upload_mpix` to see the extra copy area accepted to reduce lock calls, and
 compare `texture_locks` with `remote_frames` to verify that fragmented tile
 updates are usually reduced to one lock per presented frame.
@@ -444,8 +444,8 @@ pixel format on it does not enable software decoding. Check `ffmpeg -decoders`
 for `libdav1d` or `libaom-av1` if AV1 software decoding is unavailable.
 
 ```sh
-waydisplay-server --video-encoder vaapi --app konsole
-waydisplay-client 192.168.0.183 5000 6000 --video-codec av1 --video-decode auto
+waydisplay-server --video-encoder vaapi --launch-command konsole
+waydisplay-client 192.168.0.183 --video-codec av1 --video-decoder auto
 ```
 
 For a software encoder test, replace the server's `vaapi` with `software`;
@@ -455,8 +455,8 @@ with four encoder threads, zero lookahead, and row-based multithreading.
 At desktop resolutions it now selects `2x1` or `2x2` AV1 tiles to expose
 more parallel work; smaller images use `1x1`. More tiles can increase bitrate
 at equal visual quality, and this is **not** a guarantee of 60 fps.
-Compare `video-stream/min` `frame_attempts` and `encode_ms` before/after,
-and check `client-video/min` decoded/presented plus audio underflows. The
+Compare `video-stream/interval` `frame_attempts` and `encode_total_ms` before/after,
+and check `client-video/interval` decoded/presented plus audio underflows. The
 first keyframe may still be substantially slower than subsequent frames.
 After four non-keyframe software-AV1 samples, video-active capture pacing
 is also capped using the encoder's measured moving-average frame time with
@@ -465,19 +465,49 @@ when the encoder is handling around 13. **It does not change negotiated FPS,
 encoder configuration, stream timestamps, decoder cadence, or the tiles path.**
 The cap resets on tiles/video bandwidth-mode transitions, and ignores slow
 startup and periodic keyframes. `state` STATS reports the actual
-`capture_pacing_fps`; compare it with `video-stream/min` `frame_attempts`,
-`frames_tx`, `encode_ms`, and superseded frames before/after.
+`capture_pacing_fps`; compare it with `video-stream/interval` `frame_attempts`,
+`frames_tx`, `encode_total_ms`, and superseded frames before/after.
 AV1 VA-API encoding
 and AV1 Profile 0 VA-API decoding are separate device capabilities: a server
 may encode AV1 on its GPU even when the client's GPU cannot decode it. With
-`--video-decode auto`, WayDisplay checks the selected libva device and uses
+`--video-decoder auto`, WayDisplay checks the selected libva device and uses
 software AV1 decoding using libdav1d or libaom-av1 when AV1 Profile 0 VLD
 is unavailable. This requires a software AV1 decoder in the installed FFmpeg
 build; the native `av1` hardware decoder cannot be used for that fallback.
-Explicit `--video-decode software` selects the software decoder directly.
-`--video-decode vaapi` requires device support; the hardware decoder test skips
+Explicit `--video-decoder software` selects the software decoder directly.
+`--video-decoder vaapi` requires device support; the hardware decoder test skips
 unsupported AV1 rather than reporting a false codec regression. If the GPU does not
 support AV1 encode, `--video-encoder vaapi` cannot negotiate AV1 and will
 remain in tiles mode. Run `--video-codec h265` to retain the established HEVC
 path. AV1 sends raw length-delimited OBUs, not Annex-B NAL units; HEVC's VA-API
 start-code workaround must never process AV1 packets.
+
+### Xwayland window geometry
+
+Managed fullscreen X11 windows use the full logical output height without WayDisplay's titlebar. Maximized windows retain the titlebar; valid small X11 utility windows retain their requested sizes. The `waydisplay.xwayland_geometry` unit test covers this policy.
+
+### Xwayland lifecycle
+
+X11 map requests only configure a window; WayDisplay exposes its scene after the associated Wayland surface actually maps. Minimized X11 scene nodes are hidden; a later map or unminimize restores them. X11 transient parent references resolve only through live view entries, and child references are detached before parent destruction. Fullscreen/maximized managed windows ignore conflicting stale client configure geometry.
+
+### Compositor and Xwayland profiling
+
+`WAYDISPLAY_PACKAGE_LOG_LEVEL=STATS makepkg -sif` compiles in one
+`compositor-capture/interval` aggregate (run the server with `-v` to see it) alongside `server-loop/interval`,
+`video-stream/interval`, and `client-video/interval`. Only the `x11_` fields describe
+mapped Xwayland root surfaces, whether or not the application is Wine.
+`x11_committed_bounds_mpix` sums full committed buffer bounds: it is **not**
+unique changed pixels. The `scene_build_*`, `texture_read_*`, and
+`buffer_data_fallbacks` fields describe the entire composed output, including
+native Wayland surfaces; `texture_read_*` counts only
+`wlr_texture_read_pixels` attempts, not CPU buffer-data fallbacks.
+`server-loop/interval render_readback_avg_ms` includes additional output work:
+these timings overlap and must not be added. Neither measures Wine/DXVK render
+time or isolates GPU time. INFO compiles out the extra per-frame timing.
+
+### Naming and log field conventions
+
+[The naming guide](docs/naming.md) distinguishes Xwayland/X11 activity from
+whole-compositor capture, documents the units and semantics of the new capture
+fields and the canonical CLI and metric schema.
+Run `waydisplay.compositor_capture` for the updated aggregate helper test.

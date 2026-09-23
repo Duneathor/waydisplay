@@ -165,7 +165,7 @@ bool test_invalid_api() {
     off_config.height       = 48;
     off_config.coded_width  = 64;
     off_config.coded_height = 48;
-    off_config.decode_mode  = WD_CLIENT_VIDEO_DECODE_OFF;
+    off_config.decode_mode  = WD_CLIENT_VIDEO_DECODER_OFF;
     CHECK(!waydisplay::client_video_decoder_configure(decoder, off_config));
     off_config.decode_mode = UINT8_MAX;
     CHECK(!waydisplay::client_video_decoder_configure(decoder, off_config));
@@ -212,7 +212,7 @@ bool test_codec(uint32_t codec, const char* fixture_name) {
     config.coded_height     = 48;
     config.target_fps       = 30;
     config.codec            = codec;
-    config.decode_mode      = WD_CLIENT_VIDEO_DECODE_SOFTWARE;
+    config.decode_mode      = WD_CLIENT_VIDEO_DECODER_SOFTWARE;
 
     CHECK(waydisplay::client_video_decoder_configure(decoder, config));
     CHECK(waydisplay::client_video_decoder_configure(decoder, config));
@@ -326,7 +326,7 @@ bool test_delayed_codec(uint32_t codec, const char* fixture_name, const char* ma
     config.coded_height     = 48;
     config.target_fps       = 4;
     config.codec            = codec;
-    config.decode_mode      = WD_CLIENT_VIDEO_DECODE_SOFTWARE;
+    config.decode_mode      = WD_CLIENT_VIDEO_DECODER_SOFTWARE;
     CHECK(waydisplay::client_video_decoder_configure(decoder, config));
 
     constexpr uint64_t                   kPtsBase           = UINT64_C(4000000);

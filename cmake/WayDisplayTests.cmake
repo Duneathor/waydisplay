@@ -20,6 +20,28 @@ if(WAYDISPLAY_BUILD_TESTS)
         LABELS "unit;cmake;build"
     )
 
+    add_test(
+        NAME waydisplay.log_naming_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_log_naming_contract.cmake
+    )
+    set_tests_properties(waydisplay.log_naming_contract PROPERTIES
+        LABELS "unit;cmake;logging;documentation"
+        TIMEOUT 10
+    )
+
+    add_test(
+        NAME waydisplay.video_cadence_naming_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_video_cadence_contract.cmake
+    )
+    set_tests_properties(waydisplay.video_cadence_naming_contract PROPERTIES
+        LABELS "unit;cmake;video;telemetry"
+        TIMEOUT 10
+    )
+
     # The locally packaged runtime, CMake resolver, and full-runtime CI must
     # agree on one versioned wlroots ABI. This runs even in dependency-light
     # builds, where the compositor target is intentionally disabled.
@@ -132,10 +154,42 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.log_runtime
+        TARGET waydisplay_test_log_runtime
+        SOURCES tests/test_log_runtime.c src/common/wd_log.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;logging;cli"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.xwayland_geometry
+        TARGET waydisplay_test_xwayland_geometry
+        SOURCES tests/test_xwayland_geometry.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;xwayland;geometry"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.xwayland_lifecycle
+        TARGET waydisplay_test_xwayland_lifecycle
+        SOURCES tests/test_xwayland_lifecycle.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;xwayland;lifecycle"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.compositor_capture
+        TARGET waydisplay_test_compositor_capture
+        SOURCES tests/test_compositor_capture.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;compositor;capture;performance"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.video_encode_pacing
         TARGET waydisplay_test_video_encode_pacing
         SOURCES tests/test_video_encode_pacing.cpp
-        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server ${CMAKE_CURRENT_SOURCE_DIR}/include
         LABELS "unit;video;av1;performance"
     )
 
@@ -148,11 +202,43 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
-        NAME waydisplay.video_trace
-        TARGET waydisplay_test_video_trace
-        SOURCES tests/test_video_trace.c tests/test_video_trace.cpp
+        NAME waydisplay.video_shadow_policy
+        TARGET waydisplay_test_video_shadow_policy
+        SOURCES tests/test_video_shadow_policy.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;video;tiles;recovery;performance"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_capture_admission
+        TARGET waydisplay_test_video_capture_admission
+        SOURCES tests/test_video_capture_admission.c src/server/wd_frame_pacing.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;video;pacing;performance"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_snapshot_admission
+        TARGET waydisplay_test_video_snapshot_admission
+        SOURCES tests/test_video_snapshot_admission.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;video;pacing;telemetry"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_observation
+        TARGET waydisplay_test_video_observation
+        SOURCES tests/test_video_observation.c
         INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include
-        LABELS "unit;video;protocol;build"
+        LABELS "unit;video;telemetry"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_vaapi_quality_policy
+        TARGET waydisplay_test_video_vaapi_quality_policy
+        SOURCES tests/test_video_vaapi_quality_policy.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;video;quality"
     )
 
     waydisplay_add_test(

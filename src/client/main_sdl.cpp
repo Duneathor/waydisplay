@@ -16,22 +16,24 @@ namespace {
 void usage(const char* argv0) {
     std::fprintf(stderr,
                  "Usage:\n"
-                 "  %s <server_ipv4> <tcp_port> <client_udp_port> [options]\n\n"
+                 "  %s <server_ipv4> [tcp_port [client_udp_port]] [options]\n\n"
+                 "Defaults: TCP %u, local UDP %u\n\n"
                  "Options:\n"
-                 "  --fps <N>                     Requested remote capture FPS cap, default %u\n"
-                 "  --size <WxH>                  Request remote display size\n"
-                 "  --rate-kib <N>                Cap adaptive UDP tile budget in KiB/s\n"
+                 "  -v, --verbose                 Enable diagnostic output (default: errors only)\n"
+                 "  --session-fps <N>              Session refresh/present FPS ceiling, default %u\n"
+                 "  --display-size <WxH>          Request remote display size\n"
+                 "  --link-cap-kib-per-sec <N>   Cap estimated safe link budget (KiB/s)\n"
                  "  --no-vsync                    Disable SDL present-vsync\n"
                  "  --no-audio                    Disable audio negotiation and playback\n"
-                 "  --video <auto|off|force>      Select coarse video-mode policy, default auto\n"
+                 "  --video-mode <auto|off|force>  Select coarse video-mode policy, default auto\n"
                  "  --video-codec <auto|h264|h265|av1> Select acceptable video codecs, default h265\n"
-                 "  --video-decode <off|auto|vaapi|software> Select decoder backend, default auto\n"
+                 "  --video-decoder <off|auto|vaapi|software> Select decoder backend, default auto\n"
                  "  --help, -h                    Show this help\n\n"
                  "Detailed stream thresholds and codec policy are configured in wd_config.h.\n\n"
                  "Examples:\n"
-                 "  %s 127.0.0.1 5000 6000\n"
-                 "  %s 192.168.1.50 5000 6000 --fps 60 --rate-kib 4096\n",
-                 argv0, WD_CLIENT_DEFAULT_TARGET_FPS, argv0, argv0);
+                 "  %s 127.0.0.1\n"
+                 "  %s 192.168.1.50 5500 6500 --session-fps 60 --link-cap-kib-per-sec 4096 -v\n",
+                 argv0, WD_DEFAULT_TCP_PORT, WD_CLIENT_DEFAULT_UDP_PORT, WD_CLIENT_DEFAULT_SESSION_FPS, argv0, argv0);
 }
 
 } // namespace
@@ -56,12 +58,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    wd_log_set_verbose(cli_options.verbose);
+
     waydisplay::ClientStreamConfig stream_config;
-    stream_config.target_fps                 = cli_options.target_fps;
-    stream_config.udp_rate_cap_kib_per_second = cli_options.udp_rate_cap_kib_per_second;
+    stream_config.requested_session_fps   = cli_options.requested_session_fps;
+    stream_config.link_cap_kib_per_second = cli_options.link_cap_kib_per_second;
     stream_config.video_mode                 = cli_options.video_mode;
     stream_config.video_codec_mask           = cli_options.video_codec_mask;
-    stream_config.video_decode_mode          = cli_options.video_decode_mode;
+    stream_config.video_decoder_mode          = cli_options.video_decoder_mode;
     stream_config.disable_vsync              = cli_options.disable_vsync;
     stream_config.disable_audio              = cli_options.disable_audio;
 

@@ -58,7 +58,7 @@ std::array<uint8_t, WD_TCP_HEADER_WIRE_SIZE> encode_header(uint16_t type, uint32
 wd_client_hello_payload valid_hello() {
     wd_client_hello_payload hello{};
     hello.client_udp_port      = 6000;
-    hello.requested_capture_fps = 60;
+    hello.requested_session_fps = 60;
     hello.video_mode           = WD_VIDEO_MODE_OFF;
     return hello;
 }

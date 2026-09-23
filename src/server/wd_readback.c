@@ -148,7 +148,16 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
     enum wd_render_result result                  = WD_RENDER_RESULT_ERROR;
     bool                  built_state             = false;
 
-    if (!wlr_scene_output_build_state(server->scene_output, &state, NULL))
+#if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_STATS
+    const bool capture_profile = wd_log_would_log(WD_LOG_LEVEL_STATS);
+    uint64_t build_start_ns = capture_profile ? wd_now_ns() : 0;
+#endif
+    bool built = wlr_scene_output_build_state(server->scene_output, &state, NULL);
+#if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_STATS
+    if (capture_profile)
+        wd_compositor_capture_scene_build(&server->compositor_capture, wd_now_ns() - build_start_ns);
+#endif
+    if (!built)
     {
         static uint64_t last_log_ns = 0;
         uint64_t        now         = wd_now_ns();
@@ -220,6 +229,9 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
 
         if (readback_buffer_data_ptr_xrgb8888(server, state.buffer, full_read_width, full_read_height))
         {
+#if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_STATS
+            ++server->compositor_capture.buffer_data_fallbacks;
+#endif
             result                  = WD_RENDER_RESULT_FRAME;
             goto commit_only;
         }
@@ -253,7 +265,16 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
                 },
         };
 
-        if (!wlr_texture_read_pixels(texture, &read_options))
+#if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_STATS
+        uint64_t read_start_ns = capture_profile ? wd_now_ns() : 0;
+#endif
+        bool region_ok = wlr_texture_read_pixels(texture, &read_options);
+#if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_STATS
+        if (capture_profile)
+            wd_compositor_capture_texture_read(&server->compositor_capture, (uint32_t)region->width, (uint32_t)region->height,
+                                 wd_now_ns() - read_start_ns, region_ok);
+#endif
+        if (!region_ok)
         {
             readback_ok = false;
             break;

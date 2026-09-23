@@ -16,6 +16,7 @@
 #include "wd_tile_policy.h"
 #include "wd_video_encoder.h"
 #include "video_encode_pacing.h"
+#include "video_shadow_policy.h"
 #include "wd_video_transition.h"
 
 #include <errno.h>
@@ -191,7 +192,6 @@ static void wd_stream_policy_reset_tokens(struct wd_stream_policy* policy) {
     }
 
     wd_frame_pacing_reset(&policy->frame_pacing);
-    policy->last_video_frame_send_ns = 0;
     wd_bandwidth_bucket_reset(&policy->fresh_tile_bucket);
     wd_bandwidth_bucket_reset(&policy->repair_bucket);
     wd_bandwidth_bucket_reset(&policy->control_bucket);
@@ -205,8 +205,8 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
 
     memset(policy, 0, sizeof(*policy));
 
-    policy->requested_capture_fps             = WD_DEFAULT_CAPTURE_FPS;
-    policy->adaptive_capture_fps              = WD_DEFAULT_CAPTURE_FPS;
+    policy->requested_session_fps             = WD_DEFAULT_SESSION_FPS;
+    policy->adaptive_capture_fps              = WD_DEFAULT_SESSION_FPS;
     policy->stream_mode                       = WD_STREAM_MODE_TILES;
     policy->video_mode                        = WD_VIDEO_MODE_AUTO;
     policy->video_min_dirty_percent           = WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT;
@@ -266,9 +266,9 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
         return;
     }
 
-    const uint16_t fps = wd_frame_rate_normalize_client_request(hello->requested_capture_fps);
+    const uint16_t fps = wd_frame_rate_normalize_client_request(hello->requested_session_fps);
 
-    policy->requested_capture_fps = fps;
+    policy->requested_session_fps = fps;
     policy->adaptive_capture_fps  = fps;
     policy->video_encode_ewma_ns = 0;
     policy->video_encode_pacing_samples = 0;
@@ -342,7 +342,7 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
         policy->recent_link_bytes_per_second = policy->safe_link_bytes_per_second;
     }
 
-    const uint64_t requested_link_cap = wd_stream_link_rate_from_kib(hello->udp_rate_cap_kib_per_second);
+    const uint64_t requested_link_cap = wd_stream_link_rate_from_kib(hello->link_cap_kib_per_second);
     if (requested_link_cap != 0)
     {
         if (policy->safe_link_bytes_per_second > requested_link_cap)
@@ -444,10 +444,10 @@ static void wd_stream_log_video_health_decision_locked(const struct wd_stream_po
         (unsigned)feedback_flags, (unsigned)policy->video_feedback_decode_queue_depth,
         (unsigned)policy->video_feedback_decode_queue_capacity, (unsigned)policy->video_feedback_present_queue_depth,
         (unsigned)policy->video_feedback_present_queue_capacity, (unsigned)policy->adaptive_capture_fps,
-        (unsigned)policy->requested_capture_fps);
+        (unsigned)policy->requested_session_fps);
 }
 
-static void wd_stream_policy_restore_requested_capture_fps_locked(struct wd_stream_policy* policy, const char* reason) {
+static void wd_stream_policy_restore_requested_session_fps_locked(struct wd_stream_policy* policy, const char* reason) {
     if (!policy)
     {
         return;
@@ -455,26 +455,25 @@ static void wd_stream_policy_restore_requested_capture_fps_locked(struct wd_stre
 
     (void)reason;
 
-    if (policy->requested_capture_fps == 0)
+    if (policy->requested_session_fps == 0)
     {
-        policy->requested_capture_fps = WD_DEFAULT_CAPTURE_FPS;
+        policy->requested_session_fps = WD_DEFAULT_SESSION_FPS;
     }
 
-    uint16_t old_fps = policy->adaptive_capture_fps != 0 ? policy->adaptive_capture_fps : policy->requested_capture_fps;
-    if (old_fps == policy->requested_capture_fps)
+    uint16_t old_fps = policy->adaptive_capture_fps != 0 ? policy->adaptive_capture_fps : policy->requested_session_fps;
+    if (old_fps == policy->requested_session_fps)
     {
-        policy->adaptive_capture_fps    = policy->requested_capture_fps;
+        policy->adaptive_capture_fps    = policy->requested_session_fps;
         policy->frame_rate_good_seconds = 0;
         return;
     }
 
-    policy->adaptive_capture_fps           = policy->requested_capture_fps;
+    policy->adaptive_capture_fps           = policy->requested_session_fps;
     policy->frame_rate_good_seconds        = 0;
     policy->client_render_pressure_seconds = 0;
     wd_frame_pacing_reset(&policy->frame_pacing);
-    policy->last_video_frame_send_ns       = 0;
 
-    WD_LOG_DEBUG("stream capture rate reset: %u -> %u fps due to %s", (unsigned)old_fps, (unsigned)policy->requested_capture_fps,
+    WD_LOG_DEBUG("stream capture rate reset: %u -> %u fps due to %s", (unsigned)old_fps, (unsigned)policy->requested_session_fps,
                  reason ? reason : "stream mode change");
 }
 
@@ -576,7 +575,7 @@ void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_s
     if (wd_stream_mode_uses_video_frames(mode) && !wd_stream_mode_uses_video_frames(old_mode))
     {
         policy->video_recovery_class = WD_VIDEO_RECOVERY_NONE;
-        wd_stream_policy_restore_requested_capture_fps_locked(policy, "video mode entry");
+        wd_stream_policy_restore_requested_session_fps_locked(policy, "video mode entry");
     }
 
     WD_LOG_DEBUG("stream mode state: %s -> %s reason=%s dirty_avg_pct=%.1f dirty_peak_pct=%.1f budget_pressure_pct=%.1f video_channel=%s "
@@ -645,7 +644,7 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
     const uint64_t estimated_tile_demand = wd_tile_estimate_demand_bytes_per_second(
         stats->stream_mode_frame_samples, stats->stream_mode_dirty_coverage_per_mille_sum,
         stats->tile_choice_chosen_wire_sum, stats->tile_choice_covered_base_tiles,
-        total_tiles, policy->requested_capture_fps, fallback_wire_per_base);
+        total_tiles, policy->requested_session_fps, fallback_wire_per_base);
     const struct wd_video_auto_entry_metrics entry_metrics = {
         .frame_samples                 = stats->stream_mode_frame_samples,
         .changed_frame_samples         = stats->stream_mode_changed_frame_samples,
@@ -655,7 +654,7 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
         .estimated_tile_demand_bytes_per_second = estimated_tile_demand,
         .tile_budget_bytes_per_second  = policy->adaptive_tile_fresh_bytes_per_second,
         .send_pressure_events          = stats->udp_send_pressure_drops,
-        .requested_capture_fps         = policy->requested_capture_fps,
+        .requested_session_fps         = policy->requested_session_fps,
         .adaptive_capture_fps          = policy->adaptive_capture_fps,
         .minimum_dirty_percent         = min_dirty_pct,
         .selection_suppressed          = stats->stream_mode_full_refresh_samples != 0,
@@ -862,19 +861,19 @@ uint16_t wd_stream_policy_effective_fps_locked(const struct wd_stream_policy* po
     uint16_t fps = policy ? policy->adaptive_capture_fps : 0;
     if (fps == 0 && policy)
     {
-        fps = policy->requested_capture_fps;
+        fps = policy->requested_session_fps;
     }
     if (fps == 0)
     {
-        fps = WD_DEFAULT_CAPTURE_FPS;
+        fps = WD_DEFAULT_SESSION_FPS;
     }
     if (fps < WD_STREAM_FPS_MIN)
     {
         fps = WD_STREAM_FPS_MIN;
     }
-    if (fps > WD_MAX_REASONABLE_FPS)
+    if (fps > WD_MAX_SESSION_FPS)
     {
-        fps = WD_MAX_REASONABLE_FPS;
+        fps = WD_MAX_SESSION_FPS;
     }
     return fps;
 }
@@ -972,13 +971,13 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
 
     (void)pressure_reason;
 
-    if (policy->requested_capture_fps == 0)
+    if (policy->requested_session_fps == 0)
     {
-        policy->requested_capture_fps = WD_DEFAULT_CAPTURE_FPS;
+        policy->requested_session_fps = WD_DEFAULT_SESSION_FPS;
     }
     if (policy->adaptive_capture_fps == 0)
     {
-        policy->adaptive_capture_fps = policy->requested_capture_fps;
+        policy->adaptive_capture_fps = policy->requested_session_fps;
     }
 
     uint16_t old_fps = wd_stream_policy_effective_fps_locked(policy);
@@ -1016,9 +1015,9 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
         return;
     }
 
-    if (old_fps >= policy->requested_capture_fps)
+    if (old_fps >= policy->requested_session_fps)
     {
-        policy->adaptive_capture_fps    = policy->requested_capture_fps;
+        policy->adaptive_capture_fps    = policy->requested_session_fps;
         policy->frame_rate_good_seconds = 0;
         return;
     }
@@ -1033,9 +1032,9 @@ static void wd_stream_policy_update_frame_rate_locked(struct wd_stream_policy* p
 
     uint32_t percent_fps = ((uint32_t)old_fps * WD_STREAM_FPS_INCREASE_PERCENT) / 100u;
     uint32_t new_fps     = percent_fps > (uint32_t)old_fps ? percent_fps : (uint32_t)old_fps + 1u;
-    if (new_fps > policy->requested_capture_fps)
+    if (new_fps > policy->requested_session_fps)
     {
-        new_fps = policy->requested_capture_fps;
+        new_fps = policy->requested_session_fps;
     }
 
     if ((uint16_t)new_fps != old_fps)
@@ -1136,14 +1135,15 @@ static void wd_stream_policy_update_video_frame_rate_locked(struct wd_stream_pol
     }
 
     const uint16_t safe_decode_fps = wd_video_safe_decode_fps(
-        policy->video_decode_ewma_ns, policy->requested_capture_fps,
+        policy->video_decode_ewma_ns, policy->requested_session_fps,
         WD_STREAM_VIDEO_DECODE_HEADROOM_PERCENT);
     policy->video_decode_safe_fps = safe_decode_fps;
 
-    const bool hard_overload = health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED ||
-                               stats->client_video_queue_overflow_drops != 0;
+    const bool sustained_present_pressure = wd_video_present_overflow_pressure(
+        stats->client_video_queue_overflow_drops, stats->client_video_frames_presented);
+    const bool hard_overload = health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED || sustained_present_pressure;
     const uint16_t downshift_target = wd_video_cadence_downshift_target(
-        current_fps, policy->requested_capture_fps, safe_decode_fps, hard_overload,
+        current_fps, policy->requested_session_fps, safe_decode_fps, hard_overload,
         WD_STREAM_FPS_MIN, WD_STREAM_VIDEO_FPS_DEADBAND,
         WD_STREAM_VIDEO_OVERLOAD_DECREASE_PERCENT);
     if (downshift_target < current_fps)
@@ -1154,13 +1154,14 @@ static void wd_stream_policy_update_video_frame_rate_locked(struct wd_stream_pol
         stats->frame_rate_downshifts++;
         WD_LOG_DEBUG("stream video cadence down: %u -> %u fps reason=%s decode_ewma_ms=%.2f safe_fps=%u",
                      current_fps, downshift_target,
-                     hard_overload ? "decoder overload" : "decode capacity",
+                     health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED ? "decoder overload" :
+                     sustained_present_pressure ? "sustained presentation replacements" : "decode capacity",
                      (double)policy->video_decode_ewma_ns / 1000000.0,
                      safe_decode_fps);
         return;
     }
     if (health != WD_CLIENT_VIDEO_HEALTH_NORMAL || stats->client_video_frames_presented == 0 ||
-        current_fps >= policy->requested_capture_fps)
+        current_fps >= policy->requested_session_fps)
     {
         policy->video_frame_rate_good_seconds = 0;
         return;
@@ -1171,7 +1172,7 @@ static void wd_stream_policy_update_video_frame_rate_locked(struct wd_stream_pol
     }
     policy->video_frame_rate_good_seconds = 0;
     const uint16_t next = wd_video_cadence_upshift_target(
-        current_fps, policy->requested_capture_fps, safe_decode_fps,
+        current_fps, policy->requested_session_fps, safe_decode_fps,
         WD_STREAM_VIDEO_FPS_DEADBAND, WD_STREAM_VIDEO_FPS_INCREASE_STEP);
     if (next != current_fps)
     {
@@ -2577,6 +2578,22 @@ bool wd_stream_analyze_frame(struct wd_server* server, const struct wd_stream_da
     }
 
     memset(analysis, 0, sizeof(*analysis));
+    /* This framebuffer shadow is only useful for tile ownership. During
+     * video-active/recovering the controller samples compositor damage
+     * metadata instead. Do not compare/copy tiles that will be discarded.
+     * Leave changed_tiles NULL: a concurrent mode handoff must request an
+     * actual compositor-owned full refresh, never accept an empty analysis. */
+    pthread_mutex_lock(&server->net.lock);
+    const bool skip_shadow = wd_video_shadow_skip_diff(
+        wd_stream_mode_video_owns_display(server->net.stream_policy.stream_mode),
+        force_full_refresh, server->net.stream_policy.tile_refresh_pending, server->net.config_update_pending);
+    pthread_mutex_unlock(&server->net.lock);
+    if (skip_shadow)
+    {
+        server->framebuffer_shadow_valid = false;
+        return true;
+    }
+
     memset(changed_tiles, 0, (size_t)server->total_base_tiles * sizeof(*changed_tiles));
     const uint64_t diff_start_ns = wd_now_ns();
     const uint32_t limit = server->total_base_tiles < server->total_tiles ? server->total_base_tiles : server->total_tiles;
@@ -4188,6 +4205,16 @@ static bool wd_stream_send_tiles(struct wd_server* server, bool detect_new_damag
 
     if (net->config_update_pending)
     {
+        pthread_mutex_unlock(&net->lock);
+        return true;
+    }
+
+    /* Video may have ceded ownership after the frame worker deliberately
+     * skipped its shadow diff. Never publish an empty/stale tile analysis. */
+    if (detect_new_damage && analysis && !analysis->changed_tiles &&
+        !wd_stream_mode_video_owns_display(net->stream_policy.stream_mode))
+    {
+        wd_server_request_full_refresh(server);
         pthread_mutex_unlock(&net->lock);
         return true;
     }

@@ -190,29 +190,29 @@ bool parse_video_codec(const char* text, uint32_t& value) {
     return false;
 }
 
-bool parse_video_decode_mode(const char* text, uint8_t& value) {
+bool parse_video_decoder_mode(const char* text, uint8_t& value) {
     if (!text)
     {
         return false;
     }
     if (std::strcmp(text, "auto") == 0)
     {
-        value = WD_CLIENT_VIDEO_DECODE_AUTO;
+        value = WD_CLIENT_VIDEO_DECODER_AUTO;
         return true;
     }
     if (std::strcmp(text, "off") == 0)
     {
-        value = WD_CLIENT_VIDEO_DECODE_OFF;
+        value = WD_CLIENT_VIDEO_DECODER_OFF;
         return true;
     }
     if (std::strcmp(text, "vaapi") == 0)
     {
-        value = WD_CLIENT_VIDEO_DECODE_VAAPI;
+        value = WD_CLIENT_VIDEO_DECODER_VAAPI;
         return true;
     }
     if (std::strcmp(text, "software") == 0)
     {
-        value = WD_CLIENT_VIDEO_DECODE_SOFTWARE;
+        value = WD_CLIENT_VIDEO_DECODER_SOFTWARE;
         return true;
     }
     return false;
@@ -221,11 +221,13 @@ bool parse_video_decode_mode(const char* text, uint8_t& value) {
 } // namespace
 
 ClientCliParseResult client_cli_parse(int argc, const char* const* argv, ClientCliOptions& options, std::string* error_message) {
-    options                     = ClientCliOptions{};
-    options.target_fps          = WD_CLIENT_DEFAULT_TARGET_FPS;
-    options.video_mode          = WD_VIDEO_MODE_AUTO;
-    options.video_codec_mask    = WD_VIDEO_CODEC_H265;
-    options.video_decode_mode   = WD_CLIENT_VIDEO_DECODE_AUTO;
+    options                       = ClientCliOptions{};
+    options.tcp_port              = WD_DEFAULT_TCP_PORT;
+    options.client_udp_port       = WD_CLIENT_DEFAULT_UDP_PORT;
+    options.requested_session_fps = WD_CLIENT_DEFAULT_SESSION_FPS;
+    options.video_mode           = WD_VIDEO_MODE_AUTO;
+    options.video_codec_mask     = WD_VIDEO_CODEC_H265;
+    options.video_decoder_mode   = WD_CLIENT_VIDEO_DECODER_AUTO;
 
     if (!argv || argc <= 0 || !argv[0])
     {
@@ -236,21 +238,10 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv, ClientC
     {
         return ClientCliParseResult::Help;
     }
-    if (argc < 4 || !argv[1])
-    {
-        set_error(error_message, "expected server address and TCP/UDP ports");
-        return ClientCliParseResult::Error;
-    }
-
-    options.server_host = argv[1];
-    if (options.server_host.empty() || !parse_u16(argv[2], 1u, std::numeric_limits<uint16_t>::max(), options.tcp_port) ||
-        !parse_u16(argv[3], 1u, std::numeric_limits<uint16_t>::max(), options.client_udp_port))
-    {
-        set_error(error_message, "invalid server address or port");
-        return ClientCliParseResult::Error;
-    }
-
-    for (int i = 4; i < argc; ++i)
+    /* One required address, followed by optional positional TCP and UDP ports.
+     * Options can follow the address or an explicitly provided port. */
+    unsigned positionals = 0;
+    for (int i = 1; i < argc; ++i)
     {
         const char* argument = argv[i];
         if (!argument)
@@ -262,27 +253,31 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv, ClientC
         {
             return ClientCliParseResult::Help;
         }
-        if (std::strcmp(argument, "--fps") == 0)
+        if (std::strcmp(argument, "--verbose") == 0 || std::strcmp(argument, "-v") == 0)
         {
-            if (++i >= argc || !parse_u16(argv[i], 1u, WD_MAX_REASONABLE_FPS, options.target_fps))
+            options.verbose = true;
+        }
+        else if (std::strcmp(argument, "--session-fps") == 0)
+        {
+            if (++i >= argc || !parse_u16(argv[i], 1u, WD_MAX_SESSION_FPS, options.requested_session_fps))
             {
-                set_error(error_message, "invalid --fps value");
+                set_error(error_message, "invalid --session-fps value");
                 return ClientCliParseResult::Error;
             }
         }
-        else if (std::strcmp(argument, "--size") == 0)
+        else if (std::strcmp(argument, "--display-size") == 0)
         {
             if (++i >= argc || !parse_size(argv[i], options.desired_width, options.desired_height))
             {
-                set_error(error_message, "invalid --size value");
+                set_error(error_message, "invalid --display-size value");
                 return ClientCliParseResult::Error;
             }
         }
-        else if (std::strcmp(argument, "--rate-kib") == 0)
+        else if (std::strcmp(argument, "--link-cap-kib-per-sec") == 0)
         {
-            if (++i >= argc || !parse_u32(argv[i], 1u, std::numeric_limits<uint32_t>::max(), options.udp_rate_cap_kib_per_second))
+            if (++i >= argc || !parse_u32(argv[i], 1u, std::numeric_limits<uint32_t>::max(), options.link_cap_kib_per_second))
             {
-                set_error(error_message, "invalid --rate-kib value");
+                set_error(error_message, "invalid --link-cap-kib-per-sec value");
                 return ClientCliParseResult::Error;
             }
         }
@@ -294,11 +289,11 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv, ClientC
         {
             options.disable_audio = true;
         }
-        else if (std::strcmp(argument, "--video") == 0)
+        else if (std::strcmp(argument, "--video-mode") == 0)
         {
             if (++i >= argc || !parse_video_mode(argv[i], options.video_mode))
             {
-                set_error(error_message, "invalid --video value");
+                set_error(error_message, "invalid --video-mode value");
                 return ClientCliParseResult::Error;
             }
         }
@@ -310,21 +305,44 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv, ClientC
                 return ClientCliParseResult::Error;
             }
         }
-        else if (std::strcmp(argument, "--video-decode") == 0)
+        else if (std::strcmp(argument, "--video-decoder") == 0)
         {
-            if (++i >= argc || !parse_video_decode_mode(argv[i], options.video_decode_mode))
+            if (++i >= argc || !parse_video_decoder_mode(argv[i], options.video_decoder_mode))
             {
-                set_error(error_message, "invalid --video-decode value; expected off, auto, vaapi, or software");
+                set_error(error_message, "invalid --video-decoder value; expected off, auto, vaapi, or software");
                 return ClientCliParseResult::Error;
             }
         }
+        else if (argument[0] == '-')
+        {
+            set_error(error_message, "unknown client option");
+            return ClientCliParseResult::Error;
+        }
+        else if (positionals == 0u && argument[0] != '\0')
+        {
+            options.server_host = argument;
+            ++positionals;
+        }
+        else if (positionals == 1u && parse_u16(argument, 1u, UINT16_MAX, options.tcp_port))
+        {
+            ++positionals;
+        }
+        else if (positionals == 2u && parse_u16(argument, 1u, UINT16_MAX, options.client_udp_port))
+        {
+            ++positionals;
+        }
         else
         {
-            set_error(error_message, "unknown client argument");
+            set_error(error_message, "expected <server_ipv4> [tcp_port [client_udp_port]] with valid ports");
             return ClientCliParseResult::Error;
         }
     }
 
+    if (options.server_host.empty())
+    {
+        set_error(error_message, "missing server address");
+        return ClientCliParseResult::Error;
+    }
     return ClientCliParseResult::Ok;
 }
 

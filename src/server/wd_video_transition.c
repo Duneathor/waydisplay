@@ -117,6 +117,14 @@ bool wd_video_entry_plan_can_commit(const struct wd_video_entry_plan* plan, uint
            plan->frame_content_epoch == wd_next_nonzero_epoch(current_epoch);
 }
 
+bool wd_video_present_overflow_pressure(uint64_t replaced, uint64_t frames_presented) {
+    /* Ignore isolated presentation replacements during a moving desktop.
+     * Four or more replacements must also reach roughly 5% of pictures
+     * presented in the reporting interval to count as sustained pressure.
+     * Compressed decode queue overflow is handled separately and immediately. */
+    return replaced >= 4u && (frames_presented == 0u || replaced >= frames_presented / 20u);
+}
+
 enum wd_client_video_health_class wd_client_video_health_classify(const struct wd_client_video_health_metrics* metrics) {
     if (!metrics || metrics->server_frames_tx == 0 || metrics->client_reports == 0)
     {

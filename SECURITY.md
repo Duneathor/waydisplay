@@ -6,7 +6,7 @@ WayDisplay does not currently authenticate peers and does not encrypt traffic. T
 
 The server accepts remote input, clipboard data, media transport, and an
 application-launch command. Ctrl+Alt+right-click on the client can launch the
-server's default `--app` (`konsole`) or run a supplied command via `/bin/sh -c`
+server's default `--launch-command` (`konsole`) or run a supplied command via `/bin/sh -c`
 under the server user account. The session ID and connection token reject
 accidental cross-session messages, **not malicious clients**. Exposing it to
 an untrusted network can give an untrusted peer control over the session.

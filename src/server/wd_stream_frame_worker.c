@@ -93,10 +93,9 @@ static void* stream_frame_worker_main(void* data) {
             if (wd_stream_analyze_frame(worker->server, &damage, force_full_refresh, worker->changed_tiles,
                                         worker->damage_capacity, &analysis))
             {
-                const uint64_t now_ns = wd_now_ns();
                 worker->video_snapshot.ready   = false;
                 worker->video_snapshot.copy_ns = 0;
-                if (wd_stream_video_snapshot_needed(worker->server, now_ns))
+                if (wd_stream_video_snapshot_needed(worker->server))
                 {
                     const size_t pixel_count = (size_t)worker->server->display_width * worker->server->display_height;
                     if (worker->server->display_height != 0 && pixel_count / worker->server->display_height == worker->server->display_width &&

@@ -20,7 +20,7 @@ struct ClientVideoDecoderConfig {
     uint16_t coded_height     = 0;
     uint16_t target_fps       = 0;
     uint32_t codec            = 0;
-    uint8_t  decode_mode       = WD_CLIENT_VIDEO_DECODE_AUTO;
+    uint8_t  decode_mode       = WD_CLIENT_VIDEO_DECODER_AUTO;
 };
 
 struct ClientVideoPacket {

@@ -182,32 +182,36 @@ enum wd_server_cli_parse_result wd_server_cli_parse_args(int argc, char* const* 
         {
             return WD_SERVER_CLI_HELP;
         }
-        if (strcmp(argument, "--app") == 0)
+        if (strcmp(argument, "--verbose") == 0 || strcmp(argument, "-v") == 0)
+        {
+            options->verbose = true;
+        }
+        else if (strcmp(argument, "--launch-command") == 0)
         {
             if (++i >= argc || !argv[i] || argv[i][0] == '\0')
             {
-                wd_server_cli_set_error(error_message, error_message_size, "--app requires a nonempty command");
+                wd_server_cli_set_error(error_message, error_message_size, "--launch-command requires a nonempty command");
                 return WD_SERVER_CLI_ERROR;
             }
             options->app_command = argv[i];
         }
-        else if (strcmp(argument, "--listen") == 0)
+        else if (strcmp(argument, "--listen-ipv4") == 0)
         {
             if (++i >= argc || !wd_server_cli_parse_ipv4(argv[i], &options->listen_address))
             {
-                wd_server_cli_set_error(error_message, error_message_size, "invalid --listen value; expected an IPv4 address");
+                wd_server_cli_set_error(error_message, error_message_size, "invalid --listen-ipv4 value; expected an IPv4 address");
                 return WD_SERVER_CLI_ERROR;
             }
         }
-        else if (strcmp(argument, "--port") == 0)
+        else if (strcmp(argument, "--tcp-port") == 0)
         {
             if (++i >= argc || !wd_server_cli_parse_u16(argv[i], 0, UINT16_MAX, &options->tcp_port))
             {
-                wd_server_cli_set_error(error_message, error_message_size, "invalid --port value; expected 0 through %u", UINT16_MAX);
+                wd_server_cli_set_error(error_message, error_message_size, "invalid --tcp-port value; expected 0 through %u", UINT16_MAX);
                 return WD_SERVER_CLI_ERROR;
             }
         }
-        else if (strcmp(argument, "--size") == 0)
+        else if (strcmp(argument, "--display-size") == 0)
         {
             uint32_t width  = 0;
             uint32_t height = 0;
@@ -215,29 +219,29 @@ enum wd_server_cli_parse_result wd_server_cli_parse_args(int argc, char* const* 
                 !wd_server_cli_tile_grid_fits(width, height, WD_TILE_WIDTH, WD_TILE_HEIGHT, UINT16_MAX))
             {
                 wd_server_cli_set_error(error_message, error_message_size,
-                                        "invalid --size value; maximum is %ux%u and the configured tile grid must fit", WD_MAX_RENDER_WIDTH,
+                                        "invalid --display-size value; maximum is %ux%u and the configured tile grid must fit", WD_MAX_RENDER_WIDTH,
                                         WD_MAX_RENDER_HEIGHT);
                 return WD_SERVER_CLI_ERROR;
             }
             options->display_width  = width;
             options->display_height = height;
         }
-        else if (strcmp(argument, "--scale") == 0)
+        else if (strcmp(argument, "--output-scale") == 0)
         {
             if (++i >= argc ||
                 !wd_server_cli_parse_scale(argv[i], WD_SERVER_MIN_OUTPUT_SCALE, WD_SERVER_MAX_OUTPUT_SCALE, &options->output_scale))
             {
-                wd_server_cli_set_error(error_message, error_message_size, "invalid --scale value; expected %.2f through %.2f",
+                wd_server_cli_set_error(error_message, error_message_size, "invalid --output-scale value; expected %.2f through %.2f",
                                         WD_SERVER_MIN_OUTPUT_SCALE, WD_SERVER_MAX_OUTPUT_SCALE);
                 return WD_SERVER_CLI_ERROR;
             }
         }
-        else if (strcmp(argument, "--renderer") == 0)
+        else if (strcmp(argument, "--compositor-renderer") == 0)
         {
             if (++i >= argc || !wd_server_cli_renderer_is_valid(argv[i]))
             {
                 wd_server_cli_set_error(error_message, error_message_size,
-                                        "invalid --renderer value; expected auto, gles2, vulkan, or pixman");
+                                        "invalid --compositor-renderer value; expected auto, gles2, vulkan, or pixman");
                 return WD_SERVER_CLI_ERROR;
             }
             options->renderer_name = argv[i];

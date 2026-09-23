@@ -6,6 +6,7 @@
 #include "wd_server_cli.h"
 
 #include "waydisplay/wd_config.h"
+#include "waydisplay/wd_log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,18 +17,19 @@ static void usage(const char* argv0) {
             "Usage:\n"
             "  %s [options]\n\n"
             "Options:\n"
-            "  --listen <IPv4>                 Bind address, default %s\n"
-            "  --port <N>                      TCP control port, default %u\n"
-            "  --app <command>                 Command launched in the compositor, default %s\n"
-            "  --size <WxH>                    Virtual output size, default %ux%u\n"
-            "  --scale <N>                     Output scale, default %.2f\n"
-            "  --renderer <auto|gles2|vulkan|pixman>\n"
+            "  -v, --verbose                Enable diagnostic output (default: errors only)\n"
+            "  --listen-ipv4 <IPv4>          Bind address, default %s\n"
+            "  --tcp-port <N>               TCP control port, default %u\n"
+            "  --launch-command <command>   Command launched in the compositor, default %s\n"
+            "  --display-size <WxH>         Virtual output size, default %ux%u\n"
+            "  --output-scale <N>           Output scale, default %.2f\n"
+            "  --compositor-renderer <auto|gles2|vulkan|pixman>\n"
             "  --video-encoder <off|auto|software|vaapi>\n"
             "  --help, -h                      Show this help\n\n"
             "Tile policy, Xwayland, and xdg-dialog behavior are configured in wd_config.h.\n\n"
             "Examples:\n"
-            "  %s --listen 0.0.0.0 --port %u --app %s\n"
-            "  %s --scale 1.25 --size 1366x768 --app konsole\n",
+            "  %s --listen-ipv4 0.0.0.0 --tcp-port %u --launch-command %s\n"
+            "  %s --output-scale 1.25 --display-size 1366x768 --launch-command konsole\n",
             argv0, WD_SERVER_DEFAULT_LISTEN_IPV4, WD_DEFAULT_TCP_PORT, WD_SERVER_DEFAULT_APP_COMMAND, WD_DISPLAY_WIDTH, WD_DISPLAY_HEIGHT,
             WD_SERVER_DEFAULT_OUTPUT_SCALE, argv0, WD_DEFAULT_TCP_PORT, WD_SERVER_DEFAULT_APP_COMMAND, argv0);
 }
@@ -51,6 +53,8 @@ int main(int argc, char** argv) {
         usage(argv[0]);
         return 1;
     }
+
+    wd_log_set_verbose(options.verbose);
 
     if (strcmp(options.renderer_name, "auto") == 0)
     {
