@@ -111,10 +111,24 @@ uint32_t wd_tile_visible_height_for(uint32_t display_height, uint16_t tile_id, u
     return wd_tile_visible_height_for_tile(display_height, tile_id, tiles_x, WD_TILE_HEIGHT);
 }
 
+/* A tile ID is meaningful only relative to the framebuffer's actual grid. */
+static bool wd_tile_layout_is_valid(uint32_t framebuffer_width, uint32_t framebuffer_height, uint16_t tiles_x,
+                                    uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height) {
+    if (tile_width == 0 || tile_height == 0 || !wd_tile_id_valid_for(tile_id, total_tiles) ||
+        tiles_x != wd_tiles_for_width_with_tile(framebuffer_width, tile_width) ||
+        total_tiles != wd_total_tiles_for_size_with_tile(framebuffer_width, framebuffer_height, tile_width, tile_height))
+    {
+        return false;
+    }
+
+    /* Extraction uses a uint32_t byte count; reject sizes that would wrap it. */
+    return (uint64_t)tile_width * tile_height * WD_BYTES_PER_PIXEL <= UINT32_MAX;
+}
+
 uint32_t wd_fnv1a_tile_hash_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
                                               uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width,
                                               uint16_t tile_height) {
-    if (!framebuffer_xrgb8888 || !wd_tile_id_valid_for(tile_id, total_tiles) || tile_width == 0 || tile_height == 0)
+    if (!framebuffer_xrgb8888 || !wd_tile_layout_is_valid(framebuffer_width, framebuffer_height, tiles_x, total_tiles, tile_id, tile_width, tile_height))
     {
         return 0;
     }
@@ -140,10 +154,12 @@ uint32_t wd_fnv1a_tile_hash_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb88
     return h;
 }
 
-bool wd_extract_tile_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
-                                       uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
-                                       uint8_t* out_tile_bytes) {
-    if (!framebuffer_xrgb8888 || !out_tile_bytes || !wd_tile_id_valid_for(tile_id, total_tiles) || tile_width == 0 || tile_height == 0)
+bool wd_extract_tile_xrgb8888_for_tile_sized(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width,
+                                             uint32_t framebuffer_height, uint16_t tiles_x, uint16_t total_tiles,
+                                             uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
+                                             uint8_t* out_tile_bytes, size_t out_capacity) {
+    if (!framebuffer_xrgb8888 || !out_tile_bytes || !wd_tile_layout_is_valid(framebuffer_width, framebuffer_height, tiles_x, total_tiles, tile_id, tile_width, tile_height) ||
+        out_capacity < (size_t)tile_width * tile_height * WD_BYTES_PER_PIXEL)
     {
         return false;
     }
@@ -167,10 +183,12 @@ bool wd_extract_tile_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uin
     return true;
 }
 
-bool wd_blit_tile_xrgb8888_for_tile(uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
-                                    uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
-                                    const uint8_t* tile_bytes) {
-    if (!framebuffer_xrgb8888 || !tile_bytes || !wd_tile_id_valid_for(tile_id, total_tiles) || tile_width == 0 || tile_height == 0)
+bool wd_blit_tile_xrgb8888_for_tile_sized(uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width,
+                                          uint32_t framebuffer_height, uint16_t tiles_x, uint16_t total_tiles,
+                                          uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
+                                          const uint8_t* tile_bytes, size_t tile_capacity) {
+    if (!framebuffer_xrgb8888 || !tile_bytes || !wd_tile_layout_is_valid(framebuffer_width, framebuffer_height, tiles_x, total_tiles, tile_id, tile_width, tile_height) ||
+        tile_capacity < (size_t)tile_width * tile_height * WD_BYTES_PER_PIXEL)
     {
         return false;
     }
@@ -189,6 +207,22 @@ bool wd_blit_tile_xrgb8888_for_tile(uint32_t* framebuffer_xrgb8888, uint32_t fra
     }
 
     return true;
+}
+
+bool wd_extract_tile_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
+                                       uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width,
+                                       uint16_t tile_height, uint8_t* out_tile_bytes) {
+    return wd_extract_tile_xrgb8888_for_tile_sized(framebuffer_xrgb8888, framebuffer_width, framebuffer_height, tiles_x,
+                                                   total_tiles, tile_id, tile_width, tile_height, out_tile_bytes,
+                                                   (size_t)tile_width * tile_height * WD_BYTES_PER_PIXEL);
+}
+
+bool wd_blit_tile_xrgb8888_for_tile(uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
+                                    uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width,
+                                    uint16_t tile_height, const uint8_t* tile_bytes) {
+    return wd_blit_tile_xrgb8888_for_tile_sized(framebuffer_xrgb8888, framebuffer_width, framebuffer_height, tiles_x,
+                                                total_tiles, tile_id, tile_width, tile_height, tile_bytes,
+                                                (size_t)tile_width * tile_height * WD_BYTES_PER_PIXEL);
 }
 
 uint32_t wd_fnv1a_tile_hash_xrgb8888_for(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,

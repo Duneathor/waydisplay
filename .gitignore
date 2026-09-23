@@ -18,3 +18,9 @@ cmake_install.cmake
 *.swp
 *~
 .DS_Store
+
+# Arch makepkg outputs when building from repository root
+/src/
+/pkg/
+/*.pkg.tar.*
+/packaging/arch/waydisplay-src.tar.gz

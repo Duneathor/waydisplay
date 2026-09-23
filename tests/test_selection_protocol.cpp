@@ -47,7 +47,10 @@ void test_normalization() {
     CHECK(wd_selection_text_normalize_size(terminated, sizeof(terminated), &normalized));
     CHECK(normalized == 2);
     CHECK(!wd_selection_text_normalize_size(embedded, sizeof(embedded), &normalized));
+    CHECK(normalized == 0);
+    normalized = 99;
     CHECK(!wd_selection_text_normalize_size(nullptr, 1, &normalized));
+    CHECK(normalized == 0);
     CHECK(!wd_selection_text_normalize_size(nullptr, 0, nullptr));
 }
 

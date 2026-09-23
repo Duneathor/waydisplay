@@ -592,6 +592,57 @@ void test_channel_specific_tcp_payload_limits() {
 }
 
 
+void test_tcp_rejects_invalid_header_shape_before_body() {
+    const uint16_t message_types[] = {WD_MSG_MTU_PROBE_START, UINT16_MAX};
+    for (uint16_t message_type : message_types)
+    {
+        wd_tcp_header header{};
+        header.magic            = WD_TCP_MAGIC;
+        header.protocol_version = WD_PROTOCOL_VERSION;
+        header.message_type     = message_type;
+        header.payload_size     = 1; // Neither a fixed-size MTU probe nor an unknown message has this wire shape.
+        require(!wd_protocol_payload_size_is_valid(message_type, header.payload_size), "test header must be invalid");
+        uint8_t wire_header[WD_TCP_HEADER_WIRE_SIZE]{};
+        require(wd_tcp_header_encode(wire_header, &header), "encode invalid-shape header");
+
+        for (bool incremental : {false, true})
+        {
+            int sockets[2] = {-1, -1};
+            require(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0, "create invalid-shape socket pair");
+            const uint8_t sentinel = 0x7d;
+            require(wd_send_all(sockets[0], wire_header, sizeof(wire_header)), "send invalid-shape header");
+            require(wd_send_all(sockets[0], &sentinel, sizeof(sentinel)), "send sentinel after invalid header");
+
+            if (incremental)
+            {
+                wd_tcp_reader reader{};
+                wd_tcp_reader_init(&reader, 64);
+                wd_tcp_message message{};
+                require(wd_tcp_reader_receive(&reader, sockets[1], 100, 50, 500, &message) == WD_TCP_READER_INVALID_FRAME,
+                        "incremental reader should reject invalid shape at header boundary");
+                require(reader.payload == nullptr, "invalid-shape header must not allocate payload");
+                wd_tcp_reader_destroy(&reader);
+            }
+            else
+            {
+                uint16_t type = 0;
+                uint8_t* payload = nullptr;
+                uint32_t size = 0;
+                require(!wd_recv_tcp_message_limited(sockets[1], 64, &type, &payload, &size),
+                        "blocking reader should reject invalid shape at header boundary");
+                require(payload == nullptr && size == 0, "invalid receive must clear outputs");
+            }
+
+            uint8_t unread = 0;
+            require(recv(sockets[1], &unread, sizeof(unread), MSG_DONTWAIT) == 1 && unread == sentinel,
+                    "invalid header must not consume subsequent bytes");
+            close(sockets[0]);
+            close(sockets[1]);
+        }
+    }
+}
+
+
 void test_incremental_tcp_reader() {
     int sockets[2] = {-1, -1};
     require(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0, "create incremental reader socket pair");
@@ -699,6 +750,7 @@ int main() {
     test_audio_payload_strict_validation();
     test_input_payload_strict_validation();
     test_channel_specific_tcp_payload_limits();
+    test_tcp_rejects_invalid_header_shape_before_body();
     test_incremental_tcp_reader();
     test_tile_count_helpers_reject_overflow();
     return 0;

@@ -78,3 +78,21 @@ The test suite must exercise shutdown while every client channel is blocked in a
 ## Media transition integration tests
 
 Video codec integration tests reconfigure encoder and decoder across grow, odd-dimension, and shrink transitions. Each new content epoch must begin with a keyframe and old-resolution packets must be rejected. Audio/video integration tests hold the oldest decoded frame only for the bounded startup interval, verify that late audio can subsequently become clock master, and ensure queue pressure cannot overwrite an audio-held presentation head.
+
+## Asynchronous summary completion ownership
+
+Generation-summary sends capture the four-field stream epoch identity when
+queued. Their callbacks always retire sender-level outstanding counts, even
+if a connection was replaced, but may refund control budget, clear dirty tiles,
+or update input-to-summary telemetry only when the captured identity still
+exactly matches the current connection, configuration, content, and framebuffer.
+A matching tile-generation number or summary sequence alone is not sufficient
+when descriptor numbers or counters can be reused after reconnect.
+
+## Remote keyboard transition boundary
+
+The client discards SDL auto-repeat events. The server classifies the received
+remote press/release against its tracked pressed-key set *before* updating XKB
+or delivering to the seat. Duplicate presses and unmatched releases must not
+produce extra Wayland key events; a full pressed-key set rejects new presses.
+This does not implement relative pointer, Xwayland, or fractional scaling.

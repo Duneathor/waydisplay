@@ -75,6 +75,11 @@ bool wd_selection_text_is_valid(const uint8_t* data, uint32_t size) {
 }
 
 bool wd_selection_text_normalize_size(const uint8_t* data, uint32_t size, uint32_t* normalized_size) {
+    if (normalized_size)
+    {
+        *normalized_size = 0;
+    }
+
     if (!normalized_size || (!data && size != 0))
     {
         return false;

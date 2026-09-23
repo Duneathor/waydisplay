@@ -30,6 +30,18 @@ waydisplay-client
 
 See [BUILDING.md](BUILDING.md) for dependencies, profiles, feature switches, testing, sanitizers, installation, and troubleshooting.
 
+On Arch Linux, use the root-level local `PKGBUILD` to install dependencies,
+build both runtime binaries, run tests, and install the package directly from
+your current checkout (including uncommitted changes):
+
+```sh
+makepkg -si
+```
+
+The package's build outputs go into the ignored `src/` and `pkg/` directories.
+This local-checkout recipe is not suitable for publishing to the AUR without
+replacing its empty source list with reproducible, pinned sources.
+
 ## Run
 
 Start the server first:

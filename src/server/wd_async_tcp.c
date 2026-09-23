@@ -1,5 +1,6 @@
 #include "wd_async_tcp.h"
 
+#include "waydisplay/wd_async_tcp_policy.h"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_io_uring.h"
@@ -291,7 +292,7 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
         {
             sender->failed++;
         }
-        else if (cqe->res <= 0)
+        else if (wd_async_tcp_advance(msg->total_size, &msg->bytes_sent, cqe->res) == WD_ASYNC_TCP_SEND_FAILED)
         {
             sender->failed++;
             wd_async_tcp_pending_remove(sender, msg);
@@ -301,8 +302,7 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
         }
         else
         {
-            msg->bytes_sent += (size_t)cqe->res;
-            if (msg->bytes_sent >= msg->total_size)
+            if (msg->bytes_sent == msg->total_size)
             {
                 sender->completed++;
                 wd_async_tcp_pending_remove(sender, msg);
@@ -346,7 +346,7 @@ bool wd_async_tcp_send_message_ex(struct wd_async_tcp_sender* sender, int fd, ui
     }
 
     const uint64_t total_size = (uint64_t)WD_TCP_HEADER_WIRE_SIZE + (uint64_t)wire_payload_size;
-    if (sender->max_pending_bytes != 0 && sender->pending_bytes + total_size > sender->max_pending_bytes)
+    if (!wd_async_tcp_can_enqueue(sender->pending_bytes, total_size, sender->max_pending_bytes))
     {
         sender->overflows++;
         sender->failed++;
@@ -383,7 +383,7 @@ bool wd_async_tcp_sender_can_queue(const struct wd_async_tcp_sender* sender, uin
     }
 
     const uint64_t total_size = (uint64_t)WD_TCP_HEADER_WIRE_SIZE + (uint64_t)payload_size;
-    return sender->max_pending_bytes == 0 || sender->pending_bytes + total_size <= sender->max_pending_bytes;
+    return wd_async_tcp_can_enqueue(sender->pending_bytes, total_size, sender->max_pending_bytes);
 }
 
 bool wd_async_tcp_sender_has_message_type(const struct wd_async_tcp_sender* sender, uint16_t message_type) {

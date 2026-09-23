@@ -3,6 +3,7 @@
 #include "waydisplay/wd_config.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -33,6 +34,19 @@ uint32_t wd_tile_visible_height_for(uint32_t display_height, uint16_t tile_id, u
 uint32_t wd_fnv1a_tile_hash_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
                                               uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width,
                                               uint16_t tile_height);
+
+/* Prefer sized entry points for externally allocated buffers. On failure they
+ * neither read from nor write to the tile buffer. Legacy unsized entry points
+ * are retained for callers that already guarantee a complete tile allocation. */
+bool wd_extract_tile_xrgb8888_for_tile_sized(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width,
+                                             uint32_t framebuffer_height, uint16_t tiles_x, uint16_t total_tiles,
+                                             uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
+                                             uint8_t* out_tile_bytes, size_t out_capacity);
+
+bool wd_blit_tile_xrgb8888_for_tile_sized(uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width,
+                                          uint32_t framebuffer_height, uint16_t tiles_x, uint16_t total_tiles,
+                                          uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
+                                          const uint8_t* tile_bytes, size_t tile_capacity);
 
 bool wd_extract_tile_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
                                        uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,

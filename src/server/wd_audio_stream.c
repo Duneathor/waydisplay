@@ -507,7 +507,7 @@ bool wd_audio_stream_start(struct wd_audio_stream* stream, int tcp_fd, uint8_t s
         WD_LOG_INFO(
             "audio stream started: capture=%s encoder=%s codec=opus rate=%u channels=%u frame_samples=%u bitrate=%u target_latency_ms=%u",
             wd_audio_capture_backend_name(), wd_audio_encoder_backend_name(), WD_AUDIO_SAMPLE_RATE_DEFAULT, channels,
-            WD_AUDIO_FRAME_SAMPLES_DEFAULT, stream->bitrate, target_latency_ms);
+            (unsigned)WD_AUDIO_FRAME_SAMPLES_DEFAULT, stream->bitrate, target_latency_ms);
         WD_LOG_DEBUG("audio transport queue: userspace_max=%llu bytes target_ms=%u", (unsigned long long)stream->tx_max_pending_bytes,
                      WD_AUDIO_TX_QUEUE_MS);
         pthread_mutex_unlock(&stream->lock);

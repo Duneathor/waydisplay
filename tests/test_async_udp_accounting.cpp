@@ -65,6 +65,8 @@ void test_pending_queue_limits_include_packet_and_byte_caps() {
 void test_stream_epoch_identity_rejects_stale_work() {
     const wd_stream_epoch_identity current{7, 3, 11, 19};
     require(wd_stream_epoch_identity_equal(&current, &current), "identical epochs match");
+    require(!wd_stream_epoch_identity_equal(nullptr, &current), "null completion identity is invalid");
+    require(!wd_stream_epoch_identity_equal(&current, nullptr), "null current identity is invalid");
 
     wd_stream_epoch_identity stale = current;
     stale.connection_epoch--;

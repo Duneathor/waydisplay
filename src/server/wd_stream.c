@@ -3378,8 +3378,9 @@ static bool wd_stream_try_encode_candidate_for_snapshot(struct wd_parallel_encod
     const uint32_t uncompressed_size = (uint32_t)tile_width * (uint32_t)tile_height * WD_BYTES_PER_PIXEL;
     const uint16_t wire_tiles_x      = wd_tiles_for_width_with_tile(job->display_width, tile_width);
     const uint16_t wire_total_tiles  = wd_total_tiles_for_size_with_tile(job->display_width, job->display_height, tile_width, tile_height);
-    if (!wd_extract_tile_xrgb8888_for_tile(job->framebuffer_xrgb8888, job->display_width, job->display_height, wire_tiles_x,
-                                           wire_total_tiles, wire_tile_id, tile_width, tile_height, tile_bytes))
+    if (!wd_extract_tile_xrgb8888_for_tile_sized(job->framebuffer_xrgb8888, job->display_width, job->display_height, wire_tiles_x,
+                                                 wire_total_tiles, wire_tile_id, tile_width, tile_height, tile_bytes,
+                                                 (size_t)WD_WIRE_TILE_MAX_WIDTH * WD_WIRE_TILE_MAX_HEIGHT * WD_BYTES_PER_PIXEL))
     {
         return false;
     }
@@ -4633,6 +4634,7 @@ struct wd_summary_completion {
     uint64_t                           server_timestamp_ns;
     uint64_t                           last_input_inject_ns;
     uint64_t                           summary_epoch;
+    struct wd_stream_epoch_identity     epoch;
     uint64_t                           budget_bytes;
     uint16_t                           entry_count;
     struct wd_summary_completion_entry entries[];
@@ -4668,7 +4670,16 @@ static void wd_stream_summary_completion(void* user_data, bool success) {
     {
         struct wd_server*    server = completion->server;
         struct wd_net_state* net    = &server->net;
+        const struct wd_stream_epoch_identity current = {
+            .connection_epoch       = net->connection_epoch,
+            .config_epoch           = net->config_epoch,
+            .content_epoch          = net->content_epoch,
+            .framebuffer_generation = server->framebuffer_generation,
+        };
+        const bool same_epoch = wd_stream_epoch_identity_equal(&completion->epoch, &current);
 
+        /* Outstanding send accounting belongs to this sender, across sessions.
+         * Session budgets, dirty tiles, and input telemetry do not. */
         if (completion->async_pending && net->summary_async_pending_count > 0)
         {
             net->summary_async_pending_count--;
@@ -4678,13 +4689,13 @@ static void wd_stream_summary_completion(void* user_data, bool success) {
             }
         }
 
-        if (!success && completion->budget_bytes != 0)
+        if (same_epoch && !success && completion->budget_bytes != 0)
         {
             wd_stream_refund_tcp_control_budget_locked(net, completion->budget_bytes);
             completion->budget_bytes = 0;
         }
 
-        if (success && net->summary_dirty_tiles && net->summary_epoch == completion->summary_epoch)
+        if (same_epoch && success && net->summary_dirty_tiles && net->summary_epoch == completion->summary_epoch)
         {
             for (uint16_t i = 0; i < completion->entry_count; ++i)
             {
@@ -4697,7 +4708,7 @@ static void wd_stream_summary_completion(void* user_data, bool success) {
             wd_stream_rebuild_summary_dirty_queue_locked(server);
         }
 
-        if (success && completion->input_since_last_summary && completion->last_input_inject_ns != 0 &&
+        if (same_epoch && success && completion->input_since_last_summary && completion->last_input_inject_ns != 0 &&
             completion->server_timestamp_ns >= completion->last_input_inject_ns)
         {
             net->stats.input_to_summary_samples++;
@@ -4827,6 +4838,12 @@ static bool wd_stream_send_generation_summary_kind_locked(struct wd_server* serv
     completion->server_timestamp_ns      = header.server_timestamp_ns;
     completion->last_input_inject_ns     = net->last_input_inject_ns;
     completion->summary_epoch            = net->summary_epoch;
+    completion->epoch = (struct wd_stream_epoch_identity){
+        .connection_epoch       = net->connection_epoch,
+        .config_epoch           = net->config_epoch,
+        .content_epoch          = net->content_epoch,
+        .framebuffer_generation = server->framebuffer_generation,
+    };
     completion->budget_bytes             = frame_size;
     completion->entry_count              = entry_count;
     for (uint16_t i = 0; i < entry_count; ++i)

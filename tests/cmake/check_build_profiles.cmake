@@ -45,6 +45,10 @@ function(waydisplay_configure_profile profile output_var)
             "-DCMAKE_BUILD_TYPE=${profile}"
             "-DCMAKE_C_COMPILER=${WAYDISPLAY_C_COMPILER}"
             "-DCMAKE_CXX_COMPILER=${WAYDISPLAY_CXX_COMPILER}"
+            # Inspect WayDisplay profiles, not CFLAGS/CXXFLAGS inherited from
+            # the invoking environment (e.g. makepkg -march=native).
+            -DCMAKE_C_FLAGS=
+            -DCMAKE_CXX_FLAGS=
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
             "-DWAYDISPLAY_PGO_DATA_DIR=${WAYDISPLAY_TEST_ROOT}/pgo-data"
             -DWAYDISPLAY_BUILD_CLIENT_SDL=OFF

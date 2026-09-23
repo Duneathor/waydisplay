@@ -1,4 +1,5 @@
 #include "waydisplay/wd_input.h"
+#include "waydisplay/wd_keyboard_state.h"
 #include "waydisplay/wd_time.h"
 #include "wd_server_internal.h"
 
@@ -192,10 +193,21 @@ void wd_keyboard_notify_enter(struct wd_server* server, struct wlr_surface* surf
     server->net.stats.keyboard_enter_events++;
 }
 
-static void notify_key_and_modifiers(struct wd_server* server, const struct wd_queued_key_event* event) {
+static bool notify_key_and_modifiers(struct wd_server* server, const struct wd_queued_key_event* event) {
     if (!server || !server->seat || !server->keyboard || !event)
     {
-        return;
+        return false;
+    }
+
+    const enum wd_key_transition transition = wd_key_transition_classify(
+        server->pressed_keycodes, server->pressed_keycode_count, WD_SERVER_PRESSED_KEY_CAPACITY,
+        event->evdev_key_code, event->pressed);
+    if (transition != WD_KEY_TRANSITION_ACCEPT)
+    {
+        /* Count rejected duplicates/releases without applying a second XKB
+         * transition or forwarding inconsistent key events to the seat. */
+        wd_keyboard_note_key_state(server, event->evdev_key_code, event->pressed);
+        return false;
     }
 
     enum wl_keyboard_key_state state = event->pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
@@ -227,6 +239,7 @@ static void notify_key_and_modifiers(struct wd_server* server, const struct wd_q
     wd_keyboard_note_key_state(server, event->evdev_key_code, event->pressed);
 
     wlr_seat_keyboard_notify_key(server->seat, time_msec, event->evdev_key_code, state);
+    return true;
 }
 
 void wd_keyboard_drain_and_inject(struct wd_server* server) {
@@ -276,12 +289,13 @@ void wd_keyboard_drain_and_inject(struct wd_server* server) {
 
     for (size_t i = 0; i < count; ++i)
     {
-        notify_key_and_modifiers(server, &local[i]);
-
-        pthread_mutex_lock(&server->net.lock);
-        server->net.last_input_sequence = local[i].input_sequence;
-        wd_stats_note_input_inject_locked(&server->net, local[i].server_rx_timestamp_ns, wd_now_ns());
-        server->net.stats.key_events_injected++;
-        pthread_mutex_unlock(&server->net.lock);
+        if (notify_key_and_modifiers(server, &local[i]))
+        {
+            pthread_mutex_lock(&server->net.lock);
+            server->net.last_input_sequence = local[i].input_sequence;
+            wd_stats_note_input_inject_locked(&server->net, local[i].server_rx_timestamp_ns, wd_now_ns());
+            server->net.stats.key_events_injected++;
+            pthread_mutex_unlock(&server->net.lock);
+        }
     }
 }

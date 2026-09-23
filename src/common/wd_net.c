@@ -3,6 +3,7 @@
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_protocol_codec.h"
+#include "waydisplay/wd_protocol_dispatch.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -192,7 +193,8 @@ enum wd_tcp_reader_status wd_tcp_reader_receive(struct wd_tcp_reader* reader, in
         }
 
         if (header.magic != WD_TCP_MAGIC || header.protocol_version != WD_PROTOCOL_VERSION ||
-            header.payload_size > reader->max_payload_size)
+            header.payload_size > reader->max_payload_size ||
+            !wd_protocol_payload_size_is_valid(header.message_type, header.payload_size))
         {
             return WD_TCP_READER_INVALID_FRAME;
         }
@@ -365,7 +367,8 @@ bool wd_recv_tcp_message_limited(int fd, uint32_t max_payload_size, uint16_t* ou
 
     struct wd_tcp_header header;
     if (!wd_tcp_header_decode(wire_header, &header) || header.magic != WD_TCP_MAGIC ||
-        header.protocol_version != WD_PROTOCOL_VERSION || header.payload_size > max_payload_size)
+        header.protocol_version != WD_PROTOCOL_VERSION || header.payload_size > max_payload_size ||
+        !wd_protocol_payload_size_is_valid(header.message_type, header.payload_size))
     {
         return false;
     }

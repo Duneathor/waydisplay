@@ -100,6 +100,22 @@ if(WAYDISPLAY_BUILD_TESTS)
     endfunction()
 
     waydisplay_add_test(
+        NAME waydisplay.keyboard_state
+        TARGET waydisplay_test_keyboard_state
+        SOURCES tests/test_keyboard_state.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;input;server"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.async_tcp_policy
+        TARGET waydisplay_test_async_tcp_policy
+        SOURCES tests/test_async_tcp_policy.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;network;threading"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.cpp20_branch_hints
         TARGET waydisplay_test_cpp20_branch_hints
         SOURCES tests/test_cpp20_branch_hints.cpp

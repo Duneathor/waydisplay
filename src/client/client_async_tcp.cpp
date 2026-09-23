@@ -1,5 +1,6 @@
 #include "client_async_tcp.hpp"
 
+#include "waydisplay/wd_async_tcp_policy.h"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_io_uring.h"
@@ -281,7 +282,7 @@ void reap_locked(ClientAsyncTcpSender* sender) {
         {
             sender->failed++;
         }
-        else if (cqe->res <= 0)
+        else if (wd_async_tcp_advance(msg->bytes.size(), &msg->bytes_sent, cqe->res) == WD_ASYNC_TCP_SEND_FAILED)
         {
             sender->failed++;
             sender->fatal = true;
@@ -295,8 +296,7 @@ void reap_locked(ClientAsyncTcpSender* sender) {
         }
         else
         {
-            msg->bytes_sent += static_cast<size_t>(cqe->res);
-            if (msg->bytes_sent >= msg->bytes.size())
+            if (msg->bytes_sent == msg->bytes.size())
             {
                 sender->completed++;
                 pending_remove(sender, msg);
@@ -541,7 +541,7 @@ bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_
     }
 
     const uint64_t total_size = static_cast<uint64_t>(WD_TCP_HEADER_WIRE_SIZE) + static_cast<uint64_t>(wire_payload_size);
-    if (sender->max_pending_bytes != 0 && sender->pending_bytes + total_size > sender->max_pending_bytes)
+    if (!wd_async_tcp_can_enqueue(sender->pending_bytes, total_size, sender->max_pending_bytes))
     {
         sender->overflows++;
         sender->failed++;

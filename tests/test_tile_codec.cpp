@@ -106,6 +106,54 @@ void test_extract_hash_and_blit_partial_tiles() {
             "blit should reject null tile bytes");
 }
 
+void test_reject_inconsistent_or_unrepresentable_tile_geometry() {
+    const uint32_t framebuffer[] = {0xff102030u};
+    uint8_t tile[sizeof(framebuffer)]{};
+    uint32_t destination[] = {0xdeadbeefu};
+
+    // 32768 * 32768 * four bytes wraps a uint32_t tile byte count to zero.
+    constexpr uint16_t oversized = 32768;
+    require(!wd_extract_tile_xrgb8888_for_tile(framebuffer, 1, 1, 1, 1, 0, oversized, oversized, tile),
+            "extract must reject a tile size that overflows its byte count");
+    require(!wd_blit_tile_xrgb8888_for_tile(destination, 1, 1, 1, 1, 0, oversized, oversized, tile),
+            "blit must reject an unrepresentable tile size");
+    require(wd_fnv1a_tile_hash_xrgb8888_for_tile(framebuffer, 1, 1, 1, 1, 0, oversized, oversized) == 0,
+            "hash must reject an unrepresentable tile size");
+    require(destination[0] == 0xdeadbeefu, "invalid blit must not mutate framebuffer");
+
+    require(!wd_extract_tile_xrgb8888_for_tile(framebuffer, 1, 1, 2, 2, 0, 1, 1, tile),
+            "extract must reject a grid that disagrees with framebuffer dimensions");
+    require(!wd_blit_tile_xrgb8888_for_tile(destination, 1, 1, 2, 2, 0, 1, 1, tile),
+            "blit must reject a grid that disagrees with framebuffer dimensions");
+    require(wd_fnv1a_tile_hash_xrgb8888_for_tile(framebuffer, 1, 1, 2, 2, 0, 1, 1) == 0,
+            "hash must reject a grid that disagrees with framebuffer dimensions");
+}
+
+void test_sized_tile_buffer_contract() {
+    constexpr uint32_t width = 5, height = 3;
+    constexpr uint16_t tile_width = 4, tile_height = 2;
+    constexpr uint16_t tiles_x = 2, total_tiles = 4;
+    uint32_t source[width * height]{};
+    uint32_t destination[width * height]{};
+    uint8_t tile[tile_width * tile_height * WD_BYTES_PER_PIXEL + 1]{};
+    std::memset(tile, 0xa5, sizeof(tile));
+    require(!wd_extract_tile_xrgb8888_for_tile_sized(source, width, height, tiles_x, total_tiles, 3,
+                                                     tile_width, tile_height, tile, sizeof(tile) - 2),
+            "short extraction buffer must be rejected");
+    require(std::all_of(std::begin(tile), std::end(tile), [](uint8_t v) { return v == 0xa5; }),
+            "short extraction must not touch destination bytes");
+    require(wd_extract_tile_xrgb8888_for_tile_sized(source, width, height, tiles_x, total_tiles, 3,
+                                                    tile_width, tile_height, tile, sizeof(tile) - 1),
+            "exact-sized extraction buffer must succeed");
+    require(tile[sizeof(tile) - 1] == 0xa5, "sized extraction must preserve trailing canary");
+    require(!wd_blit_tile_xrgb8888_for_tile_sized(destination, width, height, tiles_x, total_tiles, 3,
+                                                  tile_width, tile_height, tile, sizeof(tile) - 2),
+            "short blit buffer must be rejected");
+    require(wd_blit_tile_xrgb8888_for_tile_sized(destination, width, height, tiles_x, total_tiles, 3,
+                                                 tile_width, tile_height, tile, sizeof(tile) - 1),
+            "exact-sized blit buffer must succeed");
+}
+
 void test_zstd_one_shot_and_context_contracts() {
     std::vector<uint8_t> source(8192);
     for (size_t i = 0; i < source.size(); ++i)
@@ -162,6 +210,8 @@ int main() {
     test_tile_count_boundaries();
     test_tile_coordinates_and_visible_edges();
     test_extract_hash_and_blit_partial_tiles();
+    test_sized_tile_buffer_contract();
+    test_reject_inconsistent_or_unrepresentable_tile_geometry();
     test_zstd_one_shot_and_context_contracts();
     return 0;
 }
