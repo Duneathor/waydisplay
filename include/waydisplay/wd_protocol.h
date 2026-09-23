@@ -101,8 +101,9 @@ enum wd_client_capability {
 enum wd_video_codec {
     WD_VIDEO_CODEC_H265 = 1u << 0,
     WD_VIDEO_CODEC_H264 = 1u << 1,
+    WD_VIDEO_CODEC_AV1  = 1u << 2,
 };
-#define WD_VIDEO_CODEC_MASK (WD_VIDEO_CODEC_H265 | WD_VIDEO_CODEC_H264)
+#define WD_VIDEO_CODEC_MASK (WD_VIDEO_CODEC_H265 | WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_AV1)
 
 enum wd_video_transport {
     WD_VIDEO_TRANSPORT_TCP = 1,

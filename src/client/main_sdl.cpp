@@ -24,7 +24,7 @@ void usage(const char* argv0) {
                  "  --no-vsync                    Disable SDL present-vsync\n"
                  "  --no-audio                    Disable audio negotiation and playback\n"
                  "  --video <auto|off|force>      Select coarse video-mode policy, default auto\n"
-                 "  --video-codec <auto|h264|h265> Select acceptable video codecs, default h265\n"
+                 "  --video-codec <auto|h264|h265|av1> Select acceptable video codecs, default h265\n"
                  "  --video-decode <off|auto|vaapi|software> Select decoder backend, default auto\n"
                  "  --help, -h                    Show this help\n\n"
                  "Detailed stream thresholds and codec policy are configured in wd_config.h.\n\n"

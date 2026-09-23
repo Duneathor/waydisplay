@@ -39,6 +39,9 @@ void test_payload_identity_and_geometry() {
           WD_CLIENT_VIDEO_PACKET_VALID);
     CHECK(!control);
 
+    header.codec = WD_VIDEO_CODEC_AV1;
+    CHECK(wd_client_video_packet_validate(&header, sizeof(header) + header.data_size, &expected, &control) == WD_CLIENT_VIDEO_PACKET_VALID);
+    header.codec = WD_VIDEO_CODEC_H265;
     header.connection_token++;
     CHECK(wd_client_video_packet_validate(&header, sizeof(header) + header.data_size, &expected, &control) ==
           WD_CLIENT_VIDEO_PACKET_INVALID_IDENTITY);

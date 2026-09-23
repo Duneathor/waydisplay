@@ -42,6 +42,13 @@ static void test_defaults(void) {
     CHECK(!options.disable_vsync && !options.disable_audio);
 }
 
+static void test_av1_option(void) {
+    ClientCliOptions options;
+    std::string error;
+    CHECK(parse({"client", "192.0.2.1", "5000", "6000", "--video-codec", "av1"}, options, error) == ClientCliParseResult::Ok);
+    CHECK(options.video_codec_mask == WD_VIDEO_CODEC_AV1);
+}
+
 static void test_retained_options(void) {
     ClientCliOptions options;
     std::string      error;
@@ -136,6 +143,7 @@ static void test_help(void) {
 
 int main() {
     test_defaults();
+    test_av1_option();
     test_retained_options();
     test_decode_modes();
     test_removed_options_are_rejected();

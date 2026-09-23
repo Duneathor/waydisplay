@@ -10,6 +10,12 @@ Sampled `video trace stage=…` lines on **both** the server and client require
 WAYDISPLAY_PACKAGE_LOG_LEVEL=DEBUG makepkg -sif
 ```
 
+DEBUG keeps WayDisplay's sampled video diagnostics but sets wlroots itself to
+`WLR_INFO`, avoiding its per-surface/FBO debug chatter. The server's routine
+VA-API HEVC escaped-prefix repair runs on **every affected packet**; its
+`server-hevc-repair` message is sampled alongside the other video trace stages
+(frames 1–8 and each 128th). The packet fix is never sampled or skipped.
+
 For a CMake build, configure with `-DWAYDISPLAY_LOG_LEVEL=DEBUG` and rebuild.
 There is no runtime switch for enabling compiled-out logging. To return to the
 quiet optimized package, use `makepkg -sif` without the override. The Debug
@@ -113,3 +119,9 @@ an actual encoder restart; a
 second IDR must replace decoder references even if frame 1 was already
 presented. A later video epoch can legitimately be dropped as stale if
 an EOS/tile-recovery epoch has already taken ownership.
+
+AV1 is a separate opt-in codec (`--video-codec av1`). Its encoded packets are
+OBUs and must not be checked for Annex-B start codes or passed through the
+VA-API HEVC prefix repair. Use DEBUG traces for AV1 as for HEVC, but interpret
+`prefix` as raw AV1 OBU header bytes. `--video-codec auto` retains H.264/HEVC
+for existing protocol-zero peers.

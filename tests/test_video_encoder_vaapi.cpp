@@ -68,11 +68,14 @@ bool encode_hardware_codec(wd_video_encoder* encoder, uint32_t codec) {
             continue;
         }
         CHECK(packet.data != nullptr);
-        /* The server promises Annex-B access units to the client. Test the
+        /* H.264/HEVC must be Annex-B; AV1 is raw OBUs. Test the
          * real VAAPI output, including dependent packets, not only IDRs. */
-        CHECK(packet.header.data_size >= 4);
-        CHECK(packet.data[0] == 0 && packet.data[1] == 0 &&
-              (packet.data[2] == 1 || (packet.data[2] == 0 && packet.data[3] == 1)));
+        if (codec != WD_VIDEO_CODEC_AV1)
+        {
+            CHECK(packet.header.data_size >= 4);
+            CHECK(packet.data[0] == 0 && packet.data[1] == 0 &&
+                  (packet.data[2] == 1 || (packet.data[2] == 0 && packet.data[3] == 1)));
+        }
         CHECK(packet.header.codec == codec);
         CHECK(packet.header.width == kWidth);
         CHECK(packet.header.height == kHeight);
@@ -104,6 +107,11 @@ int main() {
         return 77;
     }
 
+    if ((supported & WD_VIDEO_CODEC_AV1) != 0 && !encode_hardware_codec(encoder, WD_VIDEO_CODEC_AV1))
+    {
+        wd_video_encoder_destroy(encoder);
+        return 1;
+    }
     if ((supported & WD_VIDEO_CODEC_H264) != 0 && !encode_hardware_codec(encoder, WD_VIDEO_CODEC_H264))
     {
         wd_video_encoder_destroy(encoder);

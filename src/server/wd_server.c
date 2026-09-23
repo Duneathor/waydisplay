@@ -1890,7 +1890,9 @@ void wd_server_free(struct wd_server* server) {
 
 int wd_server_run(struct wd_server* server) {
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_DEBUG
-    wlr_log_init(WLR_DEBUG, NULL);
+    /* WayDisplay DEBUG is for application/transport diagnostics. wlroots'
+     * per-surface and per-buffer DEBUG chatter overwhelms those traces. */
+    wlr_log_init(WLR_INFO, NULL);
 #else
     wlr_log_init(WLR_ERROR, NULL);
 #endif

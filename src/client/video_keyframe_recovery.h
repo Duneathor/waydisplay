@@ -15,8 +15,9 @@ enum wd_client_video_keyframe_result {
 };
 
 /* The decoder is reset on overload. A recovery keyframe must therefore be a
- * self-contained Annex-B access unit, not merely a packet flagged KEYFRAME.
- * It must include parameter sets and an independently decodable picture.
+ * self-contained access unit, not merely a packet flagged KEYFRAME.
+ * H.264/HEVC require Annex-B parameter sets and random-access NALs; AV1
+ * requires a sequence-header OBU and key-frame picture OBUs.
  * This intentionally does not inspect every steady-state inter-frame packet. */
 enum wd_client_video_keyframe_result wd_client_video_keyframe_validate(uint32_t codec, const uint8_t* data, uint32_t size);
 const char* wd_client_video_keyframe_result_name(enum wd_client_video_keyframe_result result);

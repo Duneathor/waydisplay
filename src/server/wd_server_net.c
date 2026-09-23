@@ -52,6 +52,8 @@ static const char* wd_video_codec_name(uint32_t codec) {
         return "h264";
     case WD_VIDEO_CODEC_H265:
         return "h265";
+    case WD_VIDEO_CODEC_AV1:
+        return "av1";
     default:
         return "none";
     }

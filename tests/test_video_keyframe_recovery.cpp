@@ -43,6 +43,23 @@ void test_real_recovery_keyframes() {
     expect(WD_VIDEO_CODEC_H265, fixture("video_keyframe_128x128.h265"), WD_CLIENT_VIDEO_KEYFRAME_VALID);
     expect(WD_VIDEO_CODEC_H264, fixture("video_keyframe_64x48.h264"), WD_CLIENT_VIDEO_KEYFRAME_VALID);
     expect(WD_VIDEO_CODEC_H264, fixture("video_keyframe_128x128.h264"), WD_CLIENT_VIDEO_KEYFRAME_VALID);
+    expect(WD_VIDEO_CODEC_AV1, fixture("video_keyframe_64x48.obu"), WD_CLIENT_VIDEO_KEYFRAME_VALID);
+    expect(WD_VIDEO_CODEC_AV1, fixture("video_keyframe_128x128.obu"), WD_CLIENT_VIDEO_KEYFRAME_VALID);
+}
+
+void test_av1_obu_recovery() {
+    /* Minimal synthetic OBU headers and first frame_header byte. Not a decoded fixture. */
+    expect(WD_VIDEO_CODEC_AV1, {0x0a, 1, 0, 0x32, 1, 0}, WD_CLIENT_VIDEO_KEYFRAME_VALID);
+    expect(WD_VIDEO_CODEC_AV1, {0x12, 0, 0x0a, 1, 0, 0x1a, 1, 0, 0x22, 1, 0}, WD_CLIENT_VIDEO_KEYFRAME_VALID);
+    expect(WD_VIDEO_CODEC_AV1, {0x32, 1, 0}, WD_CLIENT_VIDEO_KEYFRAME_MISSING_PARAMETER_SETS);
+    expect(WD_VIDEO_CODEC_AV1, {0x0a, 1, 0, 0x32, 1, 0x20}, WD_CLIENT_VIDEO_KEYFRAME_MISSING_RANDOM_ACCESS);
+    expect(WD_VIDEO_CODEC_AV1, {0x0a, 1, 0}, WD_CLIENT_VIDEO_KEYFRAME_MISSING_RANDOM_ACCESS);
+    expect(WD_VIDEO_CODEC_AV1, {0x0a, 0x80}, WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM);
+    expect(WD_VIDEO_CODEC_AV1, {0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f},
+           WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM);
+    expect(WD_VIDEO_CODEC_AV1, {0x0a, 7, 0}, WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM);
+    expect(WD_VIDEO_CODEC_AV1, {0x82, 0}, WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM);
+    expect(WD_VIDEO_CODEC_AV1, {0x0a, 1, 0, 0x32, 0}, WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM);
 }
 
 void test_missing_hevc_headers_and_random_access() {
@@ -96,7 +113,7 @@ void test_reject_malformed_and_length_prefixed() {
             seed = seed * 1664525u + 1013904223u;
             byte = static_cast<uint8_t>(seed >> 24);
         }
-        for (uint32_t codec : {WD_VIDEO_CODEC_H264, WD_VIDEO_CODEC_H265})
+        for (uint32_t codec : {WD_VIDEO_CODEC_H264, WD_VIDEO_CODEC_H265, WD_VIDEO_CODEC_AV1})
         {
             const auto result = wd_client_video_keyframe_validate(codec, noise.data(), static_cast<uint32_t>(size));
             CHECK(result >= WD_CLIENT_VIDEO_KEYFRAME_VALID && result <= WD_CLIENT_VIDEO_KEYFRAME_MISSING_RANDOM_ACCESS);
@@ -108,6 +125,7 @@ void test_reject_malformed_and_length_prefixed() {
 
 int main() {
     test_real_recovery_keyframes();
+    test_av1_obu_recovery();
     test_missing_hevc_headers_and_random_access();
     test_reject_malformed_and_length_prefixed();
     return 0;

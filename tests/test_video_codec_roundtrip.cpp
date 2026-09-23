@@ -340,11 +340,19 @@ int main() {
     {
         return 1;
     }
+    if ((common & WD_VIDEO_CODEC_AV1) != 0 && !run_dropped_reference_recovery(WD_VIDEO_CODEC_AV1))
+    {
+        return 1;
+    }
     if ((common & WD_VIDEO_CODEC_H264) != 0 && !run_codec(WD_VIDEO_CODEC_H264))
     {
         return 1;
     }
     if ((common & WD_VIDEO_CODEC_H265) != 0 && !run_codec(WD_VIDEO_CODEC_H265))
+    {
+        return 1;
+    }
+    if ((common & WD_VIDEO_CODEC_AV1) != 0 && !run_codec(WD_VIDEO_CODEC_AV1))
     {
         return 1;
     }

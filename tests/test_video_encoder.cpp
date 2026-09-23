@@ -10,6 +10,9 @@
 #ifndef WAYDISPLAY_TEST_HAVE_H264_ENCODER
 #define WAYDISPLAY_TEST_HAVE_H264_ENCODER 0
 #endif
+#ifndef WAYDISPLAY_TEST_HAVE_AV1_ENCODER
+#define WAYDISPLAY_TEST_HAVE_AV1_ENCODER 0
+#endif
 #ifndef WAYDISPLAY_TEST_HAVE_H265_ENCODER
 #define WAYDISPLAY_TEST_HAVE_H265_ENCODER 0
 #endif
@@ -38,6 +41,9 @@ uint32_t compiled_codec_mask() {
 #endif
 #if WAYDISPLAY_TEST_HAVE_H265_ENCODER
     mask |= WD_VIDEO_CODEC_H265;
+#endif
+#if WAYDISPLAY_TEST_HAVE_AV1_ENCODER
+    mask |= WD_VIDEO_CODEC_AV1;
 #endif
     return mask;
 }
@@ -250,7 +256,7 @@ int main() {
 
     const uint32_t chosen = wd_video_encoder_choose_codec(encoder, compiled);
     const uint32_t expected_choice =
-        (supported & WD_VIDEO_CODEC_H265) != 0 ? WD_VIDEO_CODEC_H265 : ((supported & WD_VIDEO_CODEC_H264) != 0 ? WD_VIDEO_CODEC_H264 : 0);
+        (supported & WD_VIDEO_CODEC_H265) != 0 ? WD_VIDEO_CODEC_H265 : ((supported & WD_VIDEO_CODEC_H264) != 0 ? WD_VIDEO_CODEC_H264 : ((supported & WD_VIDEO_CODEC_AV1) != 0 ? WD_VIDEO_CODEC_AV1 : 0));
     if (chosen != expected_choice)
     {
         std::fprintf(stderr, "unexpected codec choice: got=0x%x expected=0x%x\n", chosen, expected_choice);
@@ -266,6 +272,10 @@ int main() {
     }
 
     if ((supported & WD_VIDEO_CODEC_H264) != 0 && !test_codec(WD_VIDEO_CODEC_H264))
+    {
+        return 1;
+    }
+    if ((supported & WD_VIDEO_CODEC_AV1) != 0 && !test_codec(WD_VIDEO_CODEC_AV1))
     {
         return 1;
     }

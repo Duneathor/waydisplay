@@ -17,6 +17,7 @@ int main() {
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_DEBUG
     assert(wd_video_trace_debug_sample(1));
     assert(wd_video_trace_debug_sample(128));
+    assert(!wd_video_trace_debug_sample(127));
 #else
     assert(!wd_video_trace_debug_sample(1));
     assert(!wd_video_trace_debug_sample(128));

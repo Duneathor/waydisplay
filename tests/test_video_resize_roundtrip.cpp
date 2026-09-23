@@ -204,6 +204,10 @@ int main() {
     {
         return 77;
     }
+    if ((codecs & WD_VIDEO_CODEC_AV1) != 0 && !run_codec(WD_VIDEO_CODEC_AV1))
+    {
+        return 1;
+    }
     if ((codecs & WD_VIDEO_CODEC_H264) != 0 && !run_codec(WD_VIDEO_CODEC_H264))
     {
         return 1;

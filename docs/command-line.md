@@ -23,7 +23,7 @@ waydisplay-client <server_ipv4> <tcp_port> <client_udp_port> [options]
 | `--no-vsync` | Disable SDL present-vsync | Local renderer troubleshooting and latency testing. |
 | `--no-audio` | Disable audio negotiation/playback | Local capability and session preference. |
 | `--video <auto|off|force>` | Coarse video-stream policy (also `--video off` disables encoded video on the client) | `force` bypasses automatic content thresholds, but not initial bootstrap, active recovery, or failure backoff. A successfully presented planned resize recovery may return directly to forced video. |
-| `--video-codec <auto|h264|h265>` | Acceptable video codecs | Hardware/driver compatibility. |
+| `--video-codec <auto|h264|h265|av1>` | Acceptable video codecs | AV1 requires new peers; `auto` retains H.264/H.265 only for existing peer compatibility. |
 | `--video-decode <off|auto|software|vaapi>` | `off` disables video negotiation; `auto` uses VA-API when available and falls back to software; `software` never requests VA-API; `vaapi` requires VA-API. Default `auto`. | Hardware/driver compatibility. |
 | `--help`, `-h` | Print usage | Standard interface. |
 

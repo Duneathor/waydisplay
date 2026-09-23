@@ -34,6 +34,8 @@ option(WAYDISPLAY_ENABLE_H265_SERVER_ENCODER "Enable H.265 server encoder backen
 option(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER "Enable H.265 client decoder backends when available" ON)
 option(WAYDISPLAY_ENABLE_H264_SERVER_ENCODER "Enable H.264 server encoder backends when available" ON)
 option(WAYDISPLAY_ENABLE_H264_CLIENT_DECODER "Enable H.264 client decoder backends when available" ON)
+option(WAYDISPLAY_ENABLE_AV1_SERVER_ENCODER "Enable AV1 server encoder backends when available" ON)
+option(WAYDISPLAY_ENABLE_AV1_CLIENT_DECODER "Enable AV1 client decoder backends when available" ON)
 option(WAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER "Enable optional VAAPI client hardware decode when available" ON)
 option(WAYDISPLAY_ENABLE_AUDIO "Enable audio capture and playback when dependencies are available" ON)
 option(WAYDISPLAY_REQUIRE_CODEC_TESTS "Fail configuration unless requested codec tests can be built" OFF)

@@ -177,6 +177,11 @@ bool parse_video_codec(const char* text, uint32_t& value) {
         value = WD_VIDEO_CODEC_H264;
         return true;
     }
+    if (std::strcmp(text, "av1") == 0)
+    {
+        value = WD_VIDEO_CODEC_AV1;
+        return true;
+    }
     if (std::strcmp(text, "h265") == 0 || std::strcmp(text, "hevc") == 0)
     {
         value = WD_VIDEO_CODEC_H265;

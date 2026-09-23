@@ -155,13 +155,14 @@ target_include_directories(waydisplay_video_encoder PUBLIC
 target_compile_definitions(waydisplay_video_encoder PRIVATE
     WAYDISPLAY_HAVE_H265_SERVER_ENCODER=$<BOOL:${WAYDISPLAY_HAVE_H265_SERVER_ENCODER}>
     WAYDISPLAY_HAVE_H264_SERVER_ENCODER=$<BOOL:${WAYDISPLAY_HAVE_H264_SERVER_ENCODER}>
+    WAYDISPLAY_HAVE_AV1_SERVER_ENCODER=$<BOOL:${WAYDISPLAY_HAVE_AV1_SERVER_ENCODER}>
 )
 
 target_link_libraries(waydisplay_video_encoder PUBLIC
     waydisplay_common
 )
 
-if(WAYDISPLAY_HAVE_H265_SERVER_ENCODER OR WAYDISPLAY_HAVE_H264_SERVER_ENCODER)
+if(WAYDISPLAY_HAVE_H265_SERVER_ENCODER OR WAYDISPLAY_HAVE_H264_SERVER_ENCODER OR WAYDISPLAY_HAVE_AV1_SERVER_ENCODER)
     target_link_libraries(waydisplay_video_encoder PUBLIC
         PkgConfig::FFMPEG_VIDEO_ENCODER
     )
@@ -181,6 +182,7 @@ target_include_directories(waydisplay_video_decoder PUBLIC
 target_compile_definitions(waydisplay_video_decoder PRIVATE
     WAYDISPLAY_HAVE_H265_CLIENT_DECODER=$<BOOL:${WAYDISPLAY_HAVE_H265_CLIENT_DECODER}>
     WAYDISPLAY_HAVE_H264_CLIENT_DECODER=$<BOOL:${WAYDISPLAY_HAVE_H264_CLIENT_DECODER}>
+    WAYDISPLAY_HAVE_AV1_CLIENT_DECODER=$<BOOL:${WAYDISPLAY_HAVE_AV1_CLIENT_DECODER}>
     WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER=$<BOOL:${WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER}>
 )
 
@@ -188,10 +190,14 @@ target_link_libraries(waydisplay_video_decoder PUBLIC
     waydisplay_common
 )
 
-if(WAYDISPLAY_HAVE_H265_CLIENT_DECODER OR WAYDISPLAY_HAVE_H264_CLIENT_DECODER)
+if(WAYDISPLAY_HAVE_H265_CLIENT_DECODER OR WAYDISPLAY_HAVE_H264_CLIENT_DECODER OR WAYDISPLAY_HAVE_AV1_CLIENT_DECODER)
     target_link_libraries(waydisplay_video_decoder PUBLIC
         PkgConfig::FFMPEG_VIDEO_DECODER
     )
+endif()
+
+if(WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER)
+    target_link_libraries(waydisplay_video_decoder PRIVATE PkgConfig::VAAPI_CLIENT)
 endif()
 
 # -----------------------------------------------------------------------------

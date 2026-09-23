@@ -14,6 +14,9 @@
 #ifndef WAYDISPLAY_TEST_HAVE_H264_DECODER
 #define WAYDISPLAY_TEST_HAVE_H264_DECODER 0
 #endif
+#ifndef WAYDISPLAY_TEST_HAVE_AV1_DECODER
+#define WAYDISPLAY_TEST_HAVE_AV1_DECODER 0
+#endif
 #ifndef WAYDISPLAY_TEST_HAVE_H265_DECODER
 #define WAYDISPLAY_TEST_HAVE_H265_DECODER 0
 #endif
@@ -48,10 +51,25 @@ uint32_t compiled_codec_mask() {
 #if WAYDISPLAY_TEST_HAVE_H265_DECODER
     mask |= WD_VIDEO_CODEC_H265;
 #endif
+#if WAYDISPLAY_TEST_HAVE_AV1_DECODER
+    mask |= WD_VIDEO_CODEC_AV1;
+#endif
     return mask;
 }
 
 const char* aggregate_backend_name(uint32_t codecs) {
+    if (codecs == WD_VIDEO_CODEC_MASK)
+    {
+        return "h264/hevc/av1";
+    }
+    if (codecs == (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_AV1))
+    {
+        return "h264/av1";
+    }
+    if (codecs == (WD_VIDEO_CODEC_H265 | WD_VIDEO_CODEC_AV1))
+    {
+        return "hevc/av1";
+    }
     if ((codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) == (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265))
     {
         return "h264/hevc";
@@ -63,6 +81,10 @@ const char* aggregate_backend_name(uint32_t codecs) {
     if ((codecs & WD_VIDEO_CODEC_H265) != 0)
     {
         return "hevc";
+    }
+    if ((codecs & WD_VIDEO_CODEC_AV1) != 0)
+    {
+        return "av1";
     }
     return "none";
 }
@@ -196,6 +218,13 @@ bool test_codec(uint32_t codec, const char* fixture_name) {
     CHECK(waydisplay::client_video_decoder_configure(decoder, config));
     CHECK(!waydisplay::client_video_decoder_hwdecode_failed_auto(decoder));
     CHECK(std::strcmp(waydisplay::client_video_decoder_backend_name(decoder), "none") != 0);
+#if WAYDISPLAY_TEST_HAVE_AV1_DECODER
+    if (codec == WD_VIDEO_CODEC_AV1)
+    {
+        const char* backend = waydisplay::client_video_decoder_backend_name(decoder);
+        CHECK(std::strcmp(backend, "libdav1d") == 0 || std::strcmp(backend, "libaom-av1") == 0);
+    }
+#endif
 
     ClientVideoPacket packet{};
     packet.header.session_id       = config.session_id;
@@ -398,5 +427,14 @@ int main() {
     {
         return 1;
     }
+#if WAYDISPLAY_TEST_HAVE_AV1_DECODER
+    /* This decoder test is software-only; fail if a hardware-only FFmpeg av1
+     * implementation is accidentally used for explicit software decoding. */
+    if ((supported & WD_VIDEO_CODEC_AV1) != 0 &&
+        !test_codec(WD_VIDEO_CODEC_AV1, "video_keyframe_64x48.obu"))
+    {
+        return 1;
+    }
+#endif
     return 0;
 }

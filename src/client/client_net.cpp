@@ -91,6 +91,8 @@ const char* video_codec_name(uint32_t codec) {
         return "h264";
     case WD_VIDEO_CODEC_H265:
         return "h265";
+    case WD_VIDEO_CODEC_AV1:
+        return "av1";
     case WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265:
         return "auto";
     default:
@@ -507,7 +509,7 @@ bool receive_server_config(ClientState& state) {
     const bool     video_allowed           = state.stream_config.video_mode != WD_VIDEO_MODE_OFF &&
                                              state.stream_config.video_decode_mode != WD_CLIENT_VIDEO_DECODE_OFF;
     const uint32_t supported_video_codecs  = client_video_decoder_supported_codecs(state.session.video_decoder);
-    const uint32_t requested_video_codecs  = state.stream_config.video_codec_mask & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265);
+    const uint32_t requested_video_codecs  = state.stream_config.video_codec_mask & WD_VIDEO_CODEC_MASK;
     const uint32_t advertised_video_codecs = video_allowed ? (supported_video_codecs & requested_video_codecs) : 0;
     const bool     video_decoder_available = advertised_video_codecs != 0;
     const bool     audio_available = !state.stream_config.disable_audio && state.session.audio_playback && client_audio_playback_available();
@@ -637,7 +639,7 @@ bool receive_server_config(ClientState& state) {
     state.media_clock_local_origin_ns = wd_now_ns();
 
     state.video_stream_negotiated = (state.config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0 &&
-                                    (state.config.video_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) != 0 &&
+                                    (state.config.video_codecs & WD_VIDEO_CODEC_MASK) != 0 &&
                                     state.config.video_transport == WD_VIDEO_TRANSPORT_TCP;
     state.video_codecs            = state.video_stream_negotiated ? state.config.video_codecs : 0;
     state.video_transport         = state.video_stream_negotiated ? state.config.video_transport : 0;
@@ -1244,7 +1246,7 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
     apply_link_timers_from_config(state, config);
 
     const bool     new_video_stream_negotiated = (config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0 &&
-                                                 (config.video_codecs & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265)) != 0 &&
+                                                 (config.video_codecs & WD_VIDEO_CODEC_MASK) != 0 &&
                                                  config.video_transport == WD_VIDEO_TRANSPORT_TCP;
     const uint32_t new_video_codecs            = new_video_stream_negotiated ? config.video_codecs : 0;
     const uint16_t new_video_transport         = new_video_stream_negotiated ? config.video_transport : 0;

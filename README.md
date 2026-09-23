@@ -64,7 +64,8 @@ Then connect the client using the address and ports selected for that server:
 
 For a remote host, use that server's reachable IPv4 address instead of
 `127.0.0.1`; bind it with `--listen` on a trusted network. The client prefers
-H.265; `--video-codec h264` selects H.264 explicitly. Both `--video-encoder`
+H.265; `--video-codec h264` selects H.264 and `--video-codec av1`
+selects AV1 explicitly where both peers support it. Both `--video-encoder`
 (server) and `--video-decode` (client) accept `off|auto|software|vaapi`,
 defaulting to `auto`.
 

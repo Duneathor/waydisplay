@@ -8,7 +8,7 @@ wd_client_video_packet_validate(const struct wd_video_frame_payload_header* head
         *control_frame = false;
     }
     if (!header || !expected ||
-        (header->codec != WD_VIDEO_CODEC_H265 && header->codec != WD_VIDEO_CODEC_H264) ||
+        (header->codec != WD_VIDEO_CODEC_H265 && header->codec != WD_VIDEO_CODEC_H264 && header->codec != WD_VIDEO_CODEC_AV1) ||
         !wd_video_frame_payload_size_is_valid(header, payload_size))
     {
         return WD_CLIENT_VIDEO_PACKET_INVALID_PAYLOAD;

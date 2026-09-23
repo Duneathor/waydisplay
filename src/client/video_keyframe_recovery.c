@@ -17,10 +17,107 @@ static size_t wd_start_code_size(const uint8_t* data, size_t size, size_t pos) {
     return size - pos >= 4 && data[pos + 2] == 0 && data[pos + 3] == 1 ? 4 : 0;
 }
 
+/* AV1 access units are OBUs, not Annex-B. Validate sizes without reading
+ * untrusted frame bodies beyond the first byte of the frame header. */
+static enum wd_client_video_keyframe_result wd_av1_keyframe_validate(const uint8_t* data, size_t size) {
+    bool sequence = false;
+    bool key_header = false;
+    bool picture = false;
+    size_t pos = 0;
+    while (pos < size)
+    {
+        const uint8_t header = data[pos++];
+        if ((header & 0x81u) != 0 || ((header >> 3u) & 0x0fu) == 0)
+        {
+            return WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM;
+        }
+        const uint8_t type = (header >> 3u) & 0x0fu;
+        if ((header & 0x04u) != 0)
+        {
+            if (pos >= size || (data[pos++] & 0x07u) != 0)
+            {
+                return WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM;
+            }
+        }
+        size_t payload_size = size - pos;
+        if ((header & 0x02u) != 0)
+        {
+            payload_size = 0;
+            unsigned shift = 0;
+            uint8_t part;
+            do
+            {
+                if (pos >= size || shift >= sizeof(size_t) * 8u)
+                {
+                    return WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM;
+                }
+                part = data[pos++];
+                const size_t part_size = (size_t)(part & 0x7fu);
+                if (part_size > ((size_t)-1 >> shift))
+                {
+                    return WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM;
+                }
+                payload_size |= part_size << shift;
+                shift += 7;
+            } while ((part & 0x80u) != 0);
+            if (payload_size > size - pos)
+            {
+                return WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM;
+            }
+        }
+        if (type == 1u) /* sequence header */
+        {
+            if (payload_size == 0)
+            {
+                return WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM;
+            }
+            sequence = true;
+        }
+        else if (type == 3u || type == 6u) /* frame header / frame */
+        {
+            if (payload_size == 0)
+            {
+                return WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM;
+            }
+            /* show_existing_frame must be zero; frame_type must be KEY_FRAME (0).
+             * AV1 bits are read most-significant-bit first. */
+            if (!sequence)
+            {
+                return WD_CLIENT_VIDEO_KEYFRAME_MISSING_PARAMETER_SETS;
+            }
+            if ((data[pos] & 0xe0u) != 0)
+            {
+                return WD_CLIENT_VIDEO_KEYFRAME_MISSING_RANDOM_ACCESS;
+            }
+            key_header = true;
+            if (type == 6u)
+            {
+                picture = true;
+            }
+        }
+        else if (type == 4u && key_header) /* tile group after frame header */
+        {
+            picture = payload_size != 0;
+        }
+        pos += payload_size;
+        /* An OBU without a size field consumes the remainder of the TU. */
+    }
+    if (!sequence)
+    {
+        return WD_CLIENT_VIDEO_KEYFRAME_MISSING_PARAMETER_SETS;
+    }
+    return key_header && picture ? WD_CLIENT_VIDEO_KEYFRAME_VALID : WD_CLIENT_VIDEO_KEYFRAME_MISSING_RANDOM_ACCESS;
+}
+
 enum wd_client_video_keyframe_result wd_client_video_keyframe_validate(uint32_t codec, const uint8_t* data, uint32_t size) {
-    if (!data || size == 0 || (codec != WD_VIDEO_CODEC_H264 && codec != WD_VIDEO_CODEC_H265))
+    if (!data || size == 0 || (codec != WD_VIDEO_CODEC_H264 && codec != WD_VIDEO_CODEC_H265 && codec != WD_VIDEO_CODEC_AV1))
     {
         return WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM;
+    }
+
+    if (codec == WD_VIDEO_CODEC_AV1)
+    {
+        return wd_av1_keyframe_validate(data, size);
     }
 
     const bool hevc = codec == WD_VIDEO_CODEC_H265;
@@ -102,7 +199,7 @@ const char* wd_client_video_keyframe_result_name(enum wd_client_video_keyframe_r
     case WD_CLIENT_VIDEO_KEYFRAME_VALID:
         return "valid";
     case WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM:
-        return "not Annex-B or truncated NAL";
+        return "invalid or truncated codec bitstream";
     case WD_CLIENT_VIDEO_KEYFRAME_MISSING_PARAMETER_SETS:
         return "missing codec parameter sets";
     case WD_CLIENT_VIDEO_KEYFRAME_MISSING_RANDOM_ACCESS:

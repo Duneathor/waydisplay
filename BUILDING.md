@@ -169,7 +169,7 @@ user authentication or transport encryption.
 
 ## Optional video mode
 
-The video-mode path can use FFmpeg/libavcodec for H.264 and H.265 when the codec
+The video-mode path can use FFmpeg/libavcodec for H.264, H.265, and AV1 when the codec
 libraries are available. The build still succeeds without them; in that case the
 encoder/decoder backends report `none` and video negotiation remains disabled.
 
@@ -181,17 +181,21 @@ cmake -S . -B build \
   -DWAYDISPLAY_ENABLE_H264_SERVER_ENCODER=ON \
   -DWAYDISPLAY_ENABLE_H264_CLIENT_DECODER=ON \
   -DWAYDISPLAY_ENABLE_H265_SERVER_ENCODER=ON \
-  -DWAYDISPLAY_ENABLE_H265_CLIENT_DECODER=ON
+  -DWAYDISPLAY_ENABLE_H265_CLIENT_DECODER=ON \
+  -DWAYDISPLAY_ENABLE_AV1_SERVER_ENCODER=ON \
+  -DWAYDISPLAY_ENABLE_AV1_CLIENT_DECODER=ON
 cmake --build build
 ```
 
 The client defaults to H.265. Use `--video-codec auto` to advertise both H.265
-and H.264, or `--video-codec h264` / `--video-codec h265` to force a specific
-codec. In automatic server mode, codec negotiation prefers a codec supported by
+and H.264 (unchanged for existing peers), or `--video-codec h264`,
+`--video-codec h265`, or `--video-codec av1` to select a specific codec.
+AV1 is opt-in, not part of `--video-codec auto`. In automatic server mode,
+codec negotiation prefers a codec supported by
 the VA-API device before falling back to software encoding.
 
 The server defaults to `--video-encoder auto`, which tries FFmpeg's VA-API
-encoder first and falls back to `libx264`/`libx265` when the selected codec is
+encoder first and falls back to `libx264`/`libx265`/`libaom-av1` when the selected codec is
 not supported by an automatically discovered VA device. Select a backend explicitly with:
 
 ```sh
@@ -208,7 +212,7 @@ the coarse video-policy switch.
 
 
 The first VA-API implementation still converts XRGB to NV12 in system memory
-and uploads that frame to a VA surface. It removes software H.264/H.265 encoding
+and uploads that frame to a VA surface. It removes software H.264/H.265/AV1 encoding
 from the hot path, but is not a zero-copy compositor-to-encoder path. Check
 `vainfo` for `VAEntrypointEncSlice`; older AMD hardware may support H.264 encode
 without HEVC encode, in which case use client option `--video-codec h264`.
@@ -427,3 +431,35 @@ selection uses all-frame turnover and predicted fresh-tile demand, forced mode
 still obeys negotiated control readiness, and client cadence normalization is
 shared by compositor and stream pacing. Keep these tests enabled in every core
 profile when changing transport allocation or frame timing.
+
+### AV1 video (opt-in)
+
+Use **matching new client and server binaries**; older protocol-zero builds do not
+recognize AV1's codec capability bit. The server probes `av1_vaapi` on the
+selected GPU; `--video-encoder software` requires FFmpeg's `libaom-av1` encoder.
+AV1 VA-API decoding uses FFmpeg's native `av1` hardware decoder. Software
+AV1 decoding uses FFmpeg's `libdav1d` decoder (or `libaom-av1` when dav1d is
+unavailable). The native `av1` decoder is hardware-only: choosing a software
+pixel format on it does not enable software decoding. Check `ffmpeg -decoders`
+for `libdav1d` or `libaom-av1` if AV1 software decoding is unavailable.
+
+```sh
+waydisplay-server --video-encoder vaapi --app konsole
+waydisplay-client 192.168.0.183 5000 6000 --video-codec av1 --video-decode auto
+```
+
+For a software encoder test, replace the server's `vaapi` with `software`;
+software AV1 can be substantially slower than hardware. AV1 VA-API encoding
+and AV1 Profile 0 VA-API decoding are separate device capabilities: a server
+may encode AV1 on its GPU even when the client's GPU cannot decode it. With
+`--video-decode auto`, WayDisplay checks the selected libva device and uses
+software AV1 decoding using libdav1d or libaom-av1 when AV1 Profile 0 VLD
+is unavailable. This requires a software AV1 decoder in the installed FFmpeg
+build; the native `av1` hardware decoder cannot be used for that fallback.
+Explicit `--video-decode software` selects the software decoder directly.
+`--video-decode vaapi` requires device support; the hardware decoder test skips
+unsupported AV1 rather than reporting a false codec regression. If the GPU does not
+support AV1 encode, `--video-encoder vaapi` cannot negotiate AV1 and will
+remain in tiles mode. Run `--video-codec h265` to retain the established HEVC
+path. AV1 sends raw length-delimited OBUs, not Annex-B NAL units; HEVC's VA-API
+start-code workaround must never process AV1 packets.

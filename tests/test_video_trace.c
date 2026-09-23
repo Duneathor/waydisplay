@@ -11,6 +11,7 @@ int wd_test_video_trace_c(void) {
     assert(wd_video_trace_sample(1));
     assert(wd_video_trace_sample(8));
     assert(!wd_video_trace_sample(9));
+    assert(!wd_video_trace_sample(127));
     assert(wd_video_trace_sample(128));
     assert(wd_video_trace_sample(256));
     assert(!wd_video_trace_sample(129));
@@ -20,6 +21,7 @@ int wd_test_video_trace_c(void) {
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_DEBUG
     assert(wd_video_trace_debug_sample(1));
     assert(wd_video_trace_debug_sample(128));
+    assert(!wd_video_trace_debug_sample(127));
 #else
     assert(!wd_video_trace_debug_sample(1));
     assert(!wd_video_trace_debug_sample(128));

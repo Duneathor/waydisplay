@@ -4,7 +4,7 @@
 
 pkgname=waydisplay
 pkgver=0.1.0
-pkgrel=13
+pkgrel=18
 pkgdesc='Low-latency remote Wayland display (SDL3 client and wlroots compositor)'
 arch=('x86_64')
 license=('AGPL-3.0-only')
@@ -106,6 +106,8 @@ _configure_waydisplay() {
     -DWAYDISPLAY_ENABLE_H264_CLIENT_DECODER=ON \
     -DWAYDISPLAY_ENABLE_H265_SERVER_ENCODER=ON \
     -DWAYDISPLAY_ENABLE_H265_CLIENT_DECODER=ON \
+    -DWAYDISPLAY_ENABLE_AV1_SERVER_ENCODER=ON \
+    -DWAYDISPLAY_ENABLE_AV1_CLIENT_DECODER=ON \
     -DWAYDISPLAY_ENABLE_VAAPI_CLIENT_DECODER=ON \
     "${_debug_flags[@]}"
 }
