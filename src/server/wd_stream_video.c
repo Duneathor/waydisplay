@@ -2,6 +2,7 @@
 
 #include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_time.h"
+#include "waydisplay/wd_video_trace.h"
 #include "wd_async_tcp.h"
 #include "wd_video_encoder.h"
 #include "wd_video_transition.h"
@@ -203,6 +204,12 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     pthread_mutex_unlock(&net->video_encoder_lock);
 
     const uint64_t encode_ns = wd_now_ns() - encode_start_ns;
+    /* Fingerprint only a bounded sample and do the scan outside net->lock.
+     * Match epoch/frame/hash with the client's receive trace. */
+    const bool trace_packet = encoded && !no_output && !payload_invalid && payload &&
+                              wd_video_trace_sample(header.frame_id);
+    const uint64_t trace_hash = trace_packet ? wd_video_trace_hash(payload + sizeof(header), header.data_size) : 0;
+    const uint64_t trace_prefix = trace_packet ? wd_video_trace_prefix(payload + sizeof(header), header.data_size) : 0;
 
     pthread_mutex_lock(&net->lock);
     net->stats.video_encode_ns += encode_ns;
@@ -232,6 +239,19 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     wd_async_tcp_sender_reap(net->video_tx);
     if (wd_async_tcp_sender_has_message_type(net->video_tx, WD_MSG_VIDEO_FRAME))
     {
+        /* This frame was ALREADY encoded: its references may be used by the
+         * next P-frame. A dropped encoded packet must not leave the client
+         * trying to decode that next frame without its reference picture. */
+        pthread_mutex_lock(&net->video_encoder_lock);
+        (void)wd_video_encoder_request_keyframe(net->video_encoder);
+        pthread_mutex_unlock(&net->video_encoder_lock);
+        if (trace_packet)
+        {
+            WD_LOG_WARN("video trace stage=server-drop epoch=%llu frame=%llu codec=%u key=%u bytes=%u hash=%016llx reason=pending-tcp rearm=keyframe",
+                        (unsigned long long)header.content_epoch, (unsigned long long)header.frame_id, header.codec,
+                        (unsigned)((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0), header.data_size,
+                        (unsigned long long)trace_hash);
+        }
         free(payload);
         net->stats.video_keyframe_skipped_pending++;
         pthread_mutex_unlock(&net->lock);
@@ -257,6 +277,14 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
         return;
     }
 
+    if (trace_packet)
+    {
+        WD_LOG_INFO("video trace stage=server-send epoch=%llu frame=%llu codec=%u key=%u bytes=%u prefix=%016llx hash=%016llx encode_ms=%.2f queue_ms=%.2f",
+                    (unsigned long long)header.content_epoch, (unsigned long long)header.frame_id, header.codec,
+                    (unsigned)((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0), header.data_size,
+                    (unsigned long long)trace_prefix, (unsigned long long)trace_hash,
+                    (double)encode_ns / 1000000.0, (double)(wd_now_ns() - job->published_ns) / 1000000.0);
+    }
     net->stats.video_frames_tx++;
     if ((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0)
     {

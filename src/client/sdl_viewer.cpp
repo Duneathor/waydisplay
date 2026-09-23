@@ -14,6 +14,7 @@
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
+#include "waydisplay/wd_video_trace.h"
 
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -1531,6 +1532,8 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
             }
             if (queued->width != frame_width || queued->height != frame_height)
             {
+                WD_LOG_WARN("video present rejected: frame=%llu reason=dimension-mismatch queued=%ux%u expected=%ux%u",
+                            (unsigned long long)queued->frame_id, queued->width, queued->height, frame_width, frame_height);
                 return VideoTextureUploadResult::Failed;
             }
 
@@ -1569,6 +1572,11 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                 if (sync.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_DROP)
                 {
                     ClientQueuedVideoFrame dropped = state.video_present_queue.pop_front();
+                    if (wd_video_trace_sample(dropped.frame_id))
+                    {
+                        WD_LOG_INFO("video trace stage=client-discard frame=%llu reason=audio-sync",
+                                    (unsigned long long)dropped.frame_id);
+                    }
                     state.video_present_queue.recycle(std::move(dropped.buffer));
                     state.stats.audio_video_sync_drops.fetch_add(1, std::memory_order_relaxed);
                     dropped_for_audio = true;
@@ -1610,6 +1618,11 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
 
     if (!wd_client_stream_ownership_is_current(&state.stream_ownership, frame_epoch, WD_CLIENT_CONTENT_OWNER_VIDEO))
     {
+        if (wd_video_trace_sample(present_info.frame_id))
+        {
+            WD_LOG_INFO("video trace stage=client-discard frame=%llu epoch=%llu reason=stale-owner",
+                        (unsigned long long)present_info.frame_id, (unsigned long long)frame_epoch);
+        }
         return VideoTextureUploadResult::Stale;
     }
 
@@ -1626,7 +1639,15 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
     if (!SDL_UpdateYUVTexture(texture, nullptr, y, static_cast<int>(frame.y_pitch), u, static_cast<int>(frame.uv_pitch), v,
                               static_cast<int>(frame.uv_pitch)))
     {
+        WD_LOG_WARN("video texture upload failed: frame=%llu reason=%s",
+                    (unsigned long long)present_info.frame_id, SDL_GetError());
         return VideoTextureUploadResult::Failed;
+    }
+    if (wd_video_trace_sample(present_info.frame_id))
+    {
+        WD_LOG_INFO("video trace stage=client-upload frame=%llu epoch=%llu upload_ms=%.2f",
+                    (unsigned long long)present_info.frame_id, (unsigned long long)present_info.content_epoch,
+                    (double)(wd_now_ns() - started_ns) / 1000000.0);
     }
 
     state.stats.sdl_texture_full_uploads.fetch_add(1, std::memory_order_relaxed);
@@ -2057,6 +2078,12 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
 
     if (video_present.valid)
     {
+        if (wd_video_trace_sample(video_present.frame_id))
+        {
+            WD_LOG_INFO("video trace stage=client-present frame=%llu epoch=%llu present_ms=%.2f",
+                        (unsigned long long)video_present.frame_id, (unsigned long long)video_present.content_epoch,
+                        (double)present_elapsed_ns / 1000000.0);
+        }
         state.stats.video_frames_presented.fetch_add(1, std::memory_order_relaxed);
         state.stats.video_last_frame_id_presented.store(video_present.frame_id, std::memory_order_relaxed);
         if (video_present.content_epoch != 0)

@@ -238,6 +238,80 @@ bool run_codec(uint32_t codec) {
     return true;
 }
 
+/* The server can discard a packet after it has been encoded if another TCP
+ * video send is pending. The encoder is then instructed to produce a fresh
+ * random-access picture before the client resumes receiving dependent frames. */
+bool run_dropped_reference_recovery(uint32_t codec) {
+    wd_video_encoder* encoder = nullptr;
+    ClientVideoDecoder* decoder = nullptr;
+    CHECK(wd_video_encoder_create(&encoder, "software"));
+    CHECK(waydisplay::client_video_decoder_create(&decoder));
+    CHECK(configure_pair(encoder, decoder, codec, 7));
+
+    std::vector<uint32_t> pixels(static_cast<size_t>(kStride) * kHeight);
+    bool saw_first_keyframe = false;
+    bool dropped_reference = false;
+    bool resumed_at_keyframe = false;
+    uint32_t frame_number = 0;
+    for (; frame_number < 64 && !dropped_reference; ++frame_number)
+    {
+        fill_frame(pixels, frame_number);
+        wd_video_encoder_input_xrgb8888 input{};
+        input.pixels = pixels.data();
+        input.width = kWidth;
+        input.height = kHeight;
+        input.stride_pixels = kStride;
+        input.pts_usec = UINT64_C(6000000) + static_cast<uint64_t>(frame_number) * UINT64_C(33333);
+        wd_video_encoder_packet packet{};
+        CHECK(wd_video_encoder_encode_xrgb8888(encoder, &input, &packet));
+        if (packet.header.data_size == 0)
+        {
+            continue;
+        }
+        if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0)
+        {
+            saw_first_keyframe = true;
+            continue;
+        }
+        if (saw_first_keyframe)
+        {
+            /* Packet is intentionally not passed to the decoder. */
+            dropped_reference = true;
+        }
+    }
+    CHECK(saw_first_keyframe);
+    CHECK(dropped_reference);
+    CHECK(wd_video_encoder_request_keyframe(encoder));
+    waydisplay::client_video_decoder_reset(decoder);
+    CHECK(configure_pair(encoder, decoder, codec, 7));
+
+    for (; frame_number < 96 && !resumed_at_keyframe; ++frame_number)
+    {
+        fill_frame(pixels, frame_number);
+        wd_video_encoder_input_xrgb8888 input{};
+        input.pixels = pixels.data();
+        input.width = kWidth;
+        input.height = kHeight;
+        input.stride_pixels = kStride;
+        input.pts_usec = UINT64_C(6000000) + static_cast<uint64_t>(frame_number) * UINT64_C(33333);
+        wd_video_encoder_packet packet{};
+        CHECK(wd_video_encoder_encode_xrgb8888(encoder, &input, &packet));
+        if (packet.header.data_size == 0 || (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
+        {
+            continue;
+        }
+        CHECK(wd_client_video_keyframe_validate(codec, packet.data, packet.header.data_size) == WD_CLIENT_VIDEO_KEYFRAME_VALID);
+        ClientVideoPacket received{packet.header, packet.data};
+        ClientDecodedVideoFrame decoded{};
+        CHECK(waydisplay::client_video_decoder_decode(decoder, received, &decoded));
+        resumed_at_keyframe = true;
+    }
+    CHECK(resumed_at_keyframe);
+    waydisplay::client_video_decoder_destroy(decoder);
+    wd_video_encoder_destroy(encoder);
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -257,6 +331,14 @@ int main() {
     {
         std::fprintf(stderr, "SKIP: no codec is available to both encoder and decoder\n");
         return 77;
+    }
+    if ((common & WD_VIDEO_CODEC_H264) != 0 && !run_dropped_reference_recovery(WD_VIDEO_CODEC_H264))
+    {
+        return 1;
+    }
+    if ((common & WD_VIDEO_CODEC_H265) != 0 && !run_dropped_reference_recovery(WD_VIDEO_CODEC_H265))
+    {
+        return 1;
     }
     if ((common & WD_VIDEO_CODEC_H264) != 0 && !run_codec(WD_VIDEO_CODEC_H264))
     {

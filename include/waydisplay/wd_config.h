@@ -309,7 +309,7 @@ extern "C" {
 #define WD_VIDEO_ENCODER_SOFTWARE_TUNE             "zerolatency"
 #define WD_VIDEO_ENCODER_FORCE_IDR_OPTION          "1"
 #define WD_VIDEO_ENCODER_H264_PRIVATE_PARAMS       "repeat-headers=1:sliced-threads=1"
-#define WD_VIDEO_ENCODER_H265_PRIVATE_PARAMS       "repeat-headers=1:log-level=warn:pools=none:frame-threads=1"
+#define WD_VIDEO_ENCODER_H265_PRIVATE_PARAMS       "repeat-headers=1:log-level=warning:pools=none:frame-threads=1"
 #define WD_VIDEO_ENCODER_VAAPI_AUD_OPTION          "1"
 #define WD_VIDEO_SCALER_USE_FAST_BILINEAR          1
 #define WD_CLIENT_VIDEO_DECODER_THREADS            1u

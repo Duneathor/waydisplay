@@ -31,6 +31,7 @@ struct ClientMediaPacket {
     uint8_t* payload      = nullptr;
     uint32_t payload_size = 0;
     bool reset_video_decoder_before = false;
+    uint64_t queued_ns = 0;
 };
 
 struct ClientAsyncTcpStatsSeen {
