@@ -2,6 +2,9 @@
 
 #include <assert.h>
 
+/* Keep the C entry point visible to the C++20 test and -Wmissing-prototypes. */
+int wd_test_video_trace_c(void);
+
 int wd_test_video_trace_c(void) {
     static const uint8_t sample[] = {0, 0, 0, 1, 0x26, 0x01, 0xaa, 0xbb, 0xcc};
     assert(!wd_video_trace_sample(0));

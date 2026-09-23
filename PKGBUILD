@@ -4,7 +4,7 @@
 
 pkgname=waydisplay
 pkgver=0.1.0
-pkgrel=8
+pkgrel=9
 pkgdesc='Low-latency remote Wayland display (SDL3 client and wlroots compositor)'
 arch=('x86_64')
 license=('AGPL-3.0-only')
@@ -63,6 +63,14 @@ prepare() {
 # Build a separate Debug test tree so check() runs meaningful assertions.
 _configure_waydisplay() {
   local tree=$1 profile=$2 tests=$3
+  # INFO is the lightweight production default. Opt in to the full
+  # runtime DEBUG/STAT logs with WAYDISPLAY_PACKAGE_LOG_LEVEL=DEBUG makepkg -sif.
+  # The Debug CTest tree always retains DEBUG regardless of this override.
+  local release_log_level=${WAYDISPLAY_PACKAGE_LOG_LEVEL:-INFO}
+  case $release_log_level in
+    OFF|ERROR|WARN|INFO|STATS|DEBUG) ;;
+    *) printf 'Unsupported WAYDISPLAY_PACKAGE_LOG_LEVEL: %s\n' "$release_log_level" >&2; return 1 ;;
+  esac
   local -a _debug_flags=()
   if [[ $profile == Debug ]]; then
     # Arch can define fortify via -Wp,-D_FORTIFY_SOURCE=3. GCC processes
@@ -74,7 +82,12 @@ _configure_waydisplay() {
       '-DCMAKE_CXX_FLAGS_DEBUG=-g -U_FORTIFY_SOURCE -Wp,-U_FORTIFY_SOURCE'
     )
   fi
+  local log_level=DEBUG
+  if [[ $profile == Release ]]; then
+    log_level=$release_log_level
+  fi
   cmake -S "$startdir" -B "$srcdir/$tree" \
+    -DWAYDISPLAY_LOG_LEVEL="$log_level" \
     -G 'Unix Makefiles' \
     -DCMAKE_C_COMPILER=gcc \
     -DCMAKE_CXX_COMPILER=g++ \
