@@ -854,6 +854,23 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
 #endif
 }
 
+bool wd_video_encoder_adopt_content_epoch(struct wd_video_encoder* encoder, uint8_t session_id,
+                                          uint64_t connection_token, uint64_t old_epoch, uint64_t new_epoch) {
+    if (!encoder || !encoder->configured || old_epoch == 0 || new_epoch == 0 || old_epoch == new_epoch ||
+        encoder->config.session_id != session_id || encoder->config.connection_token != connection_token ||
+        encoder->config.content_epoch != old_epoch)
+    {
+        return false;
+    }
+
+    /* The first keyframe is encoded under the tile epoch, but transmitted
+     * under the new video epoch. Update only the encoder's ownership marker:
+     * resetting its codec context here would produce another frame-1 IDR
+     * and force an unnecessary client decoder restart. */
+    encoder->config.content_epoch = new_epoch;
+    return true;
+}
+
 bool wd_video_encoder_request_keyframe(struct wd_video_encoder* encoder) {
     if (!encoder)
     {

@@ -172,10 +172,22 @@ bool test_codec(uint32_t codec) {
     CHECK((first.header.flags & WD_VIDEO_FRAME_CONFIG) != 0);
     CHECK(first.header.frame_id == 1);
 
+    /* Server entry commits tile epoch 3 -> video epoch 4 after sending the
+     * first keyframe. This must not reinitialize the codec or send frame 1
+     * again when the next snapshot is published. */
+    CHECK(!wd_video_encoder_adopt_content_epoch(encoder, config.session_id, config.connection_token + 1, 3, 4));
+    CHECK(!wd_video_encoder_adopt_content_epoch(encoder, config.session_id, config.connection_token, 2, 4));
+    CHECK(!wd_video_encoder_adopt_content_epoch(encoder, config.session_id, config.connection_token, 3, 0));
+    CHECK(wd_video_encoder_adopt_content_epoch(encoder, config.session_id, config.connection_token, 3, 4));
+    CHECK(!wd_video_encoder_adopt_content_epoch(encoder, config.session_id, config.connection_token, 3, 4));
+    config.content_epoch = 4;
+    CHECK(wd_video_encoder_configure(encoder, &config));
+
     const uint64_t          first_frame_id = first.header.frame_id;
     wd_video_encoder_packet second{};
     CHECK(encode_until_packet(encoder, config, pixels, 20, second));
     CHECK(second.header.frame_id > first_frame_id);
+    CHECK(second.header.content_epoch == 4);
 
     CHECK(wd_video_encoder_request_keyframe(encoder));
     bool saw_requested_keyframe = false;

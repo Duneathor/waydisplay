@@ -47,6 +47,11 @@ uint32_t    wd_video_encoder_choose_codec(struct wd_video_encoder* encoder, uint
 const char* wd_video_encoder_backend_name(const struct wd_video_encoder* encoder);
 
 bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config);
+/* Advance the ownership epoch after the first keyframe is queued without
+ * tearing down an otherwise unchanged encoder or restarting frame IDs.
+ * The caller must serialize this with encode/configure/reset. */
+bool wd_video_encoder_adopt_content_epoch(struct wd_video_encoder* encoder, uint8_t session_id,
+                                          uint64_t connection_token, uint64_t old_epoch, uint64_t new_epoch);
 bool wd_video_encoder_request_keyframe(struct wd_video_encoder* encoder);
 bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const struct wd_video_encoder_input_xrgb8888* input,
                                       struct wd_video_encoder_packet* packet);

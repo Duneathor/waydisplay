@@ -305,6 +305,21 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     if (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY &&
         wd_video_entry_plan_can_commit(&entry_plan, net->content_epoch, true))
     {
+        /* The first video keyframe was encoded using the preceding tiles
+         * epoch, but its header already carries the new video epoch. The
+         * next job must not interpret that bookkeeping advance as an encoder
+         * configuration change and produce a second frame-1 keyframe. */
+        pthread_mutex_lock(&net->video_encoder_lock);
+        const bool adopted = wd_video_encoder_adopt_content_epoch(
+            net->video_encoder, job->config.session_id, job->config.connection_token,
+            entry_plan.source_content_epoch, entry_plan.frame_content_epoch);
+        pthread_mutex_unlock(&net->video_encoder_lock);
+        if (!adopted)
+        {
+            WD_LOG_WARN("video encoder epoch adoption failed: old=%llu new=%llu; next frame will reconfigure",
+                        (unsigned long long)entry_plan.source_content_epoch,
+                        (unsigned long long)entry_plan.frame_content_epoch);
+        }
         net->content_epoch                       = entry_plan.frame_content_epoch;
         net->input_correlation_inflight_sequence = 0;
         WD_LOG_INFO("stream content epoch: epoch=%llu reason=first video keyframe queued", (unsigned long long)net->content_epoch);

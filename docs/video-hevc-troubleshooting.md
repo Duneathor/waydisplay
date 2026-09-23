@@ -105,8 +105,11 @@ prefixes `00000001` (or `000001`) and successful decode/presentation. The
 observed hardware run remained in one epoch beyond frame 1,400; this is not a
 guarantee for other drivers or device configurations.
 
-Frame IDs restart when the stream content epoch advances. Repeated frame-1
-keyframes within one epoch are also possible during encoder restart; a
+Frame IDs restart when the stream content epoch advances for a real new
+encoder session. The first video keyframe moves ownership from the tiles epoch
+to the video epoch without reconfiguring the existing encoder or restarting
+frame IDs. Repeated frame-1 keyframes within one epoch can still occur after
+an actual encoder restart; a
 second IDR must replace decoder references even if frame 1 was already
 presented. A later video epoch can legitimately be dropped as stale if
 an EOS/tile-recovery epoch has already taken ownership.
