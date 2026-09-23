@@ -7,7 +7,7 @@ WayDisplay has two processes:
 - `waydisplay-server` runs a headless wlroots compositor, captures damage, chooses tile or video transport, captures audio, and accepts client input.
 - `waydisplay-client` receives media and state, performs decode and reassembly, presents through SDL, and sends local input and clipboard updates.
 
-The protocol is version `0`. There are no compatibility guarantees while the software remains undeployed.
+The protocol is version `0`. There are no compatibility guarantees while the software remains undeployed. For per-frame media debugging, use [HEVC diagnostics](video-hevc-troubleshooting.md); its sampled traces require a DEBUG build and are not used for protocol decisions.
 
 ## Design priorities
 

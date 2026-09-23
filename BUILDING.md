@@ -27,14 +27,20 @@ single-purpose build profiles:
 | `profile` | Native `-O3`/LTO build instrumented with `-fprofile-generate` | `INFO` |
 | `native` | `-O3`, LTO, `-march=native`, and PGO when data is available | `INFO` |
 
-`WAYDISPLAY_LOG_LEVEL` is the sole logging build option. It accepts `OFF`,
+`WAYDISPLAY_LOG_LEVEL` is the CMake logging build option. It accepts `OFF`,
 `ERROR`, `WARN`, `INFO`, `STATS`, or `DEBUG`; each level includes all levels to
-its left. Periodic client and server telemetry uses `STATS`, so it can be
-compiled in without enabling event-by-event debug logging:
+its left. Periodic client and server telemetry uses `STATS`. Sampled per-frame
+`video trace stage=…` lines use `DEBUG` and are compiled out of normal `INFO`
+and `STATS` builds, including packet hashing. Warnings about failed decoding,
+queue overflow, video health, and encoded-frame drops remain visible at `WARN`.
 
 ```sh
 cmake --preset native -DWAYDISPLAY_LOG_LEVEL=STATS
 ```
+
+For a traced native CMake build, set `-DWAYDISPLAY_LOG_LEVEL=DEBUG` instead.
+The package-specific `WAYDISPLAY_PACKAGE_LOG_LEVEL` setting is described below;
+it is not a runtime flag and does not affect CMake builds directly.
 
 Build a portable optimized binary with:
 
@@ -121,8 +127,22 @@ BUILDDIR="$HOME/.cache/makepkg"
 ```
 
 With that configured, `makepkg -sifCc` from the repository root is safe, and
-ordinary `makepkg -si` continues to work. If you do not configure BUILDDIR,
-use `makepkg -sif` without `-C`/`-c`.
+ordinary `makepkg -si` continues to work. If you do not configure `BUILDDIR`,
+use `makepkg -sif` without `-C`/`-c`. Do not use `git clean` as a substitute
+for makepkg's clean-build operation.
+
+To install Release binaries with detailed media traces while preserving Release
+optimization and Arch hardening, build **both** endpoints with:
+
+```sh
+WAYDISPLAY_PACKAGE_LOG_LEVEL=DEBUG makepkg -sif
+```
+
+Normal `makepkg -sif` switches Release back to `INFO` and removes routine
+per-frame traces. The separate Debug test build always uses `DEBUG`; this
+setting does not enable the tests' DEBUG logging in installed Release binaries.
+See [HEVC troubleshooting](docs/video-hevc-troubleshooting.md) for interpreting
+matching server/client frame hashes, stages, and recovery warnings.
 
 The full server build requires the `wlroots0.20` package, providing the
 `wlroots-0.20` pkg-config module (version 0.20.0 or newer). The 0.19 ABI is not
@@ -180,10 +200,11 @@ waydisplay-server --video-encoder software --app konsole
 waydisplay-server --video-encoder off --app konsole  # tiles only
 ```
 
-The client uses `--video-decode <off|auto|vaapi|software>` (default `auto`).
+The client uses `--video-decode <off|auto|software|vaapi>` (default `auto`).
 `off` does not advertise the encoded-video channel; `software` decodes video
-without attempting VA-API. The old `--video-hwdecode off` is now
-`--video-decode software`. `--video off` remains the coarse video-policy switch.
+without attempting VA-API. The old `--video-hwdecode` spelling is rejected;
+its former `off` behavior is `--video-decode software`. `--video off` remains
+the coarse video-policy switch.
 
 
 The first VA-API implementation still converts XRGB to NV12 in system memory
@@ -191,6 +212,9 @@ and uploads that frame to a VA surface. It removes software H.264/H.265 encoding
 from the hot path, but is not a zero-copy compositor-to-encoder path. Check
 `vainfo` for `VAEntrypointEncSlice`; older AMD hardware may support H.264 encode
 without HEVC encode, in which case use client option `--video-codec h264`.
+HEVC VA-API output is normalized to Annex-B when a recognized escaped start-code
+prefix occurs. The repair is deliberately narrow, and does not guarantee that
+all vendor-specific bitstream defects are accepted.
 
 ## Tile-size selection
 

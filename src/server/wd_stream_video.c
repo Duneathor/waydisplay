@@ -207,7 +207,7 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     /* Fingerprint only a bounded sample and do the scan outside net->lock.
      * Match epoch/frame/hash with the client's receive trace. */
     const bool trace_packet = encoded && !no_output && !payload_invalid && payload &&
-                              wd_video_trace_sample(header.frame_id);
+                              wd_video_trace_debug_sample(header.frame_id);
     const uint64_t trace_hash = trace_packet ? wd_video_trace_hash(payload + sizeof(header), header.data_size) : 0;
     const uint64_t trace_prefix = trace_packet ? wd_video_trace_prefix(payload + sizeof(header), header.data_size) : 0;
 
@@ -245,12 +245,12 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
         pthread_mutex_lock(&net->video_encoder_lock);
         (void)wd_video_encoder_request_keyframe(net->video_encoder);
         pthread_mutex_unlock(&net->video_encoder_lock);
-        if (trace_packet)
+        if (wd_video_trace_sample(header.frame_id))
         {
-            WD_LOG_WARN("video trace stage=server-drop epoch=%llu frame=%llu codec=%u key=%u bytes=%u hash=%016llx reason=pending-tcp rearm=keyframe",
+            /* Keep the recovery event visible in INFO without hashing bytes. */
+            WD_LOG_WARN("video encoded frame dropped: epoch=%llu frame=%llu codec=%u key=%u bytes=%u reason=pending-tcp rearm=keyframe",
                         (unsigned long long)header.content_epoch, (unsigned long long)header.frame_id, header.codec,
-                        (unsigned)((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0), header.data_size,
-                        (unsigned long long)trace_hash);
+                        (unsigned)((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0), header.data_size);
         }
         free(payload);
         net->stats.video_keyframe_skipped_pending++;
@@ -279,7 +279,7 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
 
     if (trace_packet)
     {
-        WD_LOG_INFO("video trace stage=server-send epoch=%llu frame=%llu codec=%u key=%u bytes=%u prefix=%016llx hash=%016llx encode_ms=%.2f queue_ms=%.2f",
+        WD_LOG_DEBUG("video trace stage=server-send epoch=%llu frame=%llu codec=%u key=%u bytes=%u prefix=%016llx hash=%016llx encode_ms=%.2f queue_ms=%.2f",
                     (unsigned long long)header.content_epoch, (unsigned long long)header.frame_id, header.codec,
                     (unsigned)((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0), header.data_size,
                     (unsigned long long)trace_prefix, (unsigned long long)trace_hash,

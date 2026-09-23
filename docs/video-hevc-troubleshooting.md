@@ -1,28 +1,50 @@
-# HEVC trace checklist
+# HEVC diagnostics and recovery
 
-When HEVC stalls but H.264 runs, collect simultaneous client/server INFO logs
-with the same session. `video trace` samples frames 1–8 and then every 128th
-frame **per encoder frame-ID sequence** (and only on the current client video
-TCP channel). It is on by default for these sparse samples; no payload bytes
-are dumped. Packet hashes are diagnostic only, not authentication.
+## Enable a diagnostic build
+
+A normal `makepkg -sif` produces optimized Release binaries at `INFO`.
+Sampled `video trace stage=…` lines on **both** the server and client require
+`DEBUG` at compile time. Install the same log-level build on both machines:
+
+```sh
+WAYDISPLAY_PACKAGE_LOG_LEVEL=DEBUG makepkg -sif
+```
+
+For a CMake build, configure with `-DWAYDISPLAY_LOG_LEVEL=DEBUG` and rebuild.
+There is no runtime switch for enabling compiled-out logging. To return to the
+quiet optimized package, use `makepkg -sif` without the override. The Debug
+test tree always uses `DEBUG` independently of the packaged Release binaries.
+Keep the `PKGBUILD`'s safe out-of-tree `BUILDDIR` setting if using makepkg's
+`-C`/`-c` cleanup; see [BUILDING.md](../BUILDING.md).
+
+## Read the trace
+
+When HEVC stalls but H.264 works, collect simultaneous client/server DEBUG
+logs from the same connection. The trace samples frames 1–8 and every 128th
+frame per encoder frame-ID sequence. It is **not** a complete per-frame
+transport trace; no full payload bytes or connection token are logged. Packet
+hashes are diagnostics, not cryptographic authentication or wire-integrity
+checks.
 
 Compare `epoch`, `frame`, `bytes`, `prefix`, and `hash` in `server-send` and
-`client-recv`. An identical fingerprint does not prove all bytes match
-cryptographically. A difference proves the copies are different, except in
-case of a hash collision. `server-drop` means the frame was encoded but not
-transmitted; the encoder is instructed to emit a keyframe next.
+`client-recv`. A matching fingerprint is evidence for the same packet bytes,
+not proof against collisions. A sampled encoded frame dropped because a
+previous video TCP send is still pending is reported at WARN as `video encoded
+frame dropped: … reason=pending-tcp rearm=keyframe`. Even when the warning
+falls outside the sampling window, the encoder requests a fresh keyframe rather
+than continuing with a dependent frame.
 
 Then compare `client-dequeue` queue wait, `client-decode` duration and output,
-`client-publish` queue depth, and `client-upload`/`client-present`. An absent
-stage localizes the first transition that stopped. Frame IDs attached to
-`client-decode`'s output may lag the input frame ID due to codec buffering.
-`encode_ms` includes codec reconfiguration, and `queue_ms` is elapsed time
-since the server worker job was published (not TCP one-way network latency).
+`client-publish` depth, and `client-upload`/`client-present`. An absent stage
+localizes the transition that stopped. Output frame IDs may lag input IDs due
+to codec buffering. `encode_ms` includes codec reconfiguration; `queue_ms`
+measures elapsed time since the server job was published, **not** network
+one-way latency. Normal decode failures, queue-overflow warnings, and server
+health fallbacks remain visible without DEBUG.
 
-The log is intentionally sampled and is **not** a complete per-frame transport
-trace. Use `--video-codec h264` as the temporary workaround if HEVC remains
-unstable. Do not increase the decode queue simply to suppress overflow; that
-can increase latency instead of recovering correct reference frames.
+Use `--video-codec h264` for a working alternative when the HEVC path remains
+unhealthy. Enlarging the decode queue without fixing reference-frame recovery
+may only increase latency.
 
 ## Distinguish discard from slow decoder initialization
 
@@ -47,19 +69,11 @@ queue is flushed. These identify the oldest **queued** packet, not the packet
 already being processed by the decode worker. To distinguish those, pair the
 overflow with the most recent `client-dequeue`/`client-configure-start` line.
 
-For deeper diagnostics without rebuilding with CMake manually, run
-`WAYDISPLAY_PACKAGE_LOG_LEVEL=DEBUG makepkg -sif` from the checkout root.
-This compiles DEBUG logging into the **Release binaries** while retaining
-Release optimization and Arch hardening flags. The separate Debug test tree
-always uses DEBUG. A normal `makepkg -sif` reconfigures Release back to INFO.
-The package release number is unchanged by this optional diagnostic switch;
-use it only for a local package, not a distributed reproducible build.
-
 ## Audio clock ahead of slow video
 
-If `client-decode` and `client-publish` succeed but every frame logs
-`client-discard reason=audio-sync` at `present_depth=1`, software encoding may
-be slower than the audio clock. The presenter now drops a late picture only
+If `client-decode` and `client-publish` succeed but no frame reaches
+`client-present`, inspect any `client-discard reason=audio-sync` lines and
+`client-sync-late` deltas. Slow encoding can put video behind the audio clock. The presenter now drops a late picture only
 when another decoded picture is already queued; the newest available picture
 must be shown even when late. `client-sync-late` logs sampled frame ID, video
 PTS, audio playhead samples and the signed audio-video delta (milliseconds).
@@ -81,13 +95,15 @@ oldest queued frame). Do not infer an overflow merely from a reset line.
 
 Some VA-API HEVC drivers return dependent access units beginning
 `00 00 03 00 01` instead of the required Annex-B `00 00 00 01`.
-Server and client trace hashes match when this occurs: it is **encoder
-output**, not TCP corruption. The server repairs only this recognizable
+If a matching malformed prefix appears in both server and client traces,
+the format problem originates before transmission, not in TCP. The server repairs only this recognizable
 escaped-prefix pattern for HEVC VA-API output and never rewrites packets
 that already start with valid Annex-B. This narrowly scoped workaround
-is not a replacement for a complete bitstream parser. Test both IDR and
-interframes on the actual driver; check that `server-send` and
-`client-recv` start with `00000001` (or `000001`).
+is not a replacement for a complete bitstream parser. With DEBUG enabled,
+check **both keyframes and interframes** for `server-send` / `client-recv`
+prefixes `00000001` (or `000001`) and successful decode/presentation. The
+observed hardware run remained in one epoch beyond frame 1,400; this is not a
+guarantee for other drivers or device configurations.
 
 Frame IDs restart when the stream content epoch advances. Repeated frame-1
 keyframes within one epoch are also possible during encoder restart; a

@@ -17,6 +17,14 @@ int wd_test_video_trace_c(void) {
     assert(wd_video_trace_prefix(sample, sizeof(sample)) == UINT64_C(0x000000012601aabb));
     assert(wd_video_trace_prefix(sample, 3) == UINT64_C(0x0000000000000000));
     assert(wd_video_trace_prefix(sample, 4) == UINT64_C(0x0000000100000000));
+#if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_DEBUG
+    assert(wd_video_trace_debug_sample(1));
+    assert(wd_video_trace_debug_sample(128));
+#else
+    assert(!wd_video_trace_debug_sample(1));
+    assert(!wd_video_trace_debug_sample(128));
+#endif
+    assert(!wd_video_trace_debug_sample(9));
     assert(wd_video_trace_hash(sample, sizeof(sample)) != wd_video_trace_hash(sample, sizeof(sample) - 1));
     assert(wd_video_trace_hash(sample, sizeof(sample)) == wd_video_trace_hash(sample, sizeof(sample)));
     assert(wd_video_trace_hash(NULL, 4) == 0);

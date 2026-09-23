@@ -24,19 +24,15 @@ waydisplay-client <server_ipv4> <tcp_port> <client_udp_port> [options]
 | `--no-audio` | Disable audio negotiation/playback | Local capability and session preference. |
 | `--video <auto|off|force>` | Coarse video-stream policy (also `--video off` disables encoded video on the client) | `force` bypasses automatic content thresholds, but not initial bootstrap, active recovery, or failure backoff. A successfully presented planned resize recovery may return directly to forced video. |
 | `--video-codec <auto|h264|h265>` | Acceptable video codecs | Hardware/driver compatibility. |
-| `--video-decode <off|auto|vaapi|software>` | `off` disables video negotiation; `auto` uses VA-API when available and falls back to software; `software` never requests VA-API; `vaapi` requires VA-API. Default `auto`. | Hardware/driver compatibility. |
+| `--video-decode <off|auto|software|vaapi>` | `off` disables video negotiation; `auto` uses VA-API when available and falls back to software; `software` never requests VA-API; `vaapi` requires VA-API. Default `auto`. | Hardware/driver compatibility. |
 | `--help`, `-h` | Print usage | Standard interface. |
 
 ### Video cadence below the client ceiling
 
-The client `--fps` value remains the active-session ceiling. Software decode
-telemetry may lower only the video capture/encoder cadence below that ceiling;
-the compositor and local presentation cap remain at the requested session
-rate. Ordinary decode pressure clamps near the measured sustainable rate with a
-deadband, hard queue overflow receives a larger bounded reduction, and recovery
-advances one FPS at a time after sustained health. Planned display resize
-preserves whether forced or automatic video was selected and resumes it after
-the exact recovery frame is presented.
+`--fps` is a ceiling, not a guaranteed encoded-video frame rate. The server
+may adapt video capture/encode cadence below it while retaining the requested
+compositor and SDL presentation cadence. See [Frame cadence ownership](#frame-cadence-ownership)
+and [video cadence below the client ceiling](#video-cadence-below-the-client-ceiling-1).
 
 ### Configuration-only
 
@@ -55,6 +51,8 @@ These are no longer command-line options:
 - `--limited-rate-kib`: use `--rate-kib`.
 - `--wan`: use an explicit `--rate-kib <N>` when a cap is needed.
 - `--mode`: obsolete adaptive-streaming predecessor.
+- `--video-hwdecode`: use `--video-decode`. The old `off` value means
+  `--video-decode software`, **not** `--video-decode off` (which disables video).
 
 ## Server command line
 
@@ -89,14 +87,10 @@ needs to change.
 
 ### Video cadence below the client ceiling
 
-The client `--fps` value remains the active-session ceiling. Software decode
-telemetry may lower only the video capture/encoder cadence below that ceiling;
-the compositor and local presentation cap remain at the requested session
-rate. Ordinary decode pressure clamps near the measured sustainable rate with a
-deadband, hard queue overflow receives a larger bounded reduction, and recovery
-advances one FPS at a time after sustained health. Planned display resize
-preserves whether forced or automatic video was selected and resumes it after
-the exact recovery frame is presented.
+`--fps` is a ceiling, not a guaranteed encoded-video frame rate. The server
+may adapt video capture/encode cadence below it while retaining the requested
+compositor and SDL presentation cadence. See [Frame cadence ownership](#frame-cadence-ownership)
+and [video cadence below the client ceiling](#video-cadence-below-the-client-ceiling-1).
 
 ### Configuration-only
 
@@ -158,4 +152,11 @@ channel, bootstrap, recovery, or encoder readiness checks.
 
 ### Emergency application launcher
 
-While the SDL client is connected, **Ctrl+Alt+right-click** opens the local context menu. **LAUNCH DEFAULT** starts the server's `--app` command again (default `konsole`), even when all remote windows are closed. **LAUNCH APPLICATION** opens a command prompt: type a command and press Enter, or Escape to cancel. Commands run on the server, inside the compositor's Wayland environment, under the server user account—not on the SDL client. As with `--app`, the command is passed to `/bin/sh -c`; use this only with clients you trust.
+While the SDL client is connected, **Ctrl+Alt+right-click** opens the local
+context menu. **LAUNCH DEFAULT** starts the server's `--app` again (default
+`konsole`), even when every remote window has been closed. **LAUNCH APPLICATION**
+opens a command prompt; type a command and press Enter, or Escape to cancel.
+The command runs **on the server** in the compositor's Wayland environment
+under the server user account, through `/bin/sh -c`. It is not client-local
+execution. The launcher is session-bound but has no authentication boundary:
+see [Security](../SECURITY.md) and [Protocol](protocol.md#application-launch-requests).

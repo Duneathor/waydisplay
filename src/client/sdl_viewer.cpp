@@ -1579,9 +1579,9 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                         sync.decision, static_cast<uint32_t>(state.video_present_queue.size())))
                 {
                     ClientQueuedVideoFrame dropped = state.video_present_queue.pop_front();
-                    if (wd_video_trace_sample(dropped.frame_id))
+                    if (wd_video_trace_debug_sample(dropped.frame_id))
                     {
-                        WD_LOG_INFO("video trace stage=client-discard frame=%llu reason=audio-sync",
+                        WD_LOG_DEBUG("video trace stage=client-discard frame=%llu reason=audio-sync",
                                     (unsigned long long)dropped.frame_id);
                     }
                     state.video_present_queue.recycle(std::move(dropped.buffer));
@@ -1590,9 +1590,9 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                     state.pending_video_frame_dirty.store(!state.video_present_queue.empty(), std::memory_order_release);
                     continue;
                 }
-                if (sync.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_DROP && wd_video_trace_sample(queued->frame_id))
+                if (sync.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_DROP && wd_video_trace_debug_sample(queued->frame_id))
                 {
-                    WD_LOG_INFO("video trace stage=client-sync-late frame=%llu pts_usec=%llu audio_samples=%llu delta_ms=%.1f present_depth=%zu action=present-only-frame",
+                    WD_LOG_DEBUG("video trace stage=client-sync-late frame=%llu pts_usec=%llu audio_samples=%llu delta_ms=%.1f present_depth=%zu action=present-only-frame",
                                 (unsigned long long)queued->frame_id, (unsigned long long)queued->pts_usec,
                                 (unsigned long long)audio_playhead_samples,
                                 (double)sync.delta_samples * 1000.0 / WD_AUDIO_SAMPLE_RATE_DEFAULT,
@@ -1633,9 +1633,9 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
 
     if (!wd_client_stream_ownership_is_current(&state.stream_ownership, frame_epoch, WD_CLIENT_CONTENT_OWNER_VIDEO))
     {
-        if (wd_video_trace_sample(present_info.frame_id))
+        if (wd_video_trace_debug_sample(present_info.frame_id))
         {
-            WD_LOG_INFO("video trace stage=client-discard frame=%llu epoch=%llu reason=stale-owner",
+            WD_LOG_DEBUG("video trace stage=client-discard frame=%llu epoch=%llu reason=stale-owner",
                         (unsigned long long)present_info.frame_id, (unsigned long long)frame_epoch);
         }
         return VideoTextureUploadResult::Stale;
@@ -1658,9 +1658,9 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                     (unsigned long long)present_info.frame_id, SDL_GetError());
         return VideoTextureUploadResult::Failed;
     }
-    if (wd_video_trace_sample(present_info.frame_id))
+    if (wd_video_trace_debug_sample(present_info.frame_id))
     {
-        WD_LOG_INFO("video trace stage=client-upload frame=%llu epoch=%llu upload_ms=%.2f",
+        WD_LOG_DEBUG("video trace stage=client-upload frame=%llu epoch=%llu upload_ms=%.2f",
                     (unsigned long long)present_info.frame_id, (unsigned long long)present_info.content_epoch,
                     (double)(wd_now_ns() - started_ns) / 1000000.0);
     }
@@ -2093,9 +2093,9 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
 
     if (video_present.valid)
     {
-        if (wd_video_trace_sample(video_present.frame_id))
+        if (wd_video_trace_debug_sample(video_present.frame_id))
         {
-            WD_LOG_INFO("video trace stage=client-present frame=%llu epoch=%llu present_ms=%.2f",
+            WD_LOG_DEBUG("video trace stage=client-present frame=%llu epoch=%llu present_ms=%.2f",
                         (unsigned long long)video_present.frame_id, (unsigned long long)video_present.content_epoch,
                         (double)present_elapsed_ns / 1000000.0);
         }

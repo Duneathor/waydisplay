@@ -28,7 +28,7 @@ waydisplay-server
 waydisplay-client
 ```
 
-See [BUILDING.md](BUILDING.md) for dependencies, profiles, feature switches, testing, sanitizers, installation, and troubleshooting.
+See [BUILDING.md](BUILDING.md) for dependencies, profiles, feature switches, tests, and installation.
 
 On Arch Linux, use the root-level local `PKGBUILD` to install dependencies,
 build both runtime binaries, run tests, and install the package directly from
@@ -38,7 +38,8 @@ your current checkout (including uncommitted changes):
 makepkg -si
 ```
 
-The package's default build outputs go into ignored `src/build-*` and `pkg/` directories.
+Without an external `BUILDDIR`, package build outputs go into ignored
+`src/build-*` and `pkg/` directories.
 Do not pass `-C` or `-c` without setting an out-of-tree `BUILDDIR` first: makepkg's
 default `src/` directory is the project's tracked source tree. See [BUILDING.md](BUILDING.md).
 This local-checkout recipe is not suitable for publishing to the AUR without
@@ -49,8 +50,11 @@ replacing its empty source list with reproducible, pinned sources.
 Start the server first:
 
 ```sh
-./build-native/waydisplay-server
+./build-native/waydisplay-server --app konsole
 ```
+
+`konsole` is the default app and must be installed on the server; use `--app`
+to choose another command.
 
 Then connect the client using the address and ports selected for that server:
 
@@ -58,7 +62,19 @@ Then connect the client using the address and ports selected for that server:
 ./build-native/waydisplay-client 127.0.0.1 5000 6000
 ```
 
-Use `--help` on either executable for the complete command-line interface. See [docs/command-line.md](docs/command-line.md) for examples.
+For a remote host, use that server's reachable IPv4 address instead of
+`127.0.0.1`; bind it with `--listen` on a trusted network. The client prefers
+H.265; `--video-codec h264` selects H.264 explicitly. Both `--video-encoder`
+(server) and `--video-decode` (client) accept `off|auto|software|vaapi`,
+defaulting to `auto`.
+
+**Ctrl+Alt+right-click** in the client opens a launcher menu. **LAUNCH DEFAULT**
+reopens the configured server app; **LAUNCH APPLICATION** prompts for a server-side
+command. Only use this with a trusted server/client pair.
+
+Use `--help` for all arguments and see [Command line](docs/command-line.md)
+for modes and [HEVC troubleshooting](docs/video-hevc-troubleshooting.md) for
+diagnostic traces (DEBUG builds only).
 
 ## Design priorities
 
@@ -79,3 +95,6 @@ Memory safety, bounded queues, parser limits, and nonblocking network progress r
 - [Threading contract](docs/threading.md)
 - [Security model](SECURITY.md)
 - [Command line](docs/command-line.md)
+- [HEVC troubleshooting and DEBUG trace](docs/video-hevc-troubleshooting.md)
+- [Build, tests, and safe Arch packaging](BUILDING.md)
+- [Open work](TODO.md)

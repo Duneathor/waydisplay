@@ -30,7 +30,7 @@ The conceptual state order is:
 4. generation and retransmit state
 5. video-frame and presentation telemetry state
 
-No thread may call SDL while holding a producer-state mutex. The receive worker may signal `ClientRenderWake`, but only the render thread consumes and presents frames. Audio synchronization may discard or adjust audio, but it must not hold the video presentation path indefinitely. Initial audio buffering may gate video for at most `WD_CLIENT_AUDIO_VIDEO_STARTUP_HOLD_MAX_MS`; after that bound, video presents without an audio master clock until playback becomes established.
+No thread may call SDL while holding a producer-state mutex. The receive worker may signal `ClientRenderWake`, but only the render thread consumes and presents frames. Audio synchronization may discard late video **only while another decoded frame is already queued**; the sole available decoded frame must be eligible for presentation even if audio is ahead. Initial audio buffering may gate video for at most `WD_CLIENT_AUDIO_VIDEO_STARTUP_HOLD_MAX_MS`; after that bound, video presents without an audio master clock until playback becomes established.
 
 ## Resize texture lifetime
 
@@ -95,4 +95,5 @@ The client discards SDL auto-repeat events. The server classifies the received
 remote press/release against its tracked pressed-key set *before* updating XKB
 or delivering to the seat. Duplicate presses and unmatched releases must not
 produce extra Wayland key events; a full pressed-key set rejects new presses.
-This does not implement relative pointer, Xwayland, or fractional scaling.
+This keyboard boundary does not implement relative pointer or fractional scaling;
+Xwayland is handled separately by the compositor.

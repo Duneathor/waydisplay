@@ -1329,9 +1329,9 @@ bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_
     }
     if (validation != WD_CLIENT_VIDEO_PACKET_VALID)
     {
-        if (wd_video_trace_sample(packet.header.frame_id))
+        if (wd_video_trace_debug_sample(packet.header.frame_id))
         {
-            WD_LOG_INFO("video trace stage=client-drop epoch=%llu frame=%llu reason=invalid-packet validation=%u flags=0x%x bytes=%u geometry=%ux%u expected=%ux%u",
+            WD_LOG_DEBUG("video trace stage=client-drop epoch=%llu frame=%llu reason=invalid-packet validation=%u flags=0x%x bytes=%u geometry=%ux%u expected=%ux%u",
                         (unsigned long long)packet.header.content_epoch, (unsigned long long)packet.header.frame_id,
                         (unsigned)validation, (unsigned)packet.header.flags, packet.header.data_size,
                         packet.header.width, packet.header.height, expected.width, expected.height);
@@ -1417,9 +1417,9 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
         std::fill(state.pending_present_generation.begin(), state.pending_present_generation.end(), 0);
         state.pending_dirty_epoch = ownership.epoch;
         state.pending_video_frame_dirty.store(true, std::memory_order_release);
-        if (wd_video_trace_sample(frame.frame_id))
+        if (wd_video_trace_debug_sample(frame.frame_id))
         {
-            WD_LOG_INFO("video trace stage=client-publish epoch=%llu frame=%llu present_depth=%llu",
+            WD_LOG_DEBUG("video trace stage=client-publish epoch=%llu frame=%llu present_depth=%llu",
                         (unsigned long long)frame.content_epoch, (unsigned long long)frame.frame_id,
                         (unsigned long long)depth);
         }
@@ -1438,10 +1438,10 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         return;
     }
 
-    const bool trace_frame = wd_video_trace_sample(packet.header.frame_id);
+    const bool trace_frame = wd_video_trace_debug_sample(packet.header.frame_id);
     if (trace_frame)
     {
-        WD_LOG_INFO("video trace stage=client-handle epoch=%llu frame=%llu key=%u flags=0x%x bytes=%u",
+        WD_LOG_DEBUG("video trace stage=client-handle epoch=%llu frame=%llu key=%u flags=0x%x bytes=%u",
                     (unsigned long long)packet.header.content_epoch, (unsigned long long)packet.header.frame_id,
                     (unsigned)((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0),
                     (unsigned)packet.header.flags, packet.header.data_size);
@@ -1453,7 +1453,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
     const ClientContentEpochDecision content_decision = client_accept_content_epoch(state, packet.header.content_epoch, content_owner);
     if (trace_frame)
     {
-        WD_LOG_INFO("video trace stage=client-epoch epoch=%llu frame=%llu decision=%u epoch_ms=%.2f",
+        WD_LOG_DEBUG("video trace stage=client-epoch epoch=%llu frame=%llu decision=%u epoch_ms=%.2f",
                     (unsigned long long)packet.header.content_epoch, (unsigned long long)packet.header.frame_id,
                     (unsigned)content_decision, (double)(wd_now_ns() - epoch_start_ns) / 1000000.0);
     }
@@ -1461,7 +1461,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
     {
         if (trace_frame)
         {
-            WD_LOG_INFO("video trace stage=client-drop epoch=%llu frame=%llu reason=stale-content-epoch",
+            WD_LOG_DEBUG("video trace stage=client-drop epoch=%llu frame=%llu reason=stale-content-epoch",
                         (unsigned long long)packet.header.content_epoch, (unsigned long long)packet.header.frame_id);
         }
         state.stats.video_stale_frames_dropped.fetch_add(1, std::memory_order_relaxed);
@@ -1501,7 +1501,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
     {
         if (trace_frame)
         {
-            WD_LOG_INFO("video trace stage=client-drop epoch=%llu frame=%llu reason=transition flags=0x%x next_phase=%u",
+            WD_LOG_DEBUG("video trace stage=client-drop epoch=%llu frame=%llu reason=transition flags=0x%x next_phase=%u",
                         (unsigned long long)packet.header.content_epoch, (unsigned long long)packet.header.frame_id,
                         (unsigned)packet.header.flags, (unsigned)transition.next_phase);
         }
@@ -1528,7 +1528,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         {
             if (trace_frame)
             {
-                WD_LOG_INFO("video trace stage=client-drop epoch=%llu frame=%llu reason=stale-frame-id last_presented=%llu",
+                WD_LOG_DEBUG("video trace stage=client-drop epoch=%llu frame=%llu reason=stale-frame-id last_presented=%llu",
                             (unsigned long long)packet.header.content_epoch, (unsigned long long)packet.header.frame_id,
                             (unsigned long long)last_presented);
             }
@@ -1552,7 +1552,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         {
             if (trace_frame)
             {
-                WD_LOG_INFO("video trace stage=client-drop epoch=%llu frame=%llu reason=awaiting-keyframe phase=%u",
+                WD_LOG_DEBUG("video trace stage=client-drop epoch=%llu frame=%llu reason=awaiting-keyframe phase=%u",
                             (unsigned long long)packet.header.content_epoch, (unsigned long long)packet.header.frame_id,
                             (unsigned)state.session.video_phase);
             }
@@ -1590,14 +1590,14 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         const uint64_t configure_start_ns = wd_now_ns();
         if (trace_frame)
         {
-            WD_LOG_INFO("video trace stage=client-configure-start epoch=%llu frame=%llu mode=%u key=%u",
+            WD_LOG_DEBUG("video trace stage=client-configure-start epoch=%llu frame=%llu mode=%u key=%u",
                         (unsigned long long)packet.header.content_epoch, (unsigned long long)packet.header.frame_id,
                         (unsigned)config.decode_mode, (unsigned)keyframe);
         }
         const bool configured = client_video_decoder_configure(state.session.video_decoder, config);
         if (trace_frame)
         {
-            WD_LOG_INFO("video trace stage=client-configure-end epoch=%llu frame=%llu ok=%u configure_ms=%.2f",
+            WD_LOG_DEBUG("video trace stage=client-configure-end epoch=%llu frame=%llu ok=%u configure_ms=%.2f",
                         (unsigned long long)packet.header.content_epoch, (unsigned long long)packet.header.frame_id,
                         (unsigned)configured, (double)(wd_now_ns() - configure_start_ns) / 1000000.0);
         }
@@ -1618,9 +1618,9 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         const uint64_t          decode_elapsed_ns = wd_now_ns() - decode_start_ns;
         state.stats.video_decode_sum_ns.fetch_add(decode_elapsed_ns, std::memory_order_relaxed);
         state.stats.video_decode_samples.fetch_add(1, std::memory_order_relaxed);
-        if (wd_video_trace_sample(packet.header.frame_id))
+        if (wd_video_trace_debug_sample(packet.header.frame_id))
         {
-            WD_LOG_INFO("video trace stage=client-decode epoch=%llu packet=%llu output=%llu output_ready=%u ok=%u decode_ms=%.2f",
+            WD_LOG_DEBUG("video trace stage=client-decode epoch=%llu packet=%llu output=%llu output_ready=%u ok=%u decode_ms=%.2f",
                         (unsigned long long)packet.header.content_epoch, (unsigned long long)packet.header.frame_id,
                         (unsigned long long)frame.frame_id, (unsigned)(frame.format != ClientVideoPixelFormat::None),
                         (unsigned)decoded, (double)decode_elapsed_ns / 1000000.0);
@@ -1922,11 +1922,11 @@ bool handle_video_tcp_message(ClientState& state, wd_tcp_message& message) {
     {
         wd_video_frame_payload_header header{};
         std::memcpy(&header, message.payload, sizeof(header));
-        if (wd_video_trace_sample(header.frame_id) &&
+        if (wd_video_trace_debug_sample(header.frame_id) &&
             wd_video_frame_payload_size_is_valid(&header, message.payload_size) && header.data_size != 0)
         {
             const uint8_t* bitstream = message.payload + sizeof(header);
-            WD_LOG_INFO("video trace stage=client-recv epoch=%llu frame=%llu codec=%u key=%u bytes=%u prefix=%016llx hash=%016llx",
+            WD_LOG_DEBUG("video trace stage=client-recv epoch=%llu frame=%llu codec=%u key=%u bytes=%u prefix=%016llx hash=%016llx",
                         (unsigned long long)header.content_epoch, (unsigned long long)header.frame_id, header.codec,
                         (unsigned)((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0), header.data_size,
                         (unsigned long long)wd_video_trace_prefix(bitstream, header.data_size),
@@ -2118,10 +2118,10 @@ void client_video_decode_worker_main(ClientState* state) {
         {
             wd_video_frame_payload_header header{};
             std::memcpy(&header, packet.payload, sizeof(header));
-            if (wd_video_trace_sample(header.frame_id))
+            if (wd_video_trace_debug_sample(header.frame_id))
             {
                 const uint64_t now_ns = wd_now_ns();
-                WD_LOG_INFO("video trace stage=client-dequeue epoch=%llu frame=%llu wait_ms=%.2f reset=%u",
+                WD_LOG_DEBUG("video trace stage=client-dequeue epoch=%llu frame=%llu wait_ms=%.2f reset=%u",
                             (unsigned long long)header.content_epoch, (unsigned long long)header.frame_id,
                             packet.queued_ns && now_ns >= packet.queued_ns ?
                                 (double)(now_ns - packet.queued_ns) / 1000000.0 : 0.0,
