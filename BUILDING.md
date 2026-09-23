@@ -108,6 +108,22 @@ runs the full-runtime test suite before installing the Release executables:
 makepkg -si
 ```
 
+**Clean-build safety:** the repository's tracked `src/` directory is also
+makepkg's default `$srcdir` when the PKGBUILD is at the root. Do **not** use
+`makepkg -C` or `makepkg -c` with the default build directory: those options
+remove `$srcdir`, which would remove source files. The PKGBUILD refuses those
+options when it detects the collision, but a separate build directory is the
+safe way to use clean builds. Set `BUILDDIR` to an absolute directory outside
+this checkout in `~/.makepkg.conf`, for example:
+
+```sh
+BUILDDIR="$HOME/.cache/makepkg"
+```
+
+With that configured, `makepkg -sifCc` from the repository root is safe, and
+ordinary `makepkg -si` continues to work. If you do not configure BUILDDIR,
+use `makepkg -sif` without `-C`/`-c`.
+
 The full server build requires the `wlroots0.20` package, providing the
 `wlroots-0.20` pkg-config module (version 0.20.0 or newer). The 0.19 ABI is not
 an accepted fallback. After changing wlroots versions, rebuild from clean
@@ -161,7 +177,14 @@ not supported by an automatically discovered VA device. Select a backend explici
 ```sh
 waydisplay-server --video-encoder vaapi --app foot
 waydisplay-server --video-encoder software --app foot
+waydisplay-server --video-encoder off --app foot  # tiles only
 ```
+
+The client uses `--video-decode <off|auto|vaapi|software>` (default `auto`).
+`off` does not advertise the encoded-video channel; `software` decodes video
+without attempting VA-API. The old `--video-hwdecode off` is now
+`--video-decode software`. `--video off` remains the coarse video-policy switch.
+
 
 The first VA-API implementation still converts XRGB to NV12 in system memory
 and uploads that frame to a VA surface. It removes software H.264/H.265 encoding

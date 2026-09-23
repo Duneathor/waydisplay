@@ -4,7 +4,7 @@
 
 pkgname=waydisplay
 pkgver=0.1.0
-pkgrel=3
+pkgrel=6
 pkgdesc='Low-latency remote Wayland display (SDL3 client and wlroots compositor)'
 arch=('x86_64')
 license=('AGPL-3.0-only')
@@ -29,6 +29,16 @@ optdepends=(
 # No source archive: this local recipe intentionally builds the current checkout.
 # Do not publish as an AUR recipe without replacing this with pinned sources.
 source=()
+
+# makepkg parses this file before its cleanbuild / cleanup operations. Never
+# let those options remove the checkout's real src/ directory. For -C/-c,
+# configure an out-of-tree BUILDDIR in makepkg.conf (see BUILDING.md).
+if [[ ${srcdir:-} == "${startdir:-}/src" && -f "${startdir:-}/src/common/wd_time.c" ]] &&
+   (( ${CLEANBUILD:-0} || ${CLEANUP:-0} )); then
+  printf 'Refusing makepkg -C/-c: its srcdir is WayDisplay source code.\n' >&2
+  printf 'Set BUILDDIR outside the checkout before running a clean build.\n' >&2
+  return 1
+fi
 
 prepare() {
   [[ -f "$startdir/CMakeLists.txt" && -f "$startdir/LICENSE" ]] || {

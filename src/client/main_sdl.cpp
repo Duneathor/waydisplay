@@ -25,7 +25,7 @@ void usage(const char* argv0) {
                  "  --no-audio                    Disable audio negotiation and playback\n"
                  "  --video <auto|off|force>      Select coarse video-mode policy, default auto\n"
                  "  --video-codec <auto|h264|h265> Select acceptable video codecs, default h265\n"
-                 "  --video-hwdecode <off|auto|vaapi> Select hardware decoding, default auto\n"
+                 "  --video-decode <off|auto|vaapi|software> Select decoder backend, default auto\n"
                  "  --help, -h                    Show this help\n\n"
                  "Detailed stream thresholds and codec policy are configured in wd_config.h.\n\n"
                  "Examples:\n"
@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
     stream_config.udp_rate_cap_kib_per_second = cli_options.udp_rate_cap_kib_per_second;
     stream_config.video_mode                 = cli_options.video_mode;
     stream_config.video_codec_mask           = cli_options.video_codec_mask;
-    stream_config.video_hwdecode_mode        = cli_options.video_hwdecode_mode;
+    stream_config.video_decode_mode          = cli_options.video_decode_mode;
     stream_config.disable_vsync              = cli_options.disable_vsync;
     stream_config.disable_audio              = cli_options.disable_audio;
 

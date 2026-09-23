@@ -37,7 +37,7 @@ static void test_defaults(void) {
     CHECK(options.udp_rate_cap_kib_per_second == 0);
     CHECK(options.video_mode == WD_VIDEO_MODE_AUTO);
     CHECK(options.video_codec_mask == WD_VIDEO_CODEC_H265);
-    CHECK(options.video_hwdecode_mode == WD_CLIENT_VIDEO_HWDECODE_AUTO);
+    CHECK(options.video_decode_mode == WD_CLIENT_VIDEO_DECODE_AUTO);
     CHECK(options.desired_width == 0 && options.desired_height == 0);
     CHECK(!options.disable_vsync && !options.disable_audio);
 }
@@ -46,7 +46,7 @@ static void test_retained_options(void) {
     ClientCliOptions options;
     std::string      error;
     CHECK(parse({"client", "198.51.100.8", "5500", "6500", "--fps", "75", "--size", "1920x1080", "--rate-kib", "8192", "--no-vsync",
-                 "--no-audio", "--video", "force", "--video-codec", "auto", "--video-hwdecode", "off"},
+                 "--no-audio", "--video", "force", "--video-codec", "auto", "--video-decode", "software"},
                 options, error) == ClientCliParseResult::Ok);
     CHECK(options.target_fps == 75);
     CHECK(options.desired_width == 1920 && options.desired_height == 1080);
@@ -54,7 +54,7 @@ static void test_retained_options(void) {
     CHECK(options.disable_vsync && options.disable_audio);
     CHECK(options.video_mode == WD_VIDEO_MODE_FORCE);
     CHECK(options.video_codec_mask == (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265));
-    CHECK(options.video_hwdecode_mode == WD_CLIENT_VIDEO_HWDECODE_OFF);
+    CHECK(options.video_decode_mode == WD_CLIENT_VIDEO_DECODE_SOFTWARE);
 }
 
 static void test_removed_options_are_rejected(void) {
@@ -67,6 +67,7 @@ static void test_removed_options_are_rejected(void) {
         {"--video-enter-seconds", "3"},
         {"--video-exit-dirty-percent", "30"},
         {"--video-exit-seconds", "30"},
+        {"--video-hwdecode", "off"},
     };
 
     for (const auto& option : removed)
@@ -82,6 +83,31 @@ static void test_removed_options_are_rejected(void) {
             CHECK(parse({"client", "127.0.0.1", "5000", "6000", option[0]}, options, error) == ClientCliParseResult::Error);
         }
     }
+}
+
+static void test_decode_modes(void) {
+    struct ModeCase { const char* name; uint8_t mode; };
+    const ModeCase modes[] = {
+        {"off", WD_CLIENT_VIDEO_DECODE_OFF},
+        {"auto", WD_CLIENT_VIDEO_DECODE_AUTO},
+        {"software", WD_CLIENT_VIDEO_DECODE_SOFTWARE},
+        {"vaapi", WD_CLIENT_VIDEO_DECODE_VAAPI},
+    };
+    for (const auto& mode : modes)
+    {
+        ClientCliOptions options;
+        std::string error;
+        CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--video-decode", mode.name}, options, error) ==
+              ClientCliParseResult::Ok);
+        CHECK(options.video_decode_mode == mode.mode);
+    }
+    ClientCliOptions options;
+    std::string error;
+    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--video-decode", "hardware"}, options, error) ==
+          ClientCliParseResult::Error);
+    CHECK(error.find("--video-decode") != std::string::npos);
+    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--video-decode"}, options, error) ==
+          ClientCliParseResult::Error);
 }
 
 static void test_invalid_values(void) {
@@ -111,6 +137,7 @@ static void test_help(void) {
 int main() {
     test_defaults();
     test_retained_options();
+    test_decode_modes();
     test_removed_options_are_rejected();
     test_invalid_values();
     test_help();

@@ -22,9 +22,9 @@ waydisplay-client <server_ipv4> <tcp_port> <client_udp_port> [options]
 | `--rate-kib <N>` | Upper bound for the safe connection budget | Caps the link estimate before video, tile, audio, control, and overhead allocations are calculated. |
 | `--no-vsync` | Disable SDL present-vsync | Local renderer troubleshooting and latency testing. |
 | `--no-audio` | Disable audio negotiation/playback | Local capability and session preference. |
-| `--video <auto|off|force>` | Coarse video-stream policy | `force` bypasses automatic content thresholds, but not initial bootstrap, active recovery, or failure backoff. A successfully presented planned resize recovery may return directly to forced video. |
+| `--video <auto|off|force>` | Coarse video-stream policy (also `--video off` disables encoded video on the client) | `force` bypasses automatic content thresholds, but not initial bootstrap, active recovery, or failure backoff. A successfully presented planned resize recovery may return directly to forced video. |
 | `--video-codec <auto|h264|h265>` | Acceptable video codecs | Hardware/driver compatibility. |
-| `--video-hwdecode <off|auto|vaapi>` | Decoder backend policy | Hardware/driver compatibility. |
+| `--video-decode <off|auto|vaapi|software>` | `off` disables video negotiation; `auto` uses VA-API when available and falls back to software; `software` never requests VA-API; `vaapi` requires VA-API. Default `auto`. | Hardware/driver compatibility. |
 | `--help`, `-h` | Print usage | Standard interface. |
 
 ### Video cadence below the client ceiling
@@ -72,7 +72,7 @@ waydisplay-server [options]
 | `--size <WxH>` | Virtual output dimensions | Session-specific. |
 | `--scale <N>` | Virtual output scale | Session/display-specific. |
 | `--renderer <auto|gles2|vulkan|pixman>` | wlroots renderer selection | Hardware/driver compatibility. |
-| `--video-encoder <auto|software|vaapi>` | Encoder backend selection | Hardware/driver compatibility. |
+| `--video-encoder <off|auto|software|vaapi>` | `off` disables encoded-video negotiation (tiles remain available); otherwise select automatic, software-only, or VA-API-only encoding. Default `auto`. | Hardware/driver compatibility. |
 | `--help`, `-h` | Print usage | Standard interface. |
 
 ### Frame cadence ownership

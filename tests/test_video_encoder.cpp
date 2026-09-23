@@ -107,6 +107,20 @@ bool test_invalid_api() {
     CHECK(encoder == nullptr);
     CHECK(wd_video_encoder_backend_name(nullptr) != nullptr);
     CHECK(std::strcmp(wd_video_encoder_backend_name(nullptr), "none") == 0);
+    CHECK(wd_video_encoder_create(&encoder, "off"));
+    CHECK(encoder != nullptr);
+    CHECK(std::strcmp(wd_video_encoder_backend_name(encoder), "off") == 0);
+    CHECK(!wd_video_encoder_available(encoder));
+    CHECK(wd_video_encoder_supported_codecs(encoder) == 0);
+    CHECK(wd_video_encoder_choose_codec(encoder, WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265) == 0);
+    wd_video_encoder_config off_config{};
+    off_config.codec = WD_VIDEO_CODEC_H264;
+    off_config.width = 64;
+    off_config.height = 64;
+    CHECK(!wd_video_encoder_configure(encoder, &off_config));
+    wd_video_encoder_destroy(encoder);
+    encoder = nullptr;
+
     CHECK(!wd_video_encoder_request_keyframe(nullptr));
     CHECK(!wd_video_encoder_configure(nullptr, nullptr));
 

@@ -328,9 +328,10 @@ extern "C" {
 #define WD_UDP_THROUGHPUT_SAFETY_PERCENT      85u
 #define WD_VIDEO_DEFAULT_BITRATE_KIB_PER_SECOND      8192u
 #define WD_VIDEO_DERIVED_BITRATE_MAX_KIB_PER_SECOND  100000u
-#define WD_CLIENT_VIDEO_HWDECODE_AUTO                0u
-#define WD_CLIENT_VIDEO_HWDECODE_OFF                 1u
-#define WD_CLIENT_VIDEO_HWDECODE_VAAPI               2u
+#define WD_CLIENT_VIDEO_DECODE_AUTO      0u
+#define WD_CLIENT_VIDEO_DECODE_SOFTWARE  1u
+#define WD_CLIENT_VIDEO_DECODE_VAAPI     2u
+#define WD_CLIENT_VIDEO_DECODE_OFF       3u
 
 /* Stream adaptation and link-health policy.
  * Loss/pressure streaks reduce rate or FPS; sustained good periods increase

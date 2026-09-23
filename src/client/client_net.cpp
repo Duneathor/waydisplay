@@ -97,14 +97,16 @@ const char* video_codec_name(uint32_t codec) {
     }
 }
 
-const char* video_hwdecode_mode_name(uint8_t mode) {
+const char* video_decode_mode_name(uint8_t mode) {
     switch (mode)
     {
-    case WD_CLIENT_VIDEO_HWDECODE_AUTO:
+    case WD_CLIENT_VIDEO_DECODE_AUTO:
         return "auto";
-    case WD_CLIENT_VIDEO_HWDECODE_OFF:
+    case WD_CLIENT_VIDEO_DECODE_OFF:
         return "off";
-    case WD_CLIENT_VIDEO_HWDECODE_VAAPI:
+    case WD_CLIENT_VIDEO_DECODE_SOFTWARE:
+        return "software";
+    case WD_CLIENT_VIDEO_DECODE_VAAPI:
         return "vaapi";
     default:
         return "unknown";
@@ -501,7 +503,8 @@ bool receive_server_config(ClientState& state) {
     hello.desired_width                    = state.desired_width;
     hello.desired_height                   = state.desired_height;
     hello.udp_rate_cap_kib_per_second       = state.stream_config.udp_rate_cap_kib_per_second;
-    const bool     video_allowed           = state.stream_config.video_mode != WD_VIDEO_MODE_OFF;
+    const bool     video_allowed           = state.stream_config.video_mode != WD_VIDEO_MODE_OFF &&
+                                             state.stream_config.video_decode_mode != WD_CLIENT_VIDEO_DECODE_OFF;
     const uint32_t supported_video_codecs  = client_video_decoder_supported_codecs(state.session.video_decoder);
     const uint32_t requested_video_codecs  = state.stream_config.video_codec_mask & (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265);
     const uint32_t advertised_video_codecs = video_allowed ? (supported_video_codecs & requested_video_codecs) : 0;
@@ -527,12 +530,12 @@ bool receive_server_config(ClientState& state) {
 
     WD_LOG_INFO(
         "video mode control: mode=%s codec=%s bitrate_kib=%u min_dirty_pct=%u enter_seconds=%u exit_dirty_pct=%u exit_seconds=%u "
-        "hwdecode=%s decoder=%s",
+        "decode=%s decoder=%s",
         video_mode_name(state.stream_config.video_mode), video_codec_name(requested_video_codecs),
         static_cast<unsigned>(state.stream_config.video_bitrate_kib_per_second),
         static_cast<unsigned>(state.stream_config.video_min_dirty_percent), static_cast<unsigned>(state.stream_config.video_enter_seconds),
         static_cast<unsigned>(state.stream_config.video_exit_dirty_percent), static_cast<unsigned>(state.stream_config.video_exit_seconds),
-        video_hwdecode_mode_name(state.stream_config.video_hwdecode_mode), video_decoder_available ? "yes" : "no");
+        video_decode_mode_name(state.stream_config.video_decode_mode), video_decoder_available ? "yes" : "no");
     WD_LOG_INFO("audio mode: requested=%s backend=%s codec=%s transport=%s target_latency_ms=%u",
                 state.stream_config.disable_audio ? "disabled" : "enabled", client_audio_playback_backend_name(),
                 audio_available ? "opus" : "none", audio_available ? "tcp" : "none", WD_AUDIO_TARGET_LATENCY_MS_DEFAULT);
@@ -1529,7 +1532,7 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
         config.coded_height     = packet.header.coded_height != 0 ? packet.header.coded_height : packet.header.height;
         config.target_fps       = state.stream_config.target_fps;
         config.codec            = packet.header.codec;
-        config.hwdecode_mode    = state.stream_config.video_hwdecode_mode;
+        config.decode_mode     = state.stream_config.video_decode_mode;
 
         if (!client_video_decoder_configure(state.session.video_decoder, config))
         {

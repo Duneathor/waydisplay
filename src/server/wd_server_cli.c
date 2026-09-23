@@ -144,7 +144,7 @@ static bool wd_server_cli_renderer_is_valid(const char* name) {
 }
 
 static bool wd_server_cli_video_encoder_is_valid(const char* name) {
-    return name && (strcmp(name, "auto") == 0 || strcmp(name, "software") == 0 || strcmp(name, "vaapi") == 0);
+    return name && (strcmp(name, "off") == 0 || strcmp(name, "auto") == 0 || strcmp(name, "software") == 0 || strcmp(name, "vaapi") == 0);
 }
 
 enum wd_server_cli_parse_result wd_server_cli_parse_args(int argc, char* const* argv, struct wd_server_cli_options* options,
@@ -247,7 +247,7 @@ enum wd_server_cli_parse_result wd_server_cli_parse_args(int argc, char* const* 
             if (++i >= argc || !wd_server_cli_video_encoder_is_valid(argv[i]))
             {
                 wd_server_cli_set_error(error_message, error_message_size,
-                                        "invalid --video-encoder value; expected auto, software, or vaapi");
+                                        "invalid --video-encoder value; expected off, auto, software, or vaapi");
                 return WD_SERVER_CLI_ERROR;
             }
             options->video_encoder_backend = argv[i];

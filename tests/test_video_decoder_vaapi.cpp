@@ -70,7 +70,7 @@ bool decoder_advertises_vaapi(uint32_t codec) {
     return false;
 }
 
-ClientVideoDecoderConfig decoder_config(uint32_t codec, uint8_t hwdecode_mode) {
+ClientVideoDecoderConfig decoder_config(uint32_t codec, uint8_t decode_mode) {
     ClientVideoDecoderConfig config{};
     config.session_id       = 13;
     config.connection_token = UINT64_C(0x131415161718191a);
@@ -81,7 +81,7 @@ ClientVideoDecoderConfig decoder_config(uint32_t codec, uint8_t hwdecode_mode) {
     config.coded_height     = kVaapiFixtureHeight;
     config.target_fps       = 30;
     config.codec            = codec;
-    config.hwdecode_mode    = hwdecode_mode;
+    config.decode_mode      = decode_mode;
     return config;
 }
 
@@ -104,7 +104,7 @@ VaapiDecodeResult decode_with_vaapi(uint32_t codec, const char* fixture_name) {
     {
         return VaapiDecodeResult::Failed;
     }
-    if (!waydisplay::client_video_decoder_configure(decoder, decoder_config(codec, WD_CLIENT_VIDEO_HWDECODE_VAAPI)))
+    if (!waydisplay::client_video_decoder_configure(decoder, decoder_config(codec, WD_CLIENT_VIDEO_DECODE_VAAPI)))
     {
         waydisplay::client_video_decoder_destroy(decoder);
         return VaapiDecodeResult::Unsupported;

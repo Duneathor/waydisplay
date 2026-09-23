@@ -185,24 +185,29 @@ bool parse_video_codec(const char* text, uint32_t& value) {
     return false;
 }
 
-bool parse_video_hwdecode_mode(const char* text, uint8_t& value) {
+bool parse_video_decode_mode(const char* text, uint8_t& value) {
     if (!text)
     {
         return false;
     }
     if (std::strcmp(text, "auto") == 0)
     {
-        value = WD_CLIENT_VIDEO_HWDECODE_AUTO;
+        value = WD_CLIENT_VIDEO_DECODE_AUTO;
         return true;
     }
     if (std::strcmp(text, "off") == 0)
     {
-        value = WD_CLIENT_VIDEO_HWDECODE_OFF;
+        value = WD_CLIENT_VIDEO_DECODE_OFF;
         return true;
     }
     if (std::strcmp(text, "vaapi") == 0)
     {
-        value = WD_CLIENT_VIDEO_HWDECODE_VAAPI;
+        value = WD_CLIENT_VIDEO_DECODE_VAAPI;
+        return true;
+    }
+    if (std::strcmp(text, "software") == 0)
+    {
+        value = WD_CLIENT_VIDEO_DECODE_SOFTWARE;
         return true;
     }
     return false;
@@ -215,7 +220,7 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv, ClientC
     options.target_fps          = WD_CLIENT_DEFAULT_TARGET_FPS;
     options.video_mode          = WD_VIDEO_MODE_AUTO;
     options.video_codec_mask    = WD_VIDEO_CODEC_H265;
-    options.video_hwdecode_mode = WD_CLIENT_VIDEO_HWDECODE_AUTO;
+    options.video_decode_mode   = WD_CLIENT_VIDEO_DECODE_AUTO;
 
     if (!argv || argc <= 0 || !argv[0])
     {
@@ -300,11 +305,11 @@ ClientCliParseResult client_cli_parse(int argc, const char* const* argv, ClientC
                 return ClientCliParseResult::Error;
             }
         }
-        else if (std::strcmp(argument, "--video-hwdecode") == 0)
+        else if (std::strcmp(argument, "--video-decode") == 0)
         {
-            if (++i >= argc || !parse_video_hwdecode_mode(argv[i], options.video_hwdecode_mode))
+            if (++i >= argc || !parse_video_decode_mode(argv[i], options.video_decode_mode))
             {
-                set_error(error_message, "invalid --video-hwdecode value");
+                set_error(error_message, "invalid --video-decode value; expected off, auto, vaapi, or software");
                 return ClientCliParseResult::Error;
             }
         }

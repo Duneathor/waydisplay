@@ -38,7 +38,9 @@ your current checkout (including uncommitted changes):
 makepkg -si
 ```
 
-The package's build outputs go into the ignored `src/` and `pkg/` directories.
+The package's default build outputs go into ignored `src/build-*` and `pkg/` directories.
+Do not pass `-C` or `-c` without setting an out-of-tree `BUILDDIR` first: makepkg's
+default `src/` directory is the project's tracked source tree. See [BUILDING.md](BUILDING.md).
 This local-checkout recipe is not suitable for publishing to the AUR without
 replacing its empty source list with reproducible, pinned sources.
 

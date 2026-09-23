@@ -144,7 +144,7 @@ bool decoder_config_matches(const ClientVideoDecoder* decoder, const ClientVideo
            decoder->config.width == config.width && decoder->config.height == config.height &&
            decoder->config.coded_width == config.coded_width && decoder->config.coded_height == config.coded_height &&
            decoder->config.target_fps == config.target_fps && decoder->config.codec == config.codec &&
-           decoder->config.hwdecode_mode == config.hwdecode_mode;
+           decoder->config.decode_mode == config.decode_mode;
 }
 
 #if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
@@ -558,7 +558,8 @@ bool client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* decoder
 
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {
     if (!decoder || (config.codec != WD_VIDEO_CODEC_H265 && config.codec != WD_VIDEO_CODEC_H264) || config.width == 0 ||
-        config.height == 0 || config.coded_width < config.width || config.coded_height < config.height) [[unlikely]]
+        config.height == 0 || config.coded_width < config.width || config.coded_height < config.height ||
+        config.decode_mode == WD_CLIENT_VIDEO_DECODE_OFF || config.decode_mode > WD_CLIENT_VIDEO_DECODE_OFF) [[unlikely]]
     {
         return false;
     }
@@ -592,9 +593,9 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
     decoder->codec_ctx->thread_count = WD_CLIENT_VIDEO_DECODER_THREADS;
 
 #if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
-    decoder->vaapi_required = config.hwdecode_mode == WD_CLIENT_VIDEO_HWDECODE_VAAPI;
+    decoder->vaapi_required = config.decode_mode == WD_CLIENT_VIDEO_DECODE_VAAPI;
     decoder->vaapi_requested =
-        config.hwdecode_mode != WD_CLIENT_VIDEO_HWDECODE_OFF && (decoder->vaapi_required || !decoder->vaapi_auto_disabled);
+        config.decode_mode != WD_CLIENT_VIDEO_DECODE_SOFTWARE && (decoder->vaapi_required || !decoder->vaapi_auto_disabled);
     if (decoder->vaapi_requested)
     {
         char selected_device[PATH_MAX] = {};
@@ -617,7 +618,7 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
         }
     }
 #else
-    if (config.hwdecode_mode == WD_CLIENT_VIDEO_HWDECODE_VAAPI)
+    if (config.decode_mode == WD_CLIENT_VIDEO_DECODE_VAAPI)
     {
         release_decoder_backend(decoder);
         return false;

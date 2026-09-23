@@ -62,13 +62,16 @@ bool wd_log_rate_limit_should_log(uint64_t* last_log_ns, uint64_t now_ns, uint64
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_STATS
 #define WD_LOG_STATS(...) wd_log_message(WD_LOG_LEVEL_STATS, __VA_ARGS__)
 #else
-#define WD_LOG_STATS(...) ((void)0)
+/* Compile and type-check disabled log arguments without evaluating them.
+ * They remain references for -Wunused-* (including log-only helpers), while
+ * optimization and execution skip the entire branch. */
+#define WD_LOG_STATS(...) do { if (0) wd_log_message(WD_LOG_LEVEL_STATS, __VA_ARGS__); } while (0)
 #endif
 
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_DEBUG
 #define WD_LOG_DEBUG(...) wd_log_message(WD_LOG_LEVEL_DEBUG, __VA_ARGS__)
 #else
-#define WD_LOG_DEBUG(...) ((void)0)
+#define WD_LOG_DEBUG(...) do { if (0) wd_log_message(WD_LOG_LEVEL_DEBUG, __VA_ARGS__); } while (0)
 #endif
 
 #ifdef __cplusplus

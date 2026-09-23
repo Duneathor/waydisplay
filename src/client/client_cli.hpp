@@ -21,7 +21,7 @@ struct ClientCliOptions {
     uint32_t    udp_rate_cap_kib_per_second = 0;
     uint8_t     video_mode                 = 0;
     uint32_t    video_codec_mask           = 0;
-    uint8_t     video_hwdecode_mode        = 0;
+    uint8_t     video_decode_mode          = 0;
     bool        disable_vsync              = false;
     bool        disable_audio              = false;
 };

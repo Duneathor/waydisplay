@@ -42,6 +42,7 @@ enum {
 
 enum wd_video_encoder_preference {
     WD_VIDEO_ENCODER_PREFERENCE_AUTO = 0,
+    WD_VIDEO_ENCODER_PREFERENCE_OFF,
     WD_VIDEO_ENCODER_PREFERENCE_SOFTWARE,
     WD_VIDEO_ENCODER_PREFERENCE_VAAPI,
 };
@@ -590,6 +591,11 @@ static bool wd_video_encoder_parse_preference(const char* backend, enum wd_video
         *preference = WD_VIDEO_ENCODER_PREFERENCE_AUTO;
         return true;
     }
+    if (strcmp(backend, "off") == 0)
+    {
+        *preference = WD_VIDEO_ENCODER_PREFERENCE_OFF;
+        return true;
+    }
     if (strcmp(backend, "software") == 0)
     {
         *preference = WD_VIDEO_ENCODER_PREFERENCE_SOFTWARE;
@@ -626,7 +632,7 @@ bool wd_video_encoder_create(struct wd_video_encoder** out_encoder, const char* 
 
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
     av_log_set_level(AV_LOG_WARNING);
-    if (preference != WD_VIDEO_ENCODER_PREFERENCE_SOFTWARE)
+    if (preference != WD_VIDEO_ENCODER_PREFERENCE_OFF && preference != WD_VIDEO_ENCODER_PREFERENCE_SOFTWARE)
     {
         (void)wd_video_encoder_ensure_vaapi_device(encoder);
     }
@@ -666,7 +672,8 @@ void wd_video_encoder_reset(struct wd_video_encoder* encoder) {
 
 bool wd_video_encoder_available(const struct wd_video_encoder* encoder) {
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
-    return encoder && wd_video_encoder_detect_supported_codecs((struct wd_video_encoder*)encoder) != 0;
+    return encoder && encoder->preference != WD_VIDEO_ENCODER_PREFERENCE_OFF &&
+           wd_video_encoder_detect_supported_codecs((struct wd_video_encoder*)encoder) != 0;
 #else
     (void)encoder;
     return false;
@@ -675,7 +682,9 @@ bool wd_video_encoder_available(const struct wd_video_encoder* encoder) {
 
 uint32_t wd_video_encoder_supported_codecs(const struct wd_video_encoder* encoder) {
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
-    return encoder ? wd_video_encoder_detect_supported_codecs((struct wd_video_encoder*)encoder) : 0;
+    return encoder && encoder->preference != WD_VIDEO_ENCODER_PREFERENCE_OFF
+               ? wd_video_encoder_detect_supported_codecs((struct wd_video_encoder*)encoder)
+               : 0;
 #else
     (void)encoder;
     return 0;
@@ -684,7 +693,7 @@ uint32_t wd_video_encoder_supported_codecs(const struct wd_video_encoder* encode
 
 uint32_t wd_video_encoder_choose_codec(struct wd_video_encoder* encoder, uint32_t client_codecs) {
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER
-    if (!encoder)
+    if (!encoder || encoder->preference == WD_VIDEO_ENCODER_PREFERENCE_OFF)
     {
         return 0;
     }
@@ -736,6 +745,8 @@ const char* wd_video_encoder_backend_name(const struct wd_video_encoder* encoder
     }
     switch (encoder->preference)
     {
+    case WD_VIDEO_ENCODER_PREFERENCE_OFF:
+        return "off";
     case WD_VIDEO_ENCODER_PREFERENCE_SOFTWARE:
         return "software";
     case WD_VIDEO_ENCODER_PREFERENCE_VAAPI:
@@ -747,7 +758,8 @@ const char* wd_video_encoder_backend_name(const struct wd_video_encoder* encoder
 }
 
 bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config) {
-    if (!encoder || !config || (config->codec != WD_VIDEO_CODEC_H265 && config->codec != WD_VIDEO_CODEC_H264) || config->width == 0 ||
+    if (!encoder || encoder->preference == WD_VIDEO_ENCODER_PREFERENCE_OFF || !config ||
+        (config->codec != WD_VIDEO_CODEC_H265 && config->codec != WD_VIDEO_CODEC_H264) || config->width == 0 ||
         config->height == 0)
     {
         return false;

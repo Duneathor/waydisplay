@@ -113,6 +113,16 @@ if(WAYDISPLAY_BUILD_TESTS)
             ${WAYDISPLAY_TEST_TARGET})
     endfunction()
 
+    # Disabled STAT/DEBUG logs must reference their arguments for warnings
+    # without executing their side effects. Test both C11 and C++20 users.
+    waydisplay_add_test(
+        NAME waydisplay.log_compiled_out
+        TARGET waydisplay_test_log_compiled_out
+        SOURCES tests/test_log_compiled_out.c tests/test_log_compiled_out.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;logging;build"
+    )
+
     waydisplay_add_test(
         NAME waydisplay.keyboard_state
         TARGET waydisplay_test_keyboard_state

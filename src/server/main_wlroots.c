@@ -22,7 +22,7 @@ static void usage(const char* argv0) {
             "  --size <WxH>                    Virtual output size, default %ux%u\n"
             "  --scale <N>                     Output scale, default %.2f\n"
             "  --renderer <auto|gles2|vulkan|pixman>\n"
-            "  --video-encoder <auto|software|vaapi>\n"
+            "  --video-encoder <off|auto|software|vaapi>\n"
             "  --help, -h                      Show this help\n\n"
             "Tile policy, Xwayland, and xdg-dialog behavior are configured in wd_config.h.\n\n"
             "Examples:\n"

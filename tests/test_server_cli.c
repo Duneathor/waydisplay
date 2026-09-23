@@ -119,6 +119,22 @@ static void test_retained_arguments(void) {
     CHECK(strcmp(options.video_encoder_backend, "software") == 0);
 }
 
+static void test_encoder_modes(void) {
+    const char* modes[] = {"off", "auto", "software", "vaapi"};
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); ++i)
+    {
+        char* argv[] = {MUTABLE_ARG("server"), MUTABLE_ARG("--video-encoder"), (char*)modes[i]};
+        struct wd_server_cli_options options;
+        CHECK(parse_args(3, argv, &options) == WD_SERVER_CLI_OK);
+        CHECK(strcmp(options.video_encoder_backend, modes[i]) == 0);
+    }
+    char* invalid[] = {MUTABLE_ARG("server"), MUTABLE_ARG("--video-encoder"), MUTABLE_ARG("hardware")};
+    char* missing[] = {MUTABLE_ARG("server"), MUTABLE_ARG("--video-encoder")};
+    struct wd_server_cli_options options;
+    CHECK(parse_args(3, invalid, &options) == WD_SERVER_CLI_ERROR);
+    CHECK(parse_args(2, missing, &options) == WD_SERVER_CLI_ERROR);
+}
+
 static void test_removed_arguments(void) {
     char*        tile_size[]     = {MUTABLE_ARG("server"), MUTABLE_ARG("--tile-size"), MUTABLE_ARG("64x64")};
     char*        wan_tiles[]     = {MUTABLE_ARG("server"), MUTABLE_ARG("--wan-tiles")};
@@ -158,6 +174,7 @@ int main(void) {
     test_tile_grid_overflow_checks();
     test_parse_defaults();
     test_retained_arguments();
+    test_encoder_modes();
     test_removed_arguments();
     test_help_and_errors();
     return 0;
