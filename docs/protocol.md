@@ -59,3 +59,7 @@ signals; they do not by themselves change ownership. When several flags are
 combined, hard failure takes precedence over overload. The server acknowledges
 recovery indirectly by queuing and transmitting a new keyframe; successful
 presentation of that exact frame completes recovery.
+
+## Application launch requests
+
+`WD_MSG_LAUNCH_COMMAND` is a fixed-size, established-session client-to-server control message. It contains the current session ID, connection token, and a NUL-terminated command of at most 255 bytes. An empty command asks the server to rerun its configured `--app` (default `konsole`). Control messages with the wrong session ID or connection token, missing termination, or control characters are rejected. The command executes on the server under `/bin/sh -c`, in the compositor's app-launch environment. The token separates accidental overlapping sessions; it is not authentication. Do not expose the listener to untrusted clients.

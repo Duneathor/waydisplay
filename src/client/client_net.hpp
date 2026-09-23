@@ -19,6 +19,7 @@ bool client_send_clipboard_text(ClientState& state, const char* text);
 bool client_send_primary_text(ClientState& state, const char* text);
 bool client_request_server_selections(ClientState& state);
 bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t height);
+bool client_send_launch_command(ClientState& state, const char* command);
 bool client_send_config_applied(ClientState& state, uint8_t session_id, uint64_t config_epoch);
 
 void client_promote_deferred_summary_retransmits(ClientState& state);

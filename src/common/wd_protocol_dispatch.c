@@ -75,6 +75,8 @@ static const struct wd_protocol_message_descriptor wd_message_descriptors[] = {
               wd_audio_packet_payload_header, sizeof(struct wd_audio_packet_payload_header) + WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES),
     WD_FIXED(WD_MSG_VIDEO_FEEDBACK, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER,
              wd_video_feedback_payload),
+    WD_FIXED(WD_MSG_LAUNCH_COMMAND, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER,
+             wd_launch_command_payload),
 };
 
 #undef WD_FIXED

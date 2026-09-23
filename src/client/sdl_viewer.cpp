@@ -120,9 +120,12 @@ uint32_t client_present_delay_ms(const ClientState& state, uint64_t last_present
 }
 
 void update_window_size(SDL_Window* window);
+void release_forwarded_keyboard_keys(ClientState& state);
 
 enum class ContextMenuAction {
     Disabled,
+    LaunchDefault,
+    LaunchApplication,
     ToggleFullscreen,
     ActualSize,
     Quit,
@@ -135,7 +138,9 @@ struct ContextMenuItem {
 };
 
 struct ContextMenu {
-    bool open  = false;
+    bool        open    = false;
+    bool        editing = false;
+    std::string command;
     int  x     = 0;
     int  y     = 0;
     int  hover = -1;
@@ -156,9 +161,11 @@ void log_sdl_warning(const char* action) {
 }
 
 
-const std::array<ContextMenuItem, 5> CONTEXT_MENU_ITEMS{{
+const std::array<ContextMenuItem, 7> CONTEXT_MENU_ITEMS{{
     {"COPY FROM REMOTE", ContextMenuAction::Disabled, false},
     {"PASTE TO REMOTE", ContextMenuAction::Disabled, false},
+    {"LAUNCH DEFAULT", ContextMenuAction::LaunchDefault, true},
+    {"LAUNCH APPLICATION", ContextMenuAction::LaunchApplication, true},
     {"TOGGLE FULLSCREEN", ContextMenuAction::ToggleFullscreen, true},
     {"ACTUAL SIZE", ContextMenuAction::ActualSize, true},
     {"DISCONNECT", ContextMenuAction::Quit, true},
@@ -169,12 +176,16 @@ int context_menu_height() {
 }
 
 void close_context_menu(ContextMenu& menu) {
-    menu.open  = false;
-    menu.hover = -1;
+    menu.open    = false;
+    menu.editing = false;
+    menu.command.clear();
+    menu.hover   = -1;
 }
 
 void open_context_menu(ContextMenu& menu, float x, float y) {
     menu.open  = true;
+    menu.editing = false;
+    menu.command.clear();
     menu.x     = static_cast<int>(x);
     menu.y     = static_cast<int>(y);
     menu.hover = -1;
@@ -201,7 +212,7 @@ void open_context_menu(ContextMenu& menu, float x, float y) {
 }
 
 int context_menu_hit_test(const ContextMenu& menu, float x, float y) {
-    if (!menu.open)
+    if (!menu.open || menu.editing)
     {
         return -1;
     }
@@ -495,7 +506,7 @@ void render_context_menu(SDL_Renderer* renderer, const ContextMenu& menu) {
         return;
     }
 
-    const int height = context_menu_height();
+    const int height = menu.editing ? 106 : context_menu_height();
 
     SDL_FRect shadow{static_cast<float>(menu.x + WD_CLIENT_CONTEXT_MENU_SHADOW_OFFSET_PX),
                      static_cast<float>(menu.y + WD_CLIENT_CONTEXT_MENU_SHADOW_OFFSET_PX),
@@ -519,6 +530,24 @@ void render_context_menu(SDL_Renderer* renderer, const ContextMenu& menu) {
                            WD_CLIENT_CONTEXT_MENU_INNER_B, 255);
     SDL_RenderRect(renderer, &inner);
 
+    if (menu.editing)
+    {
+        SDL_SetRenderDrawColor(renderer, WD_CLIENT_CONTEXT_MENU_TEXT_ENABLED_R, WD_CLIENT_CONTEXT_MENU_TEXT_ENABLED_G,
+                               WD_CLIENT_CONTEXT_MENU_TEXT_ENABLED_B, 255);
+        SDL_RenderDebugText(renderer, static_cast<float>(menu.x + 10), static_cast<float>(menu.y + 12), "RUN ON SERVER:");
+        // Display the tail of long commands without losing any input bytes.
+        std::string visible = menu.command;
+        if (visible.size() > 19)
+        {
+            visible = "..." + visible.substr(visible.size() - 16);
+        }
+        visible += '_';
+        SDL_RenderDebugText(renderer, static_cast<float>(menu.x + 10), static_cast<float>(menu.y + 36), visible.c_str());
+        SDL_RenderDebugText(renderer, static_cast<float>(menu.x + 10), static_cast<float>(menu.y + 64), "ENTER: RUN");
+        SDL_RenderDebugText(renderer, static_cast<float>(menu.x + 10), static_cast<float>(menu.y + 82), "ESC: CANCEL");
+        return;
+    }
+
     for (int i = 0; i < static_cast<int>(CONTEXT_MENU_ITEMS.size()); ++i)
     {
         const SDL_FRect item_rect{
@@ -535,7 +564,7 @@ void render_context_menu(SDL_Renderer* renderer, const ContextMenu& menu) {
             SDL_RenderFillRect(renderer, &item_rect);
         }
 
-        if (i == 2)
+        if (i == 2 || i == 4)
         {
             SDL_SetRenderDrawColor(renderer, WD_CLIENT_CONTEXT_MENU_SEPARATOR_R, WD_CLIENT_CONTEXT_MENU_SEPARATOR_G,
                                    WD_CLIENT_CONTEXT_MENU_SEPARATOR_B, 255);
@@ -553,6 +582,17 @@ void render_context_menu(SDL_Renderer* renderer, const ContextMenu& menu) {
 void execute_context_menu_action(ClientState& state, SDL_Window* window, ContextMenuAction action) {
     switch (action)
     {
+    case ContextMenuAction::LaunchDefault:
+        if (!client_send_launch_command(state, ""))
+        {
+            WD_LOG_WARN("could not send default-application launch request");
+        }
+        break;
+
+    case ContextMenuAction::LaunchApplication:
+        // The prompt is handled by handle_context_menu_event, not here.
+        break;
+
     case ContextMenuAction::ToggleFullscreen: {
         const SDL_WindowFlags flags      = SDL_GetWindowFlags(window);
         const bool            fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
@@ -603,6 +643,11 @@ bool context_menu_open_gesture(const SDL_Event& event) {
 bool handle_context_menu_event(ClientState& state, SDL_Window* window, ContextMenu& menu, const SDL_Event& event, bool& out_frame_dirty) {
     if (context_menu_open_gesture(event))
     {
+        if (menu.editing)
+        {
+            SDL_StopTextInput(window);
+        }
+        release_forwarded_keyboard_keys(state);
         open_context_menu(menu, event.button.x, event.button.y);
         out_frame_dirty = true;
         return true;
@@ -611,6 +656,55 @@ bool handle_context_menu_event(ClientState& state, SDL_Window* window, ContextMe
     if (!menu.open)
     {
         return false;
+    }
+
+    if (menu.editing)
+    {
+        if (event.type == SDL_EVENT_TEXT_INPUT)
+        {
+            const size_t remaining = WD_LAUNCH_COMMAND_MAX_BYTES - 1u - menu.command.size();
+            const size_t bytes = std::strlen(event.text.text);
+            if (bytes <= remaining)
+            {
+                menu.command.append(event.text.text, bytes);
+                out_frame_dirty = true;
+            }
+            return true;
+        }
+        if (event.type == SDL_EVENT_KEY_DOWN)
+        {
+            if (event.key.key == SDLK_ESCAPE)
+            {
+                SDL_StopTextInput(window);
+                close_context_menu(menu);
+            }
+            else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER)
+            {
+                if (!menu.command.empty() && !client_send_launch_command(state, menu.command.c_str()))
+                {
+                    WD_LOG_WARN("could not send application launch request");
+                }
+                SDL_StopTextInput(window);
+                close_context_menu(menu);
+            }
+            else if (event.key.key == SDLK_BACKSPACE && !menu.command.empty())
+            {
+                // Remove the last UTF-8 codepoint (including its continuation bytes).
+                do
+                {
+                    menu.command.pop_back();
+                } while (!menu.command.empty() &&
+                         (static_cast<unsigned char>(menu.command.back()) & 0xc0u) == 0x80u);
+            }
+            out_frame_dirty = true;
+            return true;
+        }
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT)
+        {
+            // Ignore clicks while editing; Escape cancels the prompt.
+            return true;
+        }
+        return true; // Never forward typing, shortcuts, or clicks to remote apps.
     }
 
     if (event.type == SDL_EVENT_MOUSE_MOTION)
@@ -647,7 +741,20 @@ bool handle_context_menu_event(ClientState& state, SDL_Window* window, ContextMe
             close_context_menu(menu);
             out_frame_dirty = true;
 
-            if (item.enabled)
+            if (item.enabled && item.action == ContextMenuAction::LaunchApplication)
+            {
+                menu.open = true;
+                menu.editing = true;
+                menu.command.clear();
+                SDL_Rect area{menu.x + 8, menu.y + 34, WD_CLIENT_CONTEXT_MENU_WIDTH - 16, 16};
+                SDL_SetTextInputArea(window, &area, 0);
+                if (!SDL_StartTextInput(window))
+                {
+                    log_sdl_warning("SDL_StartTextInput");
+                    close_context_menu(menu);
+                }
+            }
+            else if (item.enabled)
             {
                 execute_context_menu_action(state, window, item.action);
             }

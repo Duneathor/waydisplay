@@ -27,7 +27,7 @@ extern "C" {
  * renderer, and video encoder backend.  Configuration-only: Xwayland and
  * xdg-dialog feature policy.  Scale is stored in thousandths so bounds remain
  * exact in compile-time assertions. */
-#define WD_SERVER_DEFAULT_APP_COMMAND           "foot"
+#define WD_SERVER_DEFAULT_APP_COMMAND           "konsole"
 #define WD_SERVER_DEFAULT_LISTEN_IPV4           "0.0.0.0"
 #define WD_SERVER_DEFAULT_OUTPUT_SCALE_MILLI    1000u
 #define WD_SERVER_MIN_OUTPUT_SCALE_MILLI        250u

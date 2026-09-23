@@ -2455,6 +2455,24 @@ void* wd_net_thread_main(void* arg) {
                         pthread_mutex_unlock(&net->lock);
                     }
                 }
+                else if (type == WD_MSG_LAUNCH_COMMAND && payload_size == sizeof(struct wd_launch_command_payload))
+                {
+                    struct wd_launch_command_payload launch;
+                    memcpy(&launch, payload, sizeof(launch));
+                    if (wd_launch_command_payload_matches(&launch, cfg.session_id, cfg.connection_token))
+                    {
+                        pthread_mutex_lock(&net->lock);
+                        if (net->client_connected && net->session_id == launch.session_id &&
+                            net->connection_token == launch.connection_token && !net->launch_command_pending)
+                        {
+                            memcpy(net->launch_command, launch.command, sizeof(launch.command));
+                            net->launch_session_id       = launch.session_id;
+                            net->launch_connection_token = launch.connection_token;
+                            net->launch_command_pending  = true;
+                        }
+                        pthread_mutex_unlock(&net->lock);
+                    }
+                }
                 else if (type == WD_MSG_DISPLAY_RESIZE && payload_size == sizeof(struct wd_display_resize_payload))
                 {
                     struct wd_display_resize_payload resize;
@@ -2520,6 +2538,7 @@ void* wd_net_thread_main(void* arg) {
         }
 
         net->client_connected = false;
+        net->launch_command_pending = false;
         net->connection_epoch++;
         if (net->connection_epoch == 0)
         {

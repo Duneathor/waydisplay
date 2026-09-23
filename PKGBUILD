@@ -4,7 +4,7 @@
 
 pkgname=waydisplay
 pkgver=0.1.0
-pkgrel=6
+pkgrel=7
 pkgdesc='Low-latency remote Wayland display (SDL3 client and wlroots compositor)'
 arch=('x86_64')
 license=('AGPL-3.0-only')
@@ -12,7 +12,7 @@ depends=(
   'glibc' 'gcc-libs' 'liburing' 'zstd'
   'sdl3' 'wlroots0.20' 'wayland' 'libxkbcommon' 'pixman' 'libdrm'
   'ffmpeg' 'libva' 'libpipewire' 'pipewire' 'opus'
-  'xorg-xwayland' 'vulkan-icd-loader'
+  'xorg-xwayland' 'vulkan-icd-loader' 'konsole'
 )
 makedepends=(
   'gcc' 'cmake' 'make' 'pkgconf'

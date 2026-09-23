@@ -137,10 +137,10 @@ To listen on a specific IPv4 interface, pass `--listen`:
 
 ```sh
 # Local machine only:
-waydisplay-server --listen 127.0.0.1 --port 5000 --app foot
+waydisplay-server --listen 127.0.0.1 --port 5000 --app konsole
 
 # All IPv4 interfaces; use only on a trusted network:
-waydisplay-server --listen 0.0.0.0 --port 5000 --app foot
+waydisplay-server --listen 0.0.0.0 --port 5000 --app konsole
 ```
 
 `--listen` accepts an IPv4 address, not a hostname or an address-and-port pair.
@@ -175,9 +175,9 @@ encoder first and falls back to `libx264`/`libx265` when the selected codec is
 not supported by an automatically discovered VA device. Select a backend explicitly with:
 
 ```sh
-waydisplay-server --video-encoder vaapi --app foot
-waydisplay-server --video-encoder software --app foot
-waydisplay-server --video-encoder off --app foot  # tiles only
+waydisplay-server --video-encoder vaapi --app konsole
+waydisplay-server --video-encoder software --app konsole
+waydisplay-server --video-encoder off --app konsole  # tiles only
 ```
 
 The client uses `--video-decode <off|auto|vaapi|software>` (default `auto`).

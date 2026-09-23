@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 
 #define CHECK(condition)                                                                                                                   \
@@ -28,7 +29,7 @@ struct Expected {
     uint32_t entry;
 };
 
-constexpr std::array<Expected, 28> ExpectedMessages{{
+constexpr std::array<Expected, 29> ExpectedMessages{{
     {WD_MSG_CLIENT_HELLO, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION, WD_PROTOCOL_CLIENT_TO_SERVER,
      WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_client_hello_payload), 0},
     {WD_MSG_SERVER_CONFIG, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION | WD_PROTOCOL_PHASE_ESTABLISHED,
@@ -87,6 +88,8 @@ constexpr std::array<Expected, 28> ExpectedMessages{{
      WD_PROTOCOL_PAYLOAD_OPAQUE_TAIL, sizeof(wd_audio_packet_payload_header), 0},
     {WD_MSG_VIDEO_FEEDBACK, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER,
      WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_video_feedback_payload), 0},
+    {WD_MSG_LAUNCH_COMMAND, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER,
+     WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_launch_command_payload), 0},
 }};
 
 void test_descriptor_completeness_and_sizes() {
@@ -136,8 +139,8 @@ void test_descriptor_completeness_and_sizes() {
         }
     }
     CHECK(wd_protocol_message_descriptor_find(0) == nullptr);
-    CHECK(wd_protocol_message_descriptor_find(29) == nullptr);
-    CHECK(!wd_protocol_payload_size_is_valid(29, 0));
+    CHECK(wd_protocol_message_descriptor_find(30) == nullptr);
+    CHECK(!wd_protocol_payload_size_is_valid(30, 0));
 }
 
 void test_every_descriptor_has_an_allowed_route() {
@@ -174,6 +177,40 @@ void test_every_descriptor_has_an_allowed_route() {
     }
 }
 
+void test_launch_request_contract() {
+    wd_launch_command_payload request{};
+    request.session_id = 1;
+    request.connection_token = 0x1234;
+    CHECK(wd_launch_command_payload_valid(&request)); // empty command means default app
+    CHECK(wd_launch_command_payload_matches(&request, 1, 0x1234));
+    CHECK(!wd_launch_command_payload_matches(&request, 2, 0x1234));
+    CHECK(!wd_launch_command_payload_matches(&request, 1, 0x1235));
+    CHECK(wd_protocol_message_allowed(WD_MSG_LAUNCH_COMMAND, WD_PROTOCOL_CHANNEL_CONTROL,
+                                      WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(request)));
+    CHECK(!wd_protocol_message_allowed(WD_MSG_LAUNCH_COMMAND, WD_PROTOCOL_CHANNEL_INPUT,
+                                       WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(request)));
+    CHECK(!wd_protocol_message_allowed(WD_MSG_LAUNCH_COMMAND, WD_PROTOCOL_CHANNEL_CONTROL,
+                                       WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_SERVER_TO_CLIENT, sizeof(request)));
+    CHECK(!wd_protocol_payload_size_is_valid(WD_MSG_LAUNCH_COMMAND, sizeof(request) - 1));
+    std::strcpy(request.command, "konsole --new-window");
+    CHECK(wd_launch_command_payload_valid(&request));
+    request.session_id = 0;
+    CHECK(!wd_launch_command_payload_valid(&request));
+    request.session_id = 1;
+    request.connection_token = 0;
+    CHECK(!wd_launch_command_payload_valid(&request));
+    request.connection_token = 0x1234;
+    std::memset(request.command, 'a', sizeof(request.command));
+    CHECK(!wd_launch_command_payload_valid(&request)); // unterminated
+    std::memset(request.command, 0, sizeof(request.command));
+    std::strcpy(request.command, "   ");
+    CHECK(!wd_launch_command_payload_valid(&request));
+    std::strcpy(request.command, "konsole\nrm -rf /");
+    CHECK(!wd_launch_command_payload_valid(&request));
+    std::strcpy(request.command, "konsole");
+    CHECK(wd_launch_command_payload_valid(&request));
+}
+
 void test_channel_caps_cover_all_allowed_messages() {
     constexpr wd_protocol_channel channels[] = {
         WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_CHANNEL_INPUT, WD_PROTOCOL_CHANNEL_SELECTION,
@@ -207,6 +244,7 @@ void test_channel_caps_cover_all_allowed_messages() {
 
 int main() {
     test_descriptor_completeness_and_sizes();
+    test_launch_request_contract();
     test_every_descriptor_has_an_allowed_route();
     test_channel_caps_cover_all_allowed_messages();
     return 0;

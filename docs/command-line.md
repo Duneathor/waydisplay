@@ -68,7 +68,7 @@ waydisplay-server [options]
 |---|---|---|
 | `--listen <IPv4>` | Bind address | Deployment and exposure policy. Remote clients normally require `--listen 0.0.0.0` or a specific interface address. |
 | `--port <N>` | Control/listener port | Deployment-specific. |
-| `--app <command>` | Application launched inside the compositor | Launch-specific. |
+| `--app <command>` | Startup application; also the Ctrl+Alt+right-click menu's **Launch default** target. Default `konsole`. | Launch-specific. |
 | `--size <WxH>` | Virtual output dimensions | Session-specific. |
 | `--scale <N>` | Virtual output scale | Session/display-specific. |
 | `--renderer <auto|gles2|vulkan|pixman>` | wlroots renderer selection | Hardware/driver compatibility. |
@@ -155,3 +155,7 @@ a 20% exit threshold held for 30 seconds. The entry controller can select video
 below 50% when predicted fresh-tile demand reaches 85% of the current fresh-tile
 allocation. `--video force` bypasses these content thresholds but not protocol,
 channel, bootstrap, recovery, or encoder readiness checks.
+
+### Emergency application launcher
+
+While the SDL client is connected, **Ctrl+Alt+right-click** opens the local context menu. **LAUNCH DEFAULT** starts the server's `--app` command again (default `konsole`), even when all remote windows are closed. **LAUNCH APPLICATION** opens a command prompt: type a command and press Enter, or Escape to cancel. Commands run on the server, inside the compositor's Wayland environment, under the server user account—not on the SDL client. As with `--app`, the command is passed to `/bin/sh -c`; use this only with clients you trust.

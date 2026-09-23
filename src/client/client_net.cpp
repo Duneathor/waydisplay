@@ -2629,6 +2629,26 @@ bool client_request_server_selections(ClientState& state) {
     return clipboard_ok && primary_ok;
 }
 
+bool client_send_launch_command(ClientState& state, const char* command) {
+    if (!command || state.session.transport.control_fd < 0)
+    {
+        return false;
+    }
+    wd_launch_command_payload launch{};
+    launch.session_id       = state.config.session_id;
+    launch.connection_token = state.config.connection_token;
+    if (std::strlen(command) >= sizeof(launch.command))
+    {
+        return false;
+    }
+    std::memcpy(launch.command, command, std::strlen(command) + 1);
+    if (!wd_launch_command_payload_valid(&launch))
+    {
+        return false;
+    }
+    return client_send_tcp_message_queued(state, state.session.transport.control_fd, WD_MSG_LAUNCH_COMMAND, &launch, sizeof(launch));
+}
+
 bool client_send_display_resize(ClientState& state, uint16_t width, uint16_t height) {
     if (state.session.transport.control_fd < 0 || width == 0 || height == 0)
     {

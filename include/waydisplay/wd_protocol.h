@@ -25,6 +25,7 @@ extern "C" {
  */
 #define WD_TCP_MAGIC                    0x54434457u
 #define WD_TCP_HEADER_WIRE_SIZE          12u
+#define WD_LAUNCH_COMMAND_MAX_BYTES       256u
 #define WD_UDP_TILE_ID_MTU_PROBE        0xffffu
 #define WD_UDP_TILE_ID_THROUGHPUT_PROBE 0xfffeu
 
@@ -57,6 +58,7 @@ enum wd_message_type {
     WD_MSG_AUDIO_CONFIG            = 26,
     WD_MSG_AUDIO_PACKET            = 27,
     WD_MSG_VIDEO_FEEDBACK          = 28,
+    WD_MSG_LAUNCH_COMMAND          = 29,
 };
 
 enum wd_protocol_error_code {
@@ -899,6 +901,13 @@ struct wd_display_resize_payload {
 };
 
 
+/* An empty command requests the server's configured --app default. */
+struct wd_launch_command_payload {
+    uint8_t  session_id;
+    uint64_t connection_token;
+    char     command[WD_LAUNCH_COMMAND_MAX_BYTES];
+};
+
 struct wd_video_feedback_payload {
     uint8_t  session_id;
     uint64_t connection_token;
@@ -957,6 +966,7 @@ static_assert(sizeof(struct wd_audio_packet_payload_header) == 49, "unexpected w
 static_assert(sizeof(struct wd_video_frame_payload_header) == 51, "unexpected wd_video_frame_payload_header size");
 static_assert(sizeof(struct wd_selection_payload_header) == 15, "unexpected wd_selection_payload_header size");
 static_assert(sizeof(struct wd_cursor_shape_payload) == 11, "unexpected wd_cursor_shape_payload size");
+static_assert(sizeof(struct wd_launch_command_payload) == 265, "unexpected wd_launch_command_payload size");
 static_assert(sizeof(struct wd_display_resize_payload) == 13, "unexpected wd_display_resize_payload size");
 static_assert(sizeof(struct wd_video_feedback_payload) == 73, "unexpected wd_video_feedback_payload size");
 static_assert(sizeof(struct wd_config_applied_payload) == 17, "unexpected wd_config_applied_payload size");
@@ -986,10 +996,39 @@ _Static_assert(sizeof(struct wd_audio_packet_payload_header) == 49, "unexpected 
 _Static_assert(sizeof(struct wd_video_frame_payload_header) == 51, "unexpected wd_video_frame_payload_header size");
 _Static_assert(sizeof(struct wd_selection_payload_header) == 15, "unexpected wd_selection_payload_header size");
 _Static_assert(sizeof(struct wd_cursor_shape_payload) == 11, "unexpected wd_cursor_shape_payload size");
+_Static_assert(sizeof(struct wd_launch_command_payload) == 265, "unexpected wd_launch_command_payload size");
 _Static_assert(sizeof(struct wd_display_resize_payload) == 13, "unexpected wd_display_resize_payload size");
 _Static_assert(sizeof(struct wd_video_feedback_payload) == 73, "unexpected wd_video_feedback_payload size");
 _Static_assert(sizeof(struct wd_config_applied_payload) == 17, "unexpected wd_config_applied_payload size");
 #endif
+
+static inline bool wd_launch_command_payload_valid(const struct wd_launch_command_payload* launch) {
+    if (!launch || launch->session_id == 0 || launch->connection_token == 0)
+    {
+        return false;
+    }
+    bool has_nonspace = false;
+    for (size_t i = 0; i < sizeof(launch->command); ++i)
+    {
+        unsigned char c = (unsigned char)launch->command[i];
+        if (c == 0)
+        {
+            return has_nonspace || i == 0; /* empty means launch the default app */
+        }
+        if (c < 32 || c == 127)
+        {
+            return false;
+        }
+        has_nonspace |= c != ' ';
+    }
+    return false; /* must be NUL-terminated */
+}
+
+static inline bool wd_launch_command_payload_matches(const struct wd_launch_command_payload* launch, uint8_t session_id,
+                                                     uint64_t connection_token) {
+    return wd_launch_command_payload_valid(launch) && launch->session_id == session_id &&
+           launch->connection_token == connection_token;
+}
 
 static inline bool wd_config_applied_matches(const struct wd_config_applied_payload* applied, uint8_t session_id, uint64_t connection_token,
                                              uint64_t config_epoch) {

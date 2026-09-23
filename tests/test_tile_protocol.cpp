@@ -82,6 +82,7 @@ void test_protocol_zero_native_wire_layout() {
     require_fixed_wire_layout(WD_MSG_MTU_PROBE_RESULT, wd_mtu_probe_result_payload{}, "MTU result codec");
     require_fixed_wire_layout(WD_MSG_CURSOR_SHAPE, wd_cursor_shape_payload{}, "cursor codec");
     require_fixed_wire_layout(WD_MSG_DISPLAY_RESIZE, wd_display_resize_payload{}, "resize codec");
+    require_fixed_wire_layout(WD_MSG_LAUNCH_COMMAND, wd_launch_command_payload{}, "launch codec");
     require_fixed_wire_layout(WD_MSG_THROUGHPUT_PROBE_START, wd_throughput_probe_start_payload{}, "throughput start codec");
     require_fixed_wire_layout(WD_MSG_THROUGHPUT_PROBE_RESULT, wd_throughput_probe_result_payload{}, "throughput result codec");
     require_fixed_wire_layout(WD_MSG_INPUT_CHANNEL_HELLO, wd_input_channel_hello_payload{}, "input hello codec");
@@ -136,7 +137,7 @@ void test_typed_protocol_dispatch() {
         WD_MSG_CLIENT_STATS,           WD_MSG_LINK_PROBE_PING,        WD_MSG_LINK_PROBE_PONG,
         WD_MSG_VIDEO_CHANNEL_HELLO,    WD_MSG_VIDEO_FRAME,            WD_MSG_CONFIG_APPLIED,
         WD_MSG_AUDIO_CHANNEL_HELLO,    WD_MSG_AUDIO_CONFIG,           WD_MSG_AUDIO_PACKET,
-        WD_MSG_VIDEO_FEEDBACK,
+        WD_MSG_VIDEO_FEEDBACK, WD_MSG_LAUNCH_COMMAND,
     };
     for (const uint16_t message_type : message_types)
     {

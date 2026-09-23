@@ -141,8 +141,33 @@ static void server_terminate_startup_process(struct wd_server* server) {
     }
 }
 
-static bool launch_startup_command(struct wd_server* server) {
-    if (!server->startup_command || server->startup_command[0] == '\0')
+static void server_reap_launched_processes(struct wd_server* server) {
+    for (size_t i = 0; i < sizeof(server->launched_processes) / sizeof(server->launched_processes[0]); ++i)
+    {
+        struct wd_spawned_process* process = &server->launched_processes[i];
+        if (process->pid > 0)
+        {
+            int status = 0;
+            int error_code = 0;
+            enum wd_process_reap_result result = wd_spawned_process_reap_nonblocking(process, &status, &error_code);
+            if (result == WD_PROCESS_REAP_EXITED)
+            {
+                server_log_startup_process_status("launched command exited", status);
+            }
+            else if (result == WD_PROCESS_REAP_ERROR)
+            {
+                WD_LOG_WARN("failed to reap launched command: %s", strerror(error_code));
+            }
+        }
+        if (process->pid <= 0 && !wd_spawned_process_group_alive(process))
+        {
+            wd_spawned_process_init(process);
+        }
+    }
+}
+
+static bool server_spawn_app_command(struct wd_server* server, const char* command, struct wd_spawned_process* process) {
+    if (!command || command[0] == '\0')
     {
         return true;
     }
@@ -207,7 +232,7 @@ static bool launch_startup_command(struct wd_server* server) {
 #undef WD_ADD_ENV
 
     int spawn_error = 0;
-    if (!wd_spawn_shell_command(&server->startup_process, server->startup_command, environment, environment_count, &spawn_error))
+    if (!wd_spawn_shell_command(process, command, environment, environment_count, &spawn_error))
     {
         WD_LOG_ERROR("failed to launch app command: %s", strerror(spawn_error));
         return false;
@@ -215,12 +240,52 @@ static bool launch_startup_command(struct wd_server* server) {
 
     WD_LOG_INFO("launched app pid=%d process_group=%d command=%s audio_sink=%s "
                 "pipewire_target=%s audio_scope=%s fallback=%s",
-                server->startup_process.pid, server->startup_process.process_group, server->startup_command,
+                process->pid, process->process_group, command,
                 audio_routing.enabled ? audio_routing.pulse_sink : "system-default",
                 audio_routing.enabled ? audio_routing.pipewire_target : "system-default",
                 audio_routing.enabled ? audio_routing.scope : "none", audio_routing.enabled ? "disabled" : "system-policy");
 
     return true;
+}
+
+static bool launch_startup_command(struct wd_server* server) {
+    return server_spawn_app_command(server, server->startup_command, &server->startup_process);
+}
+
+static void server_process_pending_launch(struct wd_server* server) {
+    char command[WD_LAUNCH_COMMAND_MAX_BYTES];
+    bool pending = false;
+    pthread_mutex_lock(&server->net.lock);
+    if (server->net.launch_command_pending && server->net.client_connected &&
+        server->net.launch_session_id == server->net.session_id &&
+        server->net.launch_connection_token == server->net.connection_token)
+    {
+        memcpy(command, server->net.launch_command, sizeof(command));
+        pending = true;
+    }
+    server->net.launch_command_pending = false;
+    pthread_mutex_unlock(&server->net.lock);
+    if (!pending)
+    {
+        return;
+    }
+
+    const char* requested = command[0] ? command : server->startup_command;
+    if (!requested || !requested[0])
+    {
+        WD_LOG_WARN("launch request ignored: no default application configured");
+        return;
+    }
+    for (size_t i = 0; i < sizeof(server->launched_processes) / sizeof(server->launched_processes[0]); ++i)
+    {
+        struct wd_spawned_process* process = &server->launched_processes[i];
+        if (process->pid <= 0 && process->process_group <= 0)
+        {
+            (void)server_spawn_app_command(server, requested, process);
+            return;
+        }
+    }
+    WD_LOG_WARN("launch request ignored: too many active launched applications");
 }
 
 static void server_process_pending_display_resize(struct wd_server* server) {
@@ -529,6 +594,7 @@ static int server_frame_timer(void* data) {
     }
 
     server_reap_startup_process(server);
+    server_reap_launched_processes(server);
 
     if (g_terminate_requested)
     {
@@ -536,6 +602,7 @@ static int server_frame_timer(void* data) {
         return 0;
     }
 
+    server_process_pending_launch(server);
     const uint64_t timer_start_ns = wd_now_ns();
 
     /* Rearm before compositor work. The interval follows the effective capture
@@ -1520,6 +1587,10 @@ bool wd_server_apply_display_mode(struct wd_server* server, uint32_t width, uint
 static bool wd_server_init(struct wd_server* server, const struct wd_server_config* config) {
     memset(server, 0, sizeof(*server));
     wd_spawned_process_init(&server->startup_process);
+    for (size_t i = 0; i < sizeof(server->launched_processes) / sizeof(server->launched_processes[0]); ++i)
+    {
+        wd_spawned_process_init(&server->launched_processes[i]);
+    }
     server->input_wakeup_fd = -1;
 
     wl_list_init(&server->views);
@@ -1651,6 +1722,20 @@ static void wd_server_destroy(struct wd_server* server) {
     }
 
     server_terminate_startup_process(server);
+    for (size_t i = 0; i < sizeof(server->launched_processes) / sizeof(server->launched_processes[0]); ++i)
+    {
+        struct wd_spawned_process* process = &server->launched_processes[i];
+        if (process->process_group > 0)
+        {
+            int status = 0;
+            int error_code = 0;
+            if (!wd_spawned_process_terminate_group(process, WD_SERVER_PROCESS_TERM_GRACE_MS, WD_SERVER_PROCESS_KILL_GRACE_MS,
+                                                    &status, &error_code))
+            {
+                WD_LOG_WARN("could not stop launched process group: %s", strerror(error_code));
+            }
+        }
+    }
 
     if (server->frame_timer)
     {

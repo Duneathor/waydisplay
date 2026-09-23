@@ -686,6 +686,11 @@ struct wd_net_state {
     enum wd_net_listener_stage startup_failed_stage;
     int                        startup_error;
 
+    bool     launch_command_pending;
+    char     launch_command[WD_LAUNCH_COMMAND_MAX_BYTES];
+    uint8_t  launch_session_id;
+    uint64_t launch_connection_token;
+
     bool     display_resize_pending;
     uint64_t display_resize_request_serial;
     uint64_t display_resize_completed_serial;
@@ -911,6 +916,8 @@ struct wd_server {
 
     struct wl_list views;
     struct wl_list popup_commit_trackers;
+
+    struct wd_spawned_process launched_processes[32];
 
     struct wd_view*     focused_view;
     struct wlr_surface* focused_surface;
