@@ -54,3 +54,25 @@ Release optimization and Arch hardening flags. The separate Debug test tree
 always uses DEBUG. A normal `makepkg -sif` reconfigures Release back to INFO.
 The package release number is unchanged by this optional diagnostic switch;
 use it only for a local package, not a distributed reproducible build.
+
+## Audio clock ahead of slow video
+
+If `client-decode` and `client-publish` succeed but every frame logs
+`client-discard reason=audio-sync` at `present_depth=1`, software encoding may
+be slower than the audio clock. The presenter now drops a late picture only
+when another decoded picture is already queued; the newest available picture
+must be shown even when late. `client-sync-late` logs sampled frame ID, video
+PTS, audio playhead samples and the signed audio-video delta (milliseconds).
+
+This avoids the false no-presentation health fallback, but it does not make a
+slow software HEVC encoder real time. Compare `server-send encode_ms` with the
+requested frame interval and use H.264 or hardware encoding where appropriate.
+An encoded-input queue overflow *without* audio remains a separate problem;
+this presentation fix does not change the input queue capacity or decoder
+recovery policy.
+
+A `client-dequeue ... reset=1` on the first accepted recovery keyframe is a
+*normal decoder reset*. Its log reason is `video recovery keyframe`. A real
+input-queue overflow is independently reported by the warning `video decode
+queue overflow: ... action=flush-and-request-keyframe` (with depth and the
+oldest queued frame). Do not infer an overflow merely from a reset line.

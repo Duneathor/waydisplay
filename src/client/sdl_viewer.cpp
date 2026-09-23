@@ -1569,7 +1569,14 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                                 WD_CLIENT_AUDIO_VIDEO_PLAYING_HOLD_MAX_MS);
                     update_audio_video_hold_duration(state, false);
                 }
-                if (sync.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_DROP)
+                /* A frame can be late because encoding/transport are slow,
+                 * not because the display has a better frame waiting. If we
+                 * drop the sole queued picture, each subsequent picture can
+                 * be late as well and the server never sees presentation
+                 * progress. Only catch up by dropping when a replacement is
+                 * already decoded and ready in the same queue. */
+                if (wd_client_audio_video_sync_should_drop(
+                        sync.decision, static_cast<uint32_t>(state.video_present_queue.size())))
                 {
                     ClientQueuedVideoFrame dropped = state.video_present_queue.pop_front();
                     if (wd_video_trace_sample(dropped.frame_id))
@@ -1582,6 +1589,14 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
                     dropped_for_audio = true;
                     state.pending_video_frame_dirty.store(!state.video_present_queue.empty(), std::memory_order_release);
                     continue;
+                }
+                if (sync.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_DROP && wd_video_trace_sample(queued->frame_id))
+                {
+                    WD_LOG_INFO("video trace stage=client-sync-late frame=%llu pts_usec=%llu audio_samples=%llu delta_ms=%.1f present_depth=%zu action=present-only-frame",
+                                (unsigned long long)queued->frame_id, (unsigned long long)queued->pts_usec,
+                                (unsigned long long)audio_playhead_samples,
+                                (double)sync.delta_samples * 1000.0 / WD_AUDIO_SAMPLE_RATE_DEFAULT,
+                                state.video_present_queue.size());
                 }
             }
             else if (audio_waiting)

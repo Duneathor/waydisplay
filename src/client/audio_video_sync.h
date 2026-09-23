@@ -29,6 +29,12 @@ enum wd_client_audio_video_sync_decision wd_client_audio_video_sync_decide(uint6
                                                                             uint64_t audio_playhead_samples,
                                                                             uint32_t sample_rate);
 
+/* Dropping a late picture only improves sync if there is a fresher decoded
+ * picture ready to replace it. Never discard the sole available picture:
+ * on a slow encoder that would prevent video from ever being presented. */
+bool wd_client_audio_video_sync_should_drop(enum wd_client_audio_video_sync_decision decision,
+                                            uint32_t decoded_queue_depth);
+
 enum wd_client_audio_startup_gate_decision {
     WD_CLIENT_AUDIO_STARTUP_READY = 0,
     WD_CLIENT_AUDIO_STARTUP_HOLD,

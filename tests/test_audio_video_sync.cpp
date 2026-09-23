@@ -50,6 +50,22 @@ int main() {
     const struct wd_client_audio_video_sync_plan enormous_lag = wd_client_audio_video_sync_plan_compute(0, UINT64_MAX, 1);
     require(enormous_lag.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_DROP, "an enormous lag should be dropped without overflow");
 
+    /* An encoder slower than the audio clock can supply one perpetually late
+     * picture at a time. Always show that picture rather than dropping every
+     * frame and falsely reporting a dead video pipeline. */
+    require(!wd_client_audio_video_sync_should_drop(WD_CLIENT_AUDIO_VIDEO_SYNC_DROP, 0),
+            "no decoded frame cannot be dropped");
+    require(!wd_client_audio_video_sync_should_drop(WD_CLIENT_AUDIO_VIDEO_SYNC_DROP, 1),
+            "the sole decoded frame must be presented even when audio is ahead");
+    require(wd_client_audio_video_sync_should_drop(WD_CLIENT_AUDIO_VIDEO_SYNC_DROP, 2),
+            "a late frame may be dropped if a fresher decoded frame is queued");
+    require(wd_client_audio_video_sync_should_drop(WD_CLIENT_AUDIO_VIDEO_SYNC_DROP, 3),
+            "catch-up can discard older frames while retaining a newest frame");
+    require(!wd_client_audio_video_sync_should_drop(WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT, 2),
+            "an on-time frame must not be dropped");
+    require(!wd_client_audio_video_sync_should_drop(WD_CLIENT_AUDIO_VIDEO_SYNC_HOLD, 2),
+            "a held frame must not be dropped by the late-frame policy");
+
     const uint64_t mixed = client_audio_frames_to_samples_fp(2880, 48000, 48000);
     require(client_audio_device_playhead(48000, 52800, mixed, 480) == 50400,
             "queued device audio should move the playhead behind mixed audio");

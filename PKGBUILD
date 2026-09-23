@@ -4,7 +4,7 @@
 
 pkgname=waydisplay
 pkgver=0.1.0
-pkgrel=9
+pkgrel=10
 pkgdesc='Low-latency remote Wayland display (SDL3 client and wlroots compositor)'
 arch=('x86_64')
 license=('AGPL-3.0-only')

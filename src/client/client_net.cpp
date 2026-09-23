@@ -2130,7 +2130,7 @@ void client_video_decode_worker_main(ClientState* state) {
         }
         if (packet.reset_video_decoder_before)
         {
-            reset_video_decoder(*state, "video decode queue overflow");
+            reset_video_decoder(*state, "video recovery keyframe");
         }
         handle_video_frame(*state, packet.payload, packet.payload_size);
         release_media_packet(packet);

@@ -55,6 +55,11 @@ enum wd_client_audio_video_sync_decision wd_client_audio_video_sync_decide(uint6
     return wd_client_audio_video_sync_plan_compute(video_pts_usec, audio_playhead_samples, sample_rate).decision;
 }
 
+bool wd_client_audio_video_sync_should_drop(enum wd_client_audio_video_sync_decision decision,
+                                            uint32_t decoded_queue_depth) {
+    return decision == WD_CLIENT_AUDIO_VIDEO_SYNC_DROP && decoded_queue_depth > 1;
+}
+
 
 enum wd_client_audio_startup_gate_decision wd_client_audio_startup_gate_decide(bool configured, bool playing, bool waiting,
                                                                                 uint64_t wait_elapsed_ms,
