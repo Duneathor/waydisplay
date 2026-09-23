@@ -1517,10 +1517,10 @@ void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t pay
     const uint64_t last_presented = state.stats.video_last_frame_id_presented.load(std::memory_order_relaxed);
     if (last_presented != 0 && packet.header.frame_id <= last_presented)
     {
-        /* A fresh keyframe with a lower ID means the sender restarted its
-         * codec/sequence without changing the display session. Recover rather
-         * than dropping the restarted stream forever. */
-        if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0 && packet.header.frame_id < last_presented)
+        /* A new keyframe with an equal OR lower ID may restart the encoder
+         * sequence. The server can send two distinct frame-1 keyframes on
+         * initial video entry; frame 2 references the second one. */
+        if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0 && packet.header.frame_id <= last_presented)
         {
             reset_video_decoder(state, "video frame id restart");
         }

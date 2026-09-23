@@ -76,3 +76,21 @@ A `client-dequeue ... reset=1` on the first accepted recovery keyframe is a
 input-queue overflow is independently reported by the warning `video decode
 queue overflow: ... action=flush-and-request-keyframe` (with depth and the
 oldest queued frame). Do not infer an overflow merely from a reset line.
+
+### VA-API HEVC escaped NAL start codes
+
+Some VA-API HEVC drivers return dependent access units beginning
+`00 00 03 00 01` instead of the required Annex-B `00 00 00 01`.
+Server and client trace hashes match when this occurs: it is **encoder
+output**, not TCP corruption. The server repairs only this recognizable
+escaped-prefix pattern for HEVC VA-API output and never rewrites packets
+that already start with valid Annex-B. This narrowly scoped workaround
+is not a replacement for a complete bitstream parser. Test both IDR and
+interframes on the actual driver; check that `server-send` and
+`client-recv` start with `00000001` (or `000001`).
+
+Frame IDs restart when the stream content epoch advances. Repeated frame-1
+keyframes within one epoch are also possible during encoder restart; a
+second IDR must replace decoder references even if frame 1 was already
+presented. A later video epoch can legitimately be dropped as stale if
+an EOS/tile-recovery epoch has already taken ownership.

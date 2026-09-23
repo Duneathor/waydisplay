@@ -141,6 +141,7 @@ target_link_libraries(waydisplay_client_tile_reassembly PUBLIC
 # client/server targets retain their existing "backend unavailable" behavior.
 # Tests that require real codecs are registered only for enabled backends below.
 add_library(waydisplay_video_encoder STATIC
+    src/server/wd_hevc_annexb.c
     src/server/wd_video_encoder.c
 )
 

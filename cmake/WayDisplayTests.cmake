@@ -113,6 +113,14 @@ if(WAYDISPLAY_BUILD_TESTS)
             ${WAYDISPLAY_TEST_TARGET})
     endfunction()
 
+    waydisplay_add_test(
+        NAME waydisplay.hevc_annexb_repair
+        TARGET waydisplay_test_hevc_annexb_repair
+        SOURCES tests/test_hevc_annexb_repair.c src/server/wd_hevc_annexb.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;video;encoder;hevc"
+    )
+
     # Disabled STAT/DEBUG logs must reference their arguments for warnings
     # without executing their side effects. Test both C11 and C++20 users.
     waydisplay_add_test(

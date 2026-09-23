@@ -59,6 +59,14 @@ ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint6
     const enum wd_client_content_owner previous_owner = state.remote_content_owner;
     state.remote_content_epoch = content_epoch;
     state.remote_content_owner = owner;
+    if (owner == WD_CLIENT_CONTENT_OWNER_VIDEO)
+    {
+        /* Frame IDs restart at one per video epoch. An ID presented in an
+         * earlier epoch must not reject the first keyframe of this epoch. */
+        state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
+        state.stats.video_last_frame_id_decoded.store(0, std::memory_order_relaxed);
+        state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
+    }
     WD_LOG_DEBUG("remote content ownership: epoch=%llu->%llu owner=%s->%s", (unsigned long long)previous_epoch,
                  (unsigned long long)content_epoch, previous_owner == WD_CLIENT_CONTENT_OWNER_VIDEO ? "video" : "tiles",
                  owner == WD_CLIENT_CONTENT_OWNER_VIDEO ? "video" : "tiles");

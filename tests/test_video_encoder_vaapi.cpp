@@ -50,7 +50,8 @@ bool encode_hardware_codec(wd_video_encoder* encoder, uint32_t codec) {
 
     std::vector<uint32_t> pixels(static_cast<size_t>(kWidth) * kHeight);
     bool                  produced_packet = false;
-    for (uint32_t frame_number = 0; frame_number < 16 && !produced_packet; ++frame_number)
+    bool produced_interframe = false;
+    for (uint32_t frame_number = 0; frame_number < 16; ++frame_number)
     {
         fill_pattern(pixels, frame_number);
         wd_video_encoder_input_xrgb8888 input{};
@@ -67,14 +68,23 @@ bool encode_hardware_codec(wd_video_encoder* encoder, uint32_t codec) {
             continue;
         }
         CHECK(packet.data != nullptr);
+        /* The server promises Annex-B access units to the client. Test the
+         * real VAAPI output, including dependent packets, not only IDRs. */
+        CHECK(packet.header.data_size >= 4);
+        CHECK(packet.data[0] == 0 && packet.data[1] == 0 &&
+              (packet.data[2] == 1 || (packet.data[2] == 0 && packet.data[3] == 1)));
         CHECK(packet.header.codec == codec);
         CHECK(packet.header.width == kWidth);
         CHECK(packet.header.height == kHeight);
-        CHECK((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0);
+        if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
+        {
+            produced_interframe = true;
+        }
         CHECK(wd_video_frame_payload_size_is_valid(&packet.header, static_cast<uint32_t>(sizeof(packet.header)) + packet.header.data_size));
         produced_packet = true;
     }
     CHECK(produced_packet);
+    CHECK(produced_interframe);
     return true;
 }
 

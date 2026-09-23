@@ -1,4 +1,5 @@
 #include "wd_video_encoder.h"
+#include "wd_hevc_annexb.h"
 
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
@@ -557,6 +558,21 @@ static bool wd_video_encoder_copy_packet(struct wd_video_encoder* encoder, const
         encoder->packet_copy_capacity = (size_t)src->size;
     }
     memcpy(encoder->packet_copy, src->data, (size_t)src->size);
+    size_t copy_size = (size_t)src->size;
+    if (encoder->active_backend == WD_VIDEO_ENCODER_BACKEND_VAAPI && encoder->config.codec == WD_VIDEO_CODEC_H265)
+    {
+        const int repaired = wd_hevc_annexb_repair_vaapi(encoder->packet_copy, &copy_size);
+        if (repaired < 0)
+        {
+            WD_LOG_WARN("VAAPI HEVC encoder emitted a packet without a valid Annex-B start code; rejecting frame");
+            encoder->keyframe_requested = true;
+            return false;
+        }
+        if (repaired > 0)
+        {
+            WD_LOG_DEBUG("repaired %d emulation-escaped VAAPI HEVC start-code prefix(es)", repaired);
+        }
+    }
 
     memset(packet, 0, sizeof(*packet));
     packet->header.session_id       = encoder->config.session_id;
@@ -574,7 +590,7 @@ static bool wd_video_encoder_copy_packet(struct wd_video_encoder* encoder, const
     packet->header.height       = encoder->config.height;
     packet->header.coded_width  = (uint16_t)encoder->codec_ctx->width;
     packet->header.coded_height = (uint16_t)encoder->codec_ctx->height;
-    packet->header.data_size    = (uint32_t)src->size;
+    packet->header.data_size    = (uint32_t)copy_size;
     packet->data                = encoder->packet_copy;
     return true;
 }
