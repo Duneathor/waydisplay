@@ -4,13 +4,13 @@
 
 pkgname=waydisplay
 pkgver=0.1.0
-pkgrel=1
+pkgrel=2
 pkgdesc='Low-latency remote Wayland display (SDL3 client and wlroots compositor)'
 arch=('x86_64')
 license=('AGPL-3.0-only')
 depends=(
   'glibc' 'gcc-libs' 'liburing' 'zstd'
-  'sdl3' 'wlroots0.19' 'wayland' 'libxkbcommon' 'pixman' 'libdrm'
+  'sdl3' 'wlroots0.20' 'wayland' 'libxkbcommon' 'pixman' 'libdrm'
   'ffmpeg' 'libva' 'libpipewire' 'pipewire' 'opus'
   'xorg-xwayland' 'vulkan-icd-loader'
 )
@@ -37,11 +37,15 @@ prepare() {
   }
   # Stop on missing optional backends rather than silently packaging only a client.
   local required=(
-    liburing libzstd sdl3 wlroots-0.19
+    liburing libzstd sdl3 wlroots-0.20
     wayland-server wayland-protocols xkbcommon pixman-1 libdrm
     libavcodec libavutil libswscale libpipewire-0.3 opus
   )
   pkg-config --print-errors --exists "${required[@]}"
+  pkg-config --atleast-version=0.20.0 wlroots-0.20 || {
+    printf "wlroots >= 0.20.0 is required for the server.\n" >&2
+    return 1
+  }
   command -v wayland-scanner >/dev/null
 }
 

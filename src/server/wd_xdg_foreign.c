@@ -56,7 +56,7 @@ void wd_xdg_foreign_destroy(struct wd_server* server) {
 
     /*
      * wlroots owns the manager globals through the Wayland display. The registry
-     * does not need explicit destruction here in wlroots 0.18/0.19 style APIs;
+     * does not need explicit destruction here with the current wlroots API;
      * clear our pointer so destroy paths do not reuse it.
      */
     server->xdg_foreign_registry = NULL;

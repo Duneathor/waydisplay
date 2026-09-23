@@ -215,7 +215,7 @@ static bool notify_key_and_modifiers(struct wd_server* server, const struct wd_q
     const uint32_t time_msec = key_time_msec(event);
 
     /*
-     * The SDL client sends Linux evdev keycodes. wlroots 0.19 does not expose
+     * The SDL client sends Linux evdev keycodes. the wlroots keyboard interface does not expose
      * wlr_keyboard_notify_key(), so update the keyboard's xkb state directly
      * before forwarding the key through the seat. xkb keycodes are evdev + 8.
      */

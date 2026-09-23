@@ -912,7 +912,7 @@ static void view_configure_idle(void* data) {
     }
 
     /*
-     * wlroots 0.19: defer initial configure until idle after initialization.
+     * Defer initial configure until idle after initialization.
      */
     uint32_t width  = 0;
     uint32_t height = 0;

@@ -10,7 +10,7 @@ The project is not deployed and the protocol is intentionally unstable. Protocol
 
 WayDisplay currently provides **no authentication or encryption**. Run it only on localhost, a trusted private network, or through a VPN. Do not expose the server port directly to an untrusted network.
 
-Both peers must be little-endian Linux systems. Big-endian hosts and non-Linux targets are intentionally unsupported. liburing is a required dependency for every build, and the wlroots server is pinned to the `wlroots-0.19` pkg-config ABI. The io_uring implementation is restricted to operations available in Linux 5.14; newer kernels are supported but newer-only operations are not used.
+Both peers must be little-endian Linux systems. Big-endian hosts and non-Linux targets are intentionally unsupported. liburing is a required dependency for every build, and the wlroots server is pinned to the `wlroots-0.20` pkg-config ABI. The io_uring implementation is restricted to operations available in Linux 5.14; newer kernels are supported but newer-only operations are not used.
 
 ## Build
 

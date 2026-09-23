@@ -457,7 +457,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
     else()
         message(WARNING
             "Skipping waydisplay-server because one or more dependencies were not found.\n"
-            "Required wlroots pkg-config module: wlroots-0.19\n"
+            "Required wlroots pkg-config module: wlroots-0.20 (>= 0.20.0)\n"
             "Required pkg-config modules: wayland-server, wayland-protocols, xkbcommon, pixman-1, libdrm\n"
             "Required executable: wayland-scanner\n"
             "Found status:\n"

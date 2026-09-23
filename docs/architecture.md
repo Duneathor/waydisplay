@@ -31,7 +31,7 @@ Late work is often less useful than dropped work. Queues are bounded, obsolete g
 - tile and selection formats
 - compression helpers
 
-Wire structures are encoded explicitly. The implementation requires little-endian Linux hosts but does not transmit compiler padding or native ABI layouts. liburing is mandatory, and the compositor targets the wlroots 0.19 ABI explicitly. The transport probes `send`, `sendmsg`, `recv`, and `async_cancel` at ring creation and intentionally avoids operations introduced after Linux 5.14.
+Wire structures are encoded explicitly. The implementation requires little-endian Linux hosts but does not transmit compiler padding or native ABI layouts. liburing is mandatory, and the compositor targets the wlroots 0.20 ABI explicitly. The transport probes `send`, `sendmsg`, `recv`, and `async_cancel` at ring creation and intentionally avoids operations introduced after Linux 5.14.
 
 ## Server
 

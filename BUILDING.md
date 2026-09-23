@@ -101,6 +101,18 @@ cmake -S . -B build-common \
 cmake --build build-common
 ```
 
+On Arch Linux, the repository-root `PKGBUILD` builds the current checkout and
+runs the full-runtime test suite before installing the Release executables:
+
+```sh
+makepkg -si
+```
+
+The full server build requires the `wlroots0.20` package, providing the
+`wlroots-0.20` pkg-config module (version 0.20.0 or newer). The 0.19 ABI is not
+an accepted fallback. After changing wlroots versions, rebuild from clean
+CMake caches so imported headers and libraries cannot be mixed.
+
 A full build needs SDL3 with Vulkan support for the client and wlroots/Wayland
 development packages for the compositor server.
 

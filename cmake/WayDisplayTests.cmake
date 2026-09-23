@@ -20,6 +20,20 @@ if(WAYDISPLAY_BUILD_TESTS)
         LABELS "unit;cmake;build"
     )
 
+    # The locally packaged runtime, CMake resolver, and full-runtime CI must
+    # agree on one versioned wlroots ABI. This runs even in dependency-light
+    # builds, where the compositor target is intentionally disabled.
+    add_test(
+        NAME waydisplay.wlroots_version_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_wlroots_version_contract.cmake
+    )
+    set_tests_properties(waydisplay.wlroots_version_contract PROPERTIES
+        LABELS "unit;cmake;wlroots;build"
+        TIMEOUT 10
+    )
+
     function(waydisplay_add_test)
         cmake_parse_arguments(WAYDISPLAY_TEST
             ""
