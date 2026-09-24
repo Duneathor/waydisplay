@@ -34,6 +34,11 @@ enum wd_video_recovery_action wd_video_recovery_decide(bool keyframe_queued, uin
                                                        uint32_t timeout_seconds, uint32_t attempts,
                                                        uint32_t maximum_attempts);
 
+/* Latch only the first keyframe of an attempt. A later periodic keyframe must
+ * not replace the frame being acknowledged or restart the fallback timeout. */
+bool wd_video_recovery_track_keyframe(bool* queued, uint64_t* frame_id, uint32_t* wait_seconds,
+                                      uint64_t newly_queued_frame_id);
+
 enum wd_tile_recovery_action {
     WD_TILE_RECOVERY_WAIT               = 0,
     WD_TILE_RECOVERY_COMPLETE_PRESENTED = 1,

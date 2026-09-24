@@ -54,6 +54,7 @@ struct wd_video_worker_job {
     uint64_t                       pts_usec;
     int                            video_tcp_fd;
     bool                           request_keyframe;
+    bool                           first_video_entry;
 };
 
 struct wd_video_worker {
@@ -161,7 +162,8 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
             header.session_id       = job->config.session_id;
             header.connection_token = job->config.connection_token;
             entry_plan =
-                wd_video_entry_plan_make(job->source_content_epoch, job->request_keyframe, (header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0);
+                wd_video_entry_plan_make(job->source_content_epoch, job->first_video_entry && job->request_keyframe,
+                                         (header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0);
             header.content_epoch = entry_plan.frame_content_epoch;
             header.codec         = job->config.codec;
             header.pts_usec      = input.pts_usec;
@@ -288,11 +290,11 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     net->stats.video_tcp_bytes_tx += payload_size;
 
     if (net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_RECOVERING &&
-        (header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0)
+        (header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0 &&
+        wd_video_recovery_track_keyframe(&net->stream_policy.video_recovery_keyframe_queued,
+                                         &net->stream_policy.video_recovery_keyframe_id,
+                                         &net->stream_policy.video_recovery_wait_seconds, header.frame_id))
     {
-        net->stream_policy.video_recovery_keyframe_queued = true;
-        net->stream_policy.video_recovery_keyframe_id     = header.frame_id;
-        net->stream_policy.video_recovery_wait_seconds    = 0;
         WD_LOG_INFO("video recovery keyframe queued: frame=%llu attempt=%u/%u", (unsigned long long)header.frame_id,
                     net->stream_policy.video_recovery_attempts, WD_STREAM_VIDEO_RECOVERY_MAX_ATTEMPTS);
     }
@@ -736,6 +738,10 @@ bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint6
     worker->pending_job.pts_usec             = wd_media_ns_to_usec(now_ns, net->media_clock_start_ns);
     worker->pending_job.video_tcp_fd         = net->video_tcp_fd;
     worker->pending_job.request_keyframe     = request_keyframe;
+    /* Recovery also requests keyframes, but only initial video entry may
+     * reserve the next content epoch. Otherwise the client advances to an
+     * epoch that the server never commits and discards all later frames. */
+    worker->pending_job.first_video_entry    = net->stream_policy.stream_mode == WD_STREAM_MODE_VIDEO_READY;
     worker->pending                          = true;
     pthread_cond_signal(&worker->cond);
     pthread_mutex_unlock(&worker->lock);

@@ -303,6 +303,22 @@ if(WAYDISPLAY_BUILD_TESTS)
         LABELS "unit;video;lifecycle"
     )
 
+    # Dependency-light control-policy regression suite; registered with CTest
+    # and buildable independently as waydisplay_test_video_control_unit.
+    waydisplay_add_test(
+        NAME waydisplay.video_control_unit
+        TARGET waydisplay_test_video_control_unit
+        SOURCES
+            tests/test_video_control_unit.cpp
+            src/server/wd_video_transition.c
+            src/client/video_decode_queue_policy.c
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+        LABELS "unit;video;control;lifecycle"
+    )
+
     waydisplay_add_test(
         NAME waydisplay.video_inplace_recovery
         TARGET waydisplay_test_video_inplace_recovery

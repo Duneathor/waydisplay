@@ -23,6 +23,18 @@ enum wd_video_recovery_action wd_video_recovery_decide(bool keyframe_queued, uin
     return WD_VIDEO_RECOVERY_ACTION_FALLBACK_TILES;
 }
 
+bool wd_video_recovery_track_keyframe(bool* queued, uint64_t* frame_id, uint32_t* wait_seconds,
+                                      uint64_t newly_queued_frame_id) {
+    if (!queued || !frame_id || !wait_seconds || *queued || newly_queued_frame_id == 0)
+    {
+        return false;
+    }
+    *queued = true;
+    *frame_id = newly_queued_frame_id;
+    *wait_seconds = 0;
+    return true;
+}
+
 enum wd_tile_recovery_action wd_tile_recovery_decide(bool refresh_sent, uint64_t required_content_epoch,
                                                      uint64_t presented_content_epoch, uint32_t wait_seconds,
                                                      uint32_t timeout_seconds) {

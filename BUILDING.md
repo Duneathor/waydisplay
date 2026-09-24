@@ -294,6 +294,19 @@ configure with `-DWAYDISPLAY_RUN_TESTS_ON_BUILD=OFF`; the explicit `run_tests`
 target remains available. `ctest --preset tests` can also be used to rerun the
 suite directly.
 
+To build and run only the video control policy regression test through the
+existing CTest architecture (without starting a server/client or building the
+entire test suite), use:
+
+```sh
+cmake --preset tests-core -DWAYDISPLAY_RUN_TESTS_ON_BUILD=OFF
+cmake --build build-tests-core --target waydisplay_test_video_control_unit
+ctest --preset tests-core -R '^waydisplay\.video_control_unit$' --no-tests=error
+```
+
+This still uses the project's normal CMake configure dependencies (including
+liburing), but compiles and executes only the video control test target.
+
 New tests should be registered with the `waydisplay_add_test()` helper in
 `CMakeLists.txt`. The helper creates the executable, registers it with CTest,
 and adds it to the build-time test dependencies, so no separate executable list
