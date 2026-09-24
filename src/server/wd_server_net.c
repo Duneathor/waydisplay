@@ -2369,6 +2369,14 @@ void* wd_net_thread_main(void* arg) {
                         {
                             net->stats.client_render_hidden_reports++;
                         }
+                        if ((cs.flags & WD_CLIENT_STATS_WINDOW_FOCUSED) != 0)
+                        {
+                            net->stats.client_window_focused_reports++;
+                        }
+                        else
+                        {
+                            net->stats.client_window_unfocused_reports++;
+                        }
                         if (cs.udp_interarrival_max_ns > net->stats.client_udp_interarrival_max_ns)
                         {
                             net->stats.client_udp_interarrival_max_ns = cs.udp_interarrival_max_ns;

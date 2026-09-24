@@ -258,6 +258,7 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->multipacket_loss_cooldown_seconds = 0;
     policy->client_render_pressure_seconds    = 0;
     policy->client_render_visible             = true;
+    policy->client_window_focused             = true;
     wd_stream_policy_reset_tokens(policy);
 }
 
@@ -335,6 +336,7 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->multipacket_loss_cooldown_seconds = 0;
     policy->client_render_pressure_seconds    = 0;
     policy->client_render_visible             = true;
+    policy->client_window_focused             = true;
     if (policy->safe_link_bytes_per_second == 0)
     {
         policy->safe_link_bytes_per_second = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
@@ -1177,8 +1179,10 @@ static void wd_stream_policy_update_video_frame_rate_locked(struct wd_stream_pol
         stats->client_video_queue_overflow_drops, stats->client_video_frames_presented);
     const bool decode_queue_pressure = wd_video_decode_queue_pressure(
         stats->client_video_decode_queue_depth_max, stats->client_video_decode_queue_capacity);
-    const bool cadence_pressure = health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED ||
-                                  sustained_present_pressure || decode_queue_pressure;
+    const bool cadence_pressure = wd_video_cadence_window_pressure(
+        policy->client_render_visible, policy->client_window_focused,
+        sustained_present_pressure, decode_queue_pressure,
+        stats->client_video_decode_queue_drops != 0 || health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED);
     const uint16_t downshift_target = wd_video_cadence_downshift_target(
         current_fps, policy->requested_session_fps, safe_decode_fps, cadence_pressure,
         WD_STREAM_FPS_MIN, WD_STREAM_VIDEO_FPS_DEADBAND,
@@ -1198,7 +1202,8 @@ static void wd_stream_policy_update_video_frame_rate_locked(struct wd_stream_pol
                      safe_decode_fps);
         return;
     }
-    if (health != WD_CLIENT_VIDEO_HEALTH_NORMAL || stats->client_video_frames_presented == 0 ||
+    if (!wd_video_cadence_window_can_upshift(policy->client_render_visible, policy->client_window_focused) ||
+        health != WD_CLIENT_VIDEO_HEALTH_NORMAL || stats->client_video_frames_presented == 0 ||
         current_fps >= policy->requested_session_fps)
     {
         policy->video_frame_rate_good_seconds = 0;
@@ -1236,6 +1241,16 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
     else if (stats->client_render_visible_reports != 0)
     {
         policy->client_render_visible = true;
+    }
+    /* Treat a mixed interval conservatively as unfocused. New reports from a
+     * restored window will allow normal rate increases on the next tick. */
+    if (stats->client_window_unfocused_reports != 0)
+    {
+        policy->client_window_focused = false;
+    }
+    else if (stats->client_window_focused_reports != 0)
+    {
+        policy->client_window_focused = true;
     }
 
     if (policy->stream_mode == WD_STREAM_MODE_TILE_RECOVERY)
@@ -1406,7 +1421,9 @@ void wd_stream_policy_update_health_locked(struct wd_stream_policy* policy, stru
             .client_queue_depth_max     = stats->client_video_queue_depth_max,
             .client_audio_video_sync_hold_current_ms = stats->client_audio_video_sync_hold_current_ms,
         };
-        const enum wd_client_video_health_class video_health = wd_client_video_health_classify(&video_health_metrics);
+        const enum wd_client_video_health_class video_health = wd_video_health_for_window(
+            wd_client_video_health_classify(&video_health_metrics),
+            policy->client_render_visible, policy->client_window_focused);
         wd_stream_policy_update_video_frame_rate_locked(policy, stats, video_health);
 
         if (video_health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED ||

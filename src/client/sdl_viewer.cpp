@@ -7,6 +7,7 @@
 #include "content_order.hpp"
 #include "render_planning.hpp"
 #include "sdl_input.hpp"
+#include "window_render_policy.hpp"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_input.h"
 #include "waydisplay/wd_log.h"
@@ -1838,9 +1839,18 @@ void update_render_feedback_visibility(ClientState& state, SDL_Window* window) {
 }
 
 void handle_sdl_event(ClientState& state, const SDL_Event& event) {
-    if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST)
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST || event.type == SDL_EVENT_WINDOW_FOCUS_GAINED)
     {
-        release_forwarded_keyboard_keys(state);
+        const bool focused = client_window_focus_after_event(
+            state.render_feedback_focused.load(std::memory_order_relaxed),
+            event.type == SDL_EVENT_WINDOW_FOCUS_LOST ? ClientWindowFocusChange::Lost : ClientWindowFocusChange::Gained);
+        state.render_feedback_focused.store(focused, std::memory_order_relaxed);
+        WD_LOG_DEBUG("SDL window focus: %s visible=%s", focused ? "focused" : "unfocused",
+                     state.render_feedback_visible.load(std::memory_order_relaxed) ? "yes" : "no");
+        if (!focused)
+        {
+            release_forwarded_keyboard_keys(state);
+        }
         return;
     }
 
@@ -2133,6 +2143,8 @@ int run_sdl_viewer(ClientState& state) {
     }
     update_window_size(window);
     update_render_feedback_visibility(state, window);
+    state.render_feedback_focused.store((SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0,
+                                        std::memory_order_relaxed);
 
     const char* renderer_driver = "vulkan";
     WD_LOG_INFO("SDL renderer vsync: %s", state.stream_config.disable_vsync ? "disabled" : "enabled");
@@ -2233,6 +2245,14 @@ int run_sdl_viewer(ClientState& state) {
             if (event.type >= SDL_EVENT_WINDOW_FIRST && event.type <= SDL_EVENT_WINDOW_LAST)
             {
                 update_render_feedback_visibility(state, window);
+            }
+
+            /* Do not let a modal context menu consume focus transitions:
+             * telemetry must observe them even while the menu is editing. */
+            if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST || event.type == SDL_EVENT_WINDOW_FOCUS_GAINED)
+            {
+                handle_sdl_event(state, event);
+                continue;
             }
 
             if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)

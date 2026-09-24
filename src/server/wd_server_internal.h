@@ -359,6 +359,8 @@ struct wd_stats {
     uint64_t client_udp_interarrival_max_ns;
     uint64_t client_render_visible_reports;
     uint64_t client_render_hidden_reports;
+    uint64_t client_window_focused_reports;
+    uint64_t client_window_unfocused_reports;
     uint64_t client_render_frames;
     uint64_t client_present_samples;
     uint64_t client_present_sum_ns;
@@ -659,6 +661,7 @@ struct wd_stream_policy {
     uint32_t multipacket_loss_cooldown_seconds;
     uint32_t client_render_pressure_seconds;
     bool     client_render_visible;
+    bool     client_window_focused;
     struct wd_bandwidth_bucket fresh_tile_bucket;
     struct wd_bandwidth_bucket repair_bucket;
     struct wd_bandwidth_bucket control_bucket;

@@ -2,6 +2,7 @@
 // These tests link the production policy implementations, not copied algorithms.
 #include "wd_video_transition.h"
 #include "video_decode_queue_policy.h"
+#include "window_render_policy.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -66,6 +67,55 @@ struct Recovery {
         return action;
     }
 };
+
+void test_window_focus_feedback_without_decoder_reset() {
+    using namespace waydisplay;
+    bool focused = true;
+    focused = client_window_focus_after_event(focused, ClientWindowFocusChange::Lost);
+    CHECK(!focused);
+    CHECK(client_window_focus_after_event(focused, ClientWindowFocusChange::None) == focused);
+    CHECK(client_window_feedback_flags(true, focused) == WD_CLIENT_STATS_RENDER_VISIBLE);
+    CHECK(client_window_feedback_flags(false, focused) == 0);
+    focused = client_window_focus_after_event(focused, ClientWindowFocusChange::Gained);
+    CHECK(focused);
+    CHECK(client_window_feedback_flags(true, focused) == WD_CLIENT_STATS_FLAG_MASK);
+    CHECK(client_window_feedback_flags(false, focused) == 0);
+    CHECK((WD_CLIENT_STATS_FLAG_MASK & ~((1u << 2) - 1u)) == 0);
+    std::puts("PASS: focus events retain visibility and send independent stats flags");
+}
+
+void test_background_video_control() {
+    wd_client_video_health_metrics metrics{};
+    metrics.server_frames_tx = 60;
+    metrics.client_reports = 1;
+    metrics.client_frames_seen = 60;
+    metrics.client_frames_decoded = 60;
+    metrics.client_decode_queue_depth_max = 4;
+    metrics.client_decode_queue_capacity = 4;
+    // Focus loss does not imply an invisible window or a decoder reset.
+    CHECK(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL);
+    CHECK(wd_video_health_for_window(WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL, true, false) == WD_CLIENT_VIDEO_HEALTH_IDLE);
+    CHECK(wd_video_health_for_window(WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL, false, true) == WD_CLIENT_VIDEO_HEALTH_IDLE);
+    CHECK(wd_video_health_for_window(WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL, true, true) == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL);
+    CHECK(!wd_video_cadence_window_pressure(true, false, false, true, false));
+    CHECK(!wd_video_cadence_window_pressure(false, false, false, true, false));
+    CHECK(wd_video_cadence_window_pressure(true, true, false, true, false));
+    CHECK(wd_video_cadence_window_pressure(true, false, true, false, false));
+    CHECK(!wd_video_cadence_window_can_upshift(true, false));
+    CHECK(!wd_video_cadence_window_can_upshift(false, true));
+    CHECK(wd_video_cadence_window_can_upshift(true, true));
+    // Compressed drops invalidate references regardless of focus or visibility.
+    metrics.client_decode_queue_drops = 1;
+    CHECK(wd_video_health_for_window(wd_client_video_health_classify(&metrics), true, false) ==
+          WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED);
+    CHECK(wd_video_cadence_window_pressure(true, false, false, false, true));
+    CHECK(wd_video_cadence_window_pressure(false, false, false, false, true));
+    metrics.client_decode_queue_drops = 0;
+    metrics.client_decode_failures = 1;
+    CHECK(wd_video_health_for_window(wd_client_video_health_classify(&metrics), false, false) ==
+          WD_CLIENT_VIDEO_HEALTH_HARD_FAILURE);
+    std::puts("PASS: background pacing is not decoder failure; actual reference loss still recovers");
+}
 
 void test_normal_entry_and_inplace_recovery_epochs() {
     // A first keyframe after tiles reserves the next epoch only on a successful queue.
@@ -189,6 +239,8 @@ void test_recovery_helper_rejects_invalid_keyframes() {
 } // namespace
 
 int main() {
+    test_window_focus_feedback_without_decoder_reset();
+    test_background_video_control();
     test_normal_entry_and_inplace_recovery_epochs();
     test_keyframes_cannot_keep_resetting_timeout();
     test_acknowledgement_completes_recovery();

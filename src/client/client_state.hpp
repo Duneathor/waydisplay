@@ -570,6 +570,7 @@ struct ClientState {
 
     std::atomic<uint64_t>             next_input_sequence{1};
     std::atomic<bool>                 render_feedback_visible{true};
+    std::atomic<bool>                 render_feedback_focused{true};
     std::mutex                        input_timestamp_mutex;
     std::deque<ClientInputEventStamp> recent_input_timestamps;
 

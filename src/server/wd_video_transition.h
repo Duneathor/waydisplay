@@ -87,6 +87,9 @@ enum wd_client_video_health_class {
     WD_CLIENT_VIDEO_HEALTH_HARD_FAILURE       = 6,
 };
 
+enum wd_client_video_health_class wd_video_health_for_window(enum wd_client_video_health_class health,
+                                                              bool visible, bool focused);
+
 struct wd_client_video_health_metrics {
     uint64_t server_frames_tx;
     uint64_t client_reports;
@@ -114,6 +117,11 @@ struct wd_client_video_health_metrics {
 bool wd_video_present_overflow_pressure(uint64_t replaced, uint64_t frames_presented);
 /* A full compressed queue is cadence pressure, not by itself a decoder failure. */
 bool wd_video_decode_queue_pressure(uint32_t peak_depth, uint16_t capacity);
+/* Focus affects interpretation of presentation pacing, never decoder
+ * reference validity: actual compressed drops and hard failures still recover. */
+bool wd_video_cadence_window_pressure(bool visible, bool focused, bool sustained_present_pressure,
+                                      bool decode_queue_peak, bool decode_queue_drops);
+bool wd_video_cadence_window_can_upshift(bool visible, bool focused);
 
 enum wd_client_video_health_class wd_client_video_health_classify(const struct wd_client_video_health_metrics* metrics);
 const char*                       wd_client_video_health_name(enum wd_client_video_health_class health);

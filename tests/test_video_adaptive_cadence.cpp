@@ -39,6 +39,12 @@ int main() {
     CHECK(!wd_video_decode_queue_pressure(3, 4));
     CHECK(wd_video_decode_queue_pressure(4, 4));
     CHECK(wd_video_cadence_downshift_target(60, 60, 60, wd_video_decode_queue_pressure(4, 4), 5, 2, 75) == 45);
+    // Foreground peaks can downshift; an unfocused high-water mark alone cannot.
+    CHECK(!wd_video_cadence_window_pressure(true, false, false, true, false));
+    CHECK(wd_video_cadence_window_pressure(true, false, true, false, false));
+    CHECK(wd_video_cadence_window_pressure(true, false, false, false, true));
+    CHECK(!wd_video_cadence_window_can_upshift(true, false));
+    CHECK(wd_video_cadence_window_can_upshift(true, true));
     // A few already-decoded pictures replaced before display are not decoder overload.
     CHECK(!wd_video_present_overflow_pressure(0, 3000));
     CHECK(!wd_video_present_overflow_pressure(2, 3000));

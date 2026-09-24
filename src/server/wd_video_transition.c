@@ -151,6 +151,31 @@ bool wd_video_decode_queue_pressure(uint32_t peak_depth, uint16_t capacity) {
     return capacity != 0 && peak_depth >= capacity;
 }
 
+bool wd_video_cadence_window_pressure(bool visible, bool focused, bool sustained_present_pressure,
+                                      bool decode_queue_peak, bool decode_queue_drops) {
+    /* An isolated peak while unfocused may reflect compositor scheduling.
+     * Sustained presentation replacements still justify reducing cadence;
+     * actual compressed drops must never be ignored. */
+    return decode_queue_drops || (visible && (sustained_present_pressure || (focused && decode_queue_peak)));
+}
+
+bool wd_video_cadence_window_can_upshift(bool visible, bool focused) {
+    /* Wait until the window is foregrounded before probing higher frame rates
+     * again. Focus loss itself neither resets the decoder nor changes epoch. */
+    return visible && focused;
+}
+
+enum wd_client_video_health_class wd_video_health_for_window(enum wd_client_video_health_class health,
+                                                              bool visible, bool focused) {
+    /* No presentation while backgrounded is not evidence of broken decoder
+     * references. Never suppress real compressed drops or decode errors. */
+    if (health == WD_CLIENT_VIDEO_HEALTH_PIPELINE_STALL && (!visible || !focused))
+    {
+        return WD_CLIENT_VIDEO_HEALTH_IDLE;
+    }
+    return health;
+}
+
 enum wd_client_video_health_class wd_client_video_health_classify(const struct wd_client_video_health_metrics* metrics) {
     if (!metrics || metrics->server_frames_tx == 0 || metrics->client_reports == 0)
     {

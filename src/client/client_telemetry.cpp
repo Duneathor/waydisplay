@@ -1,4 +1,5 @@
 #include "client_telemetry.hpp"
+#include "window_render_policy.hpp"
 
 #include "audio_playback.hpp"
 #include "client_net.hpp"
@@ -954,10 +955,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
             feedback.session_id       = state.config.session_id;
             feedback.connection_token = state.config.connection_token;
         }
-        if (state.render_feedback_visible.load(std::memory_order_relaxed))
-        {
-            feedback.flags |= WD_CLIENT_STATS_RENDER_VISIBLE;
-        }
+        feedback.flags = client_window_feedback_flags(
+            state.render_feedback_visible.load(std::memory_order_relaxed),
+            state.render_feedback_focused.load(std::memory_order_relaxed));
         feedback.udp_packets_rx                  = udp_packets;
         feedback.udp_bytes_rx                    = udp_bytes;
         feedback.udp_tiles_completed             = completed;

@@ -176,6 +176,8 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->client_udp_interarrival_jitter_sum_ns += src->client_udp_interarrival_jitter_sum_ns;
     dst->client_render_visible_reports += src->client_render_visible_reports;
     dst->client_render_hidden_reports += src->client_render_hidden_reports;
+    dst->client_window_focused_reports += src->client_window_focused_reports;
+    dst->client_window_unfocused_reports += src->client_window_unfocused_reports;
     if (src->client_udp_interarrival_max_ns > dst->client_udp_interarrival_max_ns)
     {
         dst->client_udp_interarrival_max_ns = src->client_udp_interarrival_max_ns;

@@ -355,8 +355,10 @@ struct wd_tile_repair_entry {
 
 enum wd_client_stats_flags {
     WD_CLIENT_STATS_RENDER_VISIBLE = 1u << 0,
+    /* Independent of visibility: an unfocused SDL window may remain visible. */
+    WD_CLIENT_STATS_WINDOW_FOCUSED = 1u << 1,
 };
-#define WD_CLIENT_STATS_FLAG_MASK WD_CLIENT_STATS_RENDER_VISIBLE
+#define WD_CLIENT_STATS_FLAG_MASK (WD_CLIENT_STATS_RENDER_VISIBLE | WD_CLIENT_STATS_WINDOW_FOCUSED)
 
 enum wd_client_audio_playback_state {
     WD_CLIENT_AUDIO_PLAYBACK_DISABLED  = 0,
