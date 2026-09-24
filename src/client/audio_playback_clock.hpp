@@ -62,6 +62,21 @@ inline uint64_t client_audio_device_playhead(uint64_t start_pts, uint64_t submit
     return start_pts + std::min(presented_samples, available_samples);
 }
 
+/* Postmix counts the entire device mix, including silence. It cannot prove
+ * that this stream's still-queued PCM was mixed. Bound its playhead by both
+ * the callback estimate and this stream's queued media timeline. */
+inline uint64_t client_audio_device_playhead_queued(uint64_t start_pts, uint64_t submitted_end_pts,
+                                                     uint64_t mixed_samples_fp, uint64_t device_buffer_samples,
+                                                     uint64_t stream_queued_samples) {
+    const uint64_t callback_playhead =
+        client_audio_device_playhead(start_pts, submitted_end_pts, mixed_samples_fp, device_buffer_samples);
+    const uint64_t available = submitted_end_pts >= start_pts ? submitted_end_pts - start_pts : 0;
+    const uint64_t queued = std::min(available, stream_queued_samples);
+    const uint64_t mixed_limit = available - queued;
+    const uint64_t played_limit = mixed_limit > device_buffer_samples ? mixed_limit - device_buffer_samples : 0;
+    return std::min(callback_playhead, start_pts + played_limit);
+}
+
 inline bool client_audio_device_consumed(uint64_t start_pts, uint64_t submitted_end_pts, uint64_t mixed_samples_fp,
                                          uint64_t device_buffer_samples) {
     if (submitted_end_pts <= start_pts)

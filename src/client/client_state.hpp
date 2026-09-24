@@ -213,6 +213,10 @@ struct ClientStats {
     std::atomic<uint32_t> video_decode_queue_depth_max{0};
     std::atomic<uint64_t> video_queue_depth_max{0};
     std::atomic<int64_t>  audio_video_delta_samples{0};
+    /* Signed PTS minus sampled audio playhead after SDL_RenderPresent.
+     * This is an output estimate, not measured speaker or scanout latency. */
+    std::atomic<int64_t>  audio_video_present_delta_samples{0};
+    std::atomic<uint64_t> audio_video_present_delta_count{0};
     std::atomic<uint64_t> tile_frames_presented{0};
     std::atomic<uint64_t> tile_content_epoch_presented{0};
     std::atomic<uint64_t> video_content_epoch_presented{0};

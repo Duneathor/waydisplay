@@ -2080,6 +2080,14 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
 
     if (video_present.valid)
     {
+        uint64_t present_audio_playhead = 0;
+        if (client_audio_playback_playhead_samples(state.session.audio_playback, &present_audio_playhead))
+        {
+            const auto actual_sync = wd_client_audio_video_sync_plan_compute(
+                video_present.pts_usec, present_audio_playhead, WD_AUDIO_SAMPLE_RATE_DEFAULT);
+            state.stats.audio_video_present_delta_samples.store(actual_sync.delta_samples, std::memory_order_relaxed);
+            state.stats.audio_video_present_delta_count.fetch_add(1, std::memory_order_relaxed);
+        }
         state.stats.video_frames_presented.fetch_add(1, std::memory_order_relaxed);
         state.stats.video_last_frame_id_presented.store(video_present.frame_id, std::memory_order_relaxed);
         if (video_present.content_epoch != 0)

@@ -277,8 +277,10 @@ extern "C" {
 #define WD_AUDIO_ENCODER_ENABLE_DTX                   0
 #define WD_AUDIO_ENCODER_ENABLE_INBAND_FEC            0
 #define WD_AUDIO_ENCODER_SIGNAL_MODE                  1u /* 0=auto, 1=music, 2=voice. */
-#define WD_CLIENT_VIDEO_AUDIO_EARLY_MS              40u
-#define WD_CLIENT_VIDEO_AUDIO_LATE_MS               80u
+/* Presentation should be near the audio playhead, not inside a 120 ms
+ * window. Allow a little more late slack for render/vsync scheduling. */
+#define WD_CLIENT_VIDEO_AUDIO_EARLY_MS              15u
+#define WD_CLIENT_VIDEO_AUDIO_LATE_MS               30u
 #define WD_CLIENT_VIDEO_AUDIO_MAX_RETRY_MS          20u
 #define WD_CLIENT_AUDIO_LATE_PACKET_MS              120u
 

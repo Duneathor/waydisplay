@@ -36,10 +36,10 @@ int main() {
         wd_client_audio_video_sync_plan_compute(1050000, playhead, WD_AUDIO_SAMPLE_RATE_DEFAULT);
     require(held.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_HOLD, "held plan should retain the hold decision");
     require(held.delta_samples == 2400, "held plan should report the sample lead");
-    require(held.retry_after_ms == 10, "held plan should cap the immediate retry delay");
+    require(held.retry_after_ms == WD_CLIENT_VIDEO_AUDIO_MAX_RETRY_MS, "held plan should cap the immediate retry delay");
 
     const struct wd_client_audio_video_sync_plan due =
-        wd_client_audio_video_sync_plan_compute(1040000, playhead, WD_AUDIO_SAMPLE_RATE_DEFAULT);
+        wd_client_audio_video_sync_plan_compute(1015000, playhead, WD_AUDIO_SAMPLE_RATE_DEFAULT);
     require(due.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT, "a frame inside the lead tolerance should be presented");
     require(due.retry_after_ms == 0, "a due frame should not request a retry delay");
 
@@ -116,6 +116,32 @@ int main() {
         output_queue += 960;
         output_queue -= 960;
     }
+
+    /* Device postmix may have advanced through silence while actual audio
+     * samples remain queued in the SDL stream. Do not count those as heard. */
+    const uint64_t silent_mix = client_audio_frames_to_samples_fp(9600, 48000, 48000);
+    require(client_audio_device_playhead_queued(48000, 52800, silent_mix, 480, 2880) == 49440,
+            "postmix silence must not advance the clock through 60 ms of queued PCM");
+    require(client_audio_device_playhead_queued(48000, 52800, silent_mix, 480, 0) == 52320,
+            "a drained SDL stream may advance up to the device-buffer edge");
+    require(client_audio_device_playhead_queued(48000, 52800, 0, 480, 2880) == 48000,
+            "an unstarted device clock must remain at the playback anchor");
+    require(client_audio_device_playhead_queued(48000, 52800, silent_mix, 480, UINT64_MAX) == 48000,
+            "an impossible queued count must clamp without unsigned underflow");
+
+    const auto sync_lead = wd_client_audio_video_sync_plan_compute(1016000, 48000, 48000);
+    require(sync_lead.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_HOLD,
+            "a frame 16 ms ahead should not appear as synchronized");
+    const auto sync_edge = wd_client_audio_video_sync_plan_compute(1015000, 48000, 48000);
+    require(sync_edge.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT,
+            "a frame at the 15 ms lead edge is due");
+    const auto sync_late = wd_client_audio_video_sync_plan_compute(969000, 48000, 48000);
+    require(sync_late.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_DROP,
+            "a video frame over 30 ms behind audio is late");
+    require(wd_client_audio_video_sync_plan_compute(970000, 48000, 48000).decision == WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT,
+            "the 30 ms late boundary is inclusive");
+    require(!wd_client_audio_video_sync_should_drop(sync_late.decision, 1),
+            "a slow video encoder must still show the sole late picture");
 
     const uint64_t mixed = client_audio_frames_to_samples_fp(2880, 48000, 48000);
     require(client_audio_device_playhead(48000, 52800, mixed, 480) == 50400,

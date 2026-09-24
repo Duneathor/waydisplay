@@ -53,6 +53,12 @@ void test_late_audio_can_become_clock_master() {
     const auto after_audio = wd_client_audio_startup_gate_decide(true, true, false, 1500, 1000);
     CHECK(after_audio == WD_CLIENT_AUDIO_STARTUP_READY);
 
+    /* The configured-but-muted application must not hold video waiting
+     * for packets it has never emitted. Once PCM arrives, the audio clock
+     * may own video sync without resetting video decoder state. */
+    CHECK(wd_client_audio_startup_gate_decide(true, false, false, 60000, 1000) == WD_CLIENT_AUDIO_STARTUP_READY);
+    CHECK(wd_client_audio_startup_gate_decide(true, true, false, 0, 1000) == WD_CLIENT_AUDIO_STARTUP_READY);
+
     const auto early = wd_client_audio_video_sync_plan_compute(1000000, 45000, 48000);
     CHECK(early.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_HOLD);
     const auto due = wd_client_audio_video_sync_plan_compute(1000000, 48000, 48000);

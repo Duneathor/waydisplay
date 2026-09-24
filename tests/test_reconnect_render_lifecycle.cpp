@@ -1,4 +1,5 @@
 #include "audio_video_sync.h"
+#include "waydisplay/wd_config.h"
 #include "render_planning.hpp"
 #include "video_present_queue.hpp"
 #include "waydisplay/wd_protocol.h"
@@ -60,7 +61,8 @@ void test_audio_held_video_survives_decode_and_recovery_cycle() {
     require(head && head->frame_id == 1, "the oldest frame should be the presentation head");
     const struct wd_client_audio_video_sync_plan held = wd_client_audio_video_sync_plan_compute(head->pts_usec, 48000, 48000);
     require(held.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_HOLD, "a frame 50 ms ahead of audio should wait");
-    require(held.retry_after_ms == 10, "the renderer should wake when the frame crosses the 40 ms early threshold");
+    require(held.retry_after_ms == WD_CLIENT_VIDEO_AUDIO_MAX_RETRY_MS,
+            "the renderer should cap a 50 ms lead at the configured retry interval");
 
     bool                   dropped_tail  = false;
     ClientVideoFrameBuffer decode_buffer = queue.take_decode_buffer(dropped_tail);
@@ -94,9 +96,20 @@ void test_audio_held_video_survives_decode_and_recovery_cycle() {
     require(wd_video_entry_allowed(false, false, 1, true, WD_VIDEO_RECOVERY_PLANNED), "forced video should resume immediately after recovery completes");
     require(wd_video_entry_allowed(false, false, 0, false, WD_VIDEO_RECOVERY_NONE), "automatic video may resume after recovery and cooldown complete");
 
-    const struct wd_client_audio_video_sync_plan due = wd_client_audio_video_sync_plan_compute(queue.front()->pts_usec, 48480, 48000);
-    require(due.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT,
-            "the preserved head should become presentable when audio reaches its deadline");
+    const uint64_t frame_samples = queue.front()->pts_usec * WD_AUDIO_SAMPLE_RATE_DEFAULT / 1000000u;
+    const uint64_t early_samples =
+        (uint64_t)WD_AUDIO_SAMPLE_RATE_DEFAULT * WD_CLIENT_VIDEO_AUDIO_EARLY_MS / 1000u;
+    const uint64_t one_ms_samples = WD_AUDIO_SAMPLE_RATE_DEFAULT / 1000u;
+    const uint64_t due_playhead = frame_samples - early_samples;
+    const struct wd_client_audio_video_sync_plan just_early =
+        wd_client_audio_video_sync_plan_compute(queue.front()->pts_usec, due_playhead - one_ms_samples,
+                                                WD_AUDIO_SAMPLE_RATE_DEFAULT);
+    require(just_early.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_HOLD && just_early.retry_after_ms == 1,
+            "the preserved head must remain held until the configured early threshold is reached");
+    const struct wd_client_audio_video_sync_plan due =
+        wd_client_audio_video_sync_plan_compute(queue.front()->pts_usec, due_playhead, WD_AUDIO_SAMPLE_RATE_DEFAULT);
+    require(due.decision == WD_CLIENT_AUDIO_VIDEO_SYNC_PRESENT && due.retry_after_ms == 0,
+            "the preserved head should become presentable at the configured early threshold");
     const ClientQueuedVideoFrame presented = queue.pop_front();
     require(presented.frame_id == 1, "the frame that waited for audio should be presented rather than overwritten");
 }

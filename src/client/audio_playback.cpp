@@ -91,14 +91,17 @@ void publish_device_clock_limit_locked(ClientAudioPlayback* playback) {
     }
 }
 
+uint64_t queued_samples_locked(const ClientAudioPlayback* playback);
+
 uint64_t device_playhead_locked(const ClientAudioPlayback* playback) {
     if (!playback || !playback->have_playback_start_pts)
     {
         return 0;
     }
-    return client_audio_device_playhead(playback->playback_start_pts, playback->submitted_end_pts,
-                                        playback->device_mixed_samples_fp.load(std::memory_order_acquire),
-                                        playback->device_buffer_samples.load(std::memory_order_acquire));
+    return client_audio_device_playhead_queued(playback->playback_start_pts, playback->submitted_end_pts,
+                                               playback->device_mixed_samples_fp.load(std::memory_order_acquire),
+                                               playback->device_buffer_samples.load(std::memory_order_acquire),
+                                               queued_samples_locked(playback));
 }
 
 void reset_device_clock_locked(ClientAudioPlayback* playback) {
@@ -131,6 +134,12 @@ bool handle_device_starvation_locked(ClientAudioPlayback* playback) {
     const bool     consumed =
         client_audio_device_consumed(playback->playback_start_pts, playback->submitted_end_pts, mixed_samples_fp, buffer_samples);
     if (!callback_reported && !consumed)
+    {
+        return false;
+    }
+    /* Device postmix can contain silence or other clients while our SDL
+     * stream still has PCM. It must not cause a false starvation/restart. */
+    if (queued_samples_locked(playback) != 0)
     {
         return false;
     }
@@ -198,7 +207,7 @@ bool reset_decoder_locked(ClientAudioPlayback* playback) {
 #endif
 }
 
-uint64_t queued_samples_locked(ClientAudioPlayback* playback) {
+uint64_t queued_samples_locked(const ClientAudioPlayback* playback) {
     if (!playback || !playback->stream || playback->config.channels == 0)
     {
         return 0;
@@ -346,8 +355,10 @@ bool client_audio_playback_configure(ClientAudioPlayback* playback, const wd_aud
     playback->target_latency_ms  = target_latency_ms;
     playback->pre_skip_remaining = config.codec_delay_samples;
     playback->configured         = true;
-    playback->video_sync_waiting      = true;
-    playback->video_sync_wait_started_ns = wd_now_ns();
+    /* A configured stream may have no PCM for minutes (a muted application).
+     * Do not stall video for an audio clock that has not begun buffering. */
+    playback->video_sync_waiting      = false;
+    playback->video_sync_wait_started_ns = 0;
     playback->decode_buffer.resize(static_cast<size_t>(OPUS_MAX_DECODE_SAMPLES) * config.channels);
     WD_LOG_INFO("audio playback configured: codec=opus rate=%u channels=%u frame_samples=%u bitrate=%u", config.sample_rate,
                 config.channels, config.frame_samples, config.target_bitrate);

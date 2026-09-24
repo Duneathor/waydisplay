@@ -373,12 +373,15 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     if (audio_messages_rx != 0 || state.audio_stream_negotiated)
     {
         const ClientAudioClockStatus audio_clock = client_audio_playback_clock_status(state.session.audio_playback);
+        const uint64_t av_present_samples = state.stats.audio_video_present_delta_count.exchange(0, std::memory_order_relaxed);
+        const int64_t av_present_delta = state.stats.audio_video_present_delta_samples.load(std::memory_order_relaxed);
         WD_LOG_STATS(
             "client-audio/interval: messages=%llu packets=%llu kib=%.1f decode_failed=%llu discontinuities=%llu late_drops=%llu "
             "underflows=%llu audio_decode_q_drops=%llu av_holds=%llu av_drops=%llu video_q=%u/%u q_overflow=%llu "
             "video_decode_q=%u/%u/%u video_decode_q_drops=%llu phase=%u wait_keyframe=%u oldest_pts_us=%llu "
             "av_delta_samples=%lld av_hold_ms=%u/%u startup_timeouts=%llu startup_hold_ms=%u audio_state=%u playing=%s "
-            "audio_queued_ms=%llu audio_playhead_lag_ms=%llu audio_output_rebases_total=%llu",
+            "audio_queued_ms=%llu audio_playhead_lag_ms=%llu audio_output_rebases_total=%llu "
+            "av_present_delta_samples=%lld av_present_count=%llu",
             static_cast<unsigned long long>(audio_messages_rx), static_cast<unsigned long long>(audio_packets_rx),
             static_cast<double>(audio_bytes_rx) / 1024.0, static_cast<unsigned long long>(audio_decode_failed),
             static_cast<unsigned long long>(audio_discontinuities), static_cast<unsigned long long>(audio_late_drops),
@@ -396,7 +399,8 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
             client_audio_playback_is_playing(state.session.audio_playback) ? "yes" : "no",
             static_cast<unsigned long long>(audio_clock.queued_ms),
             static_cast<unsigned long long>(audio_clock.playhead_lag_ms),
-            static_cast<unsigned long long>(audio_clock.output_rebases));
+            static_cast<unsigned long long>(audio_clock.output_rebases),
+            static_cast<long long>(av_present_delta), static_cast<unsigned long long>(av_present_samples));
     }
 
     const bool udp_activity = udp_packets != 0 || udp_bytes != 0 || completed != 0 || invalid != 0 || old_gen != 0 || ignored_probe != 0 ||
