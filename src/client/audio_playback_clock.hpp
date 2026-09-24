@@ -39,6 +39,21 @@ inline uint64_t client_audio_frames_to_samples_fp(uint64_t frames, uint32_t fram
     return whole_samples * CLIENT_AUDIO_CLOCK_FRACTION_ONE + fractional_samples_fp;
 }
 
+/* The target latency is a startup threshold, not a lifetime bound.  When
+ * the SDL input FIFO grows, audio's presentation clock trails the live video
+ * timeline indefinitely.  Rebase at a generous multiple of the startup
+ * target, with room for device callbacks and packet-delivery jitter. */
+inline uint64_t client_audio_max_queued_samples(uint32_t sample_rate, uint16_t target_latency_ms) {
+    const uint64_t max_ms = std::max<uint64_t>(120, static_cast<uint64_t>(target_latency_ms) * 4u);
+    return (static_cast<uint64_t>(sample_rate) * max_ms) / 1000u;
+}
+
+inline bool client_audio_output_rebase_needed(bool playing, uint64_t queued_samples, uint64_t incoming_samples,
+                                               uint64_t max_queued_samples) {
+    return playing && max_queued_samples != 0 && incoming_samples != 0 &&
+           (queued_samples > max_queued_samples || incoming_samples > max_queued_samples - queued_samples);
+}
+
 inline uint64_t client_audio_device_playhead(uint64_t start_pts, uint64_t submitted_end_pts, uint64_t mixed_samples_fp,
                                              uint64_t device_buffer_samples) {
     const uint64_t mixed_samples     = mixed_samples_fp >> CLIENT_AUDIO_CLOCK_FRACTION_BITS;

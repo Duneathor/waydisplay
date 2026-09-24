@@ -44,6 +44,7 @@ struct ClientAudioPlayback {
     uint64_t                submitted_end_pts       = 0;
     uint16_t                target_latency_ms       = WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
     uint16_t                pre_skip_remaining      = 0;
+    uint64_t                output_rebases          = 0;
     uint64_t                underflows              = 0;
     uint64_t                late_drops              = 0;
     uint64_t                discontinuities         = 0;
@@ -442,6 +443,26 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback, const ui
     const int queued_frames = decoded - skip;
     if (queued_frames > 0)
     {
+        const uint64_t queued_samples = queued_samples_locked(playback);
+        const uint64_t max_queued_samples =
+            client_audio_max_queued_samples(playback->config.sample_rate, playback->target_latency_ms);
+        if (client_audio_output_rebase_needed(playback->playing, queued_samples,
+                                               static_cast<uint64_t>(queued_frames), max_queued_samples))
+        {
+            /* PCM is arriving faster than the playback device consumes it.
+             * The 20 ms startup target alone does not prevent this FIFO from
+             * growing, so the audio playhead can remain arbitrarily behind
+             * video while both decoders are healthy.  Rebase OUTPUT ONLY:
+             * keep the Opus decoder and the wire PTS/sequence continuity,
+             * start the SDL output at this already decoded packet, and
+             * relinquish the audio master clock while rebuffering. */
+            WD_LOG_WARN("audio output backlog rebase: queued_ms=%llu limit_ms=%llu packet_pts=%llu",
+                        static_cast<unsigned long long>(queued_samples * WD_MSEC_PER_SEC / playback->config.sample_rate),
+                        static_cast<unsigned long long>(max_queued_samples * WD_MSEC_PER_SEC / playback->config.sample_rate),
+                        static_cast<unsigned long long>(header.pts_samples));
+            clear_for_output_gap_locked(playback);
+            playback->output_rebases++;
+        }
         if (!playback->have_playback_start_pts)
         {
             playback->playback_start_pts      = header.pts_samples + skip;
@@ -573,6 +594,24 @@ bool client_audio_playback_playhead_samples(ClientAudioPlayback* playback, uint6
     }
     *playhead_samples = device_playhead_locked(playback);
     return true;
+}
+
+ClientAudioClockStatus client_audio_playback_clock_status(ClientAudioPlayback* playback) {
+    ClientAudioClockStatus status{};
+    if (!playback)
+        return status;
+    std::lock_guard<std::mutex> lock(playback->mutex);
+    status.output_rebases = playback->output_rebases;
+    if (playback->config.sample_rate == 0 || !playback->configured)
+        return status;
+    status.queued_ms = queued_samples_locked(playback) * WD_MSEC_PER_SEC / playback->config.sample_rate;
+    if (playback->playing && playback->have_playback_start_pts)
+    {
+        const uint64_t playhead = device_playhead_locked(playback);
+        if (playback->submitted_end_pts >= playhead)
+            status.playhead_lag_ms = (playback->submitted_end_pts - playhead) * WD_MSEC_PER_SEC / playback->config.sample_rate;
+    }
+    return status;
 }
 
 uint64_t client_audio_playback_underflows(ClientAudioPlayback* playback) {

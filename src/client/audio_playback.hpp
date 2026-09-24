@@ -8,6 +8,12 @@ namespace waydisplay {
 
 struct ClientAudioPlayback;
 
+struct ClientAudioClockStatus {
+    uint64_t queued_ms = 0;
+    uint64_t playhead_lag_ms = 0;
+    uint64_t output_rebases = 0;
+};
+
 bool        client_audio_playback_create(ClientAudioPlayback** out_playback);
 void        client_audio_playback_destroy(ClientAudioPlayback* playback);
 bool        client_audio_playback_available();
@@ -21,6 +27,7 @@ bool     client_audio_playback_is_playing(ClientAudioPlayback* playback);
 bool     client_audio_playback_video_gate(ClientAudioPlayback* playback, uint64_t now_ns, uint32_t* hold_age_ms, bool* timed_out);
 uint8_t  client_audio_playback_state(ClientAudioPlayback* playback);
 bool     client_audio_playback_playhead_samples(ClientAudioPlayback* playback, uint64_t* playhead_samples);
+ClientAudioClockStatus client_audio_playback_clock_status(ClientAudioPlayback* playback);
 uint64_t client_audio_playback_underflows(ClientAudioPlayback* playback);
 uint64_t client_audio_playback_late_drops(ClientAudioPlayback* playback);
 uint64_t client_audio_playback_discontinuities(ClientAudioPlayback* playback);
