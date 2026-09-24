@@ -74,6 +74,12 @@ bool wd_video_control_allows_entry(uint8_t requested_mode, bool video_negotiated
            video_channel_connected && video_encoder_available;
 }
 
+bool wd_video_auto_mode_wait_for_recovery(bool recovering, uint8_t requested_mode, bool video_negotiated,
+                                          bool video_channel_connected, bool video_encoder_available) {
+    return recovering && wd_video_control_allows_entry(requested_mode, video_negotiated,
+                                                        video_channel_connected, video_encoder_available);
+}
+
 enum wd_planned_video_resume_action wd_planned_video_resume_decide(
     bool resume_requested, bool recovery_active, bool bootstrap_pending, uint8_t requested_mode,
     bool video_negotiated, bool video_channel_connected, bool video_encoder_available) {
@@ -91,6 +97,10 @@ enum wd_planned_video_resume_action wd_planned_video_resume_decide(
         return WD_PLANNED_VIDEO_RESUME_WAIT;
     }
     return WD_PLANNED_VIDEO_RESUME_ENTER;
+}
+
+uint16_t wd_video_failure_resume_fps(uint16_t requested_fps, uint16_t previous_video_fps) {
+    return previous_video_fps != 0 && previous_video_fps < requested_fps ? previous_video_fps : requested_fps;
 }
 
 uint64_t wd_next_nonzero_epoch(uint64_t current_epoch) {
@@ -125,6 +135,10 @@ bool wd_video_present_overflow_pressure(uint64_t replaced, uint64_t frames_prese
     return replaced >= 4u && (frames_presented == 0u || replaced >= frames_presented / 20u);
 }
 
+bool wd_video_decode_queue_pressure(uint32_t peak_depth, uint16_t capacity) {
+    return capacity != 0 && peak_depth >= capacity;
+}
+
 enum wd_client_video_health_class wd_client_video_health_classify(const struct wd_client_video_health_metrics* metrics) {
     if (!metrics || metrics->server_frames_tx == 0 || metrics->client_reports == 0)
     {
@@ -134,9 +148,11 @@ enum wd_client_video_health_class wd_client_video_health_classify(const struct w
     {
         return WD_CLIENT_VIDEO_HEALTH_HARD_FAILURE;
     }
-    if (metrics->client_decode_queue_drops != 0 ||
-        (metrics->client_decode_queue_capacity != 0 &&
-         metrics->client_decode_queue_depth_max >= metrics->client_decode_queue_capacity))
+    /* A high-water mark is not an overflow: the producer may have briefly
+     * filled the queue and the decoder may already have drained it. Only
+     * actual drops invalidate the compressed reference chain and require a
+     * recovery keyframe. Keep queue peaks available for rate diagnostics. */
+    if (metrics->client_decode_queue_drops != 0)
     {
         return WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED;
     }

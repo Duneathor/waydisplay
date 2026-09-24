@@ -15,6 +15,9 @@ int main() {
     CHECK(wd_video_cadence_upshift_target(19, 30, 25, 2, 1) == 20);
     CHECK(wd_video_cadence_upshift_target(24, 30, 25, 2, 1) == 24);
     CHECK(wd_video_cadence_upshift_target(28, 30, 30, 2, 1) == 29);
+    CHECK(wd_video_failure_resume_fps(60, 21) == 21);
+    CHECK(wd_video_failure_resume_fps(60, 0) == 60);
+    CHECK(wd_video_failure_resume_fps(30, 45) == 30);
     uint16_t stable_fps = wd_video_cadence_downshift_target(30, 30, 25, false, 5, 2, 75);
     CHECK(stable_fps == 25);
     for (unsigned i = 0; i < 120; ++i)
@@ -30,6 +33,12 @@ int main() {
         recovering_fps = wd_video_cadence_upshift_target(recovering_fps, 30, 30, 2, 1);
     }
     CHECK(recovering_fps == 30);
+    // A queue peak calls for a cadence decrease, not a decoder reset.
+    CHECK(!wd_video_decode_queue_pressure(0, 0));
+    CHECK(!wd_video_decode_queue_pressure(4, 0));
+    CHECK(!wd_video_decode_queue_pressure(3, 4));
+    CHECK(wd_video_decode_queue_pressure(4, 4));
+    CHECK(wd_video_cadence_downshift_target(60, 60, 60, wd_video_decode_queue_pressure(4, 4), 5, 2, 75) == 45);
     // A few already-decoded pictures replaced before display are not decoder overload.
     CHECK(!wd_video_present_overflow_pressure(0, 3000));
     CHECK(!wd_video_present_overflow_pressure(2, 3000));
@@ -39,7 +48,11 @@ int main() {
     CHECK(!wd_video_present_overflow_pressure(3, 0));
     CHECK(wd_video_present_overflow_pressure(4, 0));
     wd_client_video_health_metrics m{};
-    m.server_frames_tx=1; m.client_reports=1; m.client_decode_queue_drops=1;
+    m.server_frames_tx=1; m.client_reports=1;
+    m.client_frames_presented=1;
+    m.client_decode_queue_capacity=4; m.client_decode_queue_depth_max=4;
+    CHECK(wd_client_video_health_classify(&m)==WD_CLIENT_VIDEO_HEALTH_NORMAL);
+    m.client_decode_queue_drops=1;
     CHECK(wd_client_video_health_classify(&m)==WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED);
     m.client_decode_queue_drops=0; m.client_need_keyframe_drops=1;
     CHECK(wd_client_video_health_classify(&m)==WD_CLIENT_VIDEO_HEALTH_AWAITING_KEYFRAME);

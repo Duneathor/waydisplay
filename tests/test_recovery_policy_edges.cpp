@@ -129,8 +129,13 @@ void test_client_video_health_precedence() {
 
     metrics.client_decode_queue_capacity = 4;
     metrics.client_decode_queue_depth_max = 4;
-    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED,
-            "a saturated compressed decode queue should request recovery before a drop is reported");
+    metrics.client_frames_presented = 1;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_NORMAL,
+            "a full decode-queue high-water mark with successful presentation is not an overflow");
+    metrics.client_decode_queue_depth = 4;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_NORMAL,
+            "a currently full queue alone cannot invalidate decoder references");
+    metrics.client_decode_queue_depth = 0;
     metrics.client_decode_queue_depth_max = 0;
     metrics.client_decode_queue_drops = 1;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED,

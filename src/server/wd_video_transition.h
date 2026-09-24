@@ -57,6 +57,10 @@ bool wd_video_entry_allowed(bool bootstrap_pending, bool recovery_active, uint32
                             enum wd_video_recovery_class recovery_class);
 bool wd_video_control_allows_entry(uint8_t requested_mode, bool video_negotiated, bool video_channel_connected,
                                    bool video_encoder_available);
+/* The health controller owns in-video recovery while video remains available.
+ * A user disable or lost video channel must still be handled by mode selection. */
+bool wd_video_auto_mode_wait_for_recovery(bool recovering, uint8_t requested_mode, bool video_negotiated,
+                                          bool video_channel_connected, bool video_encoder_available);
 
 enum wd_planned_video_resume_action {
     WD_PLANNED_VIDEO_RESUME_WAIT  = 0,
@@ -103,6 +107,8 @@ struct wd_client_video_health_metrics {
 /* Presentation-queue replacement is not a compressed-decoder failure.
  * Decrease capture rate only for repeated replacements in an interval. */
 bool wd_video_present_overflow_pressure(uint64_t replaced, uint64_t frames_presented);
+/* A full compressed queue is cadence pressure, not by itself a decoder failure. */
+bool wd_video_decode_queue_pressure(uint32_t peak_depth, uint16_t capacity);
 
 enum wd_client_video_health_class wd_client_video_health_classify(const struct wd_client_video_health_metrics* metrics);
 const char*                       wd_client_video_health_name(enum wd_client_video_health_class health);
@@ -135,6 +141,8 @@ uint16_t                          wd_video_cadence_downshift_target(uint16_t cur
 uint16_t                          wd_video_cadence_upshift_target(uint16_t current_fps, uint16_t requested_fps,
                                                                  uint16_t safe_decode_fps, uint16_t deadband_fps,
                                                                  uint16_t increase_step);
+/* Re-entry after a failed stream must not exceed its last reduced cadence. */
+uint16_t                          wd_video_failure_resume_fps(uint16_t requested_fps, uint16_t previous_video_fps);
 
 uint64_t                   wd_next_nonzero_epoch(uint64_t current_epoch);
 struct wd_video_entry_plan wd_video_entry_plan_make(uint64_t current_epoch, bool waiting_for_first_keyframe, bool frame_is_keyframe);

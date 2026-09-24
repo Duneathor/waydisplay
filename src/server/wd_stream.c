@@ -219,6 +219,7 @@ void wd_stream_policy_set_defaults(struct wd_stream_policy* policy) {
     policy->video_client_failure_seconds      = 0;
     policy->video_client_failure_class        = WD_CLIENT_VIDEO_HEALTH_IDLE;
     policy->video_frame_rate_good_seconds     = 0;
+    policy->video_failure_resume_fps          = 0;
     policy->video_decode_ewma_ns              = 0;
     policy->video_decode_safe_fps             = 0;
     policy->video_encode_ewma_ns              = 0;
@@ -302,6 +303,7 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->video_client_failure_seconds      = 0;
     policy->video_client_failure_class        = WD_CLIENT_VIDEO_HEALTH_IDLE;
     policy->video_frame_rate_good_seconds     = 0;
+    policy->video_failure_resume_fps          = 0;
     policy->video_decode_ewma_ns              = 0;
     policy->video_decode_safe_fps             = 0;
     policy->video_feedback_pending             = false;
@@ -552,6 +554,12 @@ void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_s
         policy->video_client_failure_seconds  = 0;
         policy->tile_recovery_content_epoch    = 0;
         policy->video_recovery_class           = recovery_class;
+        if (recovery_class == WD_VIDEO_RECOVERY_FAILURE && wd_stream_mode_video_owns_display(old_mode))
+        {
+            /* Tile-mode pacing may change during fallback. Save the reduced
+             * VIDEO cadence before entering tiles for a later retry. */
+            policy->video_failure_resume_fps = wd_stream_policy_effective_fps_locked(policy);
+        }
         if (recovery_class != WD_VIDEO_RECOVERY_PLANNED)
         {
             policy->planned_recovery_resume_video = false;
@@ -576,6 +584,19 @@ void wd_stream_policy_set_mode_locked(struct wd_stream_policy* policy, enum wd_s
     {
         policy->video_recovery_class = WD_VIDEO_RECOVERY_NONE;
         wd_stream_policy_restore_requested_session_fps_locked(policy, "video mode entry");
+        if (policy->video_failure_resume_fps != 0)
+        {
+            const uint16_t resume_fps = wd_video_failure_resume_fps(policy->requested_session_fps,
+                                                                     policy->video_failure_resume_fps);
+            if (resume_fps != policy->adaptive_capture_fps)
+            {
+                policy->adaptive_capture_fps = resume_fps;
+                wd_frame_pacing_reset(&policy->frame_pacing);
+                WD_LOG_DEBUG("stream video cadence resume: %u fps after failed video recovery", resume_fps);
+            }
+            policy->video_failure_resume_fps = 0;
+            policy->video_frame_rate_good_seconds = 0;
+        }
     }
 
     WD_LOG_DEBUG("stream mode state: %s -> %s reason=%s dirty_avg_pct=%.1f dirty_peak_pct=%.1f budget_pressure_pct=%.1f video_channel=%s "
@@ -602,6 +623,19 @@ void wd_stream_policy_update_mode_locked(struct wd_stream_policy* policy, const 
     if (policy->stream_mode == WD_STREAM_MODE_TILE_RECOVERY)
     {
         policy->video_candidate_seconds = 0;
+        return;
+    }
+
+    /* Health processing runs before automatic mode selection. Do not let an
+     * auto-entry candidate turn VIDEO_RECOVERING back into VIDEO_READY before
+     * its keyframe is presented or its retry/timeout path completes. Still
+     * allow explicit video disable or transport/encoder loss to fall through. */
+    if (wd_video_auto_mode_wait_for_recovery(policy->stream_mode == WD_STREAM_MODE_VIDEO_RECOVERING,
+                                             policy->video_mode, video_negotiated, video_channel_connected,
+                                             video_encoder_available))
+    {
+        policy->video_candidate_seconds = 0;
+        policy->tile_recovery_seconds = 0;
         return;
     }
 
@@ -1141,9 +1175,12 @@ static void wd_stream_policy_update_video_frame_rate_locked(struct wd_stream_pol
 
     const bool sustained_present_pressure = wd_video_present_overflow_pressure(
         stats->client_video_queue_overflow_drops, stats->client_video_frames_presented);
-    const bool hard_overload = health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED || sustained_present_pressure;
+    const bool decode_queue_pressure = wd_video_decode_queue_pressure(
+        stats->client_video_decode_queue_depth_max, stats->client_video_decode_queue_capacity);
+    const bool cadence_pressure = health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED ||
+                                  sustained_present_pressure || decode_queue_pressure;
     const uint16_t downshift_target = wd_video_cadence_downshift_target(
-        current_fps, policy->requested_session_fps, safe_decode_fps, hard_overload,
+        current_fps, policy->requested_session_fps, safe_decode_fps, cadence_pressure,
         WD_STREAM_FPS_MIN, WD_STREAM_VIDEO_FPS_DEADBAND,
         WD_STREAM_VIDEO_OVERLOAD_DECREASE_PERCENT);
     if (downshift_target < current_fps)
@@ -1155,7 +1192,8 @@ static void wd_stream_policy_update_video_frame_rate_locked(struct wd_stream_pol
         WD_LOG_DEBUG("stream video cadence down: %u -> %u fps reason=%s decode_ewma_ms=%.2f safe_fps=%u",
                      current_fps, downshift_target,
                      health == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED ? "decoder overload" :
-                     sustained_present_pressure ? "sustained presentation replacements" : "decode capacity",
+                     sustained_present_pressure ? "sustained presentation replacements" :
+                     decode_queue_pressure ? "decode queue pressure" : "decode capacity",
                      (double)policy->video_decode_ewma_ns / 1000000.0,
                      safe_decode_fps);
         return;

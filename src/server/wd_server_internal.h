@@ -593,6 +593,7 @@ struct wd_stream_policy {
     uint32_t            video_client_failure_seconds;
     uint8_t             video_client_failure_class;
     uint32_t            video_frame_rate_good_seconds;
+    uint16_t            video_failure_resume_fps;
     uint64_t            video_decode_ewma_ns;
     uint16_t            video_decode_safe_fps;
     uint64_t            video_encode_ewma_ns;
