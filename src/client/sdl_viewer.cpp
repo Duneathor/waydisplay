@@ -6,6 +6,7 @@
 #include "client_telemetry.hpp"
 #include "content_order.hpp"
 #include "render_planning.hpp"
+#include "video_presentation_geometry.hpp"
 #include "sdl_input.hpp"
 #include "window_render_policy.hpp"
 #include "waydisplay/wd_config.h"
@@ -1103,36 +1104,12 @@ void update_window_size(SDL_Window* window) {
         return;
     }
 
-    const uint64_t width_limited_height = (static_cast<uint64_t>(width) * g_client_config->height) / g_client_config->width;
-
-    int content_width  = width;
-    int content_height = height;
-
-    if (width_limited_height <= static_cast<uint64_t>(height))
-    {
-        content_height = static_cast<int>(width_limited_height);
-    }
-    else
-    {
-        content_width = static_cast<int>((static_cast<uint64_t>(height) * g_client_config->width) / g_client_config->height);
-    }
-
-    if (content_width < 1)
-    {
-        content_width = 1;
-    }
-
-    if (content_height < 1)
-    {
-        content_height = 1;
-    }
-
-    g_content_rect = SDL_FRect{
-        static_cast<float>((width - content_width) / 2),
-        static_cast<float>((height - content_height) / 2),
-        static_cast<float>(content_width),
-        static_cast<float>(content_height),
-    };
+    /* Pointer input is in logical window coordinates; do not use the physical
+     * renderer destination here on a high-DPI monitor. */
+    const ClientVideoPresentationRect rect =
+        client_video_presentation_rect(width, height, g_client_config->width, g_client_config->height);
+    g_content_rect = SDL_FRect{static_cast<float>(rect.x), static_cast<float>(rect.y),
+                               static_cast<float>(rect.w), static_cast<float>(rect.h)};
 }
 
 SDL_Texture* create_frame_texture(SDL_Renderer* renderer, uint32_t width, uint32_t height) {
@@ -2044,7 +2021,41 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
         return log_sdl_error("SDL_RenderClear");
     }
 
-    if (!SDL_RenderTexture(renderer, texture, nullptr, &g_content_rect))
+    /* SDL's window size is logical; the renderer destination is in output
+     * pixels. Recalculate on presentation, including high-DPI display moves. */
+    int output_width = g_window_width;
+    int output_height = g_window_height;
+    if (!SDL_GetRenderOutputSize(renderer, &output_width, &output_height))
+    {
+        log_sdl_warning("SDL_GetRenderOutputSize");
+        output_width = g_window_width;
+        output_height = g_window_height;
+    }
+    const ClientVideoPresentationRect rect = client_video_presentation_rect(
+        output_width, output_height, g_client_config ? g_client_config->width : 0,
+        g_client_config ? g_client_config->height : 0);
+    const SDL_FRect render_rect{static_cast<float>(rect.x), static_cast<float>(rect.y),
+                                static_cast<float>(rect.w), static_cast<float>(rect.h)};
+    /* Log only geometry changes: confirm physical 1:1 versus genuine scaling
+     * without emitting a message for every frame. */
+    static int      logged_output_width = 0;
+    static int      logged_output_height = 0;
+    static uint32_t logged_source_width = 0;
+    static uint32_t logged_source_height = 0;
+    const uint32_t source_width = g_client_config ? g_client_config->width : 0;
+    const uint32_t source_height = g_client_config ? g_client_config->height : 0;
+    if (output_width != logged_output_width || output_height != logged_output_height ||
+        source_width != logged_source_width || source_height != logged_source_height)
+    {
+        WD_LOG_DEBUG("SDL presentation geometry: source=%ux%u output=%dx%d destination=%d,%d %dx%d pixel_exact=%s",
+                     source_width, source_height, output_width, output_height, rect.x, rect.y, rect.w, rect.h,
+                     rect.pixel_exact ? "yes" : "no");
+        logged_output_width = output_width;
+        logged_output_height = output_height;
+        logged_source_width = source_width;
+        logged_source_height = source_height;
+    }
+    if (!SDL_RenderTexture(renderer, texture, nullptr, &render_rect))
     {
         return log_sdl_error("SDL_RenderTexture");
     }

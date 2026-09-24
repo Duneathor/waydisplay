@@ -1,6 +1,8 @@
 #include "content_order.hpp"
 #include "present_telemetry.hpp"
 #include "render_planning.hpp"
+#include "video_plane_copy.hpp"
+#include "video_presentation_geometry.hpp"
 #include "render_wakeup.hpp"
 #include "stream_ownership.h"
 #include "video_decoder.hpp"
@@ -24,6 +26,57 @@ void require(bool condition, const char* message) {
         std::cerr << "test failure: " << message << '\n';
         std::exit(1);
     }
+}
+
+void test_physical_pixel_presentation_geometry() {
+    const ClientVideoPresentationRect exact = client_video_presentation_rect(1422, 773, 1422, 773);
+    require(exact.pixel_exact && exact.x == 0 && exact.y == 0 && exact.w == 1422 && exact.h == 773,
+            "matching physical output and source must render pixel for pixel");
+
+    const ClientVideoPresentationRect high_dpi = client_video_presentation_rect(2844, 1546, 1422, 773);
+    require(!high_dpi.pixel_exact && high_dpi.w == 2844 && high_dpi.h == 1546,
+            "logical-size equality must not be confused with physical pixel equality");
+
+    const ClientVideoPresentationRect letterbox = client_video_presentation_rect(1920, 1080, 800, 600);
+    require(!letterbox.pixel_exact && letterbox.x == 240 && letterbox.y == 0 &&
+                letterbox.w == 1440 && letterbox.h == 1080,
+            "nonmatching aspect ratios must keep centered integer letterboxing");
+    const ClientVideoPresentationRect empty = client_video_presentation_rect(0, 0, 0, 0);
+    require(!empty.pixel_exact && empty.w == 1 && empty.h == 1,
+            "invalid renderer sizes must not create an empty render rectangle");
+}
+
+void test_direct_visible_video_plane_copy() {
+    /* 3x3 visible picture with padded strides and 2x2 chroma. */
+    const uint8_t y[18] = {1, 2, 3, 99, 99, 99, 4, 5, 6, 99, 99, 99, 7, 8, 9, 99, 99, 99};
+    const uint8_t u[6] = {11, 12, 99, 13, 14, 99};
+    const uint8_t v[6] = {21, 22, 99, 23, 24, 99};
+    const uint8_t* src[3] = {y, u, v};
+    const int stride[3] = {6, 3, 3};
+    uint8_t out_y[9]{};
+    uint8_t out_u[4]{};
+    uint8_t out_v[4]{};
+    uint8_t* dst[3] = {out_y, out_u, out_v};
+    require(client_copy_video_planes(ClientVideoPlaneLayout::YUV420P, src, stride, dst, 3, 3),
+            "planar decoded pictures must take the direct visible-plane copy");
+    require(std::vector<uint8_t>(out_y, out_y + 9) == std::vector<uint8_t>({1, 2, 3, 4, 5, 6, 7, 8, 9}),
+            "luma must preserve exact pixel values without copying coded padding");
+    require(std::vector<uint8_t>(out_u, out_u + 4) == std::vector<uint8_t>({11, 12, 13, 14}) &&
+                std::vector<uint8_t>(out_v, out_v + 4) == std::vector<uint8_t>({21, 22, 23, 24}),
+            "planar chroma must preserve both 4:2:0 planes");
+
+    const uint8_t nv12_uv[12] = {11, 21, 12, 22, 99, 99, 13, 23, 14, 24, 99, 99};
+    src[1] = nv12_uv;
+    src[2] = nullptr;
+    const int nv12_stride[3] = {6, 6, 0};
+    require(client_copy_video_planes(ClientVideoPlaneLayout::NV12, src, nv12_stride, dst, 3, 3),
+            "NV12 must directly deinterleave U and V without changing sample values");
+    require(std::vector<uint8_t>(out_u, out_u + 4) == std::vector<uint8_t>({11, 12, 13, 14}) &&
+                std::vector<uint8_t>(out_v, out_v + 4) == std::vector<uint8_t>({21, 22, 23, 24}),
+            "NV12 chroma must match the planar decoded result exactly");
+    const int bad_stride[3] = {2, 6, 0};
+    require(!client_copy_video_planes(ClientVideoPlaneLayout::NV12, src, bad_stride, dst, 3, 3),
+            "unsupported decoded strides must use the swscale fallback");
 }
 
 void test_coalesces_horizontal_and_vertical_runs() {
@@ -446,6 +499,8 @@ void test_render_surface_handoff_requires_fresh_successful_presentation() {
 } // namespace
 
 int main() {
+    test_physical_pixel_presentation_geometry();
+    test_direct_visible_video_plane_copy();
     test_coalesces_horizontal_and_vertical_runs();
     test_clamps_to_frame();
     test_upload_planner_modes();

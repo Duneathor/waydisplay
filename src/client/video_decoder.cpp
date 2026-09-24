@@ -1,4 +1,5 @@
 #include "video_decoder.hpp"
+#include "video_plane_copy.hpp"
 
 #include "waydisplay/wd_log.h"
 
@@ -78,7 +79,6 @@ struct ClientVideoDecoder {
     AVPacket*                           packet               = nullptr;
     SwsContext*                         sws_ctx              = nullptr;
     AVBufferRef*                        hw_device_ctx        = nullptr;
-    AVPixelFormat                       sws_src_format       = AV_PIX_FMT_NONE;
     bool                                vaapi_requested      = false;
     bool                                vaapi_required       = false;
     bool                                using_vaapi          = false;
@@ -104,7 +104,6 @@ void release_decoder_backend(ClientVideoDecoder* decoder) {
     av_frame_free(&decoder->frame);
     avcodec_free_context(&decoder->codec_ctx);
     av_buffer_unref(&decoder->hw_device_ctx);
-    decoder->sws_src_format  = AV_PIX_FMT_NONE;
     decoder->vaapi_requested = false;
     decoder->vaapi_required  = false;
     decoder->using_vaapi     = false;
@@ -356,15 +355,6 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const wd_video_frame_pay
     const int  visible_width  = static_cast<int>(header.width);
     const int  visible_height = static_cast<int>(header.height);
     const auto src_format     = static_cast<AVPixelFormat>(src_frame->format);
-    const int scaler_flags = WD_VIDEO_SCALER_USE_FAST_BILINEAR ? SWS_FAST_BILINEAR : SWS_BILINEAR;
-    decoder->sws_ctx = sws_getCachedContext(decoder->sws_ctx, visible_width, visible_height, src_format, visible_width, visible_height,
-                                            AV_PIX_FMT_YUV420P, scaler_flags, nullptr, nullptr, nullptr);
-    if (!decoder->sws_ctx) [[unlikely]]
-    {
-        return false;
-    }
-    decoder->sws_src_format = src_format;
-
     const uint32_t y_pitch        = header.width;
     const uint32_t uv_width       = (header.width + 1u) / 2u;
     const uint32_t uv_height      = (header.height + 1u) / 2u;
@@ -399,9 +389,31 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const wd_video_frame_pay
         nullptr,
     };
     const int dst_stride[4] = {static_cast<int>(y_pitch), static_cast<int>(uv_width), static_cast<int>(uv_width), 0};
-    if (sws_scale(decoder->sws_ctx, src_frame->data, src_frame->linesize, 0, visible_height, dst_slices, dst_stride) != visible_height) [[unlikely]]
+    /* Both layouts already contain the final 4:2:0 pixel grid. A direct
+     * visible-plane copy avoids swscale's conversion path and ignores codec
+     * padding at the right/bottom edges. */
+    bool copied = false;
+    if (src_format == AV_PIX_FMT_YUV420P || src_format == AV_PIX_FMT_NV12)
     {
-        return false;
+        const uint8_t* const src_planes[3] = {src_frame->data[0], src_frame->data[1], src_frame->data[2]};
+        uint8_t* const dst_planes[3] = {dst_slices[0], dst_slices[1], dst_slices[2]};
+        copied = client_copy_video_planes(src_format == AV_PIX_FMT_NV12 ? ClientVideoPlaneLayout::NV12
+                                                                       : ClientVideoPlaneLayout::YUV420P,
+                                          src_planes, src_frame->linesize, dst_planes, header.width, header.height);
+    }
+    if (!copied)
+    {
+        const int scaler_flags = WD_VIDEO_SCALER_USE_FAST_BILINEAR ? SWS_FAST_BILINEAR : SWS_BILINEAR;
+        decoder->sws_ctx = sws_getCachedContext(decoder->sws_ctx, visible_width, visible_height, src_format, visible_width, visible_height,
+                                                AV_PIX_FMT_YUV420P, scaler_flags, nullptr, nullptr, nullptr);
+        if (!decoder->sws_ctx) [[unlikely]]
+        {
+            return false;
+        }
+        if (sws_scale(decoder->sws_ctx, src_frame->data, src_frame->linesize, 0, visible_height, dst_slices, dst_stride) != visible_height) [[unlikely]]
+        {
+            return false;
+        }
     }
 
     out_frame->format        = ClientVideoPixelFormat::IYUV;
