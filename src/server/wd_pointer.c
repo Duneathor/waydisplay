@@ -589,6 +589,11 @@ void wd_pointer_update_resize(struct wd_server* server) {
 #if WAYDISPLAY_ENABLE_XWAYLAND
     if (view->xwayland_surface)
     {
+        WD_LOG_DEBUG("Xwayland configure reason=interactive_resize window=0x%08x (%u) view=%p "
+                     "geom=%ux%u+%d+%d edges=0x%x mapped=%d",
+                     (unsigned)view->xwayland_surface->window_id, (unsigned)view->xwayland_surface->window_id,
+                     (void*)view, (unsigned)new_width, (unsigned)new_height, new_x, new_y,
+                     (unsigned)edges, view->mapped ? 1 : 0);
         wlr_xwayland_surface_configure(view->xwayland_surface, new_x, new_y, (uint32_t)new_width, (uint32_t)new_height);
     }
 #endif

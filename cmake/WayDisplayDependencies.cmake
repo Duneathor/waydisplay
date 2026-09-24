@@ -14,6 +14,7 @@ set(WAYDISPLAY_HAVE_H264_CLIENT_DECODER FALSE)
 set(WAYDISPLAY_HAVE_AV1_SERVER_ENCODER FALSE)
 set(WAYDISPLAY_HAVE_AV1_CLIENT_DECODER FALSE)
 set(WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER FALSE)
+set(WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK FALSE)
 set(WAYDISPLAY_HAVE_PIPEWIRE_AUDIO_CAPTURE FALSE)
 set(WAYDISPLAY_HAVE_OPUS_AUDIO FALSE)
 
@@ -61,6 +62,19 @@ if(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER OR WAYDISPLAY_ENABLE_H264_CLIENT_DECODE
         endif()
     else()
         message(STATUS "Video client decoder backends disabled: libavcodec/libavutil/libswscale not found")
+    endif()
+endif()
+
+# Avoid opening av1_vaapi on devices that only advertise AV1 decoding (or
+# lack AV1 entirely). Keep libva optional so software AV1 builds do not gain
+# a mandatory new dependency; without its development files FFmpeg's existing
+# runtime probe remains the fallback.
+if(WAYDISPLAY_HAVE_AV1_SERVER_ENCODER)
+    pkg_check_modules(VAAPI_SERVER QUIET IMPORTED_TARGET libva)
+    if(VAAPI_SERVER_FOUND)
+        set(WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK TRUE)
+    else()
+        message(STATUS "libva development files unavailable: AV1 VAAPI encoder will use FFmpeg's runtime probe")
     endif()
 endif()
 

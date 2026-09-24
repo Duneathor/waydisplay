@@ -23,6 +23,10 @@
 #define WAYDISPLAY_HAVE_H264_SERVER_ENCODER 0
 #endif
 
+#ifndef WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK
+#define WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK 0
+#endif
+
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER || WAYDISPLAY_HAVE_AV1_SERVER_ENCODER
 enum {
     /*
@@ -41,6 +45,10 @@ enum {
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
+#if WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK
+#include <libavutil/hwcontext_vaapi.h>
+#include <va/va.h>
+#endif
 #include <libavutil/log.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
@@ -295,7 +303,8 @@ static uint32_t wd_video_encoder_detect_supported_codecs(struct wd_video_encoder
         return wd_video_encoder_detect_vaapi_codecs(encoder) & ~encoder->vaapi_failed_codecs;
     case WD_VIDEO_ENCODER_PREFERENCE_AUTO:
     default:
-        return wd_video_encoder_detect_software_codecs() | wd_video_encoder_detect_vaapi_codecs(encoder);
+        return wd_video_encoder_detect_software_codecs() |
+               (wd_video_encoder_detect_vaapi_codecs(encoder) & ~encoder->vaapi_failed_codecs);
     }
 }
 
@@ -357,6 +366,87 @@ static void wd_video_encoder_set_context_defaults(AVCodecContext* codec_ctx, con
     codec_ctx->bit_rate     = bitrate;
 }
 
+#if WAYDISPLAY_HAVE_AV1_SERVER_ENCODER && WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK
+/* AV1 Profile 0 decoding (VAEntrypointVLD) is not AV1 encoding. Check both
+ * the profile and an encode entrypoint before asking FFmpeg to open av1_vaapi;
+ * the FFmpeg probe still decides whether encoding actually works. */
+static bool wd_video_encoder_vaapi_can_encode_av1(const AVBufferRef* device) {
+    if (!device || !device->data)
+    {
+        return false;
+    }
+
+    const AVHWDeviceContext* hw_device = (const AVHWDeviceContext*)device->data;
+    const AVVAAPIDeviceContext* va_device = hw_device->hwctx;
+    const VADisplay display = va_device ? va_device->display : NULL;
+    if (!display)
+    {
+        return false;
+    }
+
+    const int profile_capacity = vaMaxNumProfiles(display);
+    if (profile_capacity <= 0)
+    {
+        return false;
+    }
+    VAProfile* profiles = calloc((size_t)profile_capacity, sizeof(*profiles));
+    if (!profiles)
+    {
+        return false;
+    }
+
+    int profile_count = 0;
+    const bool queried_profiles = vaQueryConfigProfiles(display, profiles, &profile_count) == VA_STATUS_SUCCESS &&
+                                  profile_count >= 0 && profile_count <= profile_capacity;
+    bool has_profile = false;
+    if (queried_profiles)
+    {
+        for (int i = 0; i < profile_count; ++i)
+        {
+            if (profiles[i] == VAProfileAV1Profile0)
+            {
+                has_profile = true;
+                break;
+            }
+        }
+    }
+    free(profiles);
+    if (!has_profile)
+    {
+        return false;
+    }
+
+    const int entrypoint_capacity = vaMaxNumEntrypoints(display);
+    if (entrypoint_capacity <= 0)
+    {
+        return false;
+    }
+    VAEntrypoint* entrypoints = calloc((size_t)entrypoint_capacity, sizeof(*entrypoints));
+    if (!entrypoints)
+    {
+        return false;
+    }
+
+    int entrypoint_count = 0;
+    const bool queried_entrypoints = vaQueryConfigEntrypoints(display, VAProfileAV1Profile0, entrypoints, &entrypoint_count) == VA_STATUS_SUCCESS &&
+                                     entrypoint_count >= 0 && entrypoint_count <= entrypoint_capacity;
+    bool can_encode = false;
+    if (queried_entrypoints)
+    {
+        for (int i = 0; i < entrypoint_count; ++i)
+        {
+            if (entrypoints[i] == VAEntrypointEncSlice || entrypoints[i] == VAEntrypointEncSliceLP)
+            {
+                can_encode = true;
+                break;
+            }
+        }
+    }
+    free(entrypoints);
+    return can_encode;
+}
+#endif
+
 static bool wd_video_encoder_probe_vaapi_codec(struct wd_video_encoder* encoder, uint32_t codec_id) {
     if (!encoder || !encoder->vaapi_device_ctx)
     {
@@ -368,6 +458,14 @@ static bool wd_video_encoder_probe_vaapi_codec(struct wd_video_encoder* encoder,
     {
         return false;
     }
+
+#if WAYDISPLAY_HAVE_AV1_SERVER_ENCODER && WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK
+    if (codec_id == WD_VIDEO_CODEC_AV1 && !wd_video_encoder_vaapi_can_encode_av1(encoder->vaapi_device_ctx))
+    {
+        WD_LOG_DEBUG("VAAPI device %s has no AV1 Profile 0 encode entrypoint; skipping av1_vaapi probe", encoder->vaapi_device);
+        return false;
+    }
+#endif
 
     struct wd_video_encoder_config probe_config;
     memset(&probe_config, 0, sizeof(probe_config));
@@ -791,8 +889,19 @@ uint32_t wd_video_encoder_choose_codec(struct wd_video_encoder* encoder, uint32_
     }
 
     const uint32_t requested = client_codecs & WD_VIDEO_CODEC_MASK;
-    const uint32_t software  = requested & wd_video_encoder_detect_software_codecs();
-    const uint32_t vaapi     = requested & wd_video_encoder_detect_vaapi_codecs(encoder) & ~encoder->vaapi_failed_codecs;
+    if (requested == 0)
+    {
+        return 0;
+    }
+
+    /* A software-only configuration must never initialize/probe a VA-API device.
+     * Similarly, a forced VA-API configuration need not discover software codecs. */
+    const uint32_t software = encoder->preference != WD_VIDEO_ENCODER_PREFERENCE_VAAPI
+                                  ? requested & wd_video_encoder_detect_software_codecs()
+                                  : 0;
+    const uint32_t vaapi = encoder->preference != WD_VIDEO_ENCODER_PREFERENCE_SOFTWARE
+                               ? requested & wd_video_encoder_detect_vaapi_codecs(encoder) & ~encoder->vaapi_failed_codecs
+                               : 0;
 
     if (encoder->preference != WD_VIDEO_ENCODER_PREFERENCE_SOFTWARE)
     {

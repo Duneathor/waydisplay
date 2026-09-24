@@ -335,6 +335,16 @@ static void xwayland_view_clear_focus_and_grabs(struct wd_view* view) {
     }
 }
 
+/* Log the X11 resource ID, not just the wlroots/view pointer: the XCB BadWindow
+ * diagnostic reports this same ID in decimal. Log before issuing configure. */
+static void xwayland_log_configure(struct wd_view* view, const char* reason, int x, int y, uint32_t width, uint32_t height) {
+    WD_LOG_DEBUG("Xwayland configure reason=%s window=0x%08x (%u) view=%p "
+                 "geom=%ux%u+%d+%d mapped=%d associated=%d",
+                 reason, (unsigned)view->xwayland_surface->window_id, (unsigned)view->xwayland_surface->window_id,
+                 (void*)view, (unsigned)width, (unsigned)height, x, y, view->mapped ? 1 : 0,
+                 view->xwayland_surface->surface ? 1 : 0);
+}
+
 static void xwayland_view_configure_current_geometry(struct wd_view* view) {
     if (!view || !view->xwayland_surface)
     {
@@ -345,6 +355,7 @@ static void xwayland_view_configure_current_geometry(struct wd_view* view) {
     uint16_t                     width    = xwayland_configure_width(view, xsurface->width);
     uint16_t                     height   = xwayland_configure_height(view, xsurface->height);
 
+    xwayland_log_configure(view, "current_geometry", view->x, view->y, width, height);
     wlr_xwayland_surface_configure(xsurface, view->x, view->y, width, height);
     xwayland_view_update_decoration(view);
 }
@@ -373,6 +384,8 @@ static void xwayland_view_restore_saved_geometry(struct wd_view* view) {
     view->y = view->saved_y;
     wd_scene_set_view_position(view);
 
+    xwayland_log_configure(view, "restore_geometry", view->x, view->y, (uint16_t)view->saved_width,
+                           (uint16_t)view->saved_height);
     wlr_xwayland_surface_configure(view->xwayland_surface, view->x, view->y, (uint16_t)view->saved_width, (uint16_t)view->saved_height);
     xwayland_view_update_decoration(view);
 }
@@ -565,11 +578,13 @@ static void handle_xwayland_surface_map(struct wl_listener* listener, void* data
         return;
     }
 
-    xwayland_view_mark_mapped(view, true);
-
-    WD_LOG_DEBUG("Xwayland surface mapped view=%p geom=%dx%d+%d+%d title=%s class=%s", (void*)view, (int)view->xwayland_surface->width,
-                 (int)view->xwayland_surface->height, (int)view->xwayland_surface->x, (int)view->xwayland_surface->y,
+    WD_LOG_DEBUG("Xwayland lifecycle event=surface_map window=0x%08x (%u) view=%p "
+                 "geom=%dx%d+%d+%d title=%s class=%s",
+                 (unsigned)view->xwayland_surface->window_id, (unsigned)view->xwayland_surface->window_id,
+                 (void*)view, (int)view->xwayland_surface->width, (int)view->xwayland_surface->height,
+                 (int)view->xwayland_surface->x, (int)view->xwayland_surface->y,
                  view->title ? view->title : "", view->app_id ? view->app_id : "");
+    xwayland_view_mark_mapped(view, true);
 }
 
 static void handle_xwayland_surface_unmap(struct wl_listener* listener, void* data) {
@@ -581,6 +596,10 @@ static void handle_xwayland_surface_unmap(struct wl_listener* listener, void* da
         return;
     }
 
+    WD_LOG_DEBUG("Xwayland lifecycle event=surface_unmap window=0x%08x (%u) view=%p mapped=%d",
+                 view->xwayland_surface ? (unsigned)view->xwayland_surface->window_id : 0u,
+                 view->xwayland_surface ? (unsigned)view->xwayland_surface->window_id : 0u,
+                 (void*)view, view->mapped ? 1 : 0);
     bool was_focused = view->server && view->server->focused_view == view;
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_STATS
     if (view->server && view->mapped)
@@ -613,6 +632,10 @@ static void xwayland_view_disassociate(struct wd_view* view) {
         return;
     }
 
+    WD_LOG_DEBUG("Xwayland lifecycle event=dissociate window=0x%08x (%u) view=%p mapped=%d",
+                 view->xwayland_surface ? (unsigned)view->xwayland_surface->window_id : 0u,
+                 view->xwayland_surface ? (unsigned)view->xwayland_surface->window_id : 0u,
+                 (void*)view, view->mapped ? 1 : 0);
     remove_listener_if_linked(&view->xwayland_map);
     remove_listener_if_linked(&view->xwayland_unmap);
     remove_listener_if_linked(&view->xwayland_commit);
@@ -679,6 +702,9 @@ static void xwayland_view_associate(struct wd_view* view) {
         return;
     }
 
+    WD_LOG_DEBUG("Xwayland lifecycle event=associate window=0x%08x (%u) view=%p mapped=%d",
+                 (unsigned)view->xwayland_surface->window_id, (unsigned)view->xwayland_surface->window_id,
+                 (void*)view, view->mapped ? 1 : 0);
     if (!view->scene_tree)
     {
         view->scene_tree = wlr_scene_tree_create(view->server->scene_views);
@@ -745,6 +771,12 @@ static void handle_xwayland_map_request(struct wl_listener* listener, void* data
         return;
     }
 
+    WD_LOG_DEBUG("Xwayland lifecycle event=map_request window=0x%08x (%u) view=%p "
+                 "geom=%dx%d+%d+%d associated=%d",
+                 (unsigned)view->xwayland_surface->window_id, (unsigned)view->xwayland_surface->window_id,
+                 (void*)view, (int)view->xwayland_surface->width, (int)view->xwayland_surface->height,
+                 (int)view->xwayland_surface->x, (int)view->xwayland_surface->y,
+                 view->xwayland_surface->surface ? 1 : 0);
     view->xwayland_had_map_request = true;
 
     xwayland_view_configure_current_geometry(view);
@@ -753,10 +785,12 @@ static void handle_xwayland_map_request(struct wl_listener* listener, void* data
         xwayland_view_mark_mapped(view, view->scene_tree != NULL);
     }
 
-    WD_LOG_DEBUG("Xwayland map request view=%p requested=%dx%d+%d+%d configured=%ux%u "
-                 "pending_associate=%d",
-                 (void*)view, (int)view->xwayland_surface->width, (int)view->xwayland_surface->height, (int)view->xwayland_surface->x,
-                 (int)view->xwayland_surface->y, (unsigned)xwayland_configure_width(view, view->xwayland_surface->width),
+    WD_LOG_DEBUG("Xwayland lifecycle event=map_request_done window=0x%08x (%u) view=%p "
+                 "requested=%dx%d+%d+%d configured=%ux%u pending_associate=%d",
+                 (unsigned)view->xwayland_surface->window_id, (unsigned)view->xwayland_surface->window_id,
+                 (void*)view, (int)view->xwayland_surface->width, (int)view->xwayland_surface->height,
+                 (int)view->xwayland_surface->x, (int)view->xwayland_surface->y,
+                 (unsigned)xwayland_configure_width(view, view->xwayland_surface->width),
                  (unsigned)xwayland_configure_height(view, view->xwayland_surface->height), view->scene_tree ? 0 : 1);
 }
 
@@ -776,6 +810,8 @@ static void xwayland_view_set_maximized(struct wd_view* view, bool maximize) {
         view->y = 0;
         wd_scene_set_view_position(view);
 
+        xwayland_log_configure(view, "maximize", view->x, view->y, xwayland_view_display_width(view),
+                               xwayland_view_display_height(view));
         wlr_xwayland_surface_configure(xsurface, view->x, view->y, xwayland_view_display_width(view), xwayland_view_display_height(view));
         xwayland_view_update_decoration(view);
     }
@@ -811,6 +847,8 @@ void wd_xwayland_handle_output_resize(struct wd_server* server) {
             view->x = 0;
             view->y = 0;
             wd_scene_set_view_position(view);
+            xwayland_log_configure(view, "output_resize", view->x, view->y, xwayland_view_display_width(view),
+                                   xwayland_view_display_height(view));
             wlr_xwayland_surface_configure(view->xwayland_surface, view->x, view->y, xwayland_view_display_width(view),
                                            xwayland_view_display_height(view));
             xwayland_view_update_decoration(view);
@@ -854,6 +892,8 @@ static void handle_xwayland_request_fullscreen(struct wl_listener* listener, voi
         view->y = 0;
         wd_scene_set_view_position(view);
 
+        xwayland_log_configure(view, "fullscreen", view->x, view->y, xwayland_view_display_width(view),
+                               xwayland_view_display_height(view));
         wlr_xwayland_surface_configure(xsurface, view->x, view->y, xwayland_view_display_width(view), xwayland_view_display_height(view));
         xwayland_view_update_decoration(view);
     }
@@ -948,9 +988,15 @@ static void handle_xwayland_request_configure(struct wl_listener* listener, void
         width = xwayland_view_display_width(view);
         height = xwayland_view_display_height(view);
     }
+    WD_LOG_DEBUG("Xwayland lifecycle event=request_configure window=0x%08x (%u) view=%p "
+                 "requested=%ux%u+%d+%d fullscreen=%d maximized=%d",
+                 (unsigned)view->xwayland_surface->window_id, (unsigned)view->xwayland_surface->window_id,
+                 (void*)view, (unsigned)event->width, (unsigned)event->height, event->x, event->y,
+                 view->fullscreen ? 1 : 0, view->maximized ? 1 : 0);
     view->x = target_x;
     view->y = target_y;
 
+    xwayland_log_configure(view, "request_configure", target_x, target_y, width, height);
     wlr_xwayland_surface_configure(view->xwayland_surface, target_x, target_y, width, height);
     wd_scene_set_view_position(view);
     xwayland_view_update_decoration(view);
@@ -970,6 +1016,12 @@ static void handle_xwayland_surface_destroy(struct wl_listener* listener, void* 
         return;
     }
 
+    const uint32_t window_id = view->xwayland_surface ? view->xwayland_surface->window_id : 0u;
+    WD_LOG_DEBUG("Xwayland lifecycle event=destroy window=0x%08x (%u) view=%p "
+                 "mapped=%d associated=%d scene_tree=%p",
+                 (unsigned)window_id, (unsigned)window_id, (void*)view, view->mapped ? 1 : 0,
+                 view->xwayland_surface && view->xwayland_surface->surface ? 1 : 0,
+                 (void*)view->scene_tree);
     struct wd_server* server      = view->server;
     bool              was_focused = server && server->focused_view == view;
 
@@ -1028,6 +1080,8 @@ static void handle_xwayland_surface_destroy(struct wl_listener* listener, void* 
         view->xwayland_decoration_layout_valid = false;
     }
 
+    WD_LOG_DEBUG("Xwayland lifecycle event=destroy_done window=0x%08x (%u) view=%p",
+                 (unsigned)window_id, (unsigned)window_id, (void*)view);
     free(view->app_id);
     free(view->title);
     free(view);
@@ -1078,6 +1132,12 @@ static void handle_new_xwayland_surface(struct wl_listener* listener, void* data
 
     wl_list_insert(server->views.prev, &view->link);
 
+    WD_LOG_DEBUG("Xwayland lifecycle event=new_surface window=0x%08x (%u) view=%p "
+                 "geom=%dx%d+%d+%d associated=%d",
+                 (unsigned)xsurface->window_id, (unsigned)xsurface->window_id,
+                 (void*)view, (int)xsurface->width, (int)xsurface->height, (int)xsurface->x, (int)xsurface->y,
+                 xsurface->surface ? 1 : 0);
+
     view->xwayland_destroy.notify = handle_xwayland_surface_destroy;
     wl_signal_add(&xsurface->events.destroy, &view->xwayland_destroy);
 
@@ -1110,7 +1170,6 @@ static void handle_new_xwayland_surface(struct wl_listener* listener, void* data
         xwayland_view_associate(view);
     }
 
-    WD_LOG_DEBUG("new Xwayland shell surface view=%p", (void*)view);
 }
 
 bool wd_xwayland_view_decoration_at(struct wd_view* view, double sx, double sy) {
