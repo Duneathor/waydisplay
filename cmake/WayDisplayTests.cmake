@@ -674,6 +674,14 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.audio_startup_state
+        TARGET waydisplay_test_audio_startup_state
+        SOURCES tests/test_audio_startup_state.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+        LABELS "unit;audio;video;client"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.audio_startup_integration
         TARGET waydisplay_test_audio_startup_integration
         SOURCES tests/test_audio_startup_integration.cpp
@@ -682,6 +690,14 @@ if(WAYDISPLAY_BUILD_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/src/client
             ${CMAKE_CURRENT_SOURCE_DIR}/src/server
         LABELS "integration;audio;video;client;server;lifecycle"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.audio_playback_clock
+        TARGET waydisplay_test_audio_playback_clock
+        SOURCES tests/test_audio_playback_clock.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+        LABELS "unit;audio;client"
     )
 
     waydisplay_add_test(
@@ -763,6 +779,32 @@ if(WAYDISPLAY_BUILD_TESTS)
         SOURCES tests/test_client_runtime_linkage.cpp
         LIBRARIES waydisplay_client_runtime
         LABELS "client;linkage;lifecycle"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_decoder_conversion
+        TARGET waydisplay_test_video_decoder_conversion
+        SOURCES tests/test_video_decoder_conversion.cpp
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;client;video;codec"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_plane_copy
+        TARGET waydisplay_test_video_plane_copy
+        SOURCES tests/test_video_plane_copy.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+        LABELS "unit;client;video;codec"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_presentation_geometry
+        TARGET waydisplay_test_video_presentation_geometry
+        SOURCES tests/test_video_presentation_geometry.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+        LABELS "unit;client;video;render"
     )
 
     waydisplay_add_test(

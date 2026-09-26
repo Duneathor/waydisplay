@@ -1,5 +1,5 @@
 #include "video_decoder.hpp"
-#include "video_plane_copy.hpp"
+#include "video_decoder_conversion.hpp"
 
 #include "waydisplay/wd_log.h"
 
@@ -355,40 +355,7 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const wd_video_frame_pay
     const int  visible_width  = static_cast<int>(header.width);
     const int  visible_height = static_cast<int>(header.height);
     const auto src_format     = static_cast<AVPixelFormat>(src_frame->format);
-    const uint32_t y_pitch        = header.width;
-    const uint32_t uv_width       = (header.width + 1u) / 2u;
-    const uint32_t uv_height      = (header.height + 1u) / 2u;
-    const size_t   y_size         = static_cast<size_t>(y_pitch) * header.height;
-    const size_t   uv_size        = static_cast<size_t>(uv_width) * uv_height;
-    const size_t   expected_bytes = y_size + uv_size * 2u;
-    try
-    {
-        if (output->bytes.size() != expected_bytes)
-        {
-            output->bytes.resize(expected_bytes);
-        }
-    }
-    catch (...)
-    {
-        output->clear();
-        return false;
-    }
 
-    output->format   = ClientVideoPixelFormat::IYUV;
-    output->width    = header.width;
-    output->height   = header.height;
-    output->y_pitch  = y_pitch;
-    output->uv_pitch = uv_width;
-    output->u_offset = y_size;
-    output->v_offset = y_size + uv_size;
-
-    uint8_t* const dst_slices[4] = {
-        output->bytes.data(),
-        output->bytes.data() + output->u_offset,
-        output->bytes.data() + output->v_offset,
-        nullptr,
-    };
-    const int dst_stride[4] = {static_cast<int>(y_pitch), static_cast<int>(uv_width), static_cast<int>(uv_width), 0};
     /* Both layouts already contain the final 4:2:0 pixel grid. A direct
      * visible-plane copy avoids swscale's conversion path and ignores codec
      * padding at the right/bottom edges. */
@@ -396,13 +363,28 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const wd_video_frame_pay
     if (src_format == AV_PIX_FMT_YUV420P || src_format == AV_PIX_FMT_NV12)
     {
         const uint8_t* const src_planes[3] = {src_frame->data[0], src_frame->data[1], src_frame->data[2]};
-        uint8_t* const dst_planes[3] = {dst_slices[0], dst_slices[1], dst_slices[2]};
-        copied = client_copy_video_planes(src_format == AV_PIX_FMT_NV12 ? ClientVideoPlaneLayout::NV12
-                                                                       : ClientVideoPlaneLayout::YUV420P,
-                                          src_planes, src_frame->linesize, dst_planes, header.width, header.height);
+        copied = client_video_decoder_copy_visible_planes(
+            src_format == AV_PIX_FMT_NV12 ? ClientVideoPlaneLayout::NV12 : ClientVideoPlaneLayout::YUV420P,
+            src_planes, src_frame->linesize, coded_width, coded_height, header.width, header.height, *output);
     }
     if (!copied)
     {
+        if (!client_video_decoder_prepare_iyuv(*output, header.width, header.height))
+        {
+            return false;
+        }
+        uint8_t* const dst_slices[4] = {
+            output->bytes.data(),
+            output->bytes.data() + output->u_offset,
+            output->bytes.data() + output->v_offset,
+            nullptr,
+        };
+        const int dst_stride[4] = {
+            static_cast<int>(output->y_pitch),
+            static_cast<int>(output->uv_pitch),
+            static_cast<int>(output->uv_pitch),
+            0,
+        };
         const int scaler_flags = WD_VIDEO_SCALER_USE_FAST_BILINEAR ? SWS_FAST_BILINEAR : SWS_BILINEAR;
         decoder->sws_ctx = sws_getCachedContext(decoder->sws_ctx, visible_width, visible_height, src_format, visible_width, visible_height,
                                                 AV_PIX_FMT_YUV420P, scaler_flags, nullptr, nullptr, nullptr);
@@ -416,12 +398,7 @@ bool convert_decoder_frame(ClientVideoDecoder* decoder, const wd_video_frame_pay
         }
     }
 
-    out_frame->format        = ClientVideoPixelFormat::IYUV;
-    out_frame->width         = header.width;
-    out_frame->height        = header.height;
-    out_frame->frame_id      = header.frame_id;
-    out_frame->content_epoch = header.content_epoch;
-    out_frame->pts_usec      = header.pts_usec;
+    client_video_decoder_assign_metadata(header, *out_frame);
 
     return true;
 }

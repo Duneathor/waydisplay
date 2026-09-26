@@ -77,6 +77,15 @@ inline uint64_t client_audio_device_playhead_queued(uint64_t start_pts, uint64_t
     return std::min(callback_playhead, start_pts + played_limit);
 }
 
+/* Postmix callbacks can advance while this stream is silent. Treat starvation
+ * as real only after the stream is empty and the submitted media range has
+ * actually been consumed. Once the caller marks playback stopped, the same
+ * drained range cannot be counted as a second underflow. */
+inline bool client_audio_device_starvation_confirmed(bool playing, bool have_playback_start_pts,
+                                                      bool submitted_media_consumed, uint64_t stream_queued_samples) {
+    return playing && have_playback_start_pts && submitted_media_consumed && stream_queued_samples == 0;
+}
+
 inline bool client_audio_device_consumed(uint64_t start_pts, uint64_t submitted_end_pts, uint64_t mixed_samples_fp,
                                          uint64_t device_buffer_samples) {
     if (submitted_end_pts <= start_pts)

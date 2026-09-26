@@ -30,7 +30,18 @@ The conceptual state order is:
 4. generation and retransmit state
 5. video-frame and presentation telemetry state
 
-No thread may call SDL while holding a producer-state mutex. The receive worker may signal `ClientRenderWake`, but only the render thread consumes and presents frames. Audio synchronization may discard late video **only while another decoded frame is already queued**; the sole available decoded frame must be eligible for presentation even if audio is ahead. Initial audio buffering may gate video for at most `WD_CLIENT_AUDIO_VIDEO_STARTUP_HOLD_MAX_MS`; after that bound, video presents without an audio master clock until playback becomes established.
+No thread may call SDL while holding a producer-state mutex. The receive worker
+may signal `ClientRenderWake`, but only the render thread consumes and presents
+frames. Audio synchronization may discard late video **only while another
+decoded frame is already queued**; the sole available decoded frame must be
+eligible for presentation even if audio is ahead.
+
+Configuring an audio epoch does not by itself gate video. The first successfully
+queued PCM arms at most one `WD_CLIENT_AUDIO_VIDEO_STARTUP_HOLD_MAX_MS` wait, and
+later packets cannot restart its timer. Timeout releases that buffering period
+permanently. Output-backlog rebasing also releases clock ownership while
+preserving the wire sequence/PTS cursor; a confirmed drained underflow resets
+the startup state so later PCM may begin a new bounded wait.
 
 ## Resize texture lifetime
 

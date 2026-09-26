@@ -1,4 +1,5 @@
 #include "audio_video_sync.h"
+#include "audio_startup_state.hpp"
 #include "video_present_queue.hpp"
 #include "waydisplay/wd_protocol.h"
 #include "wd_video_transition.h"
@@ -31,6 +32,25 @@ waydisplay::ClientVideoFrameBuffer frame(uint8_t value) {
     result.v_offset = 20;
     result.bytes.assign(24, value);
     return result;
+}
+
+
+void test_first_pcm_arms_runtime_gate_policy() {
+    waydisplay::ClientAudioStartupGateState gate{};
+    CHECK(wd_client_audio_startup_gate_decide(true, false, waydisplay::client_audio_startup_gate_waiting(gate), 0, 1000) ==
+          WD_CLIENT_AUDIO_STARTUP_READY);
+
+    waydisplay::client_audio_startup_gate_begin_buffering(gate, UINT64_C(1000000000));
+    CHECK(wd_client_audio_startup_gate_decide(true, false, waydisplay::client_audio_startup_gate_waiting(gate),
+                                              waydisplay::client_audio_startup_gate_elapsed_ms(gate, UINT64_C(1500000000)), 1000) ==
+          WD_CLIENT_AUDIO_STARTUP_HOLD);
+
+    CHECK(wd_client_audio_startup_gate_decide(true, false, waydisplay::client_audio_startup_gate_waiting(gate),
+                                              waydisplay::client_audio_startup_gate_elapsed_ms(gate, UINT64_C(2000000000)), 1000) ==
+          WD_CLIENT_AUDIO_STARTUP_TIMEOUT);
+    waydisplay::client_audio_startup_gate_release(gate);
+    waydisplay::client_audio_startup_gate_begin_buffering(gate, UINT64_C(2100000000));
+    CHECK(!waydisplay::client_audio_startup_gate_waiting(gate));
 }
 
 void test_audio_never_arrives_releases_video() {
@@ -113,6 +133,7 @@ void test_server_health_distinguishes_bounded_wait_from_timeout() {
 } // namespace
 
 int main() {
+    test_first_pcm_arms_runtime_gate_policy();
     test_audio_never_arrives_releases_video();
     test_late_audio_can_become_clock_master();
     test_queue_pressure_preserves_audio_held_head();

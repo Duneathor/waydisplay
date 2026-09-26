@@ -30,23 +30,36 @@ using waydisplay::ClientVideoPixelFormat;
         }                                                                                                                                  \
     } while (false)
 
-constexpr uint32_t kWidth       = 65;
-constexpr uint32_t kHeight      = 49;
-constexpr uint32_t kCodedWidth  = 66;
-constexpr uint32_t kCodedHeight = 50;
-constexpr uint32_t kStride      = 72;
+constexpr uint32_t kWidth        = 65;
+constexpr uint32_t kHeight       = 49;
+constexpr uint32_t kResizeWidth  = 67;
+constexpr uint32_t kResizeHeight = 51;
+constexpr uint32_t kStride       = 72;
+constexpr uint64_t kFrameStepUsec = UINT64_C(33333);
 
-void fill_frame(std::vector<uint32_t>& pixels, uint32_t frame_number) {
-    std::fill(pixels.begin(), pixels.end(), UINT32_C(0xff000000));
-    for (uint32_t y = 0; y < kHeight; ++y)
+uint32_t coded_dimension(uint32_t value) {
+    return (value + 1u) & ~UINT32_C(1);
+}
+
+uint32_t expected_bright_quadrant(uint32_t frame_number) {
+    return frame_number & 3u;
+}
+
+void fill_frame(std::vector<uint32_t>& pixels, uint32_t width, uint32_t height, uint32_t frame_number) {
+    std::fill(pixels.begin(), pixels.end(), UINT32_C(0xff101010));
+    const uint32_t bright_quadrant = expected_bright_quadrant(frame_number);
+    const uint32_t split_x = width / 2u;
+    const uint32_t split_y = height / 2u;
+    for (uint32_t y = 0; y < height; ++y)
     {
-        for (uint32_t x = 0; x < kWidth; ++x)
+        for (uint32_t x = 0; x < width; ++x)
         {
-            const uint32_t phase                         = frame_number * 29u;
-            const uint32_t red                           = (x * 4u + phase) & 0xffu;
-            const uint32_t green                         = (y * 6u + phase * 2u) & 0xffu;
-            const uint32_t blue                          = ((x + y) * 3u + phase * 3u) & 0xffu;
-            pixels[static_cast<size_t>(y) * kStride + x] = UINT32_C(0xff000000) | (red << 16u) | (green << 8u) | blue;
+            const uint32_t quadrant = (x >= split_x ? 1u : 0u) | (y >= split_y ? 2u : 0u);
+            const uint32_t base = quadrant == bright_quadrant ? 0xe0u : 0x18u;
+            const uint32_t detail = (x * 3u + y * 5u + frame_number * 7u) & 0x0fu;
+            const uint32_t level = std::min<uint32_t>(255u, base + detail);
+            pixels[static_cast<size_t>(y) * kStride + x] =
+                UINT32_C(0xff000000) | (level << 16u) | (level << 8u) | level;
         }
     }
 }
@@ -56,13 +69,59 @@ uint64_t luma_checksum(const ClientVideoFrameBuffer& frame) {
     return std::accumulate(frame.bytes.begin(), frame.bytes.begin() + static_cast<ptrdiff_t>(y_size), UINT64_C(0));
 }
 
-bool configure_pair(wd_video_encoder* encoder, ClientVideoDecoder* decoder, uint32_t codec, uint64_t content_epoch) {
+uint32_t brightest_luma_quadrant(const ClientVideoFrameBuffer& frame) {
+    uint64_t sums[4]{};
+    uint64_t counts[4]{};
+    const uint32_t split_x = frame.width / 2u;
+    const uint32_t split_y = frame.height / 2u;
+    for (uint32_t y = 0; y < frame.height; ++y)
+    {
+        for (uint32_t x = 0; x < frame.width; ++x)
+        {
+            const uint32_t quadrant = (x >= split_x ? 1u : 0u) | (y >= split_y ? 2u : 0u);
+            sums[quadrant] += frame.bytes[static_cast<size_t>(y) * frame.y_pitch + x];
+            counts[quadrant]++;
+        }
+    }
+
+    uint32_t brightest = 0;
+    for (uint32_t quadrant = 1; quadrant < 4; ++quadrant)
+    {
+        if (sums[quadrant] * counts[brightest] > sums[brightest] * counts[quadrant])
+        {
+            brightest = quadrant;
+        }
+    }
+    return brightest;
+}
+
+struct SubmittedFrameExpectation {
+    wd_video_frame_payload_header header{};
+    uint32_t                      bright_quadrant = 0;
+};
+
+bool expected_quadrant_for_pts(uint64_t pts_usec, uint64_t base_pts_usec, uint32_t* quadrant) {
+    if (!quadrant || pts_usec < base_pts_usec)
+    {
+        return false;
+    }
+    const uint64_t delta = pts_usec - base_pts_usec;
+    if (delta % kFrameStepUsec != 0)
+    {
+        return false;
+    }
+    *quadrant = expected_bright_quadrant(static_cast<uint32_t>(delta / kFrameStepUsec));
+    return true;
+}
+
+bool configure_pair(wd_video_encoder* encoder, ClientVideoDecoder* decoder, uint32_t codec, uint64_t content_epoch,
+                    uint32_t width = kWidth, uint32_t height = kHeight) {
     wd_video_encoder_config encoder_config{};
     encoder_config.session_id             = 11;
     encoder_config.connection_token       = UINT64_C(0x1122334455667788);
     encoder_config.content_epoch          = content_epoch;
-    encoder_config.width                  = kWidth;
-    encoder_config.height                 = kHeight;
+    encoder_config.width                  = static_cast<uint16_t>(width);
+    encoder_config.height                 = static_cast<uint16_t>(height);
     encoder_config.target_fps             = 30;
     encoder_config.bitrate_kib_per_second = 4096;
     encoder_config.codec                  = codec;
@@ -72,10 +131,10 @@ bool configure_pair(wd_video_encoder* encoder, ClientVideoDecoder* decoder, uint
     decoder_config.session_id       = encoder_config.session_id;
     decoder_config.connection_token = encoder_config.connection_token;
     decoder_config.content_epoch    = content_epoch;
-    decoder_config.width            = kWidth;
-    decoder_config.height           = kHeight;
-    decoder_config.coded_width      = kCodedWidth;
-    decoder_config.coded_height     = kCodedHeight;
+    decoder_config.width            = static_cast<uint16_t>(width);
+    decoder_config.height           = static_cast<uint16_t>(height);
+    decoder_config.coded_width      = static_cast<uint16_t>(coded_dimension(width));
+    decoder_config.coded_height     = static_cast<uint16_t>(coded_dimension(height));
     decoder_config.target_fps       = encoder_config.target_fps;
     decoder_config.codec            = codec;
     decoder_config.decode_mode     = WD_CLIENT_VIDEO_DECODER_SOFTWARE;
@@ -90,21 +149,21 @@ bool run_codec(uint32_t codec) {
     CHECK(waydisplay::client_video_decoder_create(&decoder));
     CHECK(configure_pair(encoder, decoder, codec, 1));
 
-    std::vector<uint32_t>                      pixels(static_cast<size_t>(kStride) * kHeight);
-    std::vector<uint64_t>                      checksums;
-    std::vector<wd_video_frame_payload_header> submitted_headers;
+    std::vector<uint32_t>                 pixels(static_cast<size_t>(kStride) * kResizeHeight);
+    std::vector<uint64_t>                 checksums;
+    std::vector<SubmittedFrameExpectation> submitted_frames;
     uint64_t                                   previous_frame_id = 0;
     bool                                       saw_keyframe      = false;
 
     for (uint32_t frame_number = 0; frame_number < 24 && checksums.size() < 3; ++frame_number)
     {
-        fill_frame(pixels, frame_number);
+        fill_frame(pixels, kWidth, kHeight, frame_number);
         wd_video_encoder_input_xrgb8888 input{};
         input.pixels        = pixels.data();
         input.width         = kWidth;
         input.height        = kHeight;
         input.stride_pixels = kStride;
-        input.pts_usec      = UINT64_C(2000000) + static_cast<uint64_t>(frame_number) * UINT64_C(33333);
+        input.pts_usec      = UINT64_C(2000000) + static_cast<uint64_t>(frame_number) * kFrameStepUsec;
 
         wd_video_encoder_packet encoded{};
         CHECK(wd_video_encoder_encode_xrgb8888(encoder, &input, &encoded));
@@ -116,8 +175,8 @@ bool run_codec(uint32_t codec) {
         CHECK(encoded.header.frame_id > previous_frame_id);
         CHECK(encoded.header.width == kWidth);
         CHECK(encoded.header.height == kHeight);
-        CHECK(encoded.header.coded_width == kCodedWidth);
-        CHECK(encoded.header.coded_height == kCodedHeight);
+        CHECK(encoded.header.coded_width == coded_dimension(kWidth));
+        CHECK(encoded.header.coded_height == coded_dimension(kHeight));
         CHECK(wd_video_frame_payload_size_is_valid(&encoded.header,
                                                    static_cast<uint32_t>(sizeof(encoded.header)) + encoded.header.data_size));
         previous_frame_id = encoded.header.frame_id;
@@ -130,7 +189,9 @@ bool run_codec(uint32_t codec) {
         ClientVideoPacket packet{};
         packet.header = encoded.header;
         packet.data   = encoded.data;
-        submitted_headers.push_back(encoded.header);
+        uint32_t expected_quadrant = 0;
+        CHECK(expected_quadrant_for_pts(encoded.header.pts_usec, UINT64_C(2000000), &expected_quadrant));
+        submitted_frames.push_back({encoded.header, expected_quadrant});
         ClientDecodedVideoFrame decoded{};
         CHECK(waydisplay::client_video_decoder_decode(decoder, packet, &decoded));
 
@@ -142,9 +203,11 @@ bool run_codec(uint32_t codec) {
             }
 
             const auto submitted =
-                std::find_if(submitted_headers.begin(), submitted_headers.end(),
-                             [&decoded](const wd_video_frame_payload_header& header) { return header.frame_id == decoded.frame_id; });
-            CHECK(submitted != submitted_headers.end());
+                std::find_if(submitted_frames.begin(), submitted_frames.end(),
+                             [&decoded](const SubmittedFrameExpectation& candidate) {
+                                 return candidate.header.frame_id == decoded.frame_id;
+                             });
+            CHECK(submitted != submitted_frames.end());
 
             ClientVideoFrameBuffer output{};
             CHECK(waydisplay::client_video_decoder_swap_output_frame(decoder, output));
@@ -152,9 +215,10 @@ bool run_codec(uint32_t codec) {
             CHECK(decoded.format == ClientVideoPixelFormat::IYUV);
             CHECK(decoded.width == kWidth);
             CHECK(decoded.height == kHeight);
-            CHECK(decoded.content_epoch == submitted->content_epoch);
-            CHECK(decoded.pts_usec == submitted->pts_usec);
-            submitted_headers.erase(submitted);
+            CHECK(decoded.content_epoch == submitted->header.content_epoch);
+            CHECK(decoded.pts_usec == submitted->header.pts_usec);
+            CHECK(brightest_luma_quadrant(output) == submitted->bright_quadrant);
+            submitted_frames.erase(submitted);
             checksums.push_back(luma_checksum(output));
 
             decoded = ClientDecodedVideoFrame{};
@@ -171,21 +235,21 @@ bool run_codec(uint32_t codec) {
 
     waydisplay::client_video_decoder_reset(decoder);
     wd_video_encoder_reset(encoder);
-    CHECK(configure_pair(encoder, decoder, codec, 2));
+    CHECK(configure_pair(encoder, decoder, codec, 2, kResizeWidth, kResizeHeight));
     CHECK(wd_video_encoder_request_keyframe(encoder));
 
     bool decoded_new_epoch      = false;
     bool saw_new_epoch_keyframe = false;
-    submitted_headers.clear();
+    submitted_frames.clear();
     for (uint32_t frame_number = 30; frame_number < 42 && !decoded_new_epoch; ++frame_number)
     {
-        fill_frame(pixels, frame_number);
+        fill_frame(pixels, kResizeWidth, kResizeHeight, frame_number);
         wd_video_encoder_input_xrgb8888 input{};
         input.pixels        = pixels.data();
-        input.width         = kWidth;
-        input.height        = kHeight;
+        input.width         = kResizeWidth;
+        input.height        = kResizeHeight;
         input.stride_pixels = kStride;
-        input.pts_usec      = UINT64_C(5000000) + static_cast<uint64_t>(frame_number) * UINT64_C(33333);
+        input.pts_usec      = UINT64_C(5000000) + static_cast<uint64_t>(frame_number) * kFrameStepUsec;
         wd_video_encoder_packet encoded{};
         CHECK(wd_video_encoder_encode_xrgb8888(encoder, &input, &encoded));
         if (encoded.header.data_size == 0)
@@ -193,6 +257,9 @@ bool run_codec(uint32_t codec) {
             continue;
         }
         CHECK(encoded.header.content_epoch == 2);
+        CHECK(encoded.header.width == kResizeWidth && encoded.header.height == kResizeHeight);
+        CHECK(encoded.header.coded_width == coded_dimension(kResizeWidth) &&
+              encoded.header.coded_height == coded_dimension(kResizeHeight));
         if (!saw_new_epoch_keyframe)
         {
             CHECK(encoded.header.frame_id == 1);
@@ -200,7 +267,9 @@ bool run_codec(uint32_t codec) {
             CHECK(wd_client_video_keyframe_validate(codec, encoded.data, encoded.header.data_size) == WD_CLIENT_VIDEO_KEYFRAME_VALID);
             saw_new_epoch_keyframe = true;
         }
-        submitted_headers.push_back(encoded.header);
+        uint32_t expected_quadrant = 0;
+        CHECK(expected_quadrant_for_pts(encoded.header.pts_usec, UINT64_C(5000000), &expected_quadrant));
+        submitted_frames.push_back({encoded.header, expected_quadrant});
 
         ClientVideoPacket       packet{encoded.header, encoded.data};
         ClientDecodedVideoFrame decoded{};
@@ -212,15 +281,19 @@ bool run_codec(uint32_t codec) {
                 break;
             }
             const auto submitted =
-                std::find_if(submitted_headers.begin(), submitted_headers.end(),
-                             [&decoded](const wd_video_frame_payload_header& header) { return header.frame_id == decoded.frame_id; });
-            CHECK(submitted != submitted_headers.end());
+                std::find_if(submitted_frames.begin(), submitted_frames.end(),
+                             [&decoded](const SubmittedFrameExpectation& candidate) {
+                                 return candidate.header.frame_id == decoded.frame_id;
+                             });
+            CHECK(submitted != submitted_frames.end());
             ClientVideoFrameBuffer output{};
             CHECK(waydisplay::client_video_decoder_swap_output_frame(decoder, output));
             CHECK(output.valid());
+            CHECK(output.width == kResizeWidth && output.height == kResizeHeight);
             CHECK(decoded.content_epoch == 2);
-            CHECK(decoded.pts_usec == submitted->pts_usec);
-            submitted_headers.erase(submitted);
+            CHECK(decoded.pts_usec == submitted->header.pts_usec);
+            CHECK(brightest_luma_quadrant(output) == submitted->bright_quadrant);
+            submitted_frames.erase(submitted);
             decoded_new_epoch = true;
 
             decoded = ClientDecodedVideoFrame{};
@@ -255,13 +328,13 @@ bool run_dropped_reference_recovery(uint32_t codec) {
     uint32_t frame_number = 0;
     for (; frame_number < 64 && !dropped_reference; ++frame_number)
     {
-        fill_frame(pixels, frame_number);
+        fill_frame(pixels, kWidth, kHeight, frame_number);
         wd_video_encoder_input_xrgb8888 input{};
         input.pixels = pixels.data();
         input.width = kWidth;
         input.height = kHeight;
         input.stride_pixels = kStride;
-        input.pts_usec = UINT64_C(6000000) + static_cast<uint64_t>(frame_number) * UINT64_C(33333);
+        input.pts_usec = UINT64_C(6000000) + static_cast<uint64_t>(frame_number) * kFrameStepUsec;
         wd_video_encoder_packet packet{};
         CHECK(wd_video_encoder_encode_xrgb8888(encoder, &input, &packet));
         if (packet.header.data_size == 0)
@@ -287,13 +360,13 @@ bool run_dropped_reference_recovery(uint32_t codec) {
 
     for (; frame_number < 96 && !resumed_at_keyframe; ++frame_number)
     {
-        fill_frame(pixels, frame_number);
+        fill_frame(pixels, kWidth, kHeight, frame_number);
         wd_video_encoder_input_xrgb8888 input{};
         input.pixels = pixels.data();
         input.width = kWidth;
         input.height = kHeight;
         input.stride_pixels = kStride;
-        input.pts_usec = UINT64_C(6000000) + static_cast<uint64_t>(frame_number) * UINT64_C(33333);
+        input.pts_usec = UINT64_C(6000000) + static_cast<uint64_t>(frame_number) * kFrameStepUsec;
         wd_video_encoder_packet packet{};
         CHECK(wd_video_encoder_encode_xrgb8888(encoder, &input, &packet));
         if (packet.header.data_size == 0 || (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)

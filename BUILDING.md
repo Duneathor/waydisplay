@@ -352,6 +352,37 @@ The wlroots presets deliberately disable audio and video codecs so a generated
 Wayland-header or scene-test failure is not hidden by an unrelated hardware
 codec test. The full preset restores all default optional backends.
 
+### Focused audio/video regression slices
+
+The synchronization and visible-frame regressions are split so most failures can
+be reproduced without opening an audio device or invoking a codec. After a
+`tests-core` configure, the dependency-light cases can be selected with:
+
+```sh
+ctest --test-dir build-tests-core --output-on-failure   -R 'waydisplay\.(audio_startup_state|audio_playback_clock|audio_video_sync|audio_startup_integration|video_plane_copy|video_decoder_conversion|video_presentation_geometry)$'
+```
+
+`audio_startup_state` models only startup-gate transitions; it does not require
+SDL or Opus. `audio_playback_clock` covers queue rebasing, postmix/playhead
+accounting, and starvation confirmation. The video plane/conversion/geometry
+tests similarly operate on deterministic in-memory fixtures.
+
+The real encoder/decoder roundtrip remains in the codec preset because it
+requires FFmpeg and at least one codec shared by the software encoder and
+decoder:
+
+```sh
+cmake --preset tests-codecs -DWAYDISPLAY_RUN_TESTS_ON_BUILD=OFF
+cmake --build build-tests-codecs --target waydisplay_test_video_codec_roundtrip
+ctest --test-dir build-tests-codecs --output-on-failure   -R '^waydisplay\.video_codec_roundtrip$' --no-tests=error
+```
+
+That roundtrip deliberately uses odd visible dimensions backed by even coded
+dimensions, associates decoded image content with frame ID/PTS, and repeats the
+check after a resize/reconfigure. A skipped codec roundtrip is not equivalent to
+passing the dependency-light conversion tests; both layers are useful when
+debugging visual corruption.
+
 ## Runtime arguments and build-time policy
 
 The supported client/server command lines and the options intentionally kept in

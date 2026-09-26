@@ -56,7 +56,45 @@ The client may run on only two logical CPUs. Its preferred runtime shape is:
 - asynchronous io_uring transmit queues serviced without permanent sender threads
 - bounded decoder-internal threading where required
 
-Transport/session ownership is centralized. Protocol handling, render planning, reassembly, synchronization, and telemetry are kept independent from SDL where practical. Audio/video timing, video phase transitions, and stream ownership are implemented in C; new non-SDL logic should also prefer C.
+Transport/session ownership is centralized. Protocol handling, render planning,
+reassembly, synchronization, and telemetry are kept independent from SDL where
+practical. Dependency-light policy stays in small C or header-only helpers;
+backend wrappers may remain C++ where they own SDL or codec objects. Video phase
+transitions and stream ownership remain C interfaces.
+
+## Audio clock ownership
+
+Audio configuration alone does not make audio the video clock master. A
+configured stream can remain silent indefinitely, so the startup gate is armed
+only after valid decoded PCM has actually entered the playback FIFO. The first
+queued PCM establishes one bounded wait window; later packets cannot extend it.
+When playback starts, or when that wait times out, the gate is released.
+
+The release after a timeout is sticky for that buffering period. An output-only
+backlog rebase also leaves video free-running while SDL output is reanchored; it
+does not reset the Opus/wire sequence or PTS timeline. A confirmed device
+underflow is different: it ends the consumed playback period, clears the output
+anchor, and allows the next PCM period to arm one new bounded startup wait.
+
+The SDL postmix counter is only an estimate of device progress because callbacks
+can advance through silence or other clients. The media playhead is therefore
+bounded by this stream's queued PCM, and starvation is accepted only when the
+submitted media range has been consumed and this stream's queue is empty.
+
+## Decoded video geometry
+
+Video packet headers carry both visible and coded dimensions. Codecs may require
+even coded dimensions for an odd visible desktop (for example, 65x49 visible in
+66x50 coded storage). YUV420P and NV12 decoder output is copied only across the
+visible rectangle into a packed IYUV client buffer; stride and right/bottom
+codec padding are never part of the presented frame. Unsupported or unusual
+decoded layouts use the swscale fallback.
+
+SDL presentation geometry is computed from the renderer's physical output size,
+not the window's logical input coordinates. Video textures use nearest-neighbor
+scaling. Exact source/output dimensions are the only `pixel_exact` case;
+fractional high-DPI scaling and letterboxing use deterministic integer
+destination rectangles.
 
 ## Flow control
 

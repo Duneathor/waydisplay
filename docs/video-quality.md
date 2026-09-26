@@ -67,6 +67,16 @@ encoding or bitrate control, and at fractional scales it may look pixelated.
 Compare at exact 1:1 first; intentionally resizing the window changes both
 the remote geometry and the experiment's reference frame.
 
+Do not confuse **coded** dimensions with the visible desktop dimensions when
+investigating blur or edge corruption. An odd 65x49 desktop is encoded in a
+66x50 4:2:0 frame, but the client copies only the 65x49 visible luma region and
+its rounded-up chroma planes. Direct YUV420P/NV12 copies ignore decoder stride
+padding; other pixel layouts take the swscale fallback. The
+`waydisplay.video_plane_copy` and `waydisplay.video_decoder_conversion` tests
+cover this boundary without a codec, while `waydisplay.video_codec_roundtrip`
+checks the same odd-size contract through real H.264/H.265/AV1 implementations
+when available.
+
 ## High-bandwidth HEVC VA-API quality mode (049)
 
 At the existing maximum derived video budget of 100,000 KiB/s, HEVC VA-API now
