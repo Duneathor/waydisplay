@@ -10,6 +10,7 @@ extern "C" {
 
 uint16_t wd_tile_normalize_udp_payload_target(uint16_t udp_payload_target, uint16_t default_target, uint16_t maximum_target);
 uint16_t wd_tile_packet_count_for_payload(uint32_t payload_size, uint16_t udp_payload_target);
+uint16_t wd_tile_encode_pipeline_capacity(uint16_t available_jobs, uint16_t worker_count, uint16_t queue_waves);
 uint16_t wd_cap_periodic_capture_fps(uint16_t capture_fps, uint16_t output_refresh_hz);
 uint32_t wd_tile_wire_bytes_for_payload(uint32_t payload_size, uint16_t udp_payload_target, uint16_t packet_header_size,
                                         uint16_t first_packet_header_size);
@@ -67,6 +68,19 @@ struct wd_tile_compression_advisor {
 
 bool wd_tile_compression_advisor_should_attempt(struct wd_tile_compression_advisor* advisor);
 void wd_tile_compression_advisor_record(struct wd_tile_compression_advisor* advisor, bool worthwhile);
+
+struct wd_tile_payload_predictor {
+    uint32_t payload_ratio_q16;
+    uint16_t samples;
+    uint16_t skipped_candidates;
+};
+
+void     wd_tile_payload_predictor_record(struct wd_tile_payload_predictor* predictor, uint32_t payload_size, uint32_t uncompressed_size);
+uint32_t wd_tile_payload_predictor_predict(const struct wd_tile_payload_predictor* predictor, uint32_t uncompressed_size);
+bool     wd_tile_payload_predictor_should_attempt(struct wd_tile_payload_predictor* predictor, uint32_t uncompressed_size,
+                                                  uint32_t max_wire_bytes, uint16_t udp_payload_target,
+                                                  uint16_t packet_header_size, uint16_t first_packet_header_size,
+                                                  bool* out_probe);
 
 struct wd_tile_delivery_status {
     uint32_t pending;

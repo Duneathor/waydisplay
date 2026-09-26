@@ -77,6 +77,9 @@ bool packet_metadata_is_valid(const wd_video_encoder_packet& packet, const wd_vi
     CHECK((packet.header.coded_width & 1u) == 0);
     CHECK((packet.header.coded_height & 1u) == 0);
     CHECK(packet.header.frame_id != 0);
+    CHECK(packet.buffer != nullptr);
+    CHECK(packet.data == wd_buffer_const_data(packet.buffer));
+    CHECK(wd_buffer_size(packet.buffer) == packet.header.data_size);
     return true;
 }
 
@@ -127,6 +130,9 @@ bool test_invalid_api() {
     wd_video_encoder_destroy(encoder);
     encoder = nullptr;
 
+    wd_video_encoder_packet_release(nullptr);
+    wd_video_encoder_packet empty_packet{};
+    wd_video_encoder_packet_release(&empty_packet);
     CHECK(!wd_video_encoder_request_keyframe(nullptr));
     CHECK(!wd_video_encoder_configure(nullptr, nullptr));
 
@@ -177,6 +183,7 @@ bool test_codec(uint32_t codec) {
     CHECK((first.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0);
     CHECK((first.header.flags & WD_VIDEO_FRAME_CONFIG) != 0);
     CHECK(first.header.frame_id == 1);
+    const std::vector<uint8_t> first_bytes(first.data, first.data + first.header.data_size);
 
     /* Server entry commits tile epoch 3 -> video epoch 4 after sending the
      * first keyframe. This must not reinitialize the codec or send frame 1
@@ -194,6 +201,8 @@ bool test_codec(uint32_t codec) {
     CHECK(encode_until_packet(encoder, config, pixels, 20, second));
     CHECK(second.header.frame_id > first_frame_id);
     CHECK(second.header.content_epoch == 4);
+    CHECK(first.header.data_size == first_bytes.size());
+    CHECK(std::memcmp(first.data, first_bytes.data(), first_bytes.size()) == 0);
 
     CHECK(wd_video_encoder_request_keyframe(encoder));
     bool saw_requested_keyframe = false;
@@ -202,10 +211,16 @@ bool test_codec(uint32_t codec) {
         wd_video_encoder_packet packet{};
         CHECK(encode_until_packet(encoder, config, pixels, 40 + attempt * 12u, packet));
         saw_requested_keyframe = (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0;
+        wd_video_encoder_packet_release(&packet);
     }
     CHECK(saw_requested_keyframe);
 
     wd_video_encoder_reset(encoder);
+    /* Encoded packet ownership is independent of encoder reset/lifetime. */
+    CHECK(std::memcmp(first.data, first_bytes.data(), first_bytes.size()) == 0);
+    wd_video_encoder_packet_release(&first);
+    wd_video_encoder_packet_release(&second);
+    CHECK(first.buffer == nullptr && first.data == nullptr && first.header.data_size == 0);
     fill_pattern(pixels, 100);
     wd_video_encoder_input_xrgb8888 input{};
     input.pixels        = pixels.data();
@@ -222,6 +237,7 @@ bool test_codec(uint32_t codec) {
     CHECK(encode_until_packet(encoder, config, pixels, 120, new_epoch));
     CHECK(new_epoch.header.frame_id == 1);
     CHECK(new_epoch.header.content_epoch == 4);
+    wd_video_encoder_packet_release(&new_epoch);
 
     wd_video_encoder_destroy(encoder);
     return true;

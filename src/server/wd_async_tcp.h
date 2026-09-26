@@ -1,6 +1,9 @@
 #pragma once
 
+#include "waydisplay/wd_buffer.h"
+
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -22,6 +25,20 @@ bool wd_async_tcp_send_prepared_message(struct wd_async_tcp_sender* sender, int 
 
 
 typedef void (*wd_async_tcp_complete_fn)(void* user_data, bool success);
+
+/*
+ * Queue a protocol payload composed of a copied prefix and a retained slice of
+ * shared storage. The sender takes its own reference on payload for the entire
+ * queued/in-flight lifetime; the caller may release its reference immediately
+ * after this function returns. No payload bytes are copied.
+ */
+bool wd_async_tcp_send_owned_message(struct wd_async_tcp_sender* sender, int fd, uint16_t message_type,
+                                     const void* prefix, uint32_t prefix_size, struct wd_buffer* payload,
+                                     size_t payload_offset, uint32_t payload_size);
+bool wd_async_tcp_send_owned_message_ex(struct wd_async_tcp_sender* sender, int fd, uint16_t message_type,
+                                        const void* prefix, uint32_t prefix_size, struct wd_buffer* payload,
+                                        size_t payload_offset, uint32_t payload_size,
+                                        wd_async_tcp_complete_fn complete, void* user_data);
 
 bool wd_async_tcp_sender_create(struct wd_async_tcp_sender** out_sender, uint32_t entries);
 void wd_async_tcp_sender_destroy(struct wd_async_tcp_sender* sender);

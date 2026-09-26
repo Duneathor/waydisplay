@@ -5,6 +5,7 @@
 pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
 
 add_library(waydisplay_common STATIC
+    src/common/wd_buffer.c
     src/common/wd_time.c
     src/common/wd_log.c
     src/common/wd_eventfd.c
@@ -51,7 +52,9 @@ target_link_libraries(waydisplay_server_support PUBLIC
 add_library(waydisplay_server_runtime STATIC
     src/server/wd_bandwidth_plan.c
     src/server/wd_tile_policy.c
+    src/server/wd_tile_work_snapshot.c
     src/server/wd_dirty_region_scheduler.c
+    src/server/wd_encode_completion_queue.c
     src/server/wd_frame_pacing.c
     src/server/wd_async_udp_accounting.c
     src/server/wd_video_transition.c

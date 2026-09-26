@@ -18,6 +18,18 @@ void require(bool condition, const char* message) {
     }
 }
 
+
+void test_encode_pipeline_capacity_keeps_workers_fed() {
+    require(wd_tile_encode_pipeline_capacity(100, 4, 4) == 16,
+            "completion-driven scheduling should queue several worker waves");
+    require(wd_tile_encode_pipeline_capacity(3, 4, 4) == 3,
+            "pipeline capacity should not exceed available work");
+    require(wd_tile_encode_pipeline_capacity(8, 0, 0) == 1,
+            "zero worker and wave inputs should degrade to one job");
+    require(wd_tile_encode_pipeline_capacity(0, 4, 4) == 0,
+            "no available jobs should produce no work");
+}
+
 void test_wire_bytes_account_for_one_extended_header() {
     require(wd_tile_wire_bytes_for_payload(1000, 400, 20, 28) == 1068, "three packets should include one extended and two base headers");
     require(wd_tile_wire_bytes_for_payload(400, 400, 20, 28) == 428, "single packet should use the first-packet header size");
@@ -202,6 +214,39 @@ void test_compression_advisor_backs_off_and_resamples() {
     require(wd_tile_compression_advisor_should_attempt(&advisor), "a successful sample should immediately restore normal attempts");
 }
 
+void test_payload_predictor_skips_bad_candidates_and_probes() {
+    wd_tile_payload_predictor predictor{};
+    constexpr uint32_t raw_bytes = 128u * 64u * 4u;
+    for (uint32_t i = 0; i < WD_STREAM_TILE_PREDICTOR_MIN_SAMPLES; ++i)
+    {
+        require(wd_tile_payload_predictor_should_attempt(&predictor, raw_bytes, 1500, 1400, 20, 28, nullptr),
+                "predictor should warm up before skipping candidates");
+        wd_tile_payload_predictor_record(&predictor, raw_bytes, raw_bytes);
+    }
+
+    bool probe = false;
+    for (uint32_t i = 1; i < WD_STREAM_TILE_PREDICTOR_PROBE_INTERVAL; ++i)
+    {
+        probe = false;
+        require(!wd_tile_payload_predictor_should_attempt(&predictor, raw_bytes, 1500, 1400, 20, 28, &probe),
+                "historically raw large tiles should skip an impossible one-packet attempt");
+        require(!probe, "ordinary prediction skip should not be reported as a probe");
+    }
+
+    probe = false;
+    require(wd_tile_payload_predictor_should_attempt(&predictor, raw_bytes, 1500, 1400, 20, 28, &probe) && probe,
+            "prediction skips should periodically probe for changing content");
+
+    for (uint32_t i = 0; i < 12; ++i)
+    {
+        wd_tile_payload_predictor_record(&predictor, 512, raw_bytes);
+    }
+    require(wd_tile_payload_predictor_predict(&predictor, raw_bytes) < 1800,
+            "compressible history should lower the predicted payload");
+    require(wd_tile_payload_predictor_should_attempt(&predictor, raw_bytes, 1500, 1400, 20, 28, nullptr),
+            "compressible history should restore the large candidate");
+}
+
 void test_delivery_status_waits_for_seal_and_reports_failure() {
     wd_tile_delivery_status status{};
     wd_tile_delivery_status_add(&status);
@@ -268,6 +313,7 @@ void test_periodic_capture_is_capped_to_output_refresh() {
 } // namespace
 
 int main() {
+    test_encode_pipeline_capacity_keeps_workers_fed();
     test_wire_bytes_account_for_one_extended_header();
     test_auto_video_entry_uses_sustained_wire_cost();
     test_tile_demand_estimate_uses_all_frame_dirty_average();
@@ -277,6 +323,7 @@ int main() {
     test_xrgb_compression_prefilter();
     test_compression_benchmark_modes();
     test_compression_advisor_backs_off_and_resamples();
+    test_payload_predictor_skips_bad_candidates_and_probes();
     test_delivery_status_waits_for_seal_and_reports_failure();
     test_periodic_capture_is_capped_to_output_refresh();
     test_video_health_distinguishes_audio_wait_from_failure();

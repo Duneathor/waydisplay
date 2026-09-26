@@ -32,6 +32,7 @@ struct wd_async_udp_packet {
     struct iovec                iov[2];
     struct msghdr               msg;
     size_t                      packet_size;
+    struct wd_buffer*           payload_owner;
     uint8_t                     header[WD_UDP_TILE_HEADER_MAX_SIZE];
     bool                        prepared;
     bool                        submitted;
@@ -137,6 +138,8 @@ static void wd_async_udp_packet_release(struct wd_async_udp_sender* sender, stru
         return;
     }
 
+    wd_buffer_release(packet->payload_owner);
+    packet->payload_owner = NULL;
     packet->next      = NULL;
     packet->prev      = NULL;
     packet->prepared  = false;
@@ -284,9 +287,10 @@ bool wd_async_udp_sender_flush(struct wd_async_udp_sender* sender) {
     return sender->accounting.prepared == 0;
 }
 
-enum wd_async_udp_send_status wd_async_udp_send_packet(struct wd_async_udp_sender* sender, int fd, const struct sockaddr_in* addr,
-                                                       const void* header, uint32_t header_size, const void* payload, uint32_t payload_size,
-                                                       wd_async_udp_completion_fn completion, void* completion_data) {
+static enum wd_async_udp_send_status wd_async_udp_send_packet_internal(
+    struct wd_async_udp_sender* sender, int fd, const struct sockaddr_in* addr,
+    const void* header, uint32_t header_size, const void* payload, uint32_t payload_size,
+    struct wd_buffer* payload_owner, wd_async_udp_completion_fn completion, void* completion_data) {
     if (!sender || !sender->ring_ready || fd < 0)
     {
         return WD_ASYNC_UDP_SEND_FAILED;
@@ -321,6 +325,17 @@ enum wd_async_udp_send_status wd_async_udp_send_packet(struct wd_async_udp_sende
     {
         sender->local_failures++;
         return WD_ASYNC_UDP_SEND_FAILED;
+    }
+
+    if (payload_owner)
+    {
+        packet->payload_owner = wd_buffer_retain(payload_owner);
+        if (!packet->payload_owner)
+        {
+            sender->local_failures++;
+            wd_async_udp_packet_release(sender, packet);
+            return WD_ASYNC_UDP_SEND_FAILED;
+        }
     }
 
     struct io_uring_sqe* sqe = io_uring_get_sqe(&sender->ring);
@@ -363,6 +378,33 @@ enum wd_async_udp_send_status wd_async_udp_send_packet(struct wd_async_udp_sende
     wd_async_udp_accounting_queue(&sender->accounting);
 
     return WD_ASYNC_UDP_SEND_QUEUED;
+}
+
+enum wd_async_udp_send_status wd_async_udp_send_packet(struct wd_async_udp_sender* sender, int fd, const struct sockaddr_in* addr,
+                                                       const void* header, uint32_t header_size, const void* payload, uint32_t payload_size,
+                                                       wd_async_udp_completion_fn completion, void* completion_data) {
+    return wd_async_udp_send_packet_internal(sender, fd, addr, header, header_size, payload, payload_size,
+                                             NULL, completion, completion_data);
+}
+
+enum wd_async_udp_send_status wd_async_udp_send_packet_owned(
+    struct wd_async_udp_sender* sender, int fd, const struct sockaddr_in* addr,
+    const void* header, uint32_t header_size, struct wd_buffer* payload,
+    size_t payload_offset, uint32_t payload_size,
+    wd_async_udp_completion_fn completion, void* completion_data) {
+    if ((payload_size != 0 && !payload) ||
+        (payload && !wd_buffer_range_valid(payload, payload_offset, payload_size)))
+    {
+        if (sender)
+        {
+            sender->local_failures++;
+        }
+        return WD_ASYNC_UDP_SEND_FAILED;
+    }
+
+    const void* bytes = payload_size != 0 ? wd_buffer_const_data(payload) + payload_offset : NULL;
+    return wd_async_udp_send_packet_internal(sender, fd, addr, header, header_size, bytes, payload_size,
+                                             payload, completion, completion_data);
 }
 
 uint64_t wd_async_udp_sender_inflight(const struct wd_async_udp_sender* sender) {

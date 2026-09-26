@@ -61,6 +61,8 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->compression_forced_choices += src->compression_forced_choices;
     dst->compression_ns += src->compression_ns;
     dst->compression_saved_wire_bytes += src->compression_saved_wire_bytes;
+    dst->candidate_prediction_skips += src->candidate_prediction_skips;
+    dst->candidate_prediction_probes += src->candidate_prediction_probes;
     dst->stream_mode_frame_samples += src->stream_mode_frame_samples;
     dst->stream_mode_changed_frame_samples += src->stream_mode_changed_frame_samples;
     dst->stream_mode_dirty_coverage_per_mille_sum += src->stream_mode_dirty_coverage_per_mille_sum;
@@ -637,7 +639,8 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
         s.udp_async_send_failed != 0 || s.udp_async_queued != 0 || s.udp_async_completed != 0 || s.udp_async_completion_failed != 0 ||
         s.udp_async_sqe_exhausted != 0 || s.tile_choice_compressed != 0 || s.tile_choice_uncompressed != 0 || s.compression_attempts != 0 ||
         s.compression_entropy_skips != 0 || s.compression_adaptive_skips != 0 || s.compression_nonwins != 0 ||
-        s.compression_forced_choices != 0 || s.dirty_queue_age_samples != 0 || s.retx_queue_age_samples != 0 ||
+        s.compression_forced_choices != 0 || s.candidate_prediction_skips != 0 || s.candidate_prediction_probes != 0 ||
+        s.dirty_queue_age_samples != 0 || s.retx_queue_age_samples != 0 ||
         s.dirty_region_probes != 0 || s.dirty_region_hits != 0 || s.dirty_budget_blocked != 0 || s.partial_tile_sends != 0 ||
         s.dirty_detect_ns != 0 || s.framebuffer_diff_candidates != 0 || s.dirty_region_select_ns != 0 || s.tile_encode_ns != 0 ||
         s.summary_build_ns != 0 || s.udp_send_ns != 0 || s.encode_jobs_submitted != 0 || s.encode_jobs_completed != 0 ||
@@ -653,7 +656,8 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
             "choice_chosen_wire_avg_bytes=%.1f choice_saved_kib=%.1f pressure_drops=%llu async_queued=%llu async_completed=%llu "
             "async_failed=%llu async_completion_failed=%llu async_fallback=%llu async_inflight_max=%llu submit_calls=%llu "
             "partial_submits=%llu pkts_per_submit=%.2f zstd_mode=%s zstd_attempts=%llu zstd_wins=%llu zstd_nonwins=%llu zstd_forced=%llu "
-            "zstd_entropy_skip=%llu zstd_adaptive_skip=%llu zstd_total_ms=%.2f zstd_saved_kib=%.1f dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f "
+            "zstd_entropy_skip=%llu zstd_adaptive_skip=%llu predict_skip=%llu predict_probe=%llu zstd_total_ms=%.2f zstd_saved_kib=%.1f "
+            "dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f "
             "dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu dirty_budget_blocked_full_refresh=%llu "
             "partial_tiles=%llu partial_pkts=%llu detect_total_ms=%.2f diff_candidates=%llu diff_changed=%llu diff_unchanged=%llu diff_full=%llu "
             "diff_total_ms=%.2f region_pick_total_ms=%.2f encode_total_ms=%.2f udp_send_total_ms=%.2f summary_total_ms=%.2f "
@@ -682,7 +686,8 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
             wd_tile_compression_benchmark_mode_name(compression_benchmark_mode), (unsigned long long)s.compression_attempts,
             (unsigned long long)s.compression_wins, (unsigned long long)s.compression_nonwins,
             (unsigned long long)s.compression_forced_choices, (unsigned long long)s.compression_entropy_skips,
-            (unsigned long long)s.compression_adaptive_skips, (double)s.compression_ns / 1000000.0,
+            (unsigned long long)s.compression_adaptive_skips, (unsigned long long)s.candidate_prediction_skips,
+            (unsigned long long)s.candidate_prediction_probes, (double)s.compression_ns / 1000000.0,
             (double)s.compression_saved_wire_bytes / 1024.0, wd_avg_ms(s.dirty_queue_age_sum_ns, s.dirty_queue_age_samples),
             wd_avg_ms(s.retx_queue_age_sum_ns, s.retx_queue_age_samples), (unsigned long long)s.dirty_region_probes,
             (unsigned long long)s.dirty_region_hits, (unsigned long long)s.dirty_budget_blocked,

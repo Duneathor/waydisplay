@@ -1,5 +1,6 @@
 #pragma once
 
+#include "waydisplay/wd_buffer.h"
 #include "waydisplay/wd_protocol.h"
 
 #include <stdbool.h>
@@ -33,8 +34,10 @@ struct wd_video_encoder_input_xrgb8888 {
 struct wd_video_encoder_packet {
     struct wd_video_frame_payload_header header;
 
-    /* Owned by the encoder and valid until the next encode/reset/destroy call. */
-    const uint8_t* data;
+    /* Explicit owner for the encoded bytes. The caller must release the
+     * packet even if the encoder is reset or destroyed before transmission. */
+    struct wd_buffer* buffer;
+    const uint8_t*    data;
 };
 
 bool wd_video_encoder_create(struct wd_video_encoder** out_encoder, const char* video_encoder_backend);
@@ -55,6 +58,7 @@ bool wd_video_encoder_adopt_content_epoch(struct wd_video_encoder* encoder, uint
 bool wd_video_encoder_request_keyframe(struct wd_video_encoder* encoder);
 bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const struct wd_video_encoder_input_xrgb8888* input,
                                       struct wd_video_encoder_packet* packet);
+void wd_video_encoder_packet_release(struct wd_video_encoder_packet* packet);
 
 #ifdef __cplusplus
 }

@@ -140,9 +140,6 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     bool                                 no_output       = false;
     bool                                 software_av1    = false;
     bool                                 payload_invalid = false;
-    uint8_t*                             payload         = NULL;
-    void*                                prepared_payload = NULL;
-    struct wd_async_tcp_message*         prepared        = NULL;
     uint32_t                             payload_size    = 0;
     struct wd_video_frame_payload_header header;
     memset(&header, 0, sizeof(header));
@@ -185,18 +182,11 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
             }
             else
             {
-                prepared = wd_async_tcp_prepare_message(WD_MSG_VIDEO_FRAME, (uint32_t)payload_size64,
-                                                        &prepared_payload);
-                payload = prepared_payload;
-                if (!payload)
+                payload_size = (uint32_t)payload_size64;
+                if (!packet.buffer || packet.data != wd_buffer_const_data(packet.buffer) ||
+                    wd_buffer_size(packet.buffer) < header.data_size)
                 {
                     payload_invalid = true;
-                }
-                else
-                {
-                    payload_size = (uint32_t)payload_size64;
-                    memcpy(payload, &header, sizeof(header));
-                    memcpy(payload + sizeof(header), packet.data, header.data_size);
                 }
             }
         }
@@ -210,7 +200,7 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
 
     if (!encoded || payload_invalid)
     {
-        wd_async_tcp_discard_prepared_message(prepared);
+        wd_video_encoder_packet_release(&packet);
         net->stats.video_encode_failed++;
         pthread_mutex_unlock(&net->lock);
         return;
@@ -218,13 +208,14 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
 
     if (no_output)
     {
+        wd_video_encoder_packet_release(&packet);
         pthread_mutex_unlock(&net->lock);
         return;
     }
 
     if (!wd_stream_video_job_current_locked(server, job))
     {
-        wd_async_tcp_discard_prepared_message(prepared);
+        wd_video_encoder_packet_release(&packet);
         net->stats.video_worker_stale_drops++;
         pthread_mutex_unlock(&net->lock);
         return;
@@ -257,7 +248,7 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
                         (unsigned long long)header.content_epoch, (unsigned long long)header.frame_id, header.codec,
                         (unsigned)((header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0), header.data_size);
         }
-        wd_async_tcp_discard_prepared_message(prepared);
+        wd_video_encoder_packet_release(&packet);
         net->stats.video_keyframe_skipped_pending++;
         pthread_mutex_unlock(&net->lock);
         return;
@@ -265,14 +256,18 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
 
     if (job->request_keyframe && (header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
     {
-        wd_async_tcp_discard_prepared_message(prepared);
+        wd_video_encoder_packet_release(&packet);
         net->stats.video_encode_failed++;
         pthread_mutex_unlock(&net->lock);
         return;
     }
 
-    /* Transfers the prepared wire buffer on success; consumes it on error. */
-    const bool queued = wd_async_tcp_send_prepared_message(net->video_tx, net->video_tcp_fd, prepared);
+    /* Async TCP retains the encoded owner for the entire send. Only the small
+     * video payload header is copied into sender-owned inline storage. */
+    const bool queued = wd_async_tcp_send_owned_message(
+        net->video_tx, net->video_tcp_fd, WD_MSG_VIDEO_FRAME, &header, sizeof(header),
+        packet.buffer, 0, header.data_size);
+    wd_video_encoder_packet_release(&packet);
 
     if (!queued)
     {

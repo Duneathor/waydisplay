@@ -10,6 +10,7 @@
 #include "video_present_queue.hpp"
 #include "video_transition.h"
 #include "waydisplay/wd_config.h"
+#include "waydisplay/wd_buffer.h"
 #include "waydisplay/wd_protocol.h"
 
 #include <atomic>
@@ -27,11 +28,11 @@ struct ClientAsyncTcpSender;
 struct ClientAsyncUdpReceiver;
 
 struct ClientMediaPacket {
-    uint16_t message_type = 0;
-    uint8_t* payload      = nullptr;
-    uint32_t payload_size = 0;
-    bool reset_video_decoder_before = false;
-    uint64_t queued_ns = 0;
+    uint16_t   message_type = 0;
+    wd_buffer* buffer       = nullptr;
+    uint32_t   payload_size = 0;
+    bool       reset_video_decoder_before = false;
+    uint64_t   queued_ns = 0;
 };
 
 struct ClientAsyncTcpStatsSeen {

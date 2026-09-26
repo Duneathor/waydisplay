@@ -1,7 +1,10 @@
 #pragma once
 
+#include "waydisplay/wd_buffer.h"
+
 #include <netinet/in.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -27,6 +30,14 @@ bool wd_async_udp_sender_drain(struct wd_async_udp_sender* sender);
 enum wd_async_udp_send_status wd_async_udp_send_packet(struct wd_async_udp_sender* sender, int fd, const struct sockaddr_in* addr,
                                                        const void* header, uint32_t header_size, const void* payload, uint32_t payload_size,
                                                        wd_async_udp_completion_fn completion, void* completion_data);
+
+/* Retains payload until the send completes or is cancelled. The caller may
+ * release its reference immediately after a queued result. */
+enum wd_async_udp_send_status wd_async_udp_send_packet_owned(
+    struct wd_async_udp_sender* sender, int fd, const struct sockaddr_in* addr,
+    const void* header, uint32_t header_size, struct wd_buffer* payload,
+    size_t payload_offset, uint32_t payload_size,
+    wd_async_udp_completion_fn completion, void* completion_data);
 
 uint64_t wd_async_udp_sender_inflight(const struct wd_async_udp_sender* sender);
 uint64_t wd_async_udp_sender_queued(const struct wd_async_udp_sender* sender);

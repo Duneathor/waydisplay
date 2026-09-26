@@ -1,0 +1,298 @@
+The codebase is already doing several latency-conscious things well: frame/video workers use mailbox-style “latest work” semantics instead of building unbounded queues, expensive tile compression is released from the main network mutex, UDP payloads use iovec, the audio postmix callback is lock-free, and Release/Profile builds already have LTO/PGO support. I would preserve those properties.
+The largest opportunities are architectural rather than instruction-level optimizations.
+Priority	Area	Current cost	Suggested direction	Expected payoff
+1	Server video pipeline	GPU render → CPU XRGB readback → CPU snapshot → colorspace conversion → GPU VAAPI upload	GPU-surface/DMA-BUF video path	Very high
+2	Client hardware decode	VAAPI surface → CPU YUV → SDL_UpdateYUVTexture → GPU texture	Present hardware-decoded surfaces directly	Very high
+3	Tile encoder scheduler	Synchronous worker waves; send waits for entire wave	Async completion queue	High
+4	Tile dirty-state snapshots	Entire dirty/epoch arrays copied for every tiny encode batch	Per-job/per-generation compact state	High
+5	Tile encoding selection	Large tile can be extracted/compressed, rejected, then recursively redone smaller	Predict candidate size before encoding	Medium-high
+6	Packet/buffer ownership	Multiple malloc/copy/free stages around video and tiles	Ref-counted buffers + scatter/gather	Medium-high
+7	Client tile presentation	framebuffer → staging → SDL/GPU	Immutable tile upload jobs / render ownership	Medium
+8	Telemetry	Many atomic RMW operations in packet/render hot paths	Per-thread counters + periodic aggregation	Medium/low
+9	Global locking	Large state domains behind network/client mutexes	Single-owner/actor architecture if profiling proves contention	Potentially high, but invasive
+
+
+1. The server's CPU framebuffer should stop being the universal video representation
+This is the clearest performance issue I found.
+The current video route is effectively:
+wlroots/GPU scene
+       ↓
+GPU render buffer
+       ↓
+wd_readback.c
+       ↓          GPU → CPU
+XRGB CPU framebuffer
+       ↓
+frame-worker memcpy
+       ↓          CPU → CPU
+video snapshot
+       ↓
+sws_scale XRGB → NV12
+       ↓
+VAAPI upload
+       ↓          CPU → GPU
+encoder surface
+       ↓
+hardware encoder
+
+wd_readback.c calls wlr_texture_read_pixels() into server->framebuffer_xrgb8888. The frame worker then makes a full snapshot for video, and the VAAPI encoder performs CPU colorspace conversion followed by av_hwframe_transfer_data().
+A 3840×2160 XRGB frame is about 33 MB. One full CPU copy at 60 FPS is already about 2 GB/s of memory traffic. That is before accounting for GPU readback, swscale reading/writing the image, cache pollution, or uploading it again.
+I would change the fundamental frame abstraction from roughly:
+Frame = CPU XRGB pointer
+
+to something conceptually like:
+Frame
+ ├── CpuFrame
+ │    format
+ │    planes
+ │    strides
+ │
+ └── GpuFrame
+      device
+      DMA-BUF / DRM PRIME handles
+      format/modifier
+      sync/lifetime
+
+Video mode could then keep the wlroots output GPU-resident and import a DMA-BUF/DRM PRIME surface into VAAPI when the compositor and encoder devices are compatible.
+Tile mode can continue using CPU XRGB because it actually needs CPU-visible small regions.
+This also removes an unnecessary coupling: video transport should not require the same capture representation as tile transport.
+I would make this the main architectural project.
+2. The client currently defeats much of the benefit of hardware decoding
+The inverse problem exists client-side.
+In video_decoder.cpp, a VAAPI decoded frame goes through av_hwframe_transfer_data() to produce a software AVFrame. The visible YUV data is then copied into ClientVideoFrameBuffer::bytes.
+Later sdl_viewer.cpp calls SDL_UpdateYUVTexture(), uploading those bytes to the GPU again.
+So hardware decoding currently looks approximately like:
+compressed frame
+      ↓
+VAAPI decode
+      ↓
+GPU surface
+      ↓
+av_hwframe_transfer_data()
+      ↓          GPU → CPU
+CPU YUV
+      ↓
+visible-plane copy
+      ↓
+CPU framebuffer
+      ↓
+SDL_UpdateYUVTexture()
+      ↓          CPU → GPU
+GPU presentation texture
+
+At 4K60, even 4:2:0 YUV represents a substantial amount of memory bandwidth in each direction.
+I would give the client VideoFrame the same CPU/GPU distinction described above. A VAAPI frame should ideally stay on the GPU all the way through presentation.
+That probably means the video presentation backend eventually needs to go below the current SDL texture-update path—DMA-BUF/EGL, Vulkan external memory, or another suitable import path—while SDL can remain responsible for the window, events and input.
+A valuable side effect is that software decoding remains simple:
+Software decoder → CpuVideoFrame → SDL YUV texture
+
+while hardware decoding becomes:
+VAAPI → GpuVideoFrame → imported presentation surface
+
+without forcing either through the other's representation.
+3. Change tile encoding from synchronous waves to completion-driven workers
+This is the tile architecture change I would do first.
+Right now wd_stream_low_latency_batch_capacity() intentionally limits a batch to one worker wave. There is a good reason documented in the code: completed tiles aren't transmitted until the whole batch returns, so submitting hundreds of regions would delay the first network packet.
+That means the architecture currently solves head-of-line blocking by constraining concurrency.
+It also caps the encoder pool at:
+WD_STREAM_ENCODER_MAX_THREADS = 4
+WD_STREAM_ENCODER_RESERVED_CPUS = 1
+
+Instead, I would make tile encoding genuinely asynchronous:
+dirty-region scheduler
+       │
+       ├── job ──→ worker
+       ├── job ──→ worker
+       ├── job ──→ worker
+       ├── job ──→ worker
+       └── ...
+
+workers
+       ↓
+lock-free / small-lock completion queue
+       ↓
+network owner
+       ↓
+send immediately
+
+Then a 64-core machine doesn't need a 4-worker hard ceiling purely because a synchronous batch would otherwise introduce latency.
+Thread count could become adaptive based on CPU availability, outstanding dirty work, compression cost and latency target.
+More importantly, results can go on the wire as soon as individual tiles finish.
+That should improve both throughput and tail latency.
+4. Stop copying the entire dirty state for every encode wave
+This one is much less invasive and looks very worthwhile.
+For 3840×2160 with 16×16 base tiles:
+240 × 135 = 32,400 base tiles
+
+The tile send loop currently snapshots the entire:
+dirty_queued[]
+dirty_epochs[]
+
+for each encode batch.
+The epoch array alone is roughly:
+32,400 × 8 bytes ≈ 259 KB
+
+plus ~32 KB for the boolean dirty state.
+So approximately 290 KB of metadata is copied per batch.
+Because batches are currently at most one worker wave—typically four jobs—a large full refresh can repeat that operation hundreds of times. In the rough worst case, that can turn into tens of megabytes of metadata copying for a single refresh, despite each encode job touching at most a small number of base tiles.
+A 128×64 wire tile only covers:
+8 × 4 = 32 base tiles
+
+So a job really needs something more like:
+covered_tile_ids[<=32]
+dirty_mask
+epoch[<=32]
+
+Capture those values under the appropriate state lock and let the worker operate entirely from that compact immutable description.
+Another option is one immutable dirty-generation snapshot per compositor frame rather than per encoder batch.
+Either is much cheaper than copying global state repeatedly.
+5. The recursive tile compressor does avoidable work
+The current strategy effectively asks:
+Can I send 128×64?
+   encode it
+   no?
+       Can I send 64×64?
+           encode it
+           no?
+               encode smaller...
+
+That means rejected candidates can incur extraction, entropy analysis and possibly Zstd compression before the algorithm discovers that the candidate is too large for the current packet/budget constraints.
+This is particularly questionable for input-sensitive frames where the policy strongly prefers something that fits quickly into one packet.
+I would introduce a lightweight estimator before compression.
+You already have useful historical information available: compression performance, entropy, payload budgets, tile dimensions and latency state. Use that to estimate:
+predicted encoded size
+predicted packet count
+predicted compression cost
+
+and select the most plausible tile size first.
+For example, during interactive/input traffic:
+historically noisy region
++ tight one-packet target
+→ don't bother trying 128×64 first
+
+whereas a mostly flat desktop region could still go directly to 128×64.
+I would also investigate extracting a parent region once and letting children reference slices of that temporary buffer rather than repeatedly walking the framebuffer when recursive subdivision occurs.
+6. Introduce explicit buffer ownership instead of copy-based ownership
+There are several places where lifetime is currently made easy by copying data.
+That's safe, but expensive.
+On the server video path:
+FFmpeg AVPacket
+    ↓ memcpy
+encoder packet_copy
+    ↓ memcpy
+async TCP message allocation
+    ↓
+socket
+
+On the client decoder side, incoming compressed video is copied into an FFmpeg packet with av_new_packet() + memcpy().
+Tile results also allocate/copy payload memory for individual results.
+I would eventually introduce a generic ref-counted transport buffer/slab abstraction:
+Buffer {
+    data
+    size
+    capacity
+    release()
+}
+
+Then network, encoder and decoder ownership can be handed off rather than copied.
+For TCP video specifically, scatter/gather is attractive:
+iov[0] = protocol header
+iov[1] = encoded AVPacket storage
+
+The asynchronous sender owns/references the AVPacket until completion.
+That eliminates the need to manufacture a contiguous header+payload block merely to send it.
+The UDP implementation is already closer to the right design: payloads are passed using iovec and packet objects are pooled. I'd use that philosophy elsewhere.
+7. Tile rendering could stop bouncing through a shared framebuffer
+The client currently has a sensible concurrency design: don't hold the framebuffer mutex while making SDL calls.
+But achieving that requires another copy:
+network writes CPU framebuffer
+          ↓
+render snapshots dirty rect into staging
+          ↓
+SDL texture update
+          ↓
+GPU
+
+A larger redesign could make the renderer own presentation state.
+The network/reassembly side would produce immutable completed tile objects:
+CompletedTile {
+    generation
+    rect
+    pixels
+    buffer ownership
+}
+
+and enqueue those directly to the renderer.
+The renderer then applies them to the presentation texture.
+If a CPU framebuffer is still required for recovery, screenshots or bookkeeping, it could be maintained separately rather than being the mandatory rendezvous point between networking and rendering.
+This also reduces contention around framebuffer_mutex.
+I rank this below the video zero-copy work because tile updates are relatively small and the existing staging design is deliberately latency-safe.
+8. Make telemetry cheaper without removing it
+There are a lot of std::atomic<uint64_t> counters in the client, including counters incremented in packet-heavy and render-heavy paths.
+The telemetry itself is valuable—I would keep it.
+But if a counter has one natural producer thread, that producer doesn't need to perform an atomic RMW operation for every packet merely because a stats UI reads the value elsewhere.
+A better pattern is:
+network-thread local counters
+render-thread local counters
+audio-thread local counters
+         ↓ occasionally
+published stats snapshot
+
+The hot paths then use ordinary increments.
+A periodic stats aggregation step can publish coherent values.
+It also avoids unrelated atomics sharing cache lines and bouncing them between CPU cores.
+This won't compete with eliminating a GPU readback, but at very high tile packet rates it can shave measurable CPU time.
+9. I would not split every mutex yet
+There are large lock domains in wd_server_net.c, client_net.cpp, sdl_viewer.cpp, and stream state.
+It would be easy to respond by splitting every mutex into smaller locks. I would not do that automatically.
+The code's state machines are nontrivial, and lock splitting risks replacing contention with races and lock-order complexity.
+If profiling demonstrates significant lock wait time, I think the cleaner long-term architecture is single-owner state rather than dozens of locks.
+For example:
+capture ─────────────┐
+input ───────────────┤
+feedback ────────────┼── events → StreamCoordinator
+encoder completions ─┤                 │
+network events ──────┘                 ↓
+                                  owns policy/state
+                                         │
+                                   outbound work
+
+Most state then stops being shared state.
+But that's a substantial rewrite, so I'd only undertake it after actual mutex contention measurements.
+What I would leave alone for now
+The audio path doesn't stand out as a performance problem. In particular, audio_postmix_callback() doesn't grab the playback mutex; it uses a handful of atomics and simple arithmetic, which is the right shape for an audio callback.
+The frame/video mailbox behavior is also good. Dropping/superseding obsolete work is exactly what an interactive remote-display system should prefer over faithfully processing a backlog of stale frames.
+The asynchronous UDP design is similarly reasonable: pooled packet objects plus vectored payload transmission is already much better than allocating and concatenating every datagram.
+And I wouldn't spend time manually adding SIMD throughout wd_readback.c yet. There are opportunities—for example, its fallback pixel conversion loops—but eliminating the readback altogether makes optimizing the readback loop largely irrelevant.
+The architecture I would ultimately aim for
+The clean end state would be three representations with explicit ownership:
+                    ┌───────────────┐
+                    │ Compositor GPU │
+                    └───────┬───────┘
+                            │
+             ┌──────────────┴──────────────┐
+             │                             │
+        VIDEO MODE                     TILE MODE
+             │                             │
+        GPU Frame                     CPU damage
+       DMA-BUF/DRM                    regions only
+             │                             │
+       HW encoder                    async tile jobs
+             │                             │
+       encoded refbuf              Zstd/raw refbufs
+             │                             │
+             └────────── transport ────────┘
+                            │
+                         client
+             ┌──────────────┴──────────────┐
+             │                             │
+        VIDEO MODE                     TILE MODE
+             │                             │
+        HW decoder                 reassembled tile
+             │                             │
+         GPU frame                 render upload job
+             │                             │
+             └────────── renderer ─────────┘
+
+That gets the architecture away from “everything becomes a giant CPU framebuffer first”, which is the main efficiency limitation I see.
+If choosing an implementation order, I'd do server GPU-frame abstraction/zero-copy video first, then tile completion-driven scheduling + compact dirty snapshots, then client GPU-frame presentation, and only after those tackle buffer ownership/allocator/telemetry refinements. Those first three are the changes most likely to move CPU usage, memory bandwidth, latency and maximum sustainable resolution/FPS substantially.

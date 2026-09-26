@@ -28,6 +28,17 @@ struct completion_probe {
     bool     success;
 };
 
+struct owner_release_probe {
+    unsigned calls;
+};
+
+static void release_owner(void* user_data, uint8_t* data, size_t size) {
+    struct owner_release_probe* probe = user_data;
+    (void)size;
+    probe->calls++;
+    free(data);
+}
+
 static void tcp_complete(void* data, bool success) {
     struct completion_probe* probe = data;
     probe->calls++;
@@ -78,6 +89,23 @@ static int test_tcp_forced_teardown(void) {
     ((struct wd_video_frame_payload_header*)prepared_payload)->data_size = TEST_VIDEO_BYTES;
     CHECK(wd_async_tcp_send_prepared_message(sender, sockets[0], prepared));
 
+    /* An owned payload queued behind the blocked send must retain storage
+     * until shutdown removes the message, then release it exactly once. */
+    struct owner_release_probe owner_probe = {0};
+    struct completion_probe   owned_completion = {0};
+    uint8_t*                   owned_bytes = malloc(4096);
+    CHECK(owned_bytes != NULL);
+    memset(owned_bytes, 0x5a, 4096);
+    struct wd_buffer* owned = wd_buffer_wrap(owned_bytes, 4096, release_owner, &owner_probe);
+    CHECK(owned != NULL);
+    struct wd_video_frame_payload_header owned_header = {0};
+    owned_header.data_size = 4096;
+    CHECK(wd_async_tcp_send_owned_message_ex(sender, sockets[0], WD_MSG_VIDEO_FRAME,
+                                             &owned_header, sizeof(owned_header), owned, 0, 4096,
+                                             tcp_complete, &owned_completion));
+    wd_buffer_release(owned);
+    CHECK(owner_probe.calls == 0);
+
     void* malformed_prepared_payload = NULL;
     prepared = wd_async_tcp_prepare_message(WD_MSG_SERVER_CONFIG, sizeof(malformed_payload), &malformed_prepared_payload);
     CHECK(prepared != NULL && malformed_prepared_payload != NULL);
@@ -86,6 +114,9 @@ static int test_tcp_forced_teardown(void) {
     wd_async_tcp_sender_destroy(sender);
     CHECK(probe.calls == 1);
     CHECK(!probe.success);
+    CHECK(owned_completion.calls == 1);
+    CHECK(!owned_completion.success);
+    CHECK(owner_probe.calls == 1);
 
     close(sockets[0]);
     close(sockets[1]);
@@ -108,16 +139,25 @@ static int test_udp_forced_teardown(void) {
     destination.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     destination.sin_port        = htons(9);
 
-    const uint8_t           header[8]   = {0};
-    const uint8_t           payload[16] = {0};
-    struct completion_probe probe       = {0};
-    CHECK(wd_async_udp_send_packet(sender, fd, &destination, header, sizeof(header), payload, sizeof(payload), udp_complete, &probe) ==
+    const uint8_t              header[8] = {0};
+    struct completion_probe    probe     = {0};
+    struct owner_release_probe owner_probe = {0};
+    uint8_t* owned_bytes = malloc(32);
+    CHECK(owned_bytes != NULL);
+    memset(owned_bytes, 0xa5, 32);
+    struct wd_buffer* owned = wd_buffer_wrap(owned_bytes, 32, release_owner, &owner_probe);
+    CHECK(owned != NULL);
+    CHECK(wd_async_udp_send_packet_owned(sender, fd, &destination, header, sizeof(header),
+                                         owned, 8, 16, udp_complete, &probe) ==
           WD_ASYNC_UDP_SEND_QUEUED);
+    wd_buffer_release(owned);
+    CHECK(owner_probe.calls == 0);
     CHECK(wd_async_udp_sender_flush(sender));
 
     wd_async_udp_sender_destroy(sender);
     CHECK(probe.calls == 1);
     CHECK(!probe.success);
+    CHECK(owner_probe.calls == 1);
 
     close(fd);
     return 0;

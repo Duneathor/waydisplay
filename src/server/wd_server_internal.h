@@ -260,6 +260,8 @@ struct wd_stats {
     uint64_t compression_forced_choices;
     uint64_t compression_ns;
     uint64_t compression_saved_wire_bytes;
+    uint64_t candidate_prediction_skips;
+    uint64_t candidate_prediction_probes;
 
     uint64_t stream_mode_frame_samples;
     /* Scene frames whose framebuffer diff contained at least one changed

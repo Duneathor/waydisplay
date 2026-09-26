@@ -92,6 +92,7 @@ bool encode_until_packet(wd_video_encoder* encoder, uint16_t width, uint16_t hei
         }
         copy.header = packet.header;
         copy.data.assign(packet.data, packet.data + packet.header.data_size);
+        wd_video_encoder_packet_release(&packet);
         return true;
     }
     return false;

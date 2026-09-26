@@ -1,6 +1,7 @@
 #pragma once
 
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_buffer.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -25,7 +26,12 @@ struct ClientVideoDecoderConfig {
 
 struct ClientVideoPacket {
     wd_video_frame_payload_header header{};
-    const uint8_t*                data = nullptr;
+    const uint8_t*                data  = nullptr;
+    /* Non-owning pointer to the storage that contains data. The caller keeps
+     * one reference for the duration of decode(); the decoder retains its own
+     * reference while FFmpeg can observe the packet. Null preserves the
+     * legacy copy path for standalone callers/tests. */
+    wd_buffer*                    owner = nullptr;
 };
 
 enum class ClientVideoPixelFormat : uint8_t {
@@ -83,6 +89,8 @@ bool        client_video_decoder_available(const ClientVideoDecoder* decoder);
 uint32_t    client_video_decoder_supported_codecs(const ClientVideoDecoder* decoder);
 const char* client_video_decoder_backend_name(const ClientVideoDecoder* decoder);
 bool        client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* decoder);
+uint64_t    client_video_decoder_zero_copy_inputs(const ClientVideoDecoder* decoder);
+uint64_t    client_video_decoder_copied_inputs(const ClientVideoDecoder* decoder);
 
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config);
 bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoPacket& packet, ClientDecodedVideoFrame* out_frame);

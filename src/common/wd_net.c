@@ -64,7 +64,7 @@ void wd_tcp_reader_reset(struct wd_tcp_reader* reader) {
         return;
     }
 
-    free(reader->payload);
+    wd_buffer_release(reader->payload_buffer);
     wd_tcp_reader_clear_frame(reader);
 }
 
@@ -98,8 +98,30 @@ void wd_tcp_message_release(struct wd_tcp_message* message) {
         return;
     }
 
-    free(message->payload);
+    if (message->buffer)
+    {
+        wd_buffer_release(message->buffer);
+    }
+    else
+    {
+        /* Preserve release semantics for callers that construct legacy
+         * wd_tcp_message values around malloc-owned storage. */
+        free(message->payload);
+    }
     memset(message, 0, sizeof(*message));
+}
+
+struct wd_buffer* wd_tcp_message_take_buffer(struct wd_tcp_message* message) {
+    if (!message || !message->buffer)
+    {
+        return NULL;
+    }
+
+    struct wd_buffer* buffer = message->buffer;
+    message->buffer          = NULL;
+    message->payload         = NULL;
+    message->payload_size    = 0;
+    return buffer;
 }
 
 static uint64_t wd_tcp_deadline_after(uint64_t now_ns, uint64_t timeout_ns) {
@@ -204,11 +226,12 @@ enum wd_tcp_reader_status wd_tcp_reader_receive(struct wd_tcp_reader* reader, in
         reader->header_decoded = true;
         if (reader->payload_size != 0)
         {
-            reader->payload = (uint8_t*)malloc(reader->payload_size);
-            if (!reader->payload)
+            reader->payload_buffer = wd_buffer_alloc_padded(reader->payload_size, WD_TCP_PAYLOAD_PADDING_BYTES);
+            if (!reader->payload_buffer)
             {
                 return WD_TCP_READER_IO_ERROR;
             }
+            reader->payload = wd_buffer_data(reader->payload_buffer);
         }
     }
 
@@ -230,8 +253,10 @@ enum wd_tcp_reader_status wd_tcp_reader_receive(struct wd_tcp_reader* reader, in
     }
 
     out_message->message_type = reader->message_type;
+    out_message->buffer       = reader->payload_buffer;
     out_message->payload      = reader->payload;
     out_message->payload_size = reader->payload_size;
+    reader->payload_buffer    = NULL;
     reader->payload           = NULL;
     wd_tcp_reader_clear_frame(reader);
     return WD_TCP_READER_MESSAGE;

@@ -4,6 +4,7 @@
 #include "waydisplay/wd_log.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -61,6 +62,102 @@ struct QueuedDecodedFrame {
     ClientVideoFrameBuffer  buffer{};
 };
 
+void release_owned_packet_buffer(void* opaque, uint8_t*) {
+    wd_buffer_release(static_cast<wd_buffer*>(opaque));
+}
+
+bool packet_owner_view(const ClientVideoPacket& packet, size_t& offset) {
+    offset = 0;
+    if (!packet.owner || !packet.data || packet.header.data_size == 0)
+    {
+        return false;
+    }
+
+    const uint8_t* base = wd_buffer_const_data(packet.owner);
+    if (!base)
+    {
+        return false;
+    }
+
+    const uintptr_t base_address = reinterpret_cast<uintptr_t>(base);
+    const uintptr_t data_address = reinterpret_cast<uintptr_t>(packet.data);
+    if (data_address < base_address)
+    {
+        return false;
+    }
+
+    const uintptr_t distance = data_address - base_address;
+    if (distance > static_cast<uintptr_t>(SIZE_MAX))
+    {
+        return false;
+    }
+    offset = static_cast<size_t>(distance);
+
+    const size_t data_size = static_cast<size_t>(packet.header.data_size);
+    if (!wd_buffer_range_valid(packet.owner, offset, data_size))
+    {
+        return false;
+    }
+
+    const size_t end      = offset + data_size;
+    const size_t capacity = wd_buffer_capacity(packet.owner);
+    if (end > capacity || capacity - end < AV_INPUT_BUFFER_PADDING_SIZE)
+    {
+        return false;
+    }
+
+    for (size_t i = 0; i < AV_INPUT_BUFFER_PADDING_SIZE; ++i)
+    {
+        if (base[end + i] != 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool bind_decoder_packet(AVPacket* destination, const ClientVideoPacket& packet, bool& zero_copy) {
+    zero_copy = false;
+    if (!destination || !packet.data || packet.header.data_size == 0 ||
+        packet.header.data_size > static_cast<uint32_t>(INT_MAX))
+    {
+        return false;
+    }
+
+    av_packet_unref(destination);
+
+    size_t owner_offset = 0;
+    if (packet_owner_view(packet, owner_offset))
+    {
+        wd_buffer* retained = wd_buffer_retain(packet.owner);
+        if (!retained)
+        {
+            return false;
+        }
+
+        AVBufferRef* ref = av_buffer_create(wd_buffer_data(retained), wd_buffer_capacity(retained),
+                                            release_owned_packet_buffer, retained, AV_BUFFER_FLAG_READONLY);
+        if (!ref)
+        {
+            wd_buffer_release(retained);
+            return false;
+        }
+
+        destination->buf  = ref;
+        destination->data = wd_buffer_data(retained) + owner_offset;
+        destination->size = static_cast<int>(packet.header.data_size);
+        zero_copy         = true;
+        return true;
+    }
+
+    if (av_new_packet(destination, static_cast<int>(packet.header.data_size)) < 0)
+    {
+        return false;
+    }
+    std::memcpy(destination->data, packet.data, packet.header.data_size);
+    return true;
+}
+
 } // namespace
 #endif
 
@@ -70,6 +167,8 @@ struct ClientVideoDecoder {
     ClientVideoFrameBuffer   output{};
     ClientDecodedVideoFrame  output_metadata{};
     bool                     output_ready = false;
+    uint64_t                 zero_copy_inputs = 0;
+    uint64_t                 copied_inputs    = 0;
 
 #if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER || WAYDISPLAY_HAVE_AV1_CLIENT_DECODER
     const AVCodec*                      codec                = nullptr;
@@ -663,6 +762,14 @@ bool client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* decoder
 #endif
 }
 
+uint64_t client_video_decoder_zero_copy_inputs(const ClientVideoDecoder* decoder) {
+    return decoder ? decoder->zero_copy_inputs : 0;
+}
+
+uint64_t client_video_decoder_copied_inputs(const ClientVideoDecoder* decoder) {
+    return decoder ? decoder->copied_inputs : 0;
+}
+
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {
     if (!decoder || (config.codec != WD_VIDEO_CODEC_H265 && config.codec != WD_VIDEO_CODEC_H264 && config.codec != WD_VIDEO_CODEC_AV1) || config.width == 0 ||
         config.height == 0 || config.coded_width < config.width || config.coded_height < config.height ||
@@ -823,12 +930,19 @@ bool client_video_decoder_decode(ClientVideoDecoder* decoder, const ClientVideoP
         return false;
     }
 
-    av_packet_unref(decoder->packet);
-    if (av_new_packet(decoder->packet, static_cast<int>(packet.header.data_size)) < 0) [[unlikely]]
+    bool zero_copy_input = false;
+    if (!bind_decoder_packet(decoder->packet, packet, zero_copy_input)) [[unlikely]]
     {
         return false;
     }
-    std::memcpy(decoder->packet->data, packet.data, packet.header.data_size);
+    if (zero_copy_input)
+    {
+        decoder->zero_copy_inputs++;
+    }
+    else
+    {
+        decoder->copied_inputs++;
+    }
     const int64_t codec_pts = static_cast<int64_t>(packet.header.pts_usec);
     decoder->packet->pts    = codec_pts;
 

@@ -194,6 +194,7 @@ bool run_codec(uint32_t codec) {
         submitted_frames.push_back({encoded.header, expected_quadrant});
         ClientDecodedVideoFrame decoded{};
         CHECK(waydisplay::client_video_decoder_decode(decoder, packet, &decoded));
+        wd_video_encoder_packet_release(&encoded);
 
         for (;;)
         {
@@ -274,6 +275,7 @@ bool run_codec(uint32_t codec) {
         ClientVideoPacket       packet{encoded.header, encoded.data};
         ClientDecodedVideoFrame decoded{};
         CHECK(waydisplay::client_video_decoder_decode(decoder, packet, &decoded));
+        wd_video_encoder_packet_release(&encoded);
         for (;;)
         {
             if (decoded.format == ClientVideoPixelFormat::None)
@@ -344,6 +346,7 @@ bool run_dropped_reference_recovery(uint32_t codec) {
         if ((packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) != 0)
         {
             saw_first_keyframe = true;
+            wd_video_encoder_packet_release(&packet);
             continue;
         }
         if (saw_first_keyframe)
@@ -351,6 +354,7 @@ bool run_dropped_reference_recovery(uint32_t codec) {
             /* Packet is intentionally not passed to the decoder. */
             dropped_reference = true;
         }
+        wd_video_encoder_packet_release(&packet);
     }
     CHECK(saw_first_keyframe);
     CHECK(dropped_reference);
@@ -371,12 +375,14 @@ bool run_dropped_reference_recovery(uint32_t codec) {
         CHECK(wd_video_encoder_encode_xrgb8888(encoder, &input, &packet));
         if (packet.header.data_size == 0 || (packet.header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
         {
+            wd_video_encoder_packet_release(&packet);
             continue;
         }
         CHECK(wd_client_video_keyframe_validate(codec, packet.data, packet.header.data_size) == WD_CLIENT_VIDEO_KEYFRAME_VALID);
         ClientVideoPacket received{packet.header, packet.data};
         ClientDecodedVideoFrame decoded{};
         CHECK(waydisplay::client_video_decoder_decode(decoder, received, &decoded));
+        wd_video_encoder_packet_release(&packet);
         resumed_at_keyframe = true;
     }
     CHECK(resumed_at_keyframe);

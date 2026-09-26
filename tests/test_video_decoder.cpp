@@ -1,5 +1,6 @@
 #include "video_decoder.hpp"
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_net.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -100,6 +101,54 @@ std::vector<uint8_t> read_fixture(const char* name) {
     return std::vector<uint8_t>(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+struct OwnedInput {
+    wd_buffer* buffer = nullptr;
+
+    OwnedInput() = default;
+    OwnedInput(const OwnedInput&) = delete;
+    OwnedInput& operator=(const OwnedInput&) = delete;
+
+    ~OwnedInput() {
+        wd_buffer_release(buffer);
+    }
+
+    bool assign(ClientVideoPacket& packet, const uint8_t* bytes, size_t size, size_t prefix, bool padded = true,
+                bool poison_padding = false) {
+        wd_buffer_release(buffer);
+        buffer = nullptr;
+        const size_t logical = prefix + size;
+        buffer = padded ? wd_buffer_alloc_padded(logical, WD_TCP_PAYLOAD_PADDING_BYTES) : wd_buffer_alloc(logical);
+        if (!buffer)
+        {
+            return false;
+        }
+        uint8_t* storage = wd_buffer_data(buffer);
+        if (prefix != 0)
+        {
+            std::memset(storage, 0x5c, prefix);
+        }
+        std::memcpy(storage + prefix, bytes, size);
+        if (poison_padding)
+        {
+            if (wd_buffer_capacity(buffer) <= logical)
+            {
+                return false;
+            }
+            storage[logical] = 0x7f;
+        }
+        packet.data  = storage + prefix;
+        packet.owner = buffer;
+        return true;
+    }
+
+    void release_caller_reference(ClientVideoPacket& packet) {
+        wd_buffer_release(buffer);
+        buffer       = nullptr;
+        packet.owner = nullptr;
+        packet.data  = nullptr;
+    }
+};
+
 struct FixtureAccessUnit {
     size_t   size     = 0;
     uint64_t pts_usec = 0;
@@ -149,6 +198,8 @@ bool test_invalid_api() {
     CHECK(waydisplay::client_video_decoder_supported_codecs(nullptr) == 0);
     CHECK(waydisplay::client_video_decoder_backend_name(nullptr) != nullptr);
     CHECK(!waydisplay::client_video_decoder_hwdecode_failed_auto(nullptr));
+    CHECK(waydisplay::client_video_decoder_zero_copy_inputs(nullptr) == 0);
+    CHECK(waydisplay::client_video_decoder_copied_inputs(nullptr) == 0);
     CHECK(!waydisplay::client_video_decoder_configure(nullptr, ClientVideoDecoderConfig{}));
 
     ClientVideoDecoder* decoder = nullptr;
@@ -239,11 +290,15 @@ bool test_codec(uint32_t codec, const char* fixture_name) {
     packet.header.coded_width      = config.coded_width;
     packet.header.coded_height     = config.coded_height;
     packet.header.data_size        = static_cast<uint32_t>(fixture.size());
-    packet.data                    = fixture.data();
+    OwnedInput owned_input{};
+    CHECK(owned_input.assign(packet, fixture.data(), fixture.size(), sizeof(packet.header) + 7u));
     CHECK(wd_video_frame_payload_size_is_valid(&packet.header, static_cast<uint32_t>(sizeof(packet.header) + fixture.size())));
 
     ClientDecodedVideoFrame frame{};
     CHECK(waydisplay::client_video_decoder_decode(decoder, packet, &frame));
+    CHECK(waydisplay::client_video_decoder_zero_copy_inputs(decoder) == 1);
+    CHECK(waydisplay::client_video_decoder_copied_inputs(decoder) == 0);
+    owned_input.release_caller_reference(packet);
     CHECK(frame.format == ClientVideoPixelFormat::IYUV);
     CHECK(frame.width == config.width);
     CHECK(frame.height == config.height);
@@ -269,6 +324,48 @@ bool test_codec(uint32_t codec, const char* fixture_name) {
           plane_has_variation(output.bytes.data() + output.v_offset, uv_size));
     CHECK(!waydisplay::client_video_decoder_swap_output_frame(decoder, output));
     CHECK(!waydisplay::client_video_decoder_take_frame(decoder, &frame));
+
+    /* An owner without FFmpeg's required tail padding must use the safe copy
+     * path rather than exposing an over-readable network buffer. */
+    waydisplay::client_video_decoder_reset(decoder);
+    CHECK(waydisplay::client_video_decoder_configure(decoder, config));
+    ClientVideoPacket fallback = packet;
+    fallback.data               = nullptr;
+    fallback.owner              = nullptr;
+    OwnedInput unpadded{};
+    CHECK(unpadded.assign(fallback, fixture.data(), fixture.size(), 3u, false));
+    ClientDecodedVideoFrame fallback_frame{};
+    CHECK(waydisplay::client_video_decoder_decode(decoder, fallback, &fallback_frame));
+    CHECK(waydisplay::client_video_decoder_zero_copy_inputs(decoder) == 1);
+    CHECK(waydisplay::client_video_decoder_copied_inputs(decoder) == 1);
+    unpadded.release_caller_reference(fallback);
+    if (fallback_frame.format != ClientVideoPixelFormat::None)
+    {
+        ClientVideoFrameBuffer fallback_output{};
+        CHECK(waydisplay::client_video_decoder_swap_output_frame(decoder, fallback_output));
+        CHECK(fallback_output.valid());
+    }
+
+    /* Padding must be zero, not merely present. Poisoned tail bytes also force
+     * the copy path, whose av_new_packet storage restores the padding contract. */
+    waydisplay::client_video_decoder_reset(decoder);
+    CHECK(waydisplay::client_video_decoder_configure(decoder, config));
+    ClientVideoPacket poisoned = packet;
+    poisoned.data               = nullptr;
+    poisoned.owner              = nullptr;
+    OwnedInput poisoned_input{};
+    CHECK(poisoned_input.assign(poisoned, fixture.data(), fixture.size(), 0u, true, true));
+    ClientDecodedVideoFrame poisoned_frame{};
+    CHECK(waydisplay::client_video_decoder_decode(decoder, poisoned, &poisoned_frame));
+    CHECK(waydisplay::client_video_decoder_zero_copy_inputs(decoder) == 1);
+    CHECK(waydisplay::client_video_decoder_copied_inputs(decoder) == 2);
+    poisoned_input.release_caller_reference(poisoned);
+    if (poisoned_frame.format != ClientVideoPixelFormat::None)
+    {
+        ClientVideoFrameBuffer poisoned_output{};
+        CHECK(waydisplay::client_video_decoder_swap_output_frame(decoder, poisoned_output));
+        CHECK(poisoned_output.valid());
+    }
 
     waydisplay::client_video_decoder_reset(decoder);
     CHECK(!waydisplay::client_video_decoder_decode(decoder, packet, nullptr));
@@ -349,11 +446,13 @@ bool test_delayed_codec(uint32_t codec, const char* fixture_name, const char* ma
         packet.header.coded_width      = config.coded_width;
         packet.header.coded_height     = config.coded_height;
         packet.header.data_size        = static_cast<uint32_t>(access_unit.size);
-        packet.data                    = fixture.data() + offset;
+        OwnedInput owned_input{};
+        CHECK(owned_input.assign(packet, fixture.data() + offset, access_unit.size, sizeof(packet.header)));
         offset += access_unit.size;
 
         ClientDecodedVideoFrame frame{};
         CHECK(waydisplay::client_video_decoder_decode(decoder, packet, &frame));
+        owned_input.release_caller_reference(packet);
         CHECK(collect_decoded_frames(decoder, frame, decoded_frames));
     }
 
@@ -370,6 +469,8 @@ bool test_delayed_codec(uint32_t codec, const char* fixture_name, const char* ma
     }
     ClientDecodedVideoFrame frame{};
     CHECK(!waydisplay::client_video_decoder_take_frame(decoder, &frame));
+    CHECK(waydisplay::client_video_decoder_zero_copy_inputs(decoder) == access_units.size());
+    CHECK(waydisplay::client_video_decoder_copied_inputs(decoder) == 0);
 
     waydisplay::client_video_decoder_destroy(decoder);
     return true;

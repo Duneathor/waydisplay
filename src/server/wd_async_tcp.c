@@ -6,6 +6,7 @@
 #include "waydisplay/wd_io_uring.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_protocol_codec.h"
+#include "waydisplay/wd_protocol_dispatch.h"
 
 #include <errno.h>
 #include <liburing.h>
@@ -15,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #define WD_ASYNC_TCP_DEFAULT_MAX_PENDING_BYTES WD_SERVER_ASYNC_TCP_DEFAULT_PENDING_BYTES
@@ -35,6 +37,13 @@ struct wd_async_tcp_message {
     uint16_t                     message_type;
     size_t                       total_size;
     size_t                       bytes_sent;
+    size_t                       inline_size;
+    struct wd_buffer*            payload_owner;
+    size_t                       payload_offset;
+    size_t                       payload_size;
+    size_t                       submitted_size;
+    struct iovec                 submit_iov[2];
+    struct msghdr                submit_msg;
     bool                         submitted;
     wd_async_tcp_complete_fn     complete;
     void*                        user_data;
@@ -64,6 +73,16 @@ static void wd_async_tcp_complete_message(struct wd_async_tcp_message* msg, bool
     {
         msg->complete(msg->user_data, success);
     }
+}
+
+static void wd_async_tcp_message_destroy(struct wd_async_tcp_message* msg) {
+    if (!msg)
+    {
+        return;
+    }
+    wd_buffer_release(msg->payload_owner);
+    msg->payload_owner = NULL;
+    free(msg);
 }
 
 static void wd_async_tcp_pending_add(struct wd_async_tcp_sender* sender, struct wd_async_tcp_message* msg) {
@@ -125,10 +144,75 @@ static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, stru
         return false;
     }
 
-    io_uring_prep_send(sqe, msg->fd, msg->bytes + msg->bytes_sent, msg->total_size - msg->bytes_sent, MSG_NOSIGNAL);
+    size_t send_size = 0;
+    if (msg->payload_owner)
+    {
+        /*
+         * An owned message has two logical segments: the copied protocol
+         * header/prefix and the retained payload slice. Submit both in one
+         * sendmsg SQE so the segment boundary itself does not require a CQE
+         * reap before the payload can make progress.
+         *
+         * On a genuine partial kernel send, bytes_sent is advanced by the CQE
+         * result and this iovec is rebuilt from that global byte offset.
+         */
+        unsigned iov_count = 0;
+        memset(&msg->submit_msg, 0, sizeof(msg->submit_msg));
+
+        if (msg->bytes_sent < msg->inline_size)
+        {
+            msg->submit_iov[iov_count].iov_base = msg->bytes + msg->bytes_sent;
+            msg->submit_iov[iov_count].iov_len  = msg->inline_size - msg->bytes_sent;
+            send_size += msg->submit_iov[iov_count].iov_len;
+            iov_count++;
+
+            if (msg->payload_size != 0)
+            {
+                msg->submit_iov[iov_count].iov_base =
+                    (void*)(wd_buffer_const_data(msg->payload_owner) + msg->payload_offset);
+                msg->submit_iov[iov_count].iov_len = msg->payload_size;
+                send_size += msg->submit_iov[iov_count].iov_len;
+                iov_count++;
+            }
+        }
+        else
+        {
+            const size_t payload_sent = msg->bytes_sent - msg->inline_size;
+            if (payload_sent >= msg->payload_size)
+            {
+                return false;
+            }
+
+            msg->submit_iov[0].iov_base =
+                (void*)(wd_buffer_const_data(msg->payload_owner) + msg->payload_offset + payload_sent);
+            msg->submit_iov[0].iov_len = msg->payload_size - payload_sent;
+            send_size                  = msg->submit_iov[0].iov_len;
+            iov_count                  = 1;
+        }
+
+        if (iov_count == 0 || send_size == 0)
+        {
+            return false;
+        }
+
+        msg->submit_msg.msg_iov    = msg->submit_iov;
+        msg->submit_msg.msg_iovlen = iov_count;
+        io_uring_prep_sendmsg(sqe, msg->fd, &msg->submit_msg, MSG_NOSIGNAL);
+    }
+    else
+    {
+        const uint8_t* send_data = msg->bytes + msg->bytes_sent;
+        send_size                = msg->total_size - msg->bytes_sent;
+        if (send_size == 0)
+        {
+            return false;
+        }
+        io_uring_prep_send(sqe, msg->fd, send_data, send_size, MSG_NOSIGNAL);
+    }
     io_uring_sqe_set_data(sqe, msg);
 
-    msg->submitted = true;
+    msg->submitted      = true;
+    msg->submitted_size = send_size;
     sender->inflight++;
     if (sender->inflight > sender->inflight_max)
     {
@@ -171,7 +255,7 @@ static bool wd_async_tcp_try_start_head(struct wd_async_tcp_sender* sender, stru
         {
             wd_async_tcp_complete_message(failed_msg, false);
         }
-        free(failed_msg);
+        wd_async_tcp_message_destroy(failed_msg);
         if (suppressed_message_failed)
         {
             *suppressed_message_failed = suppressed;
@@ -207,11 +291,12 @@ static struct wd_async_tcp_message* wd_async_tcp_message_create(int fd, uint16_t
     msg->fd           = fd;
     msg->message_type = message_type;
     msg->total_size   = total_size;
+    msg->inline_size  = total_size;
     msg->complete     = complete;
     msg->user_data    = user_data;
     if (!wd_tcp_header_encode(msg->bytes, &header))
     {
-        free(msg);
+        wd_async_tcp_message_destroy(msg);
         return NULL;
     }
     if (wire_payload_size != 0)
@@ -243,12 +328,13 @@ struct wd_async_tcp_message* wd_async_tcp_prepare_message(uint16_t message_type,
     msg->fd           = -1;
     msg->message_type = message_type;
     msg->total_size   = total_size;
+    msg->inline_size  = total_size;
     *out_payload      = msg->bytes + WD_TCP_HEADER_WIRE_SIZE;
     return msg;
 }
 
 void wd_async_tcp_discard_prepared_message(struct wd_async_tcp_message* msg) {
-    free(msg);
+    wd_async_tcp_message_destroy(msg);
 }
 
 /* The allocated bytes are already in their final io_uring-owned storage.
@@ -262,7 +348,7 @@ bool wd_async_tcp_send_prepared_message(struct wd_async_tcp_sender* sender, int 
     }
     if (!sender || !sender->ring_ready || fd < 0)
     {
-        free(msg);
+        wd_async_tcp_message_destroy(msg);
         return false;
     }
 
@@ -273,14 +359,14 @@ bool wd_async_tcp_send_prepared_message(struct wd_async_tcp_sender* sender, int 
     if (!wd_protocol_payload_wire_size(msg->message_type, payload, payload_size, &wire_size) || wire_size != payload_size)
     {
         sender->failed++;
-        free(msg);
+        wd_async_tcp_message_destroy(msg);
         return false;
     }
     if (!wd_async_tcp_can_enqueue(sender->pending_bytes, msg->total_size, sender->max_pending_bytes))
     {
         sender->overflows++;
         sender->failed++;
-        free(msg);
+        wd_async_tcp_message_destroy(msg);
         return false;
     }
     struct wd_tcp_header header = {0};
@@ -291,7 +377,7 @@ bool wd_async_tcp_send_prepared_message(struct wd_async_tcp_sender* sender, int 
     if (!wd_tcp_header_encode(msg->bytes, &header))
     {
         sender->failed++;
-        free(msg);
+        wd_async_tcp_message_destroy(msg);
         return false;
     }
     msg->fd = fd;
@@ -303,6 +389,113 @@ bool wd_async_tcp_send_prepared_message(struct wd_async_tcp_sender* sender, int 
     }
     sender->queued++;
     return true;
+}
+
+static struct wd_async_tcp_message* wd_async_tcp_owned_message_create(
+    int fd, uint16_t message_type, const void* prefix, uint32_t prefix_size,
+    struct wd_buffer* payload, size_t payload_offset, uint32_t payload_size,
+    wd_async_tcp_complete_fn complete, void* user_data) {
+    if ((prefix_size != 0 && !prefix) || (payload_size != 0 && !payload) ||
+        (payload && !wd_buffer_range_valid(payload, payload_offset, payload_size)))
+    {
+        return NULL;
+    }
+
+    const uint64_t wire_payload_size64 = (uint64_t)prefix_size + (uint64_t)payload_size;
+    if (wire_payload_size64 > UINT32_MAX ||
+        !wd_protocol_payload_size_is_valid(message_type, (uint32_t)wire_payload_size64))
+    {
+        return NULL;
+    }
+    const size_t inline_size = WD_TCP_HEADER_WIRE_SIZE + (size_t)prefix_size;
+    if (inline_size > SIZE_MAX - sizeof(struct wd_async_tcp_message) ||
+        inline_size > SIZE_MAX - (size_t)payload_size)
+    {
+        return NULL;
+    }
+
+    struct wd_async_tcp_message* msg = calloc(1, sizeof(*msg) + inline_size);
+    if (!msg)
+    {
+        return NULL;
+    }
+
+    struct wd_buffer* retained = payload ? wd_buffer_retain(payload) : NULL;
+    if (payload && !retained)
+    {
+        wd_async_tcp_message_destroy(msg);
+        return NULL;
+    }
+
+    struct wd_tcp_header header = {0};
+    header.magic            = WD_TCP_MAGIC;
+    header.protocol_version = WD_PROTOCOL_VERSION;
+    header.message_type     = message_type;
+    header.payload_size     = (uint32_t)wire_payload_size64;
+    if (!wd_tcp_header_encode(msg->bytes, &header))
+    {
+        wd_buffer_release(retained);
+        wd_async_tcp_message_destroy(msg);
+        return NULL;
+    }
+    if (prefix_size != 0)
+    {
+        memcpy(msg->bytes + WD_TCP_HEADER_WIRE_SIZE, prefix, prefix_size);
+    }
+
+    msg->fd             = fd;
+    msg->message_type   = message_type;
+    msg->inline_size    = inline_size;
+    msg->payload_owner  = retained;
+    msg->payload_offset = payload_offset;
+    msg->payload_size   = payload_size;
+    msg->total_size     = inline_size + (size_t)payload_size;
+    msg->complete       = complete;
+    msg->user_data      = user_data;
+    return msg;
+}
+
+bool wd_async_tcp_send_owned_message_ex(struct wd_async_tcp_sender* sender, int fd, uint16_t message_type,
+                                        const void* prefix, uint32_t prefix_size, struct wd_buffer* payload,
+                                        size_t payload_offset, uint32_t payload_size,
+                                        wd_async_tcp_complete_fn complete, void* user_data) {
+    if (!sender || !sender->ring_ready || fd < 0)
+    {
+        return false;
+    }
+    wd_async_tcp_sender_reap(sender);
+
+    struct wd_async_tcp_message* msg =
+        wd_async_tcp_owned_message_create(fd, message_type, prefix, prefix_size, payload,
+                                          payload_offset, payload_size, complete, user_data);
+    if (!msg)
+    {
+        sender->failed++;
+        return false;
+    }
+    if (!wd_async_tcp_can_enqueue(sender->pending_bytes, msg->total_size, sender->max_pending_bytes))
+    {
+        sender->overflows++;
+        sender->failed++;
+        wd_async_tcp_message_destroy(msg);
+        return false;
+    }
+
+    wd_async_tcp_pending_add(sender, msg);
+    bool just_enqueued_failed = false;
+    if (!wd_async_tcp_try_start_head(sender, msg, &just_enqueued_failed) && just_enqueued_failed)
+    {
+        return false;
+    }
+    sender->queued++;
+    return true;
+}
+
+bool wd_async_tcp_send_owned_message(struct wd_async_tcp_sender* sender, int fd, uint16_t message_type,
+                                     const void* prefix, uint32_t prefix_size, struct wd_buffer* payload,
+                                     size_t payload_offset, uint32_t payload_size) {
+    return wd_async_tcp_send_owned_message_ex(sender, fd, message_type, prefix, prefix_size, payload,
+                                              payload_offset, payload_size, NULL, NULL);
 }
 
 bool wd_async_tcp_sender_create(struct wd_async_tcp_sender** out_sender, uint32_t entries) {
@@ -330,7 +523,9 @@ bool wd_async_tcp_sender_create(struct wd_async_tcp_sender** out_sender, uint32_
         free(sender);
         return false;
     }
-    if (!wd_io_uring_require_operations(&sender->ring, WD_IO_URING_OPERATION_SEND | WD_IO_URING_OPERATION_ASYNC_CANCEL,
+    if (!wd_io_uring_require_operations(&sender->ring,
+                                        WD_IO_URING_OPERATION_SEND | WD_IO_URING_OPERATION_SENDMSG |
+                                            WD_IO_URING_OPERATION_ASYNC_CANCEL,
                                         "server TCP sender"))
     {
         io_uring_queue_exit(&sender->ring);
@@ -362,10 +557,13 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
         }
 
         struct wd_async_tcp_message* msg = cqe_data;
+        size_t                       submitted_size = 0;
 
         if (msg && msg->submitted)
         {
+            submitted_size  = msg->submitted_size;
             msg->submitted = false;
+            msg->submitted_size = 0;
             if (sender->inflight > 0)
             {
                 sender->inflight--;
@@ -381,7 +579,7 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
             sender->failed++;
             wd_async_tcp_pending_remove(sender, msg);
             wd_async_tcp_complete_message(msg, false);
-            free(msg);
+            wd_async_tcp_message_destroy(msg);
             wd_async_tcp_try_start_head(sender, NULL, NULL);
         }
         else
@@ -391,18 +589,21 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
                 sender->completed++;
                 wd_async_tcp_pending_remove(sender, msg);
                 wd_async_tcp_complete_message(msg, true);
-                free(msg);
+                wd_async_tcp_message_destroy(msg);
                 wd_async_tcp_try_start_head(sender, NULL, NULL);
             }
             else
             {
-                sender->partial_resubmits++;
+                if (cqe->res >= 0 && (size_t)cqe->res < submitted_size)
+                {
+                    sender->partial_resubmits++;
+                }
                 if (!wd_async_tcp_submit_message(sender, msg))
                 {
                     sender->failed++;
                     wd_async_tcp_pending_remove(sender, msg);
                     wd_async_tcp_complete_message(msg, false);
-                    free(msg);
+                    wd_async_tcp_message_destroy(msg);
                     wd_async_tcp_try_start_head(sender, NULL, NULL);
                 }
             }
@@ -500,7 +701,7 @@ uint32_t wd_async_tcp_sender_drop_message_type(struct wd_async_tcp_sender* sende
         {
             wd_async_tcp_pending_remove(sender, msg);
             wd_async_tcp_complete_message(msg, false);
-            free(msg);
+            wd_async_tcp_message_destroy(msg);
             dropped++;
         }
         msg = next;
@@ -572,7 +773,7 @@ static void wd_async_tcp_sender_fail_unsubmitted(struct wd_async_tcp_sender* sen
         {
             wd_async_tcp_pending_remove(sender, msg);
             wd_async_tcp_complete_message(msg, false);
-            free(msg);
+            wd_async_tcp_message_destroy(msg);
         }
         msg = next;
     }
@@ -649,7 +850,7 @@ static void wd_async_tcp_sender_fail_all_after_ring_exit(struct wd_async_tcp_sen
         sender->failed++;
         wd_async_tcp_pending_remove(sender, msg);
         wd_async_tcp_complete_message(msg, false);
-        free(msg);
+        wd_async_tcp_message_destroy(msg);
         msg = next;
     }
     sender->inflight = 0;

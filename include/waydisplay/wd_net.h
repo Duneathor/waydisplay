@@ -1,6 +1,7 @@
 #pragma once
 
 #include "waydisplay/wd_protocol_codec.h"
+#include "waydisplay/wd_buffer.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -9,6 +10,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define WD_TCP_PAYLOAD_PADDING_BYTES 64u
 
 enum wd_tcp_reader_status {
     WD_TCP_READER_NEED_MORE = 0,
@@ -20,16 +23,19 @@ enum wd_tcp_reader_status {
 };
 
 struct wd_tcp_message {
-    uint16_t message_type;
-    uint8_t* payload;
-    uint32_t payload_size;
+    uint16_t          message_type;
+    struct wd_buffer* buffer;
+    /* Borrowed view into buffer; valid while the message owns buffer. */
+    uint8_t*          payload;
+    uint32_t          payload_size;
 };
 
 struct wd_tcp_reader {
     uint8_t  header_bytes[WD_TCP_HEADER_WIRE_SIZE];
     size_t   header_size;
-    uint8_t* payload;
-    uint32_t payload_size;
+    struct wd_buffer* payload_buffer;
+    uint8_t*          payload;
+    uint32_t          payload_size;
     uint32_t payload_received;
     uint32_t max_payload_size;
     uint16_t message_type;
@@ -45,7 +51,10 @@ bool wd_tcp_reader_has_partial_frame(const struct wd_tcp_reader* reader);
 uint64_t wd_tcp_reader_deadline_ns(const struct wd_tcp_reader* reader);
 enum wd_tcp_reader_status wd_tcp_reader_receive(struct wd_tcp_reader* reader, int fd, uint64_t now_ns, uint64_t idle_timeout_ns,
                                                 uint64_t max_frame_lifetime_ns, struct wd_tcp_message* out_message);
-void wd_tcp_message_release(struct wd_tcp_message* message);
+void              wd_tcp_message_release(struct wd_tcp_message* message);
+/* Transfer the message payload owner to the caller. The returned buffer owns
+ * message->payload bytes; the message is left with no payload. */
+struct wd_buffer* wd_tcp_message_take_buffer(struct wd_tcp_message* message);
 
 bool wd_send_all(int fd, const void* data, size_t size);
 bool wd_recv_all(int fd, void* data, size_t size);

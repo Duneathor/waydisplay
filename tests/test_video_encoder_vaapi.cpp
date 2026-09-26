@@ -85,6 +85,7 @@ bool encode_hardware_codec(wd_video_encoder* encoder, uint32_t codec) {
         }
         CHECK(wd_video_frame_payload_size_is_valid(&packet.header, static_cast<uint32_t>(sizeof(packet.header)) + packet.header.data_size));
         produced_packet = true;
+        wd_video_encoder_packet_release(&packet);
     }
     CHECK(produced_packet);
     CHECK(produced_interframe);

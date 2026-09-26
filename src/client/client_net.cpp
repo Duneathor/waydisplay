@@ -1302,10 +1302,11 @@ void store_server_config_update(ClientState& state, const uint8_t* payload, uint
     }
 }
 
-bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_t payload_size, ClientVideoPacket& packet,
+bool video_payload_to_packet(ClientState& state, wd_buffer* owner, uint32_t payload_size, ClientVideoPacket& packet,
                              bool& control_frame) {
     control_frame = false;
-    if (!payload || payload_size < sizeof(wd_video_frame_payload_header))
+    const uint8_t* payload = wd_buffer_const_data(owner);
+    if (!owner || wd_buffer_size(owner) < payload_size || !payload || payload_size < sizeof(wd_video_frame_payload_header))
     {
         state.stats.video_invalid_frames_rx.fetch_add(1, std::memory_order_relaxed);
         return false;
@@ -1338,7 +1339,8 @@ bool video_payload_to_packet(ClientState& state, const uint8_t* payload, uint32_
         return false;
     }
 
-    packet.data = wd_video_frame_payload_data(payload, payload_size);
+    packet.data  = wd_video_frame_payload_data(payload, payload_size);
+    packet.owner = owner;
     return true;
 }
 
@@ -1417,11 +1419,11 @@ bool publish_decoded_video_frame(ClientState& state, ClientVideoDecoder* decoder
     return true;
 }
 
-void handle_video_frame(ClientState& state, const uint8_t* payload, uint32_t payload_size) {
+void handle_video_frame(ClientState& state, wd_buffer* owner, uint32_t payload_size) {
     DeferredVideoFeedback feedback{state};
     ClientVideoPacket     packet{};
     bool                  control_frame = false;
-    if (!video_payload_to_packet(state, payload, payload_size, packet, control_frame))
+    if (!video_payload_to_packet(state, owner, payload_size, packet, control_frame))
     {
         return;
     }
@@ -1684,7 +1686,7 @@ bool process_audio_message(ClientState& state, uint16_t message_type, const uint
 }
 
 void release_media_packet(ClientMediaPacket& packet) {
-    std::free(packet.payload);
+    wd_buffer_release(packet.buffer);
     packet = ClientMediaPacket{};
 }
 
@@ -1758,9 +1760,10 @@ bool enqueue_video_message(ClientState& state, wd_tcp_message& message) {
         !state.session.video_decode_queue.empty())
     {
         const ClientMediaPacket& first = state.session.video_decode_queue.front();
-        if (first.payload && first.payload_size >= sizeof(overflow_oldest))
+        const uint8_t* first_payload = wd_buffer_const_data(first.buffer);
+        if (first_payload && first.payload_size >= sizeof(overflow_oldest))
         {
-            std::memcpy(&overflow_oldest, first.payload, sizeof(overflow_oldest));
+            std::memcpy(&overflow_oldest, first_payload, sizeof(overflow_oldest));
         }
         const uint64_t now_ns = wd_now_ns();
         if (first.queued_ns != 0 && now_ns >= first.queued_ns)
@@ -1798,8 +1801,14 @@ bool enqueue_video_message(ClientState& state, wd_tcp_message& message) {
         return true;
     }
 
+    const uint32_t payload_size = message.payload_size;
+    wd_buffer*     buffer       = wd_tcp_message_take_buffer(&message);
+    if (!buffer)
+    {
+        return false;
+    }
     state.session.video_decode_queue.push_back(
-        ClientMediaPacket{message.message_type, message.payload, message.payload_size, plan.reset_decoder_before, wd_now_ns()});
+        ClientMediaPacket{message.message_type, buffer, payload_size, plan.reset_decoder_before, wd_now_ns()});
     const uint32_t decode_depth = static_cast<uint32_t>(state.session.video_decode_queue.size());
     state.stats.video_decode_queue_depth.store(decode_depth, std::memory_order_relaxed);
     uint32_t decode_max = state.stats.video_decode_queue_depth_max.load(std::memory_order_relaxed);
@@ -1808,8 +1817,6 @@ bool enqueue_video_message(ClientState& state, wd_tcp_message& message) {
                                                                            std::memory_order_relaxed))
     {
     }
-    message.payload      = nullptr;
-    message.payload_size = 0;
     state.session.video_decode_ready.notify_one();
     return true;
 }
@@ -1831,10 +1838,14 @@ bool enqueue_audio_message(ClientState& state, wd_tcp_message& message) {
         return true;
     }
 
+    const uint32_t payload_size = message.payload_size;
+    wd_buffer*     buffer       = wd_tcp_message_take_buffer(&message);
+    if (!buffer)
+    {
+        return false;
+    }
     state.session.audio_decode_queue.push_back(
-        ClientMediaPacket{message.message_type, message.payload, message.payload_size, false});
-    message.payload      = nullptr;
-    message.payload_size = 0;
+        ClientMediaPacket{message.message_type, buffer, payload_size, false});
     state.session.audio_decode_ready.notify_one();
     return true;
 }
@@ -2033,7 +2044,7 @@ void client_video_decode_worker_main(ClientState* state) {
         {
             reset_video_decoder(*state, "video recovery keyframe");
         }
-        handle_video_frame(*state, packet.payload, packet.payload_size);
+        handle_video_frame(*state, packet.buffer, packet.payload_size);
         release_media_packet(packet);
     }
 }
@@ -2047,7 +2058,7 @@ void client_audio_decode_worker_main(ClientState* state) {
     ClientMediaPacket packet{};
     while (pop_media_packet(*state, state->session.audio_decode_queue, state->session.audio_decode_ready, packet))
     {
-        const bool ok = process_audio_message(*state, packet.message_type, packet.payload, packet.payload_size);
+        const bool ok = process_audio_message(*state, packet.message_type, wd_buffer_const_data(packet.buffer), packet.payload_size);
         release_media_packet(packet);
         if (!ok)
         {

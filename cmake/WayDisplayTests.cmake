@@ -136,6 +136,30 @@ if(WAYDISPLAY_BUILD_TESTS)
     endfunction()
 
     waydisplay_add_test(
+        NAME waydisplay.tcp_buffer_ownership
+        TARGET waydisplay_test_tcp_buffer_ownership
+        SOURCES tests/test_tcp_buffer_ownership.cpp
+        LIBRARIES waydisplay_common
+        LABELS "unit;network;lifecycle;performance"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.buffer_ownership
+        TARGET waydisplay_test_buffer_ownership
+        SOURCES tests/test_buffer_ownership.cpp
+        LIBRARIES waydisplay_common Threads::Threads
+        LABELS "unit;network;performance;threading"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.client_receive_stats_batch
+        TARGET waydisplay_test_client_receive_stats_batch
+        SOURCES tests/test_client_receive_stats_batch.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+        LABELS "unit;client;network;telemetry;performance"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.hevc_annexb_repair
         TARGET waydisplay_test_hevc_annexb_repair
         SOURCES tests/test_hevc_annexb_repair.c src/server/wd_hevc_annexb.c
@@ -477,6 +501,14 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.tile_work_snapshot
+        TARGET waydisplay_test_tile_work_snapshot
+        SOURCES tests/test_tile_work_snapshot.cpp
+        LIBRARIES waydisplay_server_runtime
+        LABELS "unit;server;tiles;performance"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.client_session
         TARGET waydisplay_test_client_session
         SOURCES tests/test_client_session.c
@@ -561,6 +593,14 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.encode_completion_queue
+        TARGET waydisplay_test_encode_completion_queue
+        SOURCES tests/test_encode_completion_queue.cpp
+        LIBRARIES waydisplay_server_runtime
+        LABELS "unit;server;tiles;threading;performance"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.frame_pacing
         TARGET waydisplay_test_frame_pacing
         SOURCES tests/test_frame_pacing.c
@@ -572,6 +612,28 @@ if(WAYDISPLAY_BUILD_TESTS)
         TARGET waydisplay_test_recovery_policy_edges
         SOURCES tests/test_recovery_policy_edges.cpp
         LIBRARIES waydisplay_server_runtime
+    )
+
+    add_test(
+        NAME waydisplay.tile_owned_transport_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_tile_owned_transport_contract.cmake
+    )
+    set_tests_properties(waydisplay.tile_owned_transport_contract PROPERTIES
+        LABELS "unit;cmake;tiles;network;performance;ownership"
+        TIMEOUT 10
+    )
+
+    add_test(
+        NAME waydisplay.video_owned_transport_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_video_owned_transport_contract.cmake
+    )
+    set_tests_properties(waydisplay.video_owned_transport_contract PROPERTIES
+        LABELS "unit;cmake;video;performance;ownership"
+        TIMEOUT 10
     )
 
     add_test(
@@ -602,6 +664,41 @@ if(WAYDISPLAY_BUILD_TESTS)
         TARGET waydisplay_test_async_udp_accounting
         SOURCES tests/test_async_udp_accounting.cpp
         LIBRARIES waydisplay_server_runtime
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.async_tcp_owned_payload
+        TARGET waydisplay_test_async_tcp_owned_payload
+        SOURCES
+            tests/test_async_tcp_owned_payload.c
+            src/server/wd_async_tcp.c
+        LIBRARIES
+            waydisplay_common
+            PkgConfig::LIBURING
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+        SKIP_RETURN_CODE 77
+        LABELS "unit;network;io_uring;ownership"
+        TIMEOUT 10
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.async_udp_owned_payload
+        TARGET waydisplay_test_async_udp_owned_payload
+        SOURCES
+            tests/test_async_udp_owned_payload.c
+            src/server/wd_async_udp.c
+            src/server/wd_async_udp_accounting.c
+        LIBRARIES
+            waydisplay_common
+            PkgConfig::LIBURING
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+        SKIP_RETURN_CODE 77
+        LABELS "unit;network;io_uring;ownership"
+        TIMEOUT 10
     )
 
     waydisplay_add_test(

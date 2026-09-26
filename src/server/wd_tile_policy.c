@@ -33,6 +33,28 @@ uint16_t wd_cap_periodic_capture_fps(uint16_t capture_fps, uint16_t output_refre
     return capture_fps;
 }
 
+uint16_t wd_tile_encode_pipeline_capacity(uint16_t available_jobs, uint16_t worker_count, uint16_t queue_waves) {
+    if (available_jobs == 0)
+    {
+        return 0;
+    }
+    if (worker_count == 0)
+    {
+        worker_count = 1;
+    }
+    if (queue_waves == 0)
+    {
+        queue_waves = 1;
+    }
+
+    uint32_t capacity = (uint32_t)worker_count * (uint32_t)queue_waves;
+    if (capacity > UINT16_MAX)
+    {
+        capacity = UINT16_MAX;
+    }
+    return available_jobs < capacity ? available_jobs : (uint16_t)capacity;
+}
+
 uint16_t wd_tile_packet_count_for_payload(uint32_t payload_size, uint16_t udp_payload_target) {
     if (payload_size == 0 || udp_payload_target == 0)
     {
@@ -306,6 +328,86 @@ void wd_tile_compression_advisor_record(struct wd_tile_compression_advisor* advi
         advisor->poor_streak      = 0;
         advisor->bypass_remaining = WD_TILE_ADVISOR_BYPASS_ATTEMPTS;
     }
+}
+
+void wd_tile_payload_predictor_record(struct wd_tile_payload_predictor* predictor, uint32_t payload_size, uint32_t uncompressed_size) {
+    if (!predictor || payload_size == 0 || uncompressed_size == 0)
+    {
+        return;
+    }
+
+    const uint64_t ratio_raw = ((uint64_t)payload_size << 16u) / uncompressed_size;
+    const uint32_t ratio_q16 = ratio_raw > UINT32_MAX ? UINT32_MAX : (uint32_t)ratio_raw;
+    if (predictor->samples == 0)
+    {
+        predictor->payload_ratio_q16 = ratio_q16;
+    }
+    else
+    {
+        const uint32_t denominator = WD_STREAM_TILE_PREDICTOR_EWMA_DENOMINATOR;
+        const uint32_t new_weight  = WD_STREAM_TILE_PREDICTOR_EWMA_NEW_NUMERATOR;
+        const uint32_t old_weight  = denominator > new_weight ? denominator - new_weight : 0;
+        predictor->payload_ratio_q16 =
+            (uint32_t)(((uint64_t)predictor->payload_ratio_q16 * old_weight + (uint64_t)ratio_q16 * new_weight) / denominator);
+    }
+    if (predictor->samples < UINT16_MAX)
+    {
+        predictor->samples++;
+    }
+    predictor->skipped_candidates = 0;
+}
+
+uint32_t wd_tile_payload_predictor_predict(const struct wd_tile_payload_predictor* predictor, uint32_t uncompressed_size) {
+    if (uncompressed_size == 0)
+    {
+        return 0;
+    }
+    if (!predictor || predictor->samples == 0)
+    {
+        return uncompressed_size;
+    }
+
+    uint64_t predicted = ((uint64_t)uncompressed_size * predictor->payload_ratio_q16 + (1u << 15u)) >> 16u;
+    if (predicted == 0)
+    {
+        predicted = 1;
+    }
+    return predicted > UINT32_MAX ? UINT32_MAX : (uint32_t)predicted;
+}
+
+bool wd_tile_payload_predictor_should_attempt(struct wd_tile_payload_predictor* predictor, uint32_t uncompressed_size,
+                                              uint32_t max_wire_bytes, uint16_t udp_payload_target,
+                                              uint16_t packet_header_size, uint16_t first_packet_header_size,
+                                              bool* out_probe) {
+    if (out_probe)
+    {
+        *out_probe = false;
+    }
+    if (!predictor || predictor->samples < WD_STREAM_TILE_PREDICTOR_MIN_SAMPLES || uncompressed_size == 0 || max_wire_bytes == 0)
+    {
+        return true;
+    }
+
+    const uint32_t predicted_payload = wd_tile_payload_predictor_predict(predictor, uncompressed_size);
+    const uint32_t predicted_wire =
+        wd_tile_wire_bytes_for_payload(predicted_payload, udp_payload_target, packet_header_size, first_packet_header_size);
+    if (predicted_wire == 0 ||
+        (uint64_t)predicted_wire * 100u <= (uint64_t)max_wire_bytes * WD_STREAM_TILE_PREDICTOR_SKIP_MARGIN_PERCENT)
+    {
+        return true;
+    }
+
+    predictor->skipped_candidates++;
+    if (WD_STREAM_TILE_PREDICTOR_PROBE_INTERVAL != 0 &&
+        predictor->skipped_candidates % WD_STREAM_TILE_PREDICTOR_PROBE_INTERVAL == 0)
+    {
+        if (out_probe)
+        {
+            *out_probe = true;
+        }
+        return true;
+    }
+    return false;
 }
 
 void wd_tile_delivery_status_add(struct wd_tile_delivery_status* status) {

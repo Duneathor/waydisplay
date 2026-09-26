@@ -1,5 +1,7 @@
 #include "client_receive.hpp"
 
+#include "client_receive_stats_batch.hpp"
+
 #include "client_async_udp.hpp"
 #include "client_net.hpp"
 #include "content_order.hpp"
@@ -172,7 +174,8 @@ bool client_has_pending_server_config(ClientState& state) {
     return state.pending_config_valid;
 }
 
-bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, const uint8_t* packet, size_t packet_size) {
+bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, ClientReceiveStatsBatch& batch,
+                          const uint8_t* packet, size_t packet_size) {
     if (!packet || packet_size < WD_UDP_TILE_HEADER_MIN_SIZE) [[unlikely]]
     {
         state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
@@ -225,8 +228,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
     if (prev_rx_ns != 0 && packet_rx_ns >= prev_rx_ns)
     {
         const uint64_t interarrival_ns = packet_rx_ns - prev_rx_ns;
-        state.stats.udp_interarrival_samples.fetch_add(1, std::memory_order_relaxed);
-        state.stats.udp_interarrival_sum_ns.fetch_add(interarrival_ns, std::memory_order_relaxed);
+        batch.note_interarrival(interarrival_ns);
         record_atomic_max(state.stats.udp_interarrival_max_ns, interarrival_ns);
 
         const uint64_t prev_interarrival_ns = state.stats.last_udp_interarrival_ns.exchange(interarrival_ns, std::memory_order_relaxed);
@@ -234,13 +236,11 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
         {
             const uint64_t jitter_ns =
                 interarrival_ns > prev_interarrival_ns ? interarrival_ns - prev_interarrival_ns : prev_interarrival_ns - interarrival_ns;
-            state.stats.udp_interarrival_jitter_samples.fetch_add(1, std::memory_order_relaxed);
-            state.stats.udp_interarrival_jitter_sum_ns.fetch_add(jitter_ns, std::memory_order_relaxed);
+            batch.note_jitter(jitter_ns);
         }
     }
 
-    state.stats.udp_packets_rx.fetch_add(1, std::memory_order_relaxed);
-    state.stats.udp_bytes_rx.fetch_add(static_cast<uint64_t>(packet_size), std::memory_order_relaxed);
+    batch.note_udp_packet(packet_size);
 
     CompletedTile completed = reassembler.process_udp_packet(state, packet, packet_size);
 
@@ -318,15 +318,11 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
         }
     }
 
-    if (completed.first_packet_ns != 0 && completed.completed_timestamp_ns >= completed.first_packet_ns)
-    {
-        state.stats.tile_assembly_samples.fetch_add(1, std::memory_order_relaxed);
-        state.stats.tile_assembly_sum_ns.fetch_add(completed.completed_timestamp_ns - completed.first_packet_ns, std::memory_order_relaxed);
-    }
-
-    state.stats.udp_completed_compressed_bytes.fetch_add(completed.compressed_size, std::memory_order_relaxed);
-    state.stats.udp_completed_packets.fetch_add(completed.packet_count, std::memory_order_relaxed);
-    state.stats.udp_tiles_completed.fetch_add(1, std::memory_order_relaxed);
+    const bool has_assembly_sample =
+        completed.first_packet_ns != 0 && completed.completed_timestamp_ns >= completed.first_packet_ns;
+    const uint64_t assembly_ns =
+        has_assembly_sample ? completed.completed_timestamp_ns - completed.first_packet_ns : 0;
+    batch.note_completed_tile(completed.compressed_size, completed.packet_count, has_assembly_sample, assembly_ns);
     if (wake_render)
     {
         state.render_wake.signal();
@@ -335,13 +331,14 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, cons
 }
 
 struct AsyncUdpDrainContext {
-    ClientState*     state       = nullptr;
-    TileReassembler* reassembler = nullptr;
+    ClientState*             state       = nullptr;
+    TileReassembler*         reassembler = nullptr;
+    ClientReceiveStatsBatch* stats_batch = nullptr;
 };
 
 bool handle_async_udp_packet(void* userdata, const uint8_t* packet, size_t packet_size) {
     auto* ctx = static_cast<AsyncUdpDrainContext*>(userdata);
-    if (!ctx || !ctx->state || !ctx->reassembler) [[unlikely]]
+    if (!ctx || !ctx->state || !ctx->reassembler || !ctx->stats_batch) [[unlikely]]
     {
         return false;
     }
@@ -349,7 +346,36 @@ bool handle_async_udp_packet(void* userdata, const uint8_t* packet, size_t packe
     {
         return true;
     }
-    return process_udp_datagram(*ctx->state, *ctx->reassembler, packet, packet_size);
+    return process_udp_datagram(*ctx->state, *ctx->reassembler, *ctx->stats_batch, packet, packet_size);
+}
+
+void publish_receive_stats_batch(ClientState& state, const ClientReceiveStatsBatch& batch) {
+    if (batch.udp_packets_rx != 0)
+    {
+        state.stats.udp_packets_rx.fetch_add(batch.udp_packets_rx, std::memory_order_relaxed);
+        state.stats.udp_bytes_rx.fetch_add(batch.udp_bytes_rx, std::memory_order_relaxed);
+    }
+    if (batch.udp_interarrival_samples != 0)
+    {
+        state.stats.udp_interarrival_samples.fetch_add(batch.udp_interarrival_samples, std::memory_order_relaxed);
+        state.stats.udp_interarrival_sum_ns.fetch_add(batch.udp_interarrival_sum_ns, std::memory_order_relaxed);
+    }
+    if (batch.udp_interarrival_jitter_samples != 0)
+    {
+        state.stats.udp_interarrival_jitter_samples.fetch_add(batch.udp_interarrival_jitter_samples, std::memory_order_relaxed);
+        state.stats.udp_interarrival_jitter_sum_ns.fetch_add(batch.udp_interarrival_jitter_sum_ns, std::memory_order_relaxed);
+    }
+    if (batch.tile_assembly_samples != 0)
+    {
+        state.stats.tile_assembly_samples.fetch_add(batch.tile_assembly_samples, std::memory_order_relaxed);
+        state.stats.tile_assembly_sum_ns.fetch_add(batch.tile_assembly_sum_ns, std::memory_order_relaxed);
+    }
+    if (batch.udp_tiles_completed != 0)
+    {
+        state.stats.udp_completed_compressed_bytes.fetch_add(batch.udp_completed_compressed_bytes, std::memory_order_relaxed);
+        state.stats.udp_completed_packets.fetch_add(batch.udp_completed_packets, std::memory_order_relaxed);
+        state.stats.udp_tiles_completed.fetch_add(batch.udp_tiles_completed, std::memory_order_relaxed);
+    }
 }
 
 bool drain_udp(ClientState& state, TileReassembler& reassembler) {
@@ -359,9 +385,11 @@ bool drain_udp(ClientState& state, TileReassembler& reassembler) {
         return false;
     }
 
-    AsyncUdpDrainContext ctx{&state, &reassembler};
+    ClientReceiveStatsBatch stats_batch{};
+    AsyncUdpDrainContext    ctx{&state, &reassembler, &stats_batch};
     const bool ok = client_async_udp_receiver_drain(state.session.udp_receiver, &ctx, handle_async_udp_packet,
                                                     WD_CLIENT_UDP_DRAIN_BATCH);
+    publish_receive_stats_batch(state, stats_batch);
     client_reap_async_udp_receives(state);
     return ok;
 }

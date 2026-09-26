@@ -92,8 +92,6 @@ struct wd_video_encoder {
     uint32_t           vaapi_supported_codecs;
     uint32_t*          padded_pixels;
     size_t             padded_pixel_capacity;
-    uint8_t*           packet_copy;
-    size_t             packet_copy_capacity;
 #endif
 };
 
@@ -133,10 +131,6 @@ static void wd_video_encoder_release_backend(struct wd_video_encoder* encoder) {
     free(encoder->padded_pixels);
     encoder->padded_pixels         = NULL;
     encoder->padded_pixel_capacity = 0;
-
-    free(encoder->packet_copy);
-    encoder->packet_copy          = NULL;
-    encoder->packet_copy_capacity = 0;
 
     av_packet_free(&encoder->packet);
     av_frame_free(&encoder->upload_frame);
@@ -718,34 +712,48 @@ static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, c
     return true;
 }
 
-static bool wd_video_encoder_copy_packet(struct wd_video_encoder* encoder, const AVPacket* src, uint64_t fallback_pts_usec,
-                                         struct wd_video_encoder_packet* packet) {
+static void wd_video_encoder_release_avpacket(void* user_data, uint8_t* data, size_t size) {
+    (void)data;
+    (void)size;
+    AVPacket* packet = user_data;
+    av_packet_free(&packet);
+}
+
+static bool wd_video_encoder_own_packet(struct wd_video_encoder* encoder, AVPacket* src, uint64_t fallback_pts_usec,
+                                        struct wd_video_encoder_packet* packet) {
     if (!encoder || !src || !packet || src->size <= 0 || (uint64_t)src->size > WD_VIDEO_FRAME_MAX_PAYLOAD_BYTES)
     {
         return false;
     }
 
-    if (encoder->packet_copy_capacity < (size_t)src->size)
+    size_t packet_size = (size_t)src->size;
+    if (encoder->active_backend == WD_VIDEO_ENCODER_BACKEND_VAAPI && encoder->config.codec == WD_VIDEO_CODEC_H265)
     {
-        uint8_t* new_copy = realloc(encoder->packet_copy, (size_t)src->size);
-        if (!new_copy)
+        if (av_packet_make_writable(src) < 0)
         {
             return false;
         }
-        encoder->packet_copy          = new_copy;
-        encoder->packet_copy_capacity = (size_t)src->size;
-    }
-    memcpy(encoder->packet_copy, src->data, (size_t)src->size);
-    size_t copy_size = (size_t)src->size;
-    if (encoder->active_backend == WD_VIDEO_ENCODER_BACKEND_VAAPI && encoder->config.codec == WD_VIDEO_CODEC_H265)
-    {
-        const int repaired = wd_hevc_annexb_repair_vaapi(encoder->packet_copy, &copy_size);
+        const int repaired = wd_hevc_annexb_repair_vaapi(src->data, &packet_size);
         if (repaired < 0)
         {
             WD_LOG_WARN("VAAPI HEVC encoder emitted a packet without a valid Annex-B start code; rejecting frame");
             encoder->keyframe_requested = true;
             return false;
         }
+        src->size = (int)packet_size;
+    }
+
+    AVPacket* owned_packet = av_packet_clone(src);
+    if (!owned_packet)
+    {
+        return false;
+    }
+    struct wd_buffer* buffer =
+        wd_buffer_wrap(owned_packet->data, packet_size, wd_video_encoder_release_avpacket, owned_packet);
+    if (!buffer)
+    {
+        av_packet_free(&owned_packet);
+        return false;
     }
 
     memset(packet, 0, sizeof(*packet));
@@ -764,10 +772,12 @@ static bool wd_video_encoder_copy_packet(struct wd_video_encoder* encoder, const
     packet->header.height       = encoder->config.height;
     packet->header.coded_width  = (uint16_t)encoder->codec_ctx->width;
     packet->header.coded_height = (uint16_t)encoder->codec_ctx->height;
-    packet->header.data_size    = (uint32_t)copy_size;
-    packet->data                = encoder->packet_copy;
+    packet->header.data_size    = (uint32_t)packet_size;
+    packet->buffer              = buffer;
+    packet->data                = wd_buffer_const_data(buffer);
     return true;
 }
+
 #endif
 
 static bool wd_video_encoder_parse_preference(const char* backend, enum wd_video_encoder_preference* preference) {
@@ -1182,6 +1192,15 @@ static bool wd_video_encoder_prepare_frame(struct wd_video_encoder* encoder, con
 }
 #endif
 
+void wd_video_encoder_packet_release(struct wd_video_encoder_packet* packet) {
+    if (!packet)
+    {
+        return;
+    }
+    wd_buffer_release(packet->buffer);
+    memset(packet, 0, sizeof(*packet));
+}
+
 bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const struct wd_video_encoder_input_xrgb8888* input,
                                       struct wd_video_encoder_packet* packet) {
     if (packet)
@@ -1238,7 +1257,7 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const st
             }
             if (!have_output)
             {
-                if (!wd_video_encoder_copy_packet(encoder, encoder->packet, input->pts_usec, packet))
+                if (!wd_video_encoder_own_packet(encoder, encoder->packet, input->pts_usec, packet))
                 {
                     av_packet_unref(encoder->packet);
                     return false;
@@ -1269,7 +1288,7 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const st
         }
         if (!have_output)
         {
-            if (!wd_video_encoder_copy_packet(encoder, encoder->packet, input->pts_usec, packet))
+            if (!wd_video_encoder_own_packet(encoder, encoder->packet, input->pts_usec, packet))
             {
                 av_packet_unref(encoder->packet);
                 return false;
