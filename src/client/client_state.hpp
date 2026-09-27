@@ -9,6 +9,7 @@
 #include "video_decoder.hpp"
 #include "video_present_queue.hpp"
 #include "video_transition.h"
+#include "tile_present_queue.hpp"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_buffer.h"
 #include "waydisplay/wd_protocol.h"
@@ -474,6 +475,9 @@ struct ClientState {
     uint32_t video_codecs            = 0;
     uint16_t video_transport         = 0;
     std::atomic<uint64_t> video_feedback_sequence{0};
+    /* Set by the active presentation backend. The decoder may only retain
+     * hardware frames when the renderer can import DRM PRIME directly. */
+    std::atomic<bool>     video_gpu_present_supported{false};
 
     bool     audio_stream_negotiated = false;
     uint32_t audio_codec             = 0;
@@ -501,6 +505,15 @@ struct ClientState {
     std::atomic<uint64_t> framebuffer_lock_wait_ewma_ns{0};
     std::mutex            dirty_rect_mutex;
     ClientDirtyTileGrid   pending_dirty_tiles;
+    std::mutex             tile_present_mutex;
+    ClientTilePresentQueue tile_present_queue{};
+    std::atomic<uint64_t>  pending_tile_upload_count{0};
+
+    /* Renderer-consumed immutable tile buffers return to the network-side
+     * reassembler pool in batches so direct presentation does not trade a
+     * framebuffer copy for allocator churn. */
+    std::mutex                         tile_present_recycle_mutex;
+    std::vector<std::vector<uint8_t>>  tile_present_recycled_buffers;
     uint64_t              pending_dirty_epoch = 1;
     struct wd_client_stream_ownership stream_ownership = WD_CLIENT_STREAM_OWNERSHIP_INITIALIZER;
     std::mutex            remote_content_mutex;

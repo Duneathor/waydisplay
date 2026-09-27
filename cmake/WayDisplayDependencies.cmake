@@ -15,6 +15,7 @@ set(WAYDISPLAY_HAVE_AV1_SERVER_ENCODER FALSE)
 set(WAYDISPLAY_HAVE_AV1_CLIENT_DECODER FALSE)
 set(WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER FALSE)
 set(WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK FALSE)
+set(WAYDISPLAY_HAVE_VAAPI_SERVER_VPP FALSE)
 set(WAYDISPLAY_HAVE_PIPEWIRE_AUDIO_CAPTURE FALSE)
 set(WAYDISPLAY_HAVE_OPUS_AUDIO FALSE)
 
@@ -65,15 +66,17 @@ if(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER OR WAYDISPLAY_ENABLE_H264_CLIENT_DECODE
     endif()
 endif()
 
-# Avoid opening av1_vaapi on devices that only advertise AV1 decoding (or
-# lack AV1 entirely). Keep libva optional so software AV1 builds do not gain
-# a mandatory new dependency; without its development files FFmpeg's existing
-# runtime probe remains the fallback.
-if(WAYDISPLAY_HAVE_AV1_SERVER_ENCODER)
+# libva remains optional for server encoding. When present it provides both
+# the AV1 profile probe and the video-processing path used to convert an
+# imported compositor DRM PRIME surface directly into an NV12 encode surface.
+if(WAYDISPLAY_HAVE_H265_SERVER_ENCODER OR WAYDISPLAY_HAVE_H264_SERVER_ENCODER OR WAYDISPLAY_HAVE_AV1_SERVER_ENCODER)
     pkg_check_modules(VAAPI_SERVER QUIET IMPORTED_TARGET libva)
     if(VAAPI_SERVER_FOUND)
-        set(WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK TRUE)
-    else()
+        set(WAYDISPLAY_HAVE_VAAPI_SERVER_VPP TRUE)
+        if(WAYDISPLAY_HAVE_AV1_SERVER_ENCODER)
+            set(WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK TRUE)
+        endif()
+    elseif(WAYDISPLAY_HAVE_AV1_SERVER_ENCODER)
         message(STATUS "libva development files unavailable: AV1 VAAPI encoder will use FFmpeg's runtime probe")
     endif()
 endif()

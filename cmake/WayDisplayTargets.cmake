@@ -6,6 +6,7 @@ pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
 
 add_library(waydisplay_common STATIC
     src/common/wd_buffer.c
+    src/common/wd_frame.c
     src/common/wd_time.c
     src/common/wd_log.c
     src/common/wd_eventfd.c
@@ -104,6 +105,7 @@ add_library(waydisplay_client_runtime STATIC
     src/client/video_decode_queue_policy.c
     src/client/video_keyframe_recovery.c
     src/client/video_present_queue.cpp
+    src/client/tile_present_queue.cpp
 )
 
 waydisplay_apply_common_warnings(waydisplay_client_runtime)
@@ -160,6 +162,7 @@ target_compile_definitions(waydisplay_video_encoder PRIVATE
     WAYDISPLAY_HAVE_H264_SERVER_ENCODER=$<BOOL:${WAYDISPLAY_HAVE_H264_SERVER_ENCODER}>
     WAYDISPLAY_HAVE_AV1_SERVER_ENCODER=$<BOOL:${WAYDISPLAY_HAVE_AV1_SERVER_ENCODER}>
     WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK=$<BOOL:${WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK}>
+    WAYDISPLAY_HAVE_VAAPI_SERVER_VPP=$<BOOL:${WAYDISPLAY_HAVE_VAAPI_SERVER_VPP}>
 )
 
 target_link_libraries(waydisplay_video_encoder PUBLIC
@@ -171,7 +174,7 @@ if(WAYDISPLAY_HAVE_H265_SERVER_ENCODER OR WAYDISPLAY_HAVE_H264_SERVER_ENCODER OR
         PkgConfig::FFMPEG_VIDEO_ENCODER
     )
 endif()
-if(WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK)
+if(WAYDISPLAY_HAVE_VAAPI_SERVER_VPP)
     target_link_libraries(waydisplay_video_encoder PRIVATE PkgConfig::VAAPI_SERVER)
 endif()
 
@@ -438,6 +441,7 @@ if(WAYDISPLAY_BUILD_WLROOTS_SERVER)
             src/server/wd_scene.c
             src/server/wd_scene_graph.c
             src/server/wd_readback.c
+            src/server/wd_gpu_capture.c
             src/server/wd_pointer.c
         )
         set_target_properties(waydisplay_server_wlroots PROPERTIES

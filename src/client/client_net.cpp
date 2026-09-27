@@ -1537,7 +1537,9 @@ void handle_video_frame(ClientState& state, wd_buffer* owner, uint32_t payload_s
         config.coded_height     = packet.header.coded_height != 0 ? packet.header.coded_height : packet.header.height;
         config.target_fps       = state.stream_config.requested_session_fps;
         config.codec            = packet.header.codec;
-        config.decode_mode     = state.stream_config.video_decoder_mode;
+        config.decode_mode      = state.stream_config.video_decoder_mode;
+        config.prefer_gpu_output =
+            state.video_gpu_present_supported.load(std::memory_order_acquire);
 
         const bool configured = client_video_decoder_configure(state.session.video_decoder, config);
         if (!configured)

@@ -1,7 +1,10 @@
 #include "waydisplay/wd_tile.h"
 #include "waydisplay/wd_time.h"
 #include "wd_server_internal.h"
+#include "wd_stream_pipeline_internal.h"
 #include "wd_readback_regions.h"
+#include "wd_gpu_capture.h"
+#include "video_gpu_capture_policy.h"
 
 #include <drm_fourcc.h>
 #include <string.h>
@@ -184,6 +187,24 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
     }
 
     merge_wlroots_output_damage(server, &state);
+
+    /* Once the configured video backend can import DRM PRIME, video ownership
+     * no longer needs a CPU framebuffer snapshot. Export independent plane FDs
+     * before committing the wlroots output state. Tile ownership and every
+     * unsupported GPU path continue through the existing CPU readback below. */
+    wd_frame_reset(&server->captured_video_frame);
+    if (wd_stream_video_gpu_capture_needed(server) &&
+        wd_gpu_capture_export_wlr_buffer(state.buffer, 0, &server->captured_video_frame))
+    {
+        if (wd_video_gpu_capture_frame_eligible(&server->captured_video_frame,
+                                                server->display_width,
+                                                server->display_height))
+        {
+            result = WD_RENDER_RESULT_FRAME;
+            goto commit_only;
+        }
+        wd_frame_reset(&server->captured_video_frame);
+    }
 
     int read_width = state.buffer->width < (int)server->display_width ? state.buffer->width : (int)server->display_width;
 

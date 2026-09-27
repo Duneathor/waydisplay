@@ -31,12 +31,14 @@ struct ClientReceiveState {
 
 namespace {
 
-bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
-                        const std::vector<uint8_t>& tile_bytes, ClientDirtyRect& dirty_rect) {
+bool tile_upload_geometry(const ClientState& state, uint16_t tile_id, uint16_t tile_width,
+                          uint16_t tile_height, const std::vector<uint8_t>& tile_bytes,
+                          ClientDirtyRect& dirty_rect) {
     const uint16_t tiles_x     = wd_tiles_for_width_with_tile(state.config.width, tile_width);
     const uint16_t tiles_y     = wd_tiles_for_height_with_tile(state.config.height, tile_height);
     const uint32_t total_tiles = static_cast<uint32_t>(tiles_x) * static_cast<uint32_t>(tiles_y);
-    if (tile_width == 0 || tile_height == 0 || tiles_x == 0 || tiles_y == 0 || tile_id >= total_tiles) [[unlikely]]
+    if (tile_width == 0 || tile_height == 0 || tiles_x == 0 || tiles_y == 0 ||
+        tile_id >= total_tiles) [[unlikely]]
     {
         return false;
     }
@@ -45,29 +47,35 @@ bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_id, uint16_t tile_widt
     const uint32_t tile_y        = tile_id / tiles_x;
     const uint32_t dst_x         = tile_x * tile_width;
     const uint32_t dst_y         = tile_y * tile_height;
-    const size_t   expected_size = static_cast<size_t>(tile_width) * static_cast<size_t>(tile_height) * WD_BYTES_PER_PIXEL;
-
-    if (tile_bytes.size() < expected_size || dst_x >= state.config.width || dst_y >= state.config.height) [[unlikely]]
+    const size_t expected_size   = static_cast<size_t>(tile_width) * tile_height * WD_BYTES_PER_PIXEL;
+    if (tile_bytes.size() < expected_size || dst_x >= state.config.width ||
+        dst_y >= state.config.height) [[unlikely]]
     {
         return false;
     }
 
-    const uint32_t visible_width  = std::min<uint32_t>(tile_width, state.config.width - dst_x);
-    const uint32_t visible_height = std::min<uint32_t>(tile_height, state.config.height - dst_y);
-
     dirty_rect.x = static_cast<uint16_t>(dst_x);
     dirty_rect.y = static_cast<uint16_t>(dst_y);
-    dirty_rect.w = static_cast<uint16_t>(visible_width);
-    dirty_rect.h = static_cast<uint16_t>(visible_height);
+    dirty_rect.w = static_cast<uint16_t>(std::min<uint32_t>(tile_width, state.config.width - dst_x));
+    dirty_rect.h = static_cast<uint16_t>(std::min<uint32_t>(tile_height, state.config.height - dst_y));
+    return dirty_rect.w != 0 && dirty_rect.h != 0;
+}
 
-    for (uint32_t y = 0; y < visible_height; ++y)
+bool blit_tile_xrgb8888(ClientState& state, uint16_t tile_width,
+                        const std::vector<uint8_t>& tile_bytes,
+                        const ClientDirtyRect& dirty_rect) {
+    if (state.framebuffer.size() <
+        static_cast<size_t>(state.config.width) * state.config.height)
+    {
+        return false;
+    }
+    for (uint32_t y = 0; y < dirty_rect.h; ++y)
     {
         const uint8_t* src = tile_bytes.data() + static_cast<size_t>(y) * tile_width * WD_BYTES_PER_PIXEL;
-        uint32_t*      dst = state.framebuffer.data() + static_cast<size_t>(dst_y + y) * state.config.width + dst_x;
-
-        std::memcpy(dst, src, static_cast<size_t>(visible_width) * WD_BYTES_PER_PIXEL);
+        uint32_t* dst = state.framebuffer.data() +
+                        static_cast<size_t>(dirty_rect.y + y) * state.config.width + dirty_rect.x;
+        std::memcpy(dst, src, static_cast<size_t>(dirty_rect.w) * WD_BYTES_PER_PIXEL);
     }
-
     return true;
 }
 
@@ -260,31 +268,69 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
             return true;
         }
 
+        if (!tile_upload_geometry(state, completed.tile_id, completed.tile_width,
+                                  completed.tile_height, completed.tile_bytes,
+                                  dirty_rect)) [[unlikely]]
         {
-            std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
-            if (!blit_tile_xrgb8888(state, completed.tile_id, completed.tile_width, completed.tile_height, completed.tile_bytes,
-                                    dirty_rect)) [[unlikely]]
+            reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
+            state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+            state.stats.udp_invalid_blit.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+
+        bool queued_direct = false;
+        {
+            std::lock_guard<std::mutex> upload_lock(state.tile_present_mutex);
+            const bool queue_was_empty = state.tile_present_queue.empty();
+            ClientTileUpload upload;
+            upload.rect          = dirty_rect;
+            upload.content_epoch = completed.content_epoch;
+            upload.generation    = completed.generation;
+            upload.source_pitch  = static_cast<uint32_t>(completed.tile_width) * WD_BYTES_PER_PIXEL;
+            upload.pixels        = std::move(completed.tile_bytes);
+            queued_direct = state.tile_present_queue.push(std::move(upload));
+            if (queued_direct)
             {
-                reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
-                state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
-                state.stats.udp_invalid_blit.fetch_add(1, std::memory_order_relaxed);
-                return true;
+                state.pending_tile_upload_count.store(state.tile_present_queue.size(),
+                                                      std::memory_order_release);
+                wake_render = queue_was_empty;
+            }
+            else
+            {
+                completed.tile_bytes = std::move(upload.pixels);
             }
         }
-        reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
 
+        if (!queued_direct)
         {
+            /* Bounded-queue overflow retains the old framebuffer path. It is
+             * slower but lossless, so renderer backpressure cannot create a
+             * visual hole or advance generations without presentable pixels. */
+            {
+                std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
+                if (!blit_tile_xrgb8888(state, completed.tile_width,
+                                        completed.tile_bytes, dirty_rect)) [[unlikely]]
+                {
+                    reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
+                    state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+                    state.stats.udp_invalid_blit.fetch_add(1, std::memory_order_relaxed);
+                    return true;
+                }
+            }
+            reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
+
             std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
-            const bool                  dirty_was_empty = state.pending_dirty_tiles.dirty_tile_count() == 0;
+            const bool dirty_was_empty = state.pending_dirty_tiles.dirty_tile_count() == 0;
             if (!state.pending_dirty_tiles.mark_rect(dirty_rect)) [[unlikely]]
             {
                 state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
                 state.stats.udp_invalid_dirty_grid.fetch_add(1, std::memory_order_relaxed);
                 return true;
             }
-            state.pending_dirty_rect_count.store(state.pending_dirty_tiles.dirty_tile_count(), std::memory_order_release);
+            state.pending_dirty_rect_count.store(state.pending_dirty_tiles.dirty_tile_count(),
+                                                 std::memory_order_release);
             state.pending_dirty_epoch = wd_client_stream_ownership_snapshot(&state.stream_ownership).epoch;
-            wake_render               = dirty_was_empty;
+            wake_render = wake_render || dirty_was_empty;
         }
 
         {
@@ -378,8 +424,21 @@ void publish_receive_stats_batch(ClientState& state, const ClientReceiveStatsBat
     }
 }
 
+void recycle_presented_tile_buffers(ClientState& state, TileReassembler& reassembler) {
+    std::vector<std::vector<uint8_t>> recycled;
+    {
+        std::lock_guard<std::mutex> recycle_lock(state.tile_present_recycle_mutex);
+        recycled.swap(state.tile_present_recycled_buffers);
+    }
+    for (auto& pixels : recycled)
+    {
+        reassembler.recycle_completed_tile_buffer(std::move(pixels));
+    }
+}
+
 bool drain_udp(ClientState& state, TileReassembler& reassembler) {
     std::lock_guard<std::mutex> processing_lock(state.udp_processing_mutex);
+    recycle_presented_tile_buffers(state, reassembler);
     if (!state.session.udp_receiver) [[unlikely]]
     {
         return false;

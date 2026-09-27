@@ -39,6 +39,34 @@ int main() {
     CHECK(plan.payload_size == 236);
 
     CHECK(!wd_async_tcp_plan_owned_send(80, 257, 337, &plan));
+
+    /*
+     * Exhaust every legal completion offset. A short send may end before,
+     * exactly on, or after the inline-prefix/payload boundary; rebuilding the
+     * next send plan must account for every already-sent byte exactly once.
+     */
+    constexpr size_t kInlineSize  = 80;
+    constexpr size_t kPayloadSize = 257;
+    constexpr size_t kTotalSize   = kInlineSize + kPayloadSize;
+    for (size_t sent_bytes = 0; sent_bytes < kTotalSize; ++sent_bytes)
+    {
+        wd_async_tcp_owned_send_plan resumed{};
+        CHECK(wd_async_tcp_plan_owned_send(kInlineSize, kPayloadSize, sent_bytes, &resumed));
+
+        const size_t expected_inline_offset = sent_bytes < kInlineSize ? sent_bytes : 0;
+        const size_t expected_inline_size =
+            sent_bytes < kInlineSize ? kInlineSize - sent_bytes : 0;
+        const size_t expected_payload_offset =
+            sent_bytes > kInlineSize ? sent_bytes - kInlineSize : 0;
+        const size_t expected_payload_size = kPayloadSize - expected_payload_offset;
+
+        CHECK(resumed.inline_offset == expected_inline_offset);
+        CHECK(resumed.inline_size == expected_inline_size);
+        CHECK(resumed.payload_offset == expected_payload_offset);
+        CHECK(resumed.payload_size == expected_payload_size);
+        CHECK(resumed.inline_size + resumed.payload_size == kTotalSize - sent_bytes);
+    }
+
     CHECK(!wd_async_tcp_plan_owned_send(
         std::numeric_limits<size_t>::max(), 1, 0, &plan));
     CHECK(!wd_async_tcp_plan_owned_send(80, 257, 0, nullptr));

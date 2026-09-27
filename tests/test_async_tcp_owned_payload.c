@@ -52,6 +52,59 @@ static struct wd_buffer* make_external_buffer(size_t size, struct release_probe*
     return buffer;
 }
 
+static struct wd_buffer* make_hevc_regression_buffer(size_t size, struct release_probe* probe) {
+    uint8_t* data = malloc(size);
+    if (!data)
+    {
+        return NULL;
+    }
+
+    /*
+     * Keep this deterministic but intentionally hostile to framing bugs:
+     * the body contains many 0x00/0x01/0x03 values, while the beginning has
+     * recognizable HEVC Annex-B VPS/SPS/PPS/IDR-style NAL prefixes.
+     */
+    uint32_t state = UINT32_C(0x6d2b79f5);
+    for (size_t i = 0; i < size; ++i)
+    {
+        state = state * UINT32_C(1664525) + UINT32_C(1013904223);
+        data[i] = (uint8_t)(state >> 24u);
+    }
+
+    static const uint8_t hevc_prefix[] = {
+        0x00, 0x00, 0x00, 0x01, 0x40, 0x01, /* VPS */
+        0x0c, 0x01, 0xff, 0xff,
+        0x00, 0x00, 0x00, 0x01, 0x42, 0x01, /* SPS */
+        0x01, 0x60, 0x00, 0x00, 0x03, 0x00,
+        0x00, 0x00, 0x00, 0x01, 0x44, 0x01, /* PPS */
+        0xc0, 0x73, 0xc0, 0x89,
+        0x00, 0x00, 0x00, 0x01, 0x26, 0x01, /* IDR */
+    };
+    if (size < sizeof(hevc_prefix) + 16u)
+    {
+        free(data);
+        return NULL;
+    }
+    memcpy(data, hevc_prefix, sizeof(hevc_prefix));
+
+    /* Preserve emulation-prevention-shaped bytes exactly across transport. */
+    const size_t marker = size / 2u;
+    const uint8_t escaped_sequences[] = {
+        0x00, 0x00, 0x03, 0x00,
+        0x00, 0x00, 0x03, 0x01,
+        0x00, 0x00, 0x03, 0x02,
+        0x00, 0x00, 0x03, 0x03,
+    };
+    memcpy(data + marker, escaped_sequences, sizeof(escaped_sequences));
+
+    struct wd_buffer* buffer = wd_buffer_wrap(data, size, release_external, probe);
+    if (!buffer)
+    {
+        free(data);
+    }
+    return buffer;
+}
+
 static bool recv_exact_with_progress(struct wd_async_tcp_sender* sender, int fd,
                                      void* destination, size_t size) {
     uint8_t* bytes = destination;
@@ -172,6 +225,91 @@ static bool test_owned_slice_wire_and_lifetime(void) {
     return true;
 }
 
+static bool test_hevc_owned_payload_wire_integrity(void) {
+    struct wd_async_tcp_sender* sender = NULL;
+    if (!wd_async_tcp_sender_create(&sender, 8))
+    {
+        return true;
+    }
+
+    int sockets[2] = {-1, -1};
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0);
+
+    /*
+     * Make the sender's socket buffer deliberately small relative to the
+     * access unit. Kernels are still free to complete the send in one CQE,
+     * but when they complete it short this exercises resumption across every
+     * logical segment without changing the correctness requirement.
+     */
+    int send_buffer_size = 4096;
+    CHECK(setsockopt(sockets[0], SOL_SOCKET, SO_SNDBUF, &send_buffer_size,
+                     sizeof(send_buffer_size)) == 0);
+
+    const uint32_t data_size = 512u * 1024u;
+    struct release_probe probe = {0};
+    struct wd_buffer* owner = make_hevc_regression_buffer(data_size, &probe);
+    CHECK(owner != NULL);
+
+    const uint8_t* original = wd_buffer_const_data(owner);
+    CHECK(original != NULL);
+    uint8_t* expected = malloc(data_size);
+    CHECK(expected != NULL);
+    memcpy(expected, original, data_size);
+
+    struct wd_video_frame_payload_header prefix = {0};
+    prefix.session_id       = 23;
+    prefix.connection_token = UINT64_C(0x8877665544332211);
+    prefix.content_epoch    = 19;
+    prefix.codec            = WD_VIDEO_CODEC_H265;
+    prefix.flags            = WD_VIDEO_FRAME_KEYFRAME | WD_VIDEO_FRAME_CONFIG;
+    prefix.frame_id         = 901;
+    prefix.pts_usec         = UINT64_C(123456789);
+    prefix.width            = 3840;
+    prefix.height           = 2160;
+    prefix.coded_width      = 3840;
+    prefix.coded_height     = 2160;
+    prefix.data_size        = data_size;
+
+    CHECK(wd_async_tcp_send_owned_message(sender, sockets[0], WD_MSG_VIDEO_FRAME,
+                                          &prefix, sizeof(prefix), owner, 0, data_size));
+
+    /* The sender must be the only remaining owner while bytes are in flight. */
+    wd_buffer_release(owner);
+    owner = NULL;
+    CHECK(probe.calls == 0);
+
+    uint8_t wire_header[WD_TCP_HEADER_WIRE_SIZE] = {0};
+    CHECK(recv_exact_with_progress(sender, sockets[1], wire_header, sizeof(wire_header)));
+
+    struct wd_tcp_header decoded_header = {0};
+    CHECK(wd_tcp_header_decode(wire_header, &decoded_header));
+    CHECK(decoded_header.message_type == WD_MSG_VIDEO_FRAME);
+    CHECK(decoded_header.payload_size == sizeof(prefix) + data_size);
+
+    struct wd_video_frame_payload_header received_prefix = {0};
+    CHECK(recv_exact_with_progress(sender, sockets[1], &received_prefix, sizeof(received_prefix)));
+    CHECK(memcmp(&received_prefix, &prefix, sizeof(prefix)) == 0);
+
+    uint8_t* received = malloc(data_size);
+    CHECK(received != NULL);
+    CHECK(recv_exact_with_progress(sender, sockets[1], received, data_size));
+    CHECK(memcmp(received, expected, data_size) == 0);
+
+    free(received);
+    free(expected);
+
+    reap_until_idle(sender);
+    CHECK(wd_async_tcp_sender_pending_bytes(sender) == 0);
+    CHECK(wd_async_tcp_sender_completed(sender) == 1);
+    CHECK(wd_async_tcp_sender_failed(sender) == 0);
+    CHECK(probe.calls == 1);
+
+    wd_async_tcp_sender_destroy(sender);
+    close(sockets[0]);
+    close(sockets[1]);
+    return true;
+}
+
 static bool test_invalid_ranges_and_overflow_release_temporary_refs(void) {
     struct wd_async_tcp_sender* sender = NULL;
     if (!wd_async_tcp_sender_create(&sender, 8))
@@ -258,6 +396,7 @@ int main(void) {
     wd_async_tcp_sender_destroy(probe);
 
     if (!test_owned_slice_wire_and_lifetime() ||
+        !test_hevc_owned_payload_wire_integrity() ||
         !test_invalid_ranges_and_overflow_release_temporary_refs() ||
         !test_drop_unsubmitted_releases_owner())
     {

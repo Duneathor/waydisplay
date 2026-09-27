@@ -7,6 +7,17 @@ if(WAYDISPLAY_BUILD_TESTS)
     enable_testing()
 
     add_test(
+        NAME waydisplay.zero_copy_architecture_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_zero_copy_architecture_contract.cmake
+    )
+    set_tests_properties(waydisplay.zero_copy_architecture_contract PROPERTIES
+        LABELS "unit;cmake;video;render;performance;ownership"
+        TIMEOUT 10
+    )
+
+    add_test(
         NAME waydisplay.cmake_build_profiles
         COMMAND ${CMAKE_COMMAND}
             -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -135,6 +146,57 @@ if(WAYDISPLAY_BUILD_TESTS)
             ${WAYDISPLAY_TEST_TARGET})
     endfunction()
 
+
+    waydisplay_add_test(
+        NAME waydisplay.video_gpu_capture_policy
+        TARGET waydisplay_test_video_gpu_capture_policy
+        SOURCES tests/test_video_gpu_capture_policy.c
+        LIBRARIES waydisplay_common
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;server;video;vaapi;ownership"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_output_policy
+        TARGET waydisplay_test_video_output_policy
+        SOURCES tests/test_video_output_policy.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+        LABELS "unit;client;video;render"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.tile_present_queue
+        TARGET waydisplay_test_tile_present_queue
+        SOURCES tests/test_tile_present_queue.cpp src/client/tile_present_queue.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;client;tiles;render;ownership"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.client_video_frame_storage
+        TARGET waydisplay_test_client_video_frame_storage
+        SOURCES tests/test_client_video_frame_storage.cpp
+        LIBRARIES waydisplay_common
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;client;video;ownership"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_encoder_frame_api
+        TARGET waydisplay_test_video_encoder_frame_api
+        SOURCES tests/test_video_encoder_frame_api.c
+        LIBRARIES waydisplay_video_encoder
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;video;encoder;ownership"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.frame_storage
+        TARGET waydisplay_test_frame_storage
+        SOURCES tests/test_frame_storage.c
+        LIBRARIES waydisplay_common
+        LABELS "unit;video;ownership"
+    )
     waydisplay_add_test(
         NAME waydisplay.tcp_buffer_ownership
         TARGET waydisplay_test_tcp_buffer_ownership
@@ -882,6 +944,7 @@ if(WAYDISPLAY_BUILD_TESTS)
         NAME waydisplay.video_decoder_conversion
         TARGET waydisplay_test_video_decoder_conversion
         SOURCES tests/test_video_decoder_conversion.cpp
+        LIBRARIES waydisplay_common
         INCLUDE_DIRECTORIES
             ${CMAKE_CURRENT_SOURCE_DIR}/src/client
             ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -1027,6 +1090,24 @@ if(WAYDISPLAY_BUILD_TESTS)
             LIBRARIES waydisplay_video_encoder
             SKIP_RETURN_CODE 77
             LABELS "video;codec;encoder;hardware;vaapi"
+            TIMEOUT 30
+            RESOURCE_LOCK waydisplay_gpu
+        )
+    endif()
+
+    if(WAYDISPLAY_HAVE_H265_SERVER_ENCODER AND WAYDISPLAY_HAVE_H265_CLIENT_DECODER)
+        waydisplay_add_test(
+            NAME waydisplay.video_hevc_vaapi_roundtrip
+            TARGET waydisplay_test_video_hevc_vaapi_roundtrip
+            SOURCES tests/test_video_hevc_vaapi_roundtrip.cpp
+            LIBRARIES
+                waydisplay_video_encoder
+                waydisplay_video_decoder
+            INCLUDE_DIRECTORIES
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+            SKIP_RETURN_CODE 77
+            LABELS "integration;video;codec;encoder;hevc;roundtrip;hardware;vaapi"
             TIMEOUT 30
             RESOURCE_LOCK waydisplay_gpu
         )

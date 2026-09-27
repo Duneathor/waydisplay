@@ -27,6 +27,10 @@
 #define WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK 0
 #endif
 
+#ifndef WAYDISPLAY_HAVE_VAAPI_SERVER_VPP
+#define WAYDISPLAY_HAVE_VAAPI_SERVER_VPP 0
+#endif
+
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER || WAYDISPLAY_HAVE_AV1_SERVER_ENCODER
 enum {
     /*
@@ -45,9 +49,14 @@ enum {
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
-#if WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK
+#if WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK || WAYDISPLAY_HAVE_VAAPI_SERVER_VPP
 #include <libavutil/hwcontext_vaapi.h>
 #include <va/va.h>
+#endif
+#if WAYDISPLAY_HAVE_VAAPI_SERVER_VPP
+#include <sys/stat.h>
+#include <va/va_drmcommon.h>
+#include <va/va_vpp.h>
 #endif
 #include <libavutil/log.h>
 #include <libavutil/opt.h>
@@ -90,6 +99,11 @@ struct wd_video_encoder {
     bool               vaapi_device_attempted;
     bool               vaapi_probe_complete;
     uint32_t           vaapi_supported_codecs;
+#if WAYDISPLAY_HAVE_VAAPI_SERVER_VPP
+    VAConfigID         vaapi_vpp_config;
+    VAContextID        vaapi_vpp_context;
+    bool               vaapi_vpp_ready;
+#endif
     uint32_t*          padded_pixels;
     size_t             padded_pixel_capacity;
 #endif
@@ -124,6 +138,28 @@ static void wd_video_encoder_release_backend(struct wd_video_encoder* encoder) {
     {
         return;
     }
+
+#if WAYDISPLAY_HAVE_VAAPI_SERVER_VPP
+    if (encoder->vaapi_vpp_ready && encoder->vaapi_device_ctx)
+    {
+        AVHWDeviceContext* hwdev = (AVHWDeviceContext*)encoder->vaapi_device_ctx->data;
+        AVVAAPIDeviceContext* va = hwdev ? (AVVAAPIDeviceContext*)hwdev->hwctx : NULL;
+        if (va && va->display)
+        {
+            if (encoder->vaapi_vpp_context != VA_INVALID_ID)
+            {
+                (void)vaDestroyContext(va->display, encoder->vaapi_vpp_context);
+            }
+            if (encoder->vaapi_vpp_config != VA_INVALID_ID)
+            {
+                (void)vaDestroyConfig(va->display, encoder->vaapi_vpp_config);
+            }
+        }
+    }
+    encoder->vaapi_vpp_config  = VA_INVALID_ID;
+    encoder->vaapi_vpp_context = VA_INVALID_ID;
+    encoder->vaapi_vpp_ready   = false;
+#endif
 
     sws_freeContext(encoder->sws_ctx);
     encoder->sws_ctx = NULL;
@@ -608,6 +644,190 @@ static bool wd_video_encoder_configure_software(struct wd_video_encoder* encoder
     return true;
 }
 
+
+#if WAYDISPLAY_HAVE_VAAPI_SERVER_VPP
+static VADisplay wd_video_encoder_va_display(struct wd_video_encoder* encoder) {
+    if (!encoder || !encoder->vaapi_device_ctx)
+    {
+        return NULL;
+    }
+    AVHWDeviceContext* hwdev = (AVHWDeviceContext*)encoder->vaapi_device_ctx->data;
+    AVVAAPIDeviceContext* va = hwdev ? (AVVAAPIDeviceContext*)hwdev->hwctx : NULL;
+    return va ? va->display : NULL;
+}
+
+static bool wd_video_encoder_init_vaapi_vpp(struct wd_video_encoder* encoder) {
+    VADisplay display = wd_video_encoder_va_display(encoder);
+    if (!display || !encoder->codec_ctx)
+    {
+        return false;
+    }
+
+    encoder->vaapi_vpp_config  = VA_INVALID_ID;
+    encoder->vaapi_vpp_context = VA_INVALID_ID;
+    encoder->vaapi_vpp_ready   = false;
+
+    VAStatus status = vaCreateConfig(display, VAProfileNone, VAEntrypointVideoProc,
+                                     NULL, 0, &encoder->vaapi_vpp_config);
+    if (status != VA_STATUS_SUCCESS)
+    {
+        return false;
+    }
+
+    status = vaCreateContext(display, encoder->vaapi_vpp_config,
+                             encoder->codec_ctx->width, encoder->codec_ctx->height,
+                             VA_PROGRESSIVE, NULL, 0, &encoder->vaapi_vpp_context);
+    if (status != VA_STATUS_SUCCESS)
+    {
+        (void)vaDestroyConfig(display, encoder->vaapi_vpp_config);
+        encoder->vaapi_vpp_config = VA_INVALID_ID;
+        return false;
+    }
+
+    encoder->vaapi_vpp_ready = true;
+    return true;
+}
+
+static uint32_t wd_video_encoder_dmabuf_object_size(const struct wd_frame_drm_plane* plane,
+                                                     uint32_t height) {
+    if (!plane || plane->fd < 0)
+    {
+        return 0;
+    }
+    struct stat st;
+    if (fstat(plane->fd, &st) == 0 && st.st_size > 0 && (uint64_t)st.st_size <= UINT32_MAX)
+    {
+        return (uint32_t)st.st_size;
+    }
+    const uint64_t fallback = (uint64_t)plane->offset + (uint64_t)plane->stride * height;
+    return fallback <= UINT32_MAX ? (uint32_t)fallback : 0;
+}
+
+static bool wd_video_encoder_vpp_drm_to_vaapi(struct wd_video_encoder* encoder,
+                                               const struct wd_frame* input) {
+    if (!encoder || !input || !encoder->vaapi_vpp_ready ||
+        input->storage != WD_FRAME_STORAGE_DRM_PRIME ||
+        input->data.drm.plane_count != 1 || !encoder->vaapi_frames_ctx ||
+        !encoder->frame || input->width != encoder->config.width ||
+        input->height != encoder->config.height)
+    {
+        return false;
+    }
+
+    VADisplay display = wd_video_encoder_va_display(encoder);
+    if (!display)
+    {
+        return false;
+    }
+
+    const struct wd_frame_drm_plane* plane = &input->data.drm.planes[0];
+    const uint32_t object_size = wd_video_encoder_dmabuf_object_size(plane, input->height);
+    if (object_size == 0)
+    {
+        return false;
+    }
+
+    VADRMPRIMESurfaceDescriptor descriptor;
+    memset(&descriptor, 0, sizeof(descriptor));
+    descriptor.fourcc                         = input->fourcc;
+    descriptor.width                          = input->width;
+    descriptor.height                         = input->height;
+    descriptor.num_objects                    = 1;
+    descriptor.objects[0].fd                  = plane->fd;
+    descriptor.objects[0].size                = object_size;
+    descriptor.objects[0].drm_format_modifier = plane->modifier;
+    descriptor.num_layers                     = 1;
+    descriptor.layers[0].drm_format           = input->fourcc;
+    descriptor.layers[0].num_planes           = 1;
+    descriptor.layers[0].object_index[0]      = 0;
+    descriptor.layers[0].offset[0]            = plane->offset;
+    descriptor.layers[0].pitch[0]             = plane->stride;
+
+    VASurfaceAttrib attributes[3];
+    memset(attributes, 0, sizeof(attributes));
+    attributes[0].type          = VASurfaceAttribMemoryType;
+    attributes[0].flags         = VA_SURFACE_ATTRIB_SETTABLE;
+    attributes[0].value.type    = VAGenericValueTypeInteger;
+    attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+    attributes[1].type          = VASurfaceAttribExternalBufferDescriptor;
+    attributes[1].flags         = VA_SURFACE_ATTRIB_SETTABLE;
+    attributes[1].value.type    = VAGenericValueTypePointer;
+    attributes[1].value.value.p = &descriptor;
+    attributes[2].type          = VASurfaceAttribPixelFormat;
+    attributes[2].flags         = VA_SURFACE_ATTRIB_SETTABLE;
+    attributes[2].value.type    = VAGenericValueTypeInteger;
+    attributes[2].value.value.i = (int)input->fourcc;
+
+    VASurfaceID source_surface = VA_INVALID_SURFACE;
+    VAStatus status = vaCreateSurfaces(display, VA_RT_FORMAT_RGB32,
+                                       input->width, input->height,
+                                       &source_surface, 1, attributes, 3);
+    if (status != VA_STATUS_SUCCESS)
+    {
+        return false;
+    }
+
+    av_frame_unref(encoder->frame);
+    int rc = av_hwframe_get_buffer(encoder->vaapi_frames_ctx, encoder->frame, 0);
+    if (rc < 0)
+    {
+        (void)vaDestroySurfaces(display, &source_surface, 1);
+        return false;
+    }
+
+    const VASurfaceID destination_surface = (VASurfaceID)(uintptr_t)encoder->frame->data[3];
+    VARectangle source_rect = {0, 0, (uint16_t)input->width, (uint16_t)input->height};
+    VARectangle destination_rect = source_rect;
+    VAProcPipelineParameterBuffer params;
+    memset(&params, 0, sizeof(params));
+    params.surface       = source_surface;
+    params.surface_region = &source_rect;
+    params.output_region  = &destination_rect;
+
+    VABufferID params_buffer = VA_INVALID_ID;
+    bool ok = false;
+    status = vaCreateBuffer(display, encoder->vaapi_vpp_context,
+                            VAProcPipelineParameterBufferType, sizeof(params), 1,
+                            &params, &params_buffer);
+    if (status == VA_STATUS_SUCCESS &&
+        vaBeginPicture(display, encoder->vaapi_vpp_context, destination_surface) == VA_STATUS_SUCCESS)
+    {
+        status = vaRenderPicture(display, encoder->vaapi_vpp_context, &params_buffer, 1);
+        if (status == VA_STATUS_SUCCESS)
+        {
+            status = vaEndPicture(display, encoder->vaapi_vpp_context);
+            if (status == VA_STATUS_SUCCESS)
+            {
+                /* Synchronize before releasing the imported source descriptor.
+                 * Encoding remains GPU-resident; this only establishes source
+                 * lifetime across the VPP operation. */
+                ok = vaSyncSurface(display, destination_surface) == VA_STATUS_SUCCESS;
+            }
+        }
+        else
+        {
+            (void)vaEndPicture(display, encoder->vaapi_vpp_context);
+        }
+    }
+
+    if (params_buffer != VA_INVALID_ID)
+    {
+        (void)vaDestroyBuffer(display, params_buffer);
+    }
+    (void)vaDestroySurfaces(display, &source_surface, 1);
+
+    if (!ok)
+    {
+        av_frame_unref(encoder->frame);
+        return false;
+    }
+
+    encoder->frame->pts       = (int64_t)input->pts_usec;
+    encoder->frame->pict_type = encoder->keyframe_requested ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    return true;
+}
+#endif
+
 static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config,
                                               bool quality_mode) {
     if (!wd_video_encoder_ensure_vaapi_device(encoder) || (wd_video_encoder_detect_vaapi_codecs(encoder) & config->codec) == 0)
@@ -707,6 +927,13 @@ static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, c
         wd_video_encoder_release_backend(encoder);
         return false;
     }
+
+#if WAYDISPLAY_HAVE_VAAPI_SERVER_VPP
+    if (!wd_video_encoder_init_vaapi_vpp(encoder))
+    {
+        WD_LOG_DEBUG("VAAPI video processing unavailable; DRM PRIME capture will use CPU readback");
+    }
+#endif
 
     encoder->active_backend = WD_VIDEO_ENCODER_BACKEND_VAAPI;
     return true;
@@ -1201,30 +1428,10 @@ void wd_video_encoder_packet_release(struct wd_video_encoder_packet* packet) {
     memset(packet, 0, sizeof(*packet));
 }
 
-bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const struct wd_video_encoder_input_xrgb8888* input,
-                                      struct wd_video_encoder_packet* packet) {
-    if (packet)
-    {
-        memset(packet, 0, sizeof(*packet));
-    }
-
-    if (!encoder || !input || !packet || !input->pixels || input->width == 0 || input->height == 0 || input->stride_pixels < input->width)
-    {
-        return false;
-    }
 
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER || WAYDISPLAY_HAVE_AV1_SERVER_ENCODER
-    if (!encoder->configured || !encoder->codec_ctx || !encoder->frame || !encoder->packet || !encoder->sws_ctx ||
-        input->width != encoder->config.width || input->height != encoder->config.height)
-    {
-        return false;
-    }
-
-    if (!wd_video_encoder_prepare_frame(encoder, input))
-    {
-        return false;
-    }
-
+static bool wd_video_encoder_encode_prepared(struct wd_video_encoder* encoder, uint64_t pts_usec,
+                                             struct wd_video_encoder_packet* packet) {
     bool frame_sent  = false;
     bool have_output = false;
 
@@ -1257,7 +1464,7 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const st
             }
             if (!have_output)
             {
-                if (!wd_video_encoder_own_packet(encoder, encoder->packet, input->pts_usec, packet))
+                if (!wd_video_encoder_own_packet(encoder, encoder->packet, pts_usec, packet))
                 {
                     av_packet_unref(encoder->packet);
                     return false;
@@ -1288,7 +1495,7 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const st
         }
         if (!have_output)
         {
-            if (!wd_video_encoder_own_packet(encoder, encoder->packet, input->pts_usec, packet))
+            if (!wd_video_encoder_own_packet(encoder, encoder->packet, pts_usec, packet))
             {
                 av_packet_unref(encoder->packet);
                 return false;
@@ -1298,9 +1505,94 @@ bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const st
     }
 
     return true;
+}
+#endif
+
+bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const struct wd_video_encoder_input_xrgb8888* input,
+                                      struct wd_video_encoder_packet* packet) {
+    if (packet)
+    {
+        memset(packet, 0, sizeof(*packet));
+    }
+
+    if (!encoder || !input || !packet || !input->pixels || input->width == 0 || input->height == 0 || input->stride_pixels < input->width)
+    {
+        return false;
+    }
+
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER || WAYDISPLAY_HAVE_AV1_SERVER_ENCODER
+    if (!encoder->configured || !encoder->codec_ctx || !encoder->frame || !encoder->packet || !encoder->sws_ctx ||
+        input->width != encoder->config.width || input->height != encoder->config.height)
+    {
+        return false;
+    }
+
+    if (!wd_video_encoder_prepare_frame(encoder, input))
+    {
+        return false;
+    }
+
+    return wd_video_encoder_encode_prepared(encoder, input->pts_usec, packet);
 #else
     (void)encoder;
     (void)input;
     return false;
 #endif
+}
+
+
+bool wd_video_encoder_supports_drm_prime(const struct wd_video_encoder* encoder) {
+#if WAYDISPLAY_HAVE_VAAPI_SERVER_VPP && (WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER || WAYDISPLAY_HAVE_AV1_SERVER_ENCODER)
+    return encoder && encoder->configured &&
+           encoder->active_backend == WD_VIDEO_ENCODER_BACKEND_VAAPI &&
+           encoder->vaapi_vpp_ready;
+#else
+    (void)encoder;
+    return false;
+#endif
+}
+
+bool wd_video_encoder_encode_frame(struct wd_video_encoder* encoder, const struct wd_frame* frame,
+                                   struct wd_video_encoder_packet* packet) {
+    if (!encoder || !frame || !packet || !wd_frame_valid(frame))
+    {
+        return false;
+    }
+
+    if (frame->storage == WD_FRAME_STORAGE_CPU_XRGB8888)
+    {
+        if ((frame->data.cpu.stride_bytes & 3u) != 0)
+        {
+            return false;
+        }
+        const uint8_t* bytes = wd_frame_cpu_data(frame);
+        if (!bytes)
+        {
+            return false;
+        }
+        struct wd_video_encoder_input_xrgb8888 input = {
+            .pixels        = (const uint32_t*)bytes,
+            .width         = frame->width,
+            .height        = frame->height,
+            .stride_pixels = frame->data.cpu.stride_bytes / 4u,
+            .pts_usec      = frame->pts_usec,
+        };
+        return wd_video_encoder_encode_xrgb8888(encoder, &input, packet);
+    }
+
+#if WAYDISPLAY_HAVE_VAAPI_SERVER_VPP && (WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER || WAYDISPLAY_HAVE_AV1_SERVER_ENCODER)
+    if (frame->storage == WD_FRAME_STORAGE_DRM_PRIME)
+    {
+        memset(packet, 0, sizeof(*packet));
+        if (!wd_video_encoder_supports_drm_prime(encoder) ||
+            frame->width != encoder->config.width || frame->height != encoder->config.height ||
+            !wd_video_encoder_vpp_drm_to_vaapi(encoder, frame))
+        {
+            return false;
+        }
+        return wd_video_encoder_encode_prepared(encoder, frame->pts_usec, packet);
+    }
+#endif
+
+    return false;
 }

@@ -36,6 +36,7 @@ extern "C" {
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
 #if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+#include <libavutil/hwcontext_drm.h>
 #include <libavutil/hwcontext_vaapi.h>
 #include <va/va.h>
 #endif
@@ -167,8 +168,10 @@ struct ClientVideoDecoder {
     ClientVideoFrameBuffer   output{};
     ClientDecodedVideoFrame  output_metadata{};
     bool                     output_ready = false;
-    uint64_t                 zero_copy_inputs = 0;
-    uint64_t                 copied_inputs    = 0;
+    uint64_t                 zero_copy_inputs  = 0;
+    uint64_t                 copied_inputs     = 0;
+    uint64_t                 gpu_output_frames = 0;
+    uint64_t                 gpu_output_fallbacks = 0;
 
 #if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER || WAYDISPLAY_HAVE_AV1_CLIENT_DECODER
     const AVCodec*                      codec                = nullptr;
@@ -423,12 +426,97 @@ bool transfer_hw_frame_if_needed(ClientVideoDecoder* decoder, AVFrame** frame) {
     return true;
 }
 
+
+#if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+bool export_vaapi_frame_to_drm(ClientVideoDecoder* decoder,
+                               const wd_video_frame_payload_header& header,
+                               ClientVideoFrameBuffer* output,
+                               ClientDecodedVideoFrame* out_frame) {
+    if (!decoder || !decoder->frame || !output || !out_frame ||
+        !decoder->config.prefer_gpu_output ||
+        decoder->frame->format != AV_PIX_FMT_VAAPI)
+    {
+        return false;
+    }
+
+    AVFrame* drm_frame = av_frame_alloc();
+    if (!drm_frame)
+    {
+        decoder->gpu_output_fallbacks++;
+        return false;
+    }
+    drm_frame->format = AV_PIX_FMT_DRM_PRIME;
+
+    const int rc = av_hwframe_map(drm_frame, decoder->frame, AV_HWFRAME_MAP_READ);
+    if (rc < 0 || !drm_frame->data[0])
+    {
+        av_frame_free(&drm_frame);
+        decoder->gpu_output_fallbacks++;
+        return false;
+    }
+
+    const AVDRMFrameDescriptor* descriptor =
+        reinterpret_cast<const AVDRMFrameDescriptor*>(drm_frame->data[0]);
+    if (descriptor->nb_layers != 1 || descriptor->layers[0].nb_planes <= 0 ||
+        descriptor->layers[0].nb_planes > static_cast<int>(WD_FRAME_MAX_PLANES))
+    {
+        av_frame_free(&drm_frame);
+        decoder->gpu_output_fallbacks++;
+        return false;
+    }
+
+    const AVDRMLayerDescriptor& layer = descriptor->layers[0];
+    wd_frame_drm_plane planes[WD_FRAME_MAX_PLANES]{};
+    for (int i = 0; i < layer.nb_planes; ++i)
+    {
+        const int object_index = layer.planes[i].object_index;
+        if (object_index < 0 || object_index >= descriptor->nb_objects)
+        {
+            av_frame_free(&drm_frame);
+            decoder->gpu_output_fallbacks++;
+            return false;
+        }
+        const AVDRMObjectDescriptor& object = descriptor->objects[object_index];
+        planes[i].fd       = object.fd;
+        planes[i].stride   = layer.planes[i].pitch;
+        planes[i].offset   = layer.planes[i].offset;
+        planes[i].modifier = object.format_modifier;
+    }
+
+    output->clear();
+    if (!wd_frame_set_drm_prime_dup(&output->gpu_frame, header.width, header.height,
+                                    layer.format, header.pts_usec, planes,
+                                    static_cast<uint32_t>(layer.nb_planes)))
+    {
+        av_frame_free(&drm_frame);
+        decoder->gpu_output_fallbacks++;
+        return false;
+    }
+
+    output->format = ClientVideoPixelFormat::DRMPrime;
+    output->width  = header.width;
+    output->height = header.height;
+    client_video_decoder_assign_metadata(header, *out_frame);
+    out_frame->format = ClientVideoPixelFormat::DRMPrime;
+    decoder->gpu_output_frames++;
+    av_frame_free(&drm_frame);
+    return true;
+}
+#endif
+
 bool convert_decoder_frame(ClientVideoDecoder* decoder, const wd_video_frame_payload_header& header, ClientVideoFrameBuffer* output,
                            ClientDecodedVideoFrame* out_frame) {
     if (!decoder || !decoder->frame || !output || !out_frame) [[unlikely]]
     {
         return false;
     }
+
+#if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+    if (export_vaapi_frame_to_drm(decoder, header, output, out_frame))
+    {
+        return true;
+    }
+#endif
 
     AVFrame* src_frame = decoder->frame;
     if (!transfer_hw_frame_if_needed(decoder, &src_frame)) [[unlikely]]
@@ -768,6 +856,14 @@ uint64_t client_video_decoder_zero_copy_inputs(const ClientVideoDecoder* decoder
 
 uint64_t client_video_decoder_copied_inputs(const ClientVideoDecoder* decoder) {
     return decoder ? decoder->copied_inputs : 0;
+}
+
+uint64_t client_video_decoder_gpu_output_frames(const ClientVideoDecoder* decoder) {
+    return decoder ? decoder->gpu_output_frames : 0;
+}
+
+uint64_t client_video_decoder_gpu_output_fallbacks(const ClientVideoDecoder* decoder) {
+    return decoder ? decoder->gpu_output_fallbacks : 0;
 }
 
 bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {

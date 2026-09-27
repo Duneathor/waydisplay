@@ -1,5 +1,7 @@
 #pragma once
 
+#include "waydisplay/wd_frame.h"
+
 #include "wd_server_internal.h"
 #include "wd_video_transition.h"
 
@@ -26,11 +28,12 @@ struct wd_stream_frame_analysis {
 };
 
 struct wd_stream_video_snapshot {
-    uint32_t* pixels;
-    size_t    pixel_capacity;
-    size_t    pixel_count;
-    uint64_t  copy_ns;
-    bool      ready;
+    uint32_t*       pixels;
+    size_t          pixel_capacity;
+    size_t          pixel_count;
+    uint64_t        copy_ns;
+    bool            ready;
+    struct wd_frame gpu_frame;
 };
 
 bool wd_stream_frame_worker_init(struct wd_server* server);
@@ -67,6 +70,7 @@ bool     wd_stream_video_worker_init(struct wd_server* server);
 void     wd_stream_video_worker_destroy(struct wd_server* server);
 bool     wd_stream_queue_video_control_frame_locked(struct wd_server* server, uint16_t flags);
 bool     wd_stream_video_snapshot_needed(struct wd_server* server);
+bool     wd_stream_video_gpu_capture_needed(struct wd_server* server);
 bool     wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint64_t now_ns,
                                                       struct wd_stream_video_snapshot* snapshot);
 uint32_t wd_stream_video_bitrate_kib_locked(const struct wd_stream_policy* policy);

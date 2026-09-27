@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <utility>
+#include <fcntl.h>
+#include <unistd.h>
 
 using namespace waydisplay;
 
@@ -99,6 +101,38 @@ void test_recycle_and_clear_release_all_state() {
     require(!after_clear.valid(), "clear should also discard the recycle buffer");
 }
 
+
+void test_gpu_frame_ownership_moves_through_queue() {
+    int pipefd[2];
+    require(pipe(pipefd) == 0, "create DRM ownership test pipe");
+
+    ClientVideoFrameBuffer frame;
+    struct wd_frame_drm_plane plane = {
+        .fd = pipefd[0], .stride = 256, .offset = 0, .modifier = 0
+    };
+    require(wd_frame_set_drm_prime_dup(&frame.gpu_frame, 64, 32, 0x3231564eu, 7,
+                                       &plane, 1),
+            "create owned GPU frame");
+    close(pipefd[0]);
+    close(pipefd[1]);
+    frame.format = ClientVideoPixelFormat::DRMPrime;
+    frame.width = 64;
+    frame.height = 32;
+    const int owned_fd = frame.gpu_frame.data.drm.planes[0].fd;
+
+    ClientVideoPresentQueue queue(2);
+    require(queue.push_decoded(std::move(frame), 64, 32, 99, 123, 4),
+            "queue GPU frame");
+    require(fcntl(owned_fd, F_GETFD) >= 0, "queue retains GPU descriptor");
+
+    ClientQueuedVideoFrame popped = queue.pop_front();
+    require(popped.buffer.gpu_valid(), "GPU frame survives queue move");
+    queue.recycle(std::move(popped.buffer));
+    require(fcntl(owned_fd, F_GETFD) >= 0, "recycle slot retains GPU descriptor");
+    queue.clear();
+    require(fcntl(owned_fd, F_GETFD) < 0, "clear releases GPU descriptor exactly once");
+}
+
 } // namespace
 
 int main() {
@@ -106,5 +140,6 @@ int main() {
     test_rejects_invalid_and_mismatched_frames();
     test_full_queue_discards_tail_but_preserves_head();
     test_recycle_and_clear_release_all_state();
+    test_gpu_frame_ownership_moves_through_queue();
     return 0;
 }

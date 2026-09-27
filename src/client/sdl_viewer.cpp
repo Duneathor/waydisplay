@@ -1252,6 +1252,11 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         state.pending_dirty_tiles = std::move(new_dirty_tiles);
         state.pending_dirty_rect_count.store(0, std::memory_order_release);
         state.pending_dirty_epoch        = 0;
+        {
+            std::lock_guard<std::mutex> upload_lock(state.tile_present_mutex);
+            state.tile_present_queue.clear();
+            state.pending_tile_upload_count.store(0, std::memory_order_release);
+        }
         state.received_generation        = std::move(new_received_generation);
         state.presented_generation       = std::move(new_presented_generation);
         state.pending_present_generation = std::move(new_pending_present_generation);
@@ -1399,6 +1404,72 @@ void record_texture_call_cost(ClientState& state, ClientTextureUploadCostModel& 
     state.stats.sdl_texture_model_update_call_ns.store(costs.update_call_cost_ns, std::memory_order_relaxed);
     state.stats.sdl_texture_model_lock_call_ns.store(costs.lock_call_cost_ns, std::memory_order_relaxed);
     state.stats.sdl_texture_model_pixel_cost_q16.store(costs.pixel_cost_q16, std::memory_order_relaxed);
+}
+
+
+bool upload_completed_tiles_direct(ClientState& state, SDL_Texture* texture,
+                                   std::vector<ClientTileUpload>& uploads,
+                                   std::vector<ClientDirtyRect>& uploaded_rects) {
+    uploaded_rects.clear();
+    if (uploads.empty())
+    {
+        return true;
+    }
+
+    const auto ownership = wd_client_stream_ownership_snapshot(&state.stream_ownership);
+    for (ClientTileUpload& upload : uploads)
+    {
+        if (!upload.valid() || ownership.owner != WD_CLIENT_CONTENT_OWNER_TILES ||
+            upload.content_epoch != ownership.epoch)
+        {
+            continue;
+        }
+
+        SDL_Rect rect{
+            static_cast<int>(upload.rect.x), static_cast<int>(upload.rect.y),
+            static_cast<int>(upload.rect.w), static_cast<int>(upload.rect.h)};
+        if (!SDL_UpdateTexture(texture, &rect, upload.pixels.data(),
+                               static_cast<int>(upload.source_pitch)))
+        {
+            return false;
+        }
+
+        /* The renderer, not the network thread, owns mutation of the CPU
+         * recovery image for directly queued tiles. Keep it current for a
+         * later full upload without bouncing pixels through a staging copy. */
+        {
+            std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
+            if (state.framebuffer.size() <
+                static_cast<size_t>(state.config.width) * state.config.height)
+            {
+                return false;
+            }
+            for (uint32_t row = 0; row < upload.rect.h; ++row)
+            {
+                const uint8_t* src = upload.pixels.data() +
+                                     static_cast<size_t>(row) * upload.source_pitch;
+                uint32_t* dst = state.framebuffer.data() +
+                                static_cast<size_t>(upload.rect.y + row) * state.config.width +
+                                upload.rect.x;
+                std::memcpy(dst, src, static_cast<size_t>(upload.rect.w) * WD_BYTES_PER_PIXEL);
+            }
+        }
+        uploaded_rects.push_back(upload.rect);
+    }
+    return true;
+}
+
+
+void recycle_direct_tile_upload_buffers(ClientState& state,
+                                        std::vector<ClientTileUpload>& uploads) {
+    std::lock_guard<std::mutex> recycle_lock(state.tile_present_recycle_mutex);
+    for (ClientTileUpload& upload : uploads)
+    {
+        if (!upload.pixels.empty())
+        {
+            state.tile_present_recycled_buffers.push_back(std::move(upload.pixels));
+        }
+    }
 }
 
 void record_framebuffer_snapshot_stats(ClientState& state, ClientTextureUploadCostModel& costs, uint64_t started_ns, uint64_t pixels) {
@@ -2225,6 +2296,8 @@ int run_sdl_viewer(ClientState& state) {
     ContextMenu                             context_menu;
     ClientPresentTelemetryBatch             tile_telemetry_batch;
     std::vector<ClientDirtyRect>            dirty_rects;
+    std::vector<ClientTileUpload>           direct_tile_uploads;
+    std::vector<ClientDirtyRect>            direct_tile_rects;
     std::vector<uint16_t>                   dirty_tile_ids;
     std::vector<ClientTileGenerationUpdate> tile_generation_updates;
     ClientVideoFrameBuffer                  video_upload_frame;
@@ -2331,7 +2404,9 @@ int run_sdl_viewer(ClientState& state) {
         uint32_t   video_hold_wait_ms     = 0;
 
         const bool video_frame_pending  = state.pending_video_frame_dirty.load(std::memory_order_acquire);
-        const bool remote_dirty_pending = video_frame_pending || state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0;
+        const bool remote_dirty_pending = video_frame_pending ||
+                                         state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0 ||
+                                         state.pending_tile_upload_count.load(std::memory_order_acquire) != 0;
         if (local_frame_dirty || remote_dirty_pending)
         {
             const uint64_t present_check_ns = wd_now_ns();
@@ -2404,6 +2479,40 @@ int run_sdl_viewer(ClientState& state) {
                     const bool allow_tile_upload = pending_surface_tile_ready &&
                                                    (!video_result_stale || ownership.owner == WD_CLIENT_CONTENT_OWNER_TILES);
 
+                    bool direct_tile_updated = false;
+                    direct_tile_uploads.clear();
+                    direct_tile_rects.clear();
+                    if (allow_tile_upload)
+                    {
+                        {
+                            std::lock_guard<std::mutex> upload_lock(state.tile_present_mutex);
+                            state.tile_present_queue.drain(direct_tile_uploads);
+                            state.pending_tile_upload_count.store(0, std::memory_order_release);
+                        }
+                        const bool direct_upload_ok =
+                            upload_completed_tiles_direct(state, texture, direct_tile_uploads,
+                                                          direct_tile_rects);
+                        recycle_direct_tile_upload_buffers(state, direct_tile_uploads);
+                        if (!direct_upload_ok)
+                        {
+                            WD_LOG_ERROR("failed to upload completed tile directly: %s", SDL_GetError());
+                            state.session.running.store(false, std::memory_order_relaxed);
+                            break;
+                        }
+                        direct_tile_updated = !direct_tile_rects.empty();
+                        if (direct_tile_updated)
+                        {
+                            uploaded_ownership = wd_client_stream_ownership_snapshot(&state.stream_ownership);
+                            upload_has_ownership = true;
+                            std::lock_guard<std::mutex> generation_lock(state.generation_mutex);
+                            collect_base_tile_ids_for_rects(state.config, direct_tile_rects, dirty_tile_ids);
+                            claim_pending_tile_generations(state.pending_present_generation,
+                                                           state.presented_generation,
+                                                           dirty_tile_ids,
+                                                           tile_generation_updates);
+                        }
+                    }
+
                     if (allow_tile_upload && !texture_needs_full_upload && !stale_video_needs_tile_restore)
                     {
                         std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
@@ -2468,7 +2577,7 @@ int run_sdl_viewer(ClientState& state) {
                         }
                     }
 
-                    bool tile_texture_updated = false;
+                    bool tile_texture_updated = direct_tile_updated;
                     if (upload_full)
                     {
                         {
@@ -2594,6 +2703,7 @@ int run_sdl_viewer(ClientState& state) {
         }
 
         const bool pending_remote_dirty = state.pending_dirty_rect_count.load(std::memory_order_acquire) != 0 ||
+                                          state.pending_tile_upload_count.load(std::memory_order_acquire) != 0 ||
                                           state.pending_video_frame_dirty.load(std::memory_order_acquire);
         uint32_t   wait_ms              = 0;
         if (!frame_dirty && !pending_remote_dirty)

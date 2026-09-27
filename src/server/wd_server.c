@@ -1828,6 +1828,7 @@ static void wd_server_destroy(struct wd_server* server) {
         server->output_layout = NULL;
     }
 
+    wd_frame_reset(&server->captured_video_frame);
     free(server->framebuffer_xrgb8888);
     server->framebuffer_xrgb8888 = NULL;
     free(server->framebuffer_shadow_xrgb8888);

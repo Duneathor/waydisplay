@@ -555,3 +555,16 @@ time or isolates GPU time. INFO compiles out the extra per-frame timing.
 whole-compositor capture, documents the units and semantics of the new capture
 fields and the canonical CLI and metric schema.
 Run `waydisplay.compositor_capture` for the updated aggregate helper test.
+
+
+### GPU/frame-ownership regression slice
+
+The CPU/GPU frame-storage and direct tile-present architecture can be checked
+without running the full suite:
+
+```sh
+ctest --test-dir build --output-on-failure -L 'ownership|performance'
+```
+
+Hardware VAAPI coverage remains separately labeled `hardware;vaapi`; the
+dependency-light policy/ownership tests do not require a GPU.

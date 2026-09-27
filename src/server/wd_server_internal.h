@@ -1,5 +1,7 @@
 #pragma once
 
+#include "waydisplay/wd_frame.h"
+
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -1005,6 +1007,7 @@ struct wd_server {
     uint32_t* framebuffer_shadow_xrgb8888;
     bool      framebuffer_shadow_valid;
     uint64_t  framebuffer_generation;
+    struct wd_frame captured_video_frame;
 
     const char*               socket_name;
     const char*               startup_command;

@@ -23,7 +23,8 @@ struct wd_stream_frame_worker {
     bool*             changed_tiles;
     uint32_t          damage_capacity;
     struct wd_stream_video_snapshot video_snapshot;
-    bool              damage_all_tiles;
+    struct wd_frame                 captured_video_frame;
+    bool                            damage_all_tiles;
     uint32_t          damage_tile_count;
 };
 
@@ -95,33 +96,45 @@ static void* stream_frame_worker_main(void* data) {
             {
                 worker->video_snapshot.ready   = false;
                 worker->video_snapshot.copy_ns = 0;
+                wd_frame_reset(&worker->video_snapshot.gpu_frame);
                 if (wd_stream_video_snapshot_needed(worker->server))
                 {
-                    const size_t pixel_count = (size_t)worker->server->display_width * worker->server->display_height;
-                    if (worker->server->display_height != 0 && pixel_count / worker->server->display_height == worker->server->display_width &&
-                        pixel_count <= SIZE_MAX / sizeof(uint32_t))
+                    if (wd_frame_valid(&worker->captured_video_frame))
                     {
-                        if (worker->video_snapshot.pixel_capacity < pixel_count)
+                        worker->video_snapshot.gpu_frame = worker->captured_video_frame;
+                        wd_frame_init(&worker->captured_video_frame);
+                        worker->video_snapshot.ready = true;
+                    }
+                    else
+                    {
+                        const size_t pixel_count = (size_t)worker->server->display_width * worker->server->display_height;
+                        if (worker->server->display_height != 0 &&
+                            pixel_count / worker->server->display_height == worker->server->display_width &&
+                            pixel_count <= SIZE_MAX / sizeof(uint32_t))
                         {
-                            uint32_t* pixels = realloc(worker->video_snapshot.pixels, pixel_count * sizeof(*pixels));
-                            if (pixels)
+                            if (worker->video_snapshot.pixel_capacity < pixel_count)
                             {
-                                worker->video_snapshot.pixels         = pixels;
-                                worker->video_snapshot.pixel_capacity = pixel_count;
+                                uint32_t* pixels = realloc(worker->video_snapshot.pixels, pixel_count * sizeof(*pixels));
+                                if (pixels)
+                                {
+                                    worker->video_snapshot.pixels         = pixels;
+                                    worker->video_snapshot.pixel_capacity = pixel_count;
+                                }
                             }
-                        }
-                        if (worker->video_snapshot.pixel_capacity >= pixel_count)
-                        {
-                            const uint64_t copy_start_ns = wd_now_ns();
-                            memcpy(worker->video_snapshot.pixels, worker->server->framebuffer_xrgb8888,
-                                   pixel_count * sizeof(*worker->video_snapshot.pixels));
-                            worker->video_snapshot.copy_ns     = wd_now_ns() - copy_start_ns;
-                            worker->video_snapshot.pixel_count = pixel_count;
-                            worker->video_snapshot.ready       = true;
+                            if (worker->video_snapshot.pixel_capacity >= pixel_count)
+                            {
+                                const uint64_t copy_start_ns = wd_now_ns();
+                                memcpy(worker->video_snapshot.pixels, worker->server->framebuffer_xrgb8888,
+                                       pixel_count * sizeof(*worker->video_snapshot.pixels));
+                                worker->video_snapshot.copy_ns     = wd_now_ns() - copy_start_ns;
+                                worker->video_snapshot.pixel_count = pixel_count;
+                                worker->video_snapshot.ready       = true;
+                            }
                         }
                     }
                 }
                 (void)wd_stream_process_frame(worker->server, &damage, &analysis, &worker->video_snapshot);
+                wd_frame_reset(&worker->video_snapshot.gpu_frame);
             }
         }
         else
@@ -210,6 +223,8 @@ void wd_stream_frame_worker_destroy(struct wd_server* server) {
         pthread_join(worker->thread, NULL);
     }
 
+    wd_frame_reset(&worker->video_snapshot.gpu_frame);
+    wd_frame_reset(&worker->captured_video_frame);
     free(worker->video_snapshot.pixels);
     free(worker->changed_tiles);
     free(worker->damage_tiles);
@@ -253,6 +268,9 @@ bool wd_stream_frame_worker_submit(struct wd_server* server) {
     }
     worker->damage_all_tiles  = server->damage_all_tiles;
     worker->damage_tile_count = server->damage_tile_count;
+    wd_frame_reset(&worker->captured_video_frame);
+    worker->captured_video_frame = server->captured_video_frame;
+    wd_frame_init(&server->captured_video_frame);
     worker->frame_pending     = true;
     worker->service_pending   = false;
 

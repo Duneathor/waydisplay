@@ -96,6 +96,60 @@ scaling. Exact source/output dimensions are the only `pixel_exact` case;
 fractional high-DPI scaling and letterboxing use deterministic integer
 destination rectangles.
 
+## Frame storage and GPU-resident video
+
+Captured and decoded frames have explicit storage identity. `wd_frame` owns
+either CPU XRGB storage or DRM PRIME plane descriptors; copying a frame object
+means retaining CPU storage or duplicating DRM descriptors, never borrowing an
+implicit backend lifetime.
+
+On the server, tile ownership continues to use the CPU XRGB framebuffer because
+the tile codec needs CPU-visible damage. Video ownership is different. After a
+VAAPI encoder is configured and its video-processing context is available,
+wlroots output buffers are exported as DRM PRIME before the output state is
+committed. Eligible XRGB/ARGB single-plane surfaces are handed through the frame
+worker without a full-frame CPU snapshot. libva imports that surface and VPP
+converts it directly into the encoder's NV12 VAAPI surface. If export, format,
+VPP, device, or backend capability is unavailable, capture remains on the
+existing CPU readback/sws/upload path.
+
+This makes the intended server paths:
+
+```
+tiles: wlroots -> CPU XRGB -> tile encoder
+video/VAAPI: wlroots -> DRM PRIME -> VAAPI VPP -> VAAPI encoder
+video/software/fallback: wlroots -> CPU XRGB -> swscale -> encoder
+```
+
+The first VAAPI frame may still use CPU capture because encoder/VPP capability
+is not known until configuration succeeds. Subsequent video-owned frames may use
+DRM PRIME. Transitioning back to tile ownership requests a real compositor full
+refresh before tile generations are published, so a GPU-resident video period
+does not leave the CPU recovery framebuffer authoritative by accident.
+
+On the client, `ClientVideoFrameBuffer` is move-only and may own either packed
+IYUV bytes or a DRM PRIME frame. VAAPI decode can export an FFmpeg hardware
+frame to DRM PRIME without `av_hwframe_transfer_data()`, but this is
+capability-gated: the decoder only selects GPU output when the active presenter
+sets `video_gpu_present_supported`. The current SDL texture presenter does not
+claim that capability, so ordinary SDL presentation intentionally continues to
+use the tested CPU IYUV fallback. A future EGL/Vulkan/other external-memory
+presenter can enable the already-owned DRM PRIME path without changing decoder
+queue semantics.
+
+Tile presentation no longer requires the network thread to mutate the shared
+framebuffer on the normal path. A completed tile moves into a bounded immutable
+present queue. The render thread uploads those bytes directly to the SDL texture
+and then updates its CPU recovery image. Queue overflow deliberately falls back
+to the previous framebuffer/dirty-grid path rather than dropping visual state.
+This removes the normal network-framebuffer lock handoff and the
+framebuffer-to-staging copy while retaining a lossless backpressure fallback.
+
+Regression coverage includes frame descriptor lifetime/clone behavior, move-only
+client GPU frames, GPU capture eligibility, tile present queue coalescing and
+bounds, GPU-frame ownership across the video present queue, and a source
+contract that keeps the zero-copy/fallback boundaries explicit.
+
 ## Flow control
 
 Control and input messages take priority over bulk media. Media work carries generation or sequence identity so stale work can be rejected before expensive processing and again before publication.

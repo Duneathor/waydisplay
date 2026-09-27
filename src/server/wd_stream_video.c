@@ -44,8 +44,9 @@ uint32_t wd_stream_video_bitrate_kib_locked(const struct wd_stream_policy* polic
 }
 
 struct wd_video_worker_job {
-    uint32_t* pixels;
-    size_t    pixel_capacity;
+    uint32_t*       pixels;
+    size_t          pixel_capacity;
+    struct wd_frame frame;
 
     struct wd_video_encoder_config config;
     uint64_t                       epoch;
@@ -86,7 +87,8 @@ static bool wd_stream_video_job_current_locked(const struct wd_server* server, c
 }
 
 static void wd_stream_video_worker_process(struct wd_video_worker* worker, struct wd_video_worker_job* job) {
-    if (!worker || !worker->server || !job || !job->pixels)
+    if (!worker || !worker->server || !job ||
+        (!job->pixels && !wd_frame_valid(&job->frame)))
     {
         return;
     }
@@ -131,6 +133,10 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     input.height        = job->config.height;
     input.stride_pixels = job->config.width;
     input.pts_usec      = job->pts_usec;
+    if (wd_frame_valid(&job->frame))
+    {
+        job->frame.pts_usec = job->pts_usec;
+    }
 
     struct wd_video_encoder_packet packet;
     memset(&packet, 0, sizeof(packet));
@@ -149,7 +155,9 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     if (wd_video_encoder_configure(net->video_encoder, &job->config) &&
         (!job->request_keyframe || wd_video_encoder_request_keyframe(net->video_encoder)))
     {
-        encoded   = wd_video_encoder_encode_xrgb8888(net->video_encoder, &input, &packet);
+        encoded = wd_frame_valid(&job->frame)
+                      ? wd_video_encoder_encode_frame(net->video_encoder, &job->frame, &packet)
+                      : wd_video_encoder_encode_xrgb8888(net->video_encoder, &input, &packet);
         no_output = encoded && (!packet.data || packet.header.data_size == 0);
         software_av1 = job->config.codec == WD_VIDEO_CODEC_AV1 &&
                        strcmp(wd_video_encoder_backend_name(net->video_encoder), "libaom-av1") == 0;
@@ -350,6 +358,7 @@ static void* wd_stream_video_worker_main(void* data) {
         pthread_mutex_unlock(&worker->lock);
 
         wd_stream_video_worker_process(worker, &worker->active_job);
+        wd_frame_reset(&worker->active_job.frame);
     }
 
     return NULL;
@@ -424,6 +433,8 @@ void wd_stream_video_worker_destroy(struct wd_server* server) {
         pthread_join(worker->thread, NULL);
     }
 
+    wd_frame_reset(&worker->pending_job.frame);
+    wd_frame_reset(&worker->active_job.frame);
     free(worker->pending_job.pixels);
     free(worker->active_job.pixels);
     pthread_cond_destroy(&worker->cond);
@@ -608,8 +619,32 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
     }
 }
 
+bool wd_stream_video_gpu_capture_needed(struct wd_server* server) {
+    if (!server)
+    {
+        return false;
+    }
+
+    struct wd_net_state* net = &server->net;
+    pthread_mutex_lock(&net->lock);
+    const bool transport_ready =
+        wd_stream_mode_video_owns_display(net->stream_policy.stream_mode) &&
+        net->video_worker && net->video_stream_negotiated &&
+        net->video_tcp_fd >= 0 && net->video_tx;
+    pthread_mutex_unlock(&net->lock);
+    if (!transport_ready)
+    {
+        return false;
+    }
+
+    pthread_mutex_lock(&net->video_encoder_lock);
+    const bool import_ready = wd_video_encoder_supports_drm_prime(net->video_encoder);
+    pthread_mutex_unlock(&net->video_encoder_lock);
+    return import_ready;
+}
+
 bool wd_stream_video_snapshot_needed(struct wd_server* server) {
-    if (!server || !server->framebuffer_xrgb8888)
+    if (!server)
     {
         return false;
     }
@@ -652,7 +687,8 @@ bool wd_stream_video_snapshot_needed(struct wd_server* server) {
 
 bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint64_t now_ns,
                                                   struct wd_stream_video_snapshot* snapshot) {
-    if (!server || !snapshot || !snapshot->ready || !snapshot->pixels)
+    if (!server || !snapshot || !snapshot->ready ||
+        (!snapshot->pixels && !wd_frame_valid(&snapshot->gpu_frame)))
     {
         return false;
     }
@@ -685,8 +721,16 @@ bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint6
     }
 
     const size_t pixel_count = (size_t)width * (size_t)height;
-    if ((height != 0 && pixel_count / height != width) || pixel_count > SIZE_MAX / sizeof(uint32_t) ||
-        snapshot->pixel_count != pixel_count || snapshot->pixel_capacity < pixel_count)
+    const bool gpu_snapshot = wd_frame_valid(&snapshot->gpu_frame);
+    if (!gpu_snapshot &&
+        ((height != 0 && pixel_count / height != width) || pixel_count > SIZE_MAX / sizeof(uint32_t) ||
+         snapshot->pixel_count != pixel_count || snapshot->pixel_capacity < pixel_count))
+    {
+        net->stats.video_encode_failed++;
+        return false;
+    }
+    if (gpu_snapshot &&
+        (snapshot->gpu_frame.width != width || snapshot->gpu_frame.height != height))
     {
         net->stats.video_encode_failed++;
         return false;
@@ -717,14 +761,23 @@ bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint6
     }
 
     const bool superseded = worker->pending;
-    uint32_t*    spare_pixels   = worker->pending_job.pixels;
-    const size_t spare_capacity = worker->pending_job.pixel_capacity;
-    worker->pending_job.pixels         = snapshot->pixels;
-    worker->pending_job.pixel_capacity = snapshot->pixel_capacity;
-    snapshot->pixels                   = spare_pixels;
-    snapshot->pixel_capacity           = spare_capacity;
-    snapshot->pixel_count              = 0;
-    snapshot->ready                    = false;
+    wd_frame_reset(&worker->pending_job.frame);
+    if (gpu_snapshot)
+    {
+        worker->pending_job.frame = snapshot->gpu_frame;
+        wd_frame_init(&snapshot->gpu_frame);
+    }
+    else
+    {
+        uint32_t*    spare_pixels   = worker->pending_job.pixels;
+        const size_t spare_capacity = worker->pending_job.pixel_capacity;
+        worker->pending_job.pixels         = snapshot->pixels;
+        worker->pending_job.pixel_capacity = snapshot->pixel_capacity;
+        snapshot->pixels                   = spare_pixels;
+        snapshot->pixel_capacity           = spare_capacity;
+    }
+    snapshot->pixel_count = 0;
+    snapshot->ready       = false;
 
     worker->pending_job.config               = config;
     worker->pending_job.epoch                = net->video_worker_epoch;
@@ -746,8 +799,11 @@ bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint6
     {
         net->stats.video_frames_superseded++;
     }
-    net->stats.video_publish_copy_samples++;
-    net->stats.video_publish_copy_ns += snapshot->copy_ns;
+    if (!gpu_snapshot)
+    {
+        net->stats.video_publish_copy_samples++;
+        net->stats.video_publish_copy_ns += snapshot->copy_ns;
+    }
     snapshot->copy_ns = 0;
 
     return true;

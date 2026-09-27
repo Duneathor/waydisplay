@@ -1,6 +1,7 @@
 #pragma once
 
 #include "waydisplay/wd_buffer.h"
+#include "waydisplay/wd_frame.h"
 #include "waydisplay/wd_protocol.h"
 
 #include <stdbool.h>
@@ -56,6 +57,9 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
 bool wd_video_encoder_adopt_content_epoch(struct wd_video_encoder* encoder, uint8_t session_id,
                                           uint64_t connection_token, uint64_t old_epoch, uint64_t new_epoch);
 bool wd_video_encoder_request_keyframe(struct wd_video_encoder* encoder);
+bool wd_video_encoder_supports_drm_prime(const struct wd_video_encoder* encoder);
+bool wd_video_encoder_encode_frame(struct wd_video_encoder* encoder, const struct wd_frame* frame,
+                                   struct wd_video_encoder_packet* packet);
 bool wd_video_encoder_encode_xrgb8888(struct wd_video_encoder* encoder, const struct wd_video_encoder_input_xrgb8888* input,
                                       struct wd_video_encoder_packet* packet);
 void wd_video_encoder_packet_release(struct wd_video_encoder_packet* packet);

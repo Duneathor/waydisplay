@@ -1,0 +1,29 @@
+if(NOT DEFINED WAYDISPLAY_SOURCE_DIR)
+    message(FATAL_ERROR "WAYDISPLAY_SOURCE_DIR is required")
+endif()
+
+function(require_source needle file)
+    file(READ "${WAYDISPLAY_SOURCE_DIR}/${file}" contents)
+    string(FIND "${contents}" "${needle}" index)
+    if(index EQUAL -1)
+        message(FATAL_ERROR "${file} lost zero-copy contract token: ${needle}")
+    endif()
+endfunction()
+
+require_source("wd_gpu_capture_export_wlr_buffer" "src/server/wd_readback.c")
+require_source("wd_video_gpu_capture_frame_eligible" "src/server/wd_readback.c")
+require_source("vaCreateSurfaces" "src/server/wd_video_encoder.c")
+require_source("VAProcPipelineParameterBufferType" "src/server/wd_video_encoder.c")
+require_source("wd_video_encoder_encode_frame" "src/server/wd_stream_video.c")
+
+require_source("prefer_gpu_output" "src/client/video_decoder.cpp")
+require_source("AV_PIX_FMT_DRM_PRIME" "src/client/video_decoder.cpp")
+require_source("av_hwframe_map" "src/client/video_decoder.cpp")
+require_source("video_gpu_present_supported" "src/client/client_net.cpp")
+
+require_source("tile_present_queue.push" "src/client/client_receive.cpp")
+require_source("upload_completed_tiles_direct" "src/client/sdl_viewer.cpp")
+require_source("queued_direct" "src/client/client_receive.cpp")
+require_source("blit_tile_xrgb8888" "src/client/client_receive.cpp")
+
+message(STATUS "Zero-copy architecture contracts satisfied")
