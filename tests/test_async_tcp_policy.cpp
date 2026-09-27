@@ -14,6 +14,35 @@ int main() {
     CHECK(!wd_async_tcp_can_enqueue(UINT64_MAX, 1, 0));
     CHECK(!wd_async_tcp_can_enqueue(UINT64_MAX - 1, 3, UINT64_MAX));
     CHECK(!wd_async_tcp_can_enqueue(0, 21, 20));
+
+    wd_async_tcp_owned_send_plan plan{};
+    CHECK(wd_async_tcp_plan_owned_send(80, 257, 0, &plan));
+    CHECK(plan.inline_offset == 0);
+    CHECK(plan.inline_size == 80);
+    CHECK(plan.payload_offset == 0);
+    CHECK(plan.payload_size == 257);
+
+    CHECK(wd_async_tcp_plan_owned_send(80, 257, 17, &plan));
+    CHECK(plan.inline_offset == 17);
+    CHECK(plan.inline_size == 63);
+    CHECK(plan.payload_offset == 0);
+    CHECK(plan.payload_size == 257);
+
+    CHECK(wd_async_tcp_plan_owned_send(80, 257, 80, &plan));
+    CHECK(plan.inline_size == 0);
+    CHECK(plan.payload_offset == 0);
+    CHECK(plan.payload_size == 257);
+
+    CHECK(wd_async_tcp_plan_owned_send(80, 257, 101, &plan));
+    CHECK(plan.inline_size == 0);
+    CHECK(plan.payload_offset == 21);
+    CHECK(plan.payload_size == 236);
+
+    CHECK(!wd_async_tcp_plan_owned_send(80, 257, 337, &plan));
+    CHECK(!wd_async_tcp_plan_owned_send(
+        std::numeric_limits<size_t>::max(), 1, 0, &plan));
+    CHECK(!wd_async_tcp_plan_owned_send(80, 257, 0, nullptr));
+
     size_t sent = 0;
     CHECK(wd_async_tcp_advance(10, &sent, 4) == WD_ASYNC_TCP_SEND_PARTIAL && sent == 4);
     CHECK(wd_async_tcp_advance(10, &sent, 0) == WD_ASYNC_TCP_SEND_FAILED && sent == 4);

@@ -156,38 +156,31 @@ static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, stru
          * On a genuine partial kernel send, bytes_sent is advanced by the CQE
          * result and this iovec is rebuilt from that global byte offset.
          */
+        struct wd_async_tcp_owned_send_plan plan = {0};
+        if (!wd_async_tcp_plan_owned_send(msg->inline_size, msg->payload_size,
+                                          msg->bytes_sent, &plan))
+        {
+            return false;
+        }
+
         unsigned iov_count = 0;
         memset(&msg->submit_msg, 0, sizeof(msg->submit_msg));
 
-        if (msg->bytes_sent < msg->inline_size)
+        if (plan.inline_size != 0)
         {
-            msg->submit_iov[iov_count].iov_base = msg->bytes + msg->bytes_sent;
-            msg->submit_iov[iov_count].iov_len  = msg->inline_size - msg->bytes_sent;
-            send_size += msg->submit_iov[iov_count].iov_len;
+            msg->submit_iov[iov_count].iov_base = msg->bytes + plan.inline_offset;
+            msg->submit_iov[iov_count].iov_len  = plan.inline_size;
+            send_size += plan.inline_size;
             iov_count++;
-
-            if (msg->payload_size != 0)
-            {
-                msg->submit_iov[iov_count].iov_base =
-                    (void*)(wd_buffer_const_data(msg->payload_owner) + msg->payload_offset);
-                msg->submit_iov[iov_count].iov_len = msg->payload_size;
-                send_size += msg->submit_iov[iov_count].iov_len;
-                iov_count++;
-            }
         }
-        else
+        if (plan.payload_size != 0)
         {
-            const size_t payload_sent = msg->bytes_sent - msg->inline_size;
-            if (payload_sent >= msg->payload_size)
-            {
-                return false;
-            }
-
-            msg->submit_iov[0].iov_base =
-                (void*)(wd_buffer_const_data(msg->payload_owner) + msg->payload_offset + payload_sent);
-            msg->submit_iov[0].iov_len = msg->payload_size - payload_sent;
-            send_size                  = msg->submit_iov[0].iov_len;
-            iov_count                  = 1;
+            msg->submit_iov[iov_count].iov_base =
+                (void*)(wd_buffer_const_data(msg->payload_owner) + msg->payload_offset +
+                        plan.payload_offset);
+            msg->submit_iov[iov_count].iov_len = plan.payload_size;
+            send_size += plan.payload_size;
+            iov_count++;
         }
 
         if (iov_count == 0 || send_size == 0)
