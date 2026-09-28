@@ -5,6 +5,7 @@
 #include "wd_readback_regions.h"
 #include "wd_gpu_capture.h"
 #include "video_gpu_capture_policy.h"
+#include "video_gpu_capture_runtime_policy.h"
 
 #include <drm_fourcc.h>
 #include <string.h>
@@ -221,8 +222,11 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
         }
         else
         {
+            const uint64_t failure_ns = wd_now_ns();
             pthread_mutex_lock(&server->net.lock);
             server->net.stats.video_gpu_export_failed++;
+            server->net.video_gpu_capture_backoff_until_ns =
+                wd_video_gpu_capture_backoff_after_failure(server->net.video_gpu_capture_backoff_until_ns, failure_ns);
             pthread_mutex_unlock(&server->net.lock);
         }
     }

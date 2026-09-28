@@ -309,10 +309,20 @@ void wd_stream_policy_apply_client_hello(struct wd_stream_policy* policy, const 
     policy->video_failure_resume_fps          = 0;
     policy->video_decode_ewma_ns              = 0;
     policy->video_decode_safe_fps             = 0;
-    policy->video_feedback_pending             = false;
-    policy->video_feedback_flags               = 0;
-    policy->video_feedback_sequence            = 0;
-    policy->video_recovery_attempts             = 0;
+    policy->video_feedback_pending                = false;
+    policy->video_feedback_flags                  = 0;
+    policy->video_feedback_sequence               = 0;
+    policy->video_feedback_last_frame_id_rx        = 0;
+    policy->video_feedback_last_frame_id_decoded   = 0;
+    policy->video_feedback_last_frame_id_presented = 0;
+    policy->video_feedback_decode_queue_depth      = 0;
+    policy->video_feedback_decode_queue_capacity   = 0;
+    policy->video_feedback_present_queue_depth     = 0;
+    policy->video_feedback_present_queue_capacity  = 0;
+    policy->video_feedback_presentation_stall_ms   = 0;
+    policy->video_feedback_audio_sync_hold_ms      = 0;
+    policy->video_feedback_decoder_phase           = WD_VIDEO_DECODER_PHASE_TILES;
+    policy->video_recovery_attempts                = 0;
     policy->video_recovery_wait_seconds         = 0;
     policy->video_recovery_keyframe_queued      = false;
     policy->video_recovery_keyframe_id          = 0;
@@ -374,12 +384,14 @@ void wd_stream_policy_begin_session(struct wd_stream_policy* policy, const struc
         return;
     }
     wd_stream_policy_apply_client_hello(policy, hello);
+    const bool video_bootstrap_required =
+        wd_video_session_bootstrap_required(hello->video_mode, hello->capabilities);
     policy->tile_refresh_pending            = true;
-    policy->video_bootstrap_pending         = true;
+    policy->video_bootstrap_pending         = video_bootstrap_required;
     policy->video_bootstrap_refresh_started = false;
     policy->video_bootstrap_refresh_sent    = false;
     policy->video_bootstrap_wait_seconds    = 0;
-    policy->video_bootstrap_content_epoch   = bootstrap_content_epoch;
+    policy->video_bootstrap_content_epoch   = video_bootstrap_required ? bootstrap_content_epoch : 0;
     policy->tile_recovery_content_epoch              = 0;
     policy->tile_recovery_framebuffer_generation     = 0;
     policy->tile_recovery_live_damage_deferred       = false;

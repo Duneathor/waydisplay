@@ -107,6 +107,30 @@ static void test_removed_options_are_rejected(void) {
     }
 }
 
+static void test_video_modes(void) {
+    struct ModeCase { const char* name; uint8_t mode; };
+    const ModeCase modes[] = {
+        {"off", WD_VIDEO_MODE_OFF},
+        {"auto", WD_VIDEO_MODE_AUTO},
+        {"force", WD_VIDEO_MODE_FORCE},
+    };
+    for (const auto& mode : modes)
+    {
+        ClientCliOptions options;
+        std::string error;
+        CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--video-mode", mode.name}, options, error) ==
+              ClientCliParseResult::Ok);
+        CHECK(options.video_mode == mode.mode);
+    }
+
+    ClientCliOptions options;
+    std::string error;
+    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--video-mode", "tiles"}, options, error) ==
+          ClientCliParseResult::Error);
+    CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--video-mode"}, options, error) ==
+          ClientCliParseResult::Error);
+}
+
 static void test_decode_modes(void) {
     struct ModeCase { const char* name; uint8_t mode; };
     const ModeCase modes[] = {
@@ -165,6 +189,7 @@ int main() {
     test_defaults();
     test_av1_option();
     test_retained_options();
+    test_video_modes();
     test_decode_modes();
     test_removed_options_are_rejected();
     test_invalid_values();

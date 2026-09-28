@@ -80,6 +80,11 @@ bool wd_video_entry_allowed(bool bootstrap_pending, bool recovery_active, uint32
     return video_forced && recovery_class == WD_VIDEO_RECOVERY_PLANNED;
 }
 
+bool wd_video_session_bootstrap_required(uint8_t requested_mode, uint32_t client_capabilities) {
+    return requested_mode != WD_VIDEO_MODE_OFF && requested_mode <= WD_VIDEO_MODE_FORCE &&
+           (client_capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0;
+}
+
 bool wd_video_control_allows_entry(uint8_t requested_mode, bool video_negotiated, bool video_channel_connected,
                                    bool video_encoder_available) {
     return requested_mode != WD_VIDEO_MODE_OFF && requested_mode <= WD_VIDEO_MODE_FORCE && video_negotiated &&

@@ -154,8 +154,8 @@ void test_invalid_and_partial_frames() {
 
 wd_aux_channel_policy policy() {
     wd_aux_channel_policy value{};
-    value.session_id       = 7;
-    value.connection_token = UINT64_C(0x1122334455667788);
+    value.identity.session_id       = 7;
+    value.identity.connection_token = UINT64_C(0x1122334455667788);
     value.video_negotiated = true;
     value.video_codecs     = WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265;
     value.video_transport  = WD_VIDEO_TRANSPORT_TCP;
@@ -167,7 +167,7 @@ wd_aux_channel_policy policy() {
 
 void test_auxiliary_channel_binding() {
     auto p = policy();
-    wd_input_channel_hello_payload input{p.session_id, p.connection_token};
+    wd_input_channel_hello_payload input{p.identity.session_id, p.identity.connection_token};
     CHECK(wd_aux_channel_validate_hello(WD_MSG_INPUT_CHANNEL_HELLO, &input, sizeof(input), &p) == WD_AUX_CHANNEL_INPUT);
     p.input_bound = true;
     CHECK(wd_aux_channel_validate_hello(WD_MSG_INPUT_CHANNEL_HELLO, &input, sizeof(input), &p) == WD_AUX_CHANNEL_INVALID);
@@ -175,11 +175,23 @@ void test_auxiliary_channel_binding() {
     input.connection_token++;
     CHECK(wd_aux_channel_validate_hello(WD_MSG_INPUT_CHANNEL_HELLO, &input, sizeof(input), &p) == WD_AUX_CHANNEL_INVALID);
 
-    wd_selection_channel_hello_payload selection{p.session_id, p.connection_token};
+    /* A delayed channel from the previous transport lifetime must remain
+     * stale even if the 8-bit session id is eventually reused. */
+    auto previous = policy();
+    previous.identity.connection_token--;
+    wd_input_channel_hello_payload stale_same_session{previous.identity.session_id, previous.identity.connection_token};
+    CHECK(wd_aux_channel_validate_hello(WD_MSG_INPUT_CHANNEL_HELLO, &stale_same_session, sizeof(stale_same_session), &p) ==
+          WD_AUX_CHANNEL_INVALID);
+    wd_input_channel_hello_payload stale_previous_session{static_cast<uint8_t>(p.identity.session_id - 1u),
+                                                           p.identity.connection_token};
+    CHECK(wd_aux_channel_validate_hello(WD_MSG_INPUT_CHANNEL_HELLO, &stale_previous_session, sizeof(stale_previous_session), &p) ==
+          WD_AUX_CHANNEL_INVALID);
+
+    wd_selection_channel_hello_payload selection{p.identity.session_id, p.identity.connection_token};
     CHECK(wd_aux_channel_validate_hello(WD_MSG_SELECTION_CHANNEL_HELLO, &selection, sizeof(selection), &p) ==
           WD_AUX_CHANNEL_SELECTION);
 
-    wd_video_channel_hello_payload video{p.session_id, p.connection_token, WD_VIDEO_CODEC_H265, WD_VIDEO_TRANSPORT_TCP};
+    wd_video_channel_hello_payload video{p.identity.session_id, p.identity.connection_token, WD_VIDEO_CODEC_H265, WD_VIDEO_TRANSPORT_TCP};
     CHECK(wd_aux_channel_validate_hello(WD_MSG_VIDEO_CHANNEL_HELLO, &video, sizeof(video), &p) == WD_AUX_CHANNEL_VIDEO);
     video.video_codecs = 1u << 31u;
     CHECK(wd_aux_channel_validate_hello(WD_MSG_VIDEO_CHANNEL_HELLO, &video, sizeof(video), &p) == WD_AUX_CHANNEL_INVALID);
@@ -188,7 +200,7 @@ void test_auxiliary_channel_binding() {
     CHECK(wd_aux_channel_validate_hello(WD_MSG_VIDEO_CHANNEL_HELLO, &video, sizeof(video), &p) == WD_AUX_CHANNEL_INVALID);
 
     p = policy();
-    wd_audio_channel_hello_payload audio{p.session_id, p.connection_token, WD_AUDIO_CODEC_OPUS, WD_AUDIO_TRANSPORT_TCP};
+    wd_audio_channel_hello_payload audio{p.identity.session_id, p.identity.connection_token, WD_AUDIO_CODEC_OPUS, WD_AUDIO_TRANSPORT_TCP};
     CHECK(wd_aux_channel_validate_hello(WD_MSG_AUDIO_CHANNEL_HELLO, &audio, sizeof(audio), &p) == WD_AUX_CHANNEL_AUDIO);
     audio.audio_transport++;
     CHECK(wd_aux_channel_validate_hello(WD_MSG_AUDIO_CHANNEL_HELLO, &audio, sizeof(audio), &p) == WD_AUX_CHANNEL_INVALID);

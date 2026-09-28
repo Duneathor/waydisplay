@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
@@ -24,6 +25,25 @@
     } while (0)
 
 namespace {
+
+void move_socket_endpoint_to_fd(int source_fd, int& peer_fd, int target_fd) {
+    if (source_fd == target_fd)
+    {
+        return;
+    }
+
+    if (peer_fd == target_fd)
+    {
+        const int moved_peer = ::dup(peer_fd);
+        CHECK(moved_peer >= 0);
+        CHECK(::fcntl(moved_peer, F_SETFD, FD_CLOEXEC) == 0);
+        ::close(peer_fd);
+        peer_fd = moved_peer;
+    }
+
+    CHECK(::dup2(source_fd, target_fd) == target_fd);
+    CHECK(::fcntl(target_fd, F_SETFD, FD_CLOEXEC) == 0);
+}
 
 void test_shutdown_unblocks_every_channel_and_reconnects() {
     wd_client_session session{};
@@ -102,6 +122,72 @@ void test_shutdown_unblocks_every_channel_and_reconnects() {
     wd_client_session_shutdown_open_fds(&session);
     wd_client_session_close_open_fds(&session);
     close(replacement[1]);
+}
+
+
+void test_reconnect_stress_reuses_channel_descriptors() {
+    wd_client_session session{};
+    wd_client_session_init(&session);
+
+    std::array<int, 6> reused_fds{};
+    reused_fds.fill(-1);
+    constexpr unsigned Iterations = 128;
+
+    for (unsigned iteration = 0; iteration < Iterations; ++iteration)
+    {
+        CHECK(wd_client_session_begin_connect(&session));
+
+        std::array<int, 6> peers{};
+        peers.fill(-1);
+        for (size_t channel = 0; channel < reused_fds.size(); ++channel)
+        {
+            int pair[2]{-1, -1};
+            CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) == 0);
+            if (iteration == 0)
+            {
+                reused_fds[channel] = fcntl(pair[0], F_DUPFD_CLOEXEC, 64);
+                CHECK(reused_fds[channel] >= 64);
+            }
+            else
+            {
+                move_socket_endpoint_to_fd(pair[0], pair[1], reused_fds[channel]);
+            }
+            close(pair[0]);
+            peers[channel] = pair[1];
+        }
+
+        session.control_fd   = reused_fds[0];
+        session.input_fd     = reused_fds[1];
+        session.selection_fd = reused_fds[2];
+        session.video_fd     = reused_fds[3];
+        session.audio_fd     = reused_fds[4];
+        session.udp_fd       = reused_fds[5];
+        wd_client_session_mark_connected(&session);
+        CHECK(session.phase == WD_CLIENT_SESSION_CONNECTED);
+
+        /* Every reused descriptor must belong to this iteration and carry
+         * traffic before teardown. A leaked shutdown/close from the prior
+         * iteration would surface here as a failed write/read. */
+        for (size_t channel = 0; channel < reused_fds.size(); ++channel)
+        {
+            const uint8_t sent = static_cast<uint8_t>((iteration + channel) & 0xffu);
+            uint8_t received = 0;
+            CHECK(send(reused_fds[channel], &sent, sizeof(sent), MSG_NOSIGNAL) == 1);
+            CHECK(recv(peers[channel], &received, sizeof(received), MSG_WAITALL) == 1);
+            CHECK(received == sent);
+        }
+
+        CHECK(wd_client_session_begin_shutdown(&session));
+        wd_client_session_shutdown_open_fds(&session);
+        wd_client_session_close_open_fds(&session);
+        CHECK(wd_client_session_fds_closed(&session));
+        CHECK(session.phase == WD_CLIENT_SESSION_IDLE);
+
+        for (int peer : peers)
+        {
+            close(peer);
+        }
+    }
 }
 
 void test_stale_async_identity_is_rejected_after_rotation() {
@@ -191,6 +277,7 @@ void test_accounting_shutdown_does_not_complete_twice() {
 
 int main() {
     test_shutdown_unblocks_every_channel_and_reconnects();
+    test_reconnect_stress_reuses_channel_descriptors();
     test_stale_async_identity_is_rejected_after_rotation();
     test_stream_ownership_is_atomic_under_contention();
     test_accounting_shutdown_does_not_complete_twice();

@@ -265,7 +265,7 @@ updates are usually reduced to one lock per presented frame.
 
 ## Render geometry limit
 
-WayDisplay protocol v1 limits the negotiated render surface to **4096x2160**.
+WayDisplay protocol v2 limits the negotiated render surface to **4096x2160**.
 The tile protocol uses 16-bit base-tile IDs and counts with a fixed 16x16 base
 grid; enforcing this 4K-class limit prevents grid-count truncation and keeps
 framebuffer allocation bounded. Both client-requested sizes and server config

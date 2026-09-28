@@ -497,7 +497,7 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
                          wd_async_tcp_sender_last_transport_result(server->net.control_tx),
                          wd_async_tcp_sender_last_transport_fd(server->net.control_tx),
                          wd_async_tcp_sender_last_transport_message_type(server->net.control_tx));
-            if (server->net.tcp_fd >= 0)
+            if (wd_async_tcp_sender_last_transport_matches_fd(server->net.control_tx, server->net.tcp_fd))
             {
                 (void)shutdown(server->net.tcp_fd, SHUT_RDWR);
             }
@@ -544,7 +544,7 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
                          wd_async_tcp_sender_last_transport_result(server->net.selection_tx),
                          wd_async_tcp_sender_last_transport_fd(server->net.selection_tx),
                          wd_async_tcp_sender_last_transport_message_type(server->net.selection_tx));
-            if (server->net.selection_tcp_fd >= 0)
+            if (wd_async_tcp_sender_last_transport_matches_fd(server->net.selection_tx, server->net.selection_tcp_fd))
             {
                 (void)shutdown(server->net.selection_tcp_fd, SHUT_RDWR);
             }
@@ -560,7 +560,7 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
             server->net.video_tx_transport_failed_seen = transport_failed;
             server->net.stats.video_tcp_send_failed += new_failures;
 
-            if (server->net.video_tcp_fd >= 0)
+            if (wd_async_tcp_sender_last_transport_matches_fd(server->net.video_tx, server->net.video_tcp_fd))
             {
                 WD_LOG_ERROR("video TCP async transport failure: result=%d fd=%d message_type=%u; returning display ownership to tiles",
                              wd_async_tcp_sender_last_transport_result(server->net.video_tx),

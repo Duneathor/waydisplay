@@ -10,6 +10,7 @@
 #include "video_decoder.hpp"
 #include "video_decode_queue_policy.h"
 #include "video_keyframe_recovery.h"
+#include "video_output_policy.hpp"
 #include "video_packet_validation.h"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
@@ -19,6 +20,7 @@
 #include "waydisplay/wd_protocol_dispatch.h"
 #include "waydisplay/wd_selection.h"
 #include "waydisplay/wd_time.h"
+#include "waydisplay/wd_video_offer.h"
 
 #include <algorithm>
 #include <array>
@@ -505,14 +507,14 @@ bool receive_server_config(ClientState& state) {
     hello.desired_width                    = state.desired_width;
     hello.desired_height                   = state.desired_height;
     hello.link_cap_kib_per_second       = state.stream_config.link_cap_kib_per_second;
-    const bool     video_allowed           = state.stream_config.video_mode != WD_VIDEO_MODE_OFF &&
-                                             state.stream_config.video_decoder_mode != WD_CLIENT_VIDEO_DECODER_OFF;
-    const uint32_t supported_video_codecs  = client_video_decoder_supported_codecs(state.session.video_decoder);
-    const uint32_t requested_video_codecs  = state.stream_config.video_codec_mask & WD_VIDEO_CODEC_MASK;
-    const uint32_t advertised_video_codecs = video_allowed ? (supported_video_codecs & requested_video_codecs) : 0;
-    const bool     video_decoder_available = advertised_video_codecs != 0;
-    const bool     audio_available = !state.stream_config.disable_audio && state.session.audio_playback && client_audio_playback_available();
-    hello.capabilities             = video_decoder_available ? (WD_CLIENT_CAP_VIDEO_STREAM | WD_CLIENT_CAP_VIDEO_FEEDBACK) : 0;
+    const uint32_t supported_video_codecs = client_video_decoder_supported_codecs(state.session.video_decoder);
+    const uint32_t requested_video_codecs = state.stream_config.video_codec_mask & WD_VIDEO_CODEC_MASK;
+    const wd_client_video_offer video_offer = wd_client_video_offer_decide(
+        state.stream_config.video_mode, state.stream_config.video_decoder_mode,
+        supported_video_codecs, requested_video_codecs);
+    const bool video_decoder_available = (video_offer.capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0;
+    const bool audio_available = !state.stream_config.disable_audio && state.session.audio_playback && client_audio_playback_available();
+    hello.capabilities = video_offer.capabilities;
     if (audio_available)
     {
         hello.capabilities |= WD_CLIENT_CAP_AUDIO_STREAM;
@@ -521,8 +523,8 @@ bool receive_server_config(ClientState& state) {
         hello.audio_max_channels      = WD_AUDIO_CHANNELS_MAX;
         hello.audio_target_latency_ms = WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
     }
-    hello.video_codecs                 = advertised_video_codecs;
-    hello.video_transport              = video_decoder_available ? WD_VIDEO_TRANSPORT_TCP : 0;
+    hello.video_codecs                 = video_offer.codecs;
+    hello.video_transport              = video_offer.transport;
     hello.video_mode                   = state.stream_config.video_mode;
     hello.video_min_dirty_percent      = state.stream_config.video_min_dirty_percent;
     hello.video_enter_seconds          = state.stream_config.video_enter_seconds;
@@ -1538,8 +1540,11 @@ void handle_video_frame(ClientState& state, wd_buffer* owner, uint32_t payload_s
         config.target_fps       = state.stream_config.requested_session_fps;
         config.codec            = packet.header.codec;
         config.decode_mode      = state.stream_config.video_decoder_mode;
-        config.prefer_gpu_output =
+        ClientVideoOutputCapabilities output_capabilities{};
+        output_capabilities.drm_prime_import =
             state.video_gpu_present_supported.load(std::memory_order_acquire);
+        config.prefer_gpu_output =
+            client_video_output_storage(true, output_capabilities) == ClientVideoOutputStorage::DrmPrime;
 
         const bool configured = client_video_decoder_configure(state.session.video_decoder, config);
         if (!configured)

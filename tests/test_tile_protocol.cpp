@@ -26,21 +26,46 @@ void require(bool condition, const char* message) {
 }
 
 void test_protocol_version_and_header_sizes() {
-    require(WD_PROTOCOL_VERSION == 1, "protocol v1 should expose the performance-telemetry wire ABI");
+    require(WD_PROTOCOL_VERSION == 2, "protocol v2 should expose the current wire ABI");
     require(WD_UDP_TILE_HEADER_MIN_SIZE == 36, "canonical tile header size");
     require(WD_UDP_TILE_HEADER_MAX_SIZE == 44, "correlated tile header size");
 }
 
 
+
+void test_protocol_v1_is_rejected_after_v2_break() {
+    int sockets[2] = {-1, -1};
+    require(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0, "create protocol-version rejection socket pair");
+
+    wd_tcp_header header{};
+    header.magic = WD_TCP_MAGIC;
+    header.protocol_version = 1;
+    header.message_type = WD_MSG_CLIENT_HELLO;
+    header.payload_size = sizeof(wd_client_hello_payload);
+    uint8_t wire_header[WD_TCP_HEADER_WIRE_SIZE]{};
+    require(wd_tcp_header_encode(wire_header, &header), "encode legacy v1 header");
+    require(wd_send_all(sockets[0], wire_header, sizeof(wire_header)), "send legacy v1 header");
+
+    uint16_t type = 0;
+    uint8_t* payload = nullptr;
+    uint32_t payload_size = 0;
+    require(!wd_recv_tcp_message(sockets[1], &type, &payload, &payload_size),
+            "protocol v2 must reject a protocol v1 frame before reading its body");
+    require(payload == nullptr && payload_size == 0, "version rejection must leave receive outputs empty");
+
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
 template <typename T>
 void require_fixed_wire_layout(uint16_t message_type, const T& source, const char* message) {
     uint32_t wire_size = 0;
     require(wd_protocol_payload_wire_size(message_type, &source, sizeof(source), &wire_size), message);
-    require(wire_size == sizeof(source), "fixed wire size should match the packed protocol-v1 structure");
+    require(wire_size == sizeof(source), "fixed wire size should match the packed protocol-v2 structure");
     require(wd_protocol_payload_validate(message_type, &source, sizeof(source)), message);
 }
 
-void test_protocol_v1_native_wire_layout() {
+void test_protocol_v2_native_wire_layout() {
     wd_tcp_header header{};
     header.magic            = WD_TCP_MAGIC;
     header.protocol_version = WD_PROTOCOL_VERSION;
@@ -48,7 +73,7 @@ void test_protocol_v1_native_wire_layout() {
     header.payload_size     = 0x12345678u;
     uint8_t wire_header[WD_TCP_HEADER_WIRE_SIZE]{};
     require(wd_tcp_header_encode(wire_header, &header), "TCP header should encode");
-    const uint8_t expected_header[WD_TCP_HEADER_WIRE_SIZE] = {0x57, 0x44, 0x43, 0x54, 0x01, 0x00,
+    const uint8_t expected_header[WD_TCP_HEADER_WIRE_SIZE] = {0x57, 0x44, 0x43, 0x54, 0x02, 0x00,
                                                               0x02, 0x00, 0x78, 0x56, 0x34, 0x12};
     require(std::memcmp(wire_header, expected_header, sizeof(expected_header)) == 0,
             "TCP header should use the documented little-endian layout");
@@ -63,7 +88,7 @@ void test_protocol_v1_native_wire_layout() {
     input_hello.connection_token = 0x0102030405060708ull;
     const uint8_t expected_input_hello[sizeof(input_hello)] = {0x7a, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01};
     require(std::memcmp(&input_hello, expected_input_hello, sizeof(input_hello)) == 0,
-            "packed input-channel hello should match the protocol-v1 golden bytes");
+            "packed input-channel hello should match the protocol-v2 golden bytes");
 
     wd_config_applied_payload applied{};
     applied.session_id       = 0x11u;
@@ -72,7 +97,7 @@ void test_protocol_v1_native_wire_layout() {
     const uint8_t expected_applied[sizeof(applied)] = {0x11, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
                                                        0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01};
     require(std::memcmp(&applied, expected_applied, sizeof(applied)) == 0,
-            "packed config-applied payload should match the protocol-v1 golden bytes");
+            "packed config-applied payload should match the protocol-v2 golden bytes");
 
     require_fixed_wire_layout(WD_MSG_CLIENT_HELLO, wd_client_hello_payload{}, "client hello codec");
     require_fixed_wire_layout(WD_MSG_SERVER_CONFIG, wd_server_config_payload{}, "server config codec");
@@ -388,8 +413,8 @@ void test_fragment_layout_is_canonical() {
 }
 
 void test_protocol_zero_strict_payload_helpers() {
-    require(sizeof(wd_server_config_payload) == 101, "protocol-v1 server config should include media and audio negotiation");
-    require(sizeof(wd_config_applied_payload) == 17, "protocol-v1 config ACK should include config epoch");
+    require(sizeof(wd_server_config_payload) == 101, "protocol-v2 server config should include media and audio negotiation");
+    require(sizeof(wd_config_applied_payload) == 17, "protocol-v2 config ACK should include config epoch");
     require(wd_fixed_payload_size_is_valid(17, sizeof(wd_config_applied_payload)), "fixed payload helper should accept exact size");
     require(!wd_fixed_payload_size_is_valid(18, sizeof(wd_config_applied_payload)), "fixed payload helper should reject trailing bytes");
     wd_config_applied_payload applied{4, 5, 6};
@@ -736,7 +761,8 @@ void test_tile_count_helpers_reject_overflow() {
 
 int main() {
     test_protocol_version_and_header_sizes();
-    test_protocol_v1_native_wire_layout();
+    test_protocol_v2_native_wire_layout();
+    test_protocol_v1_is_rejected_after_v2_break();
     test_typed_protocol_dispatch();
     test_media_clock_helpers();
     test_tile_size_round_trip();

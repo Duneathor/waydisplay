@@ -11,17 +11,17 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 1u
+#define WD_PROTOCOL_VERSION 2u
 
 #if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
-#error "WayDisplay protocol version 1 requires a little-endian host"
+#error "WayDisplay protocol version 2 requires a little-endian host"
 #endif
 
 /*
- * Protocol version 1 intentionally supports only little-endian Linux peers.
+ * Protocol version 2 intentionally supports only little-endian Linux peers.
  * Fixed-width packed C structures are the wire ABI. GCC-compatible packing,
  * the asserted structure sizes below, and little-endian field order are part
- * of the protocol-v1 contract.
+ * of the protocol-v2 contract.
  */
 #define WD_TCP_MAGIC                    0x54434457u
 #define WD_TCP_HEADER_WIRE_SIZE          12u
@@ -453,7 +453,7 @@ struct wd_client_stats_payload {
     uint32_t audio_video_sync_hold_current_ms;
     uint32_t audio_video_sync_hold_max_ms;
 
-    /* Protocol v1 performance telemetry. These are interval deltas except the
+    /* Protocol v2 performance telemetry. These are interval deltas except the
      * depth/max fields, which describe the reporting interval. */
     uint64_t video_gpu_frames_presented;
     uint64_t video_gpu_present_failures;
@@ -614,7 +614,7 @@ enum wd_tile_size {
     WD_TILE_16x16  = 3,
 };
 
-/* Protocol v1 uses one canonical base header for every tile fragment.
+/* Protocol v2 uses one canonical base header for every tile fragment.
  * tile_payload_size is the total compressed or uncompressed tile payload.
  * The optional input sequence extension is legal only on packet zero. */
 struct wd_udp_tile_packet_header {

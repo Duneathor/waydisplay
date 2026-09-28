@@ -319,6 +319,30 @@ void test_present_telemetry_claims_only_matching_generation_batch() {
     require(pending[2].generation == 9 && pending[3].generation == 10, "stale-epoch and not-yet-presented records should remain pending");
 }
 
+void test_present_telemetry_does_not_ack_epoch_without_matching_pixels() {
+    std::vector<ClientPendingTileTelemetry> pending(3);
+    pending[0] = {1, 8, 4, 100, 0};
+    pending[1] = {2, 8, 5, 120, 0};
+    pending[2] = {3, 9, 6, 140, 0};
+
+    /* A renderer can still hold generation updates claimed before a remote
+     * content-epoch advance. Presenting those stale updates must not stamp the
+     * newly current epoch into feedback merely because that is the epoch at
+     * claim time. */
+    std::vector<ClientTileGenerationUpdate> stale_updates{{0, 4}, {1, 5}};
+    ClientPresentTelemetryBatch batch;
+    claim_tile_present_telemetry(pending, stale_updates, 9, 200, batch);
+    require(batch.content_epoch == 0,
+            "stale generation updates must not acknowledge the current bootstrap epoch");
+    require(batch.tile_count == 0 && batch.empty(),
+            "an epoch with no matching presented tile telemetry must remain unacknowledged");
+
+    std::vector<ClientTileGenerationUpdate> current_updates{{2, 6}};
+    claim_tile_present_telemetry(pending, current_updates, 9, 220, batch);
+    require(batch.content_epoch == 9 && batch.tile_count == 1,
+            "a matching presented tile may acknowledge its content epoch");
+}
+
 void test_present_telemetry_input_sequence_set_is_bounded() {
     std::vector<ClientPendingTileTelemetry> pending(12);
     std::vector<ClientTileGenerationUpdate> updates;
@@ -460,6 +484,7 @@ int main() {
     test_stream_ownership_epochs();
     test_remote_content_epochs_reject_late_cross_transport_packets();
     test_present_telemetry_claims_only_matching_generation_batch();
+    test_present_telemetry_does_not_ack_epoch_without_matching_pixels();
     test_present_telemetry_input_sequence_set_is_bounded();
     test_present_telemetry_counts_large_tile_completion_once();
     test_tile_generation_claim_commit_and_requeue();

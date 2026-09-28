@@ -16,3 +16,7 @@ static inline uint64_t wd_video_gpu_capture_backoff_deadline(uint64_t now_ns) {
     }
     return now_ns + WD_VIDEO_GPU_CAPTURE_BACKOFF_NS;
 }
+static inline uint64_t wd_video_gpu_capture_backoff_after_failure(uint64_t current_until_ns, uint64_t now_ns) {
+    const uint64_t deadline = wd_video_gpu_capture_backoff_deadline(now_ns);
+    return deadline > current_until_ns ? deadline : current_until_ns;
+}

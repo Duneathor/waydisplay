@@ -62,6 +62,7 @@ bool wd_video_entry_allowed(bool bootstrap_pending, bool recovery_active, uint32
                             enum wd_video_recovery_class recovery_class);
 bool wd_video_control_allows_entry(uint8_t requested_mode, bool video_negotiated, bool video_channel_connected,
                                    bool video_encoder_available);
+bool wd_video_session_bootstrap_required(uint8_t requested_mode, uint32_t client_capabilities);
 /* The health controller owns in-video recovery while video remains available.
  * A user disable or lost video channel must still be handled by mode selection. */
 bool wd_video_auto_mode_wait_for_recovery(bool recovering, uint8_t requested_mode, bool video_negotiated,

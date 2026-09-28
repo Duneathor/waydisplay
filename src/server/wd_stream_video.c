@@ -219,11 +219,8 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
         else
         {
             net->stats.video_gpu_encode_failed++;
-            const uint64_t deadline = wd_video_gpu_capture_backoff_deadline(encode_done_ns);
-            if (deadline > net->video_gpu_capture_backoff_until_ns)
-            {
-                net->video_gpu_capture_backoff_until_ns = deadline;
-            }
+            net->video_gpu_capture_backoff_until_ns =
+                wd_video_gpu_capture_backoff_after_failure(net->video_gpu_capture_backoff_until_ns, encode_done_ns);
         }
     }
 

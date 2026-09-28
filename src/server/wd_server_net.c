@@ -1278,16 +1278,16 @@ bool wd_server_send_current_config_locked(struct wd_server* server) {
 
     (void)wd_async_tcp_sender_drop_message_type(net->control_tx, WD_MSG_SERVER_CONFIG);
     (void)wd_async_tcp_sender_drop_message_type(net->control_tx, WD_MSG_TILE_GENERATION_SUMMARY);
-    if (wd_async_tcp_sender_has_message_type(net->control_tx, WD_MSG_TILE_GENERATION_SUMMARY))
-    {
-        net->stats.tcp_async_send_failed++;
-        (void)shutdown(net->tcp_fd, SHUT_RDWR);
-        return false;
-    }
+    /* A summary already submitted to the kernel cannot be removed, but it is
+     * safe to let it finish: TCP ordering guarantees that the old summary is
+     * consumed before this newer config. Disconnecting here turned an
+     * otherwise ordinary resize into a session failure whenever the resize
+     * happened to race one in-flight summary. */
     const bool ok = wd_async_tcp_send_message(net->control_tx, net->tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg));
     if (!ok)
     {
         net->stats.tcp_async_send_failed++;
+        WD_LOG_ERROR("failed to queue server config on control channel; closing session");
         (void)shutdown(net->tcp_fd, SHUT_RDWR);
     }
 
@@ -1359,7 +1359,7 @@ static void wd_server_handle_pointer_message(struct wd_server* server, const str
     }
 }
 
-static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_id, uint64_t connection_token, int* input_tcp_fd,
+static bool wd_accept_aux_channel_fd(struct wd_server* server, const struct wd_aux_channel_identity* identity, int* input_tcp_fd,
                                      int* selection_tcp_fd, int* video_tcp_fd, int* audio_tcp_fd) {
     struct wd_net_state* net = &server->net;
 
@@ -1386,8 +1386,7 @@ static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_i
     }
 
     const struct wd_aux_channel_policy policy = {
-        .session_id         = session_id,
-        .connection_token   = connection_token,
+        .identity           = *identity,
         .input_bound        = *input_tcp_fd >= 0,
         .selection_bound    = *selection_tcp_fd >= 0,
         .video_bound        = video_tcp_fd && *video_tcp_fd >= 0,
@@ -1443,7 +1442,7 @@ static bool wd_accept_aux_channel_fd(struct wd_server* server, uint8_t session_i
     return true;
 }
 
-static bool wd_accept_required_aux_channels(struct wd_server* server, uint8_t session_id, uint64_t connection_token, int* input_tcp_fd,
+static bool wd_accept_required_aux_channels(struct wd_server* server, const struct wd_aux_channel_identity* identity, int* input_tcp_fd,
                                             int* selection_tcp_fd, int* video_tcp_fd, int* audio_tcp_fd) {
     struct wd_net_state* net         = &server->net;
     const uint64_t       deadline_ns = wd_now_ns() + WD_NET_AUX_CHANNEL_ACCEPT_TIMEOUT_NS;
@@ -1490,7 +1489,7 @@ static bool wd_accept_required_aux_channels(struct wd_server* server, uint8_t se
             break;
         }
 
-        (void)wd_accept_aux_channel_fd(server, session_id, connection_token, input_tcp_fd, selection_tcp_fd, video_tcp_fd, audio_tcp_fd);
+        (void)wd_accept_aux_channel_fd(server, identity, input_tcp_fd, selection_tcp_fd, video_tcp_fd, audio_tcp_fd);
     }
 
     return *input_tcp_fd >= 0 && *selection_tcp_fd >= 0;
@@ -1760,7 +1759,11 @@ void* wd_net_thread_main(void* arg) {
         int selection_tcp_fd = -1;
         int video_tcp_fd     = -1;
         int audio_tcp_fd     = -1;
-        if (!wd_accept_required_aux_channels(server, cfg.session_id, cfg.connection_token, &input_tcp_fd, &selection_tcp_fd,
+        const struct wd_aux_channel_identity aux_identity = {
+            .session_id = cfg.session_id,
+            .connection_token = cfg.connection_token,
+        };
+        if (!wd_accept_required_aux_channels(server, &aux_identity, &input_tcp_fd, &selection_tcp_fd,
                                              &video_tcp_fd, &audio_tcp_fd))
         {
             WD_LOG_ERROR("required input/selection channels were not established");
@@ -2030,7 +2033,7 @@ void* wd_net_thread_main(void* arg) {
                 int old_video_fd = video_tcp_fd;
                 int old_audio_fd     = audio_tcp_fd;
 
-                (void)wd_accept_aux_channel_fd(server, cfg.session_id, cfg.connection_token, &input_tcp_fd, &selection_tcp_fd,
+                (void)wd_accept_aux_channel_fd(server, &aux_identity, &input_tcp_fd, &selection_tcp_fd,
                                                &video_tcp_fd, &audio_tcp_fd);
 
                 if (video_tcp_fd >= 0 && old_video_fd < 0)

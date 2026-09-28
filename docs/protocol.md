@@ -1,14 +1,14 @@
 # WayDisplay protocol
 
-WayDisplay currently uses protocol version 1. The protocol may change without backward compatibility while the project remains undeployed.
+WayDisplay currently uses protocol version 2. The protocol may change without backward compatibility while the project remains undeployed.
 
 ## Platform contract
 
-Both peers must run on little-endian Linux hosts. Big-endian and non-Linux systems are intentionally unsupported; configuration fails on such targets. Protocol v1 sends packed, fixed-width C structures directly. Client hello
+Both peers must run on little-endian Linux hosts. Big-endian and non-Linux systems are intentionally unsupported; configuration fails on such targets. Protocol v2 sends packed, fixed-width C structures directly. Client hello
 `requested_session_fps` sets session cadence; `link_cap_kib_per_second` caps
 the estimated safe whole-link rate (not only UDP). GCC-compatible one-byte packing, little-endian field order, and the compile-time asserted structure sizes are the current wire ABI. Compatibility with other compilers, architectures, or future protocol revisions is not promised. Variable media and selection tails remain opaque byte sequences. H.264/H.265 video packets carry Annex-B elementary-stream access units; AV1 packets carry raw OBUs. Codec bits are H.265=1, H.264=2, AV1=4; AV1 requires both endpoints to advertise the AV1 codec bit. The server applies a narrowly scoped VA-API HEVC escaped-start-code repair before sending HEVC (never AV1), and the client verifies codec-specific recovery keyframes before accepting them.
 
-The expected deployment is localhost, a trusted network, or a VPN. Protocol version 1 does not provide authentication or encryption.
+The expected deployment is localhost, a trusted network, or a VPN. Protocol version 2 does not provide authentication or encryption.
 
 ## Presentation acknowledgements
 
@@ -38,7 +38,7 @@ Input, selection, video, and audio sockets are bound to the control session by t
 
 ## Protocol descriptor completeness
 
-The dispatch descriptor table is the canonical route and size policy for every message type. Tests enumerate the complete contiguous protocol-v1 message range, verify fixed/empty/opaque/repeated size boundaries, prove that each descriptor has at least one legal channel/phase/direction route, and confirm that per-channel payload caps cover every legal message. Coverage-guided fuzz inputs are isolated: mutable reassembly state is recreated for each input so failures reproduce independently of corpus execution order.
+The dispatch descriptor table is the canonical route and size policy for every message type. Tests enumerate the complete contiguous protocol-v2 message range, verify fixed/empty/opaque/repeated size boundaries, prove that each descriptor has at least one legal channel/phase/direction route, and confirm that per-channel payload caps cover every legal message. Coverage-guided fuzz inputs are isolated: mutable reassembly state is recreated for each input so failures reproduce independently of corpus execution order.
 
 
 Client video packet validation is shared between the production receive loop and unit tests. Non-control frames must match the active session identity and configured visible geometry, and coded dimensions cannot be smaller than visible dimensions. Resize/end-of-stream controls may announce transition geometry with an empty payload; ordinary empty frames are invalid.

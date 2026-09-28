@@ -203,6 +203,13 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.tile_recovery_image
+        TARGET waydisplay_test_tile_recovery_image
+        SOURCES tests/test_tile_recovery_image.cpp
+        LIBRARIES waydisplay_client_runtime
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.tile_upload_epoch
         TARGET waydisplay_test_tile_upload_epoch
         SOURCES tests/test_tile_upload_epoch.cpp src/client/stream_ownership.c
@@ -465,6 +472,14 @@ if(WAYDISPLAY_BUILD_TESTS)
     # Dependency-light control-policy regression suite; registered with CTest
     # and buildable independently as waydisplay_test_video_control_unit.
     waydisplay_add_test(
+        NAME waydisplay.video_session_modes
+        TARGET waydisplay_test_video_session_modes
+        SOURCES tests/test_video_session_modes.cpp
+        LIBRARIES waydisplay_server_runtime
+        LABELS "unit;lifecycle;client;server;video"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.video_control_unit
         TARGET waydisplay_test_video_control_unit
         SOURCES
@@ -524,6 +539,13 @@ if(WAYDISPLAY_BUILD_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/src/client
             ${CMAKE_CURRENT_SOURCE_DIR}/src/server
         LABELS "integration;client;server;video;lifecycle"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_decode_overflow_recovery
+        TARGET waydisplay_test_video_decode_overflow_recovery
+        SOURCES tests/test_video_decode_overflow_recovery.cpp
+        LIBRARIES waydisplay_client_runtime
     )
 
     waydisplay_add_test(
@@ -780,6 +802,14 @@ if(WAYDISPLAY_BUILD_TESTS)
     set_tests_properties(waydisplay.io_uring_5_14_contract PROPERTIES
         LABELS "unit;cmake;io_uring"
         TIMEOUT 10
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.socket_pin
+        TARGET waydisplay_test_socket_pin
+        SOURCES tests/test_socket_pin.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;network;lifecycle"
     )
 
     waydisplay_add_test(
@@ -1064,6 +1094,18 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.mixed_mode_soak
+        TARGET waydisplay_test_mixed_mode_soak
+        SOURCES tests/test_mixed_mode_soak.cpp
+        LIBRARIES waydisplay_client_runtime waydisplay_server_runtime
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "integration;soak;lifecycle;client;server;video"
+        TIMEOUT 30
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.stream_lifecycle_scenarios
         TARGET waydisplay_test_stream_lifecycle_scenarios
         SOURCES tests/test_stream_lifecycle_scenarios.cpp
@@ -1281,6 +1323,39 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
     set_tests_properties(waydisplay.runtime_target_gating PROPERTIES
         LABELS "unit;cmake;client;server"
+        TIMEOUT 10
+    )
+
+    add_test(
+        NAME waydisplay.async_tcp_cqe_fallback_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_async_tcp_cqe_fallback_contract.cmake
+    )
+    set_tests_properties(waydisplay.async_tcp_cqe_fallback_contract PROPERTIES
+        LABELS "unit;network;threading;cmake"
+        TIMEOUT 10
+    )
+
+    add_test(
+        NAME waydisplay.video_session_mode_transition_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_video_session_mode_transition_contract.cmake
+    )
+    set_tests_properties(waydisplay.video_session_mode_transition_contract PROPERTIES
+        LABELS "unit;lifecycle;client;server;video;cmake"
+        TIMEOUT 10
+    )
+
+    add_test(
+        NAME waydisplay.resize_config_queue_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_resize_config_queue_contract.cmake
+    )
+    set_tests_properties(waydisplay.resize_config_queue_contract PROPERTIES
+        LABELS "unit;network;resize;cmake"
         TIMEOUT 10
     )
 

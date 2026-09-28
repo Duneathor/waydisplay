@@ -15,9 +15,13 @@ enum wd_aux_channel_kind {
     WD_AUX_CHANNEL_AUDIO,
 };
 
-struct wd_aux_channel_policy {
+struct wd_aux_channel_identity {
     uint8_t  session_id;
     uint64_t connection_token;
+};
+
+struct wd_aux_channel_policy {
+    struct wd_aux_channel_identity identity;
 
     bool input_bound;
     bool selection_bound;

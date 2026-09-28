@@ -1,5 +1,6 @@
 #include "client_telemetry.hpp"
 #include "window_render_policy.hpp"
+#include "video_output_policy.hpp"
 
 #include "audio_playback.hpp"
 #include "client_net.hpp"
@@ -998,7 +999,10 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         feedback.flags = client_window_feedback_flags(
             state.render_feedback_visible.load(std::memory_order_relaxed),
             state.render_feedback_focused.load(std::memory_order_relaxed));
-        if (state.video_gpu_present_supported.load(std::memory_order_relaxed))
+        ClientVideoOutputCapabilities output_capabilities{};
+        output_capabilities.drm_prime_import =
+            state.video_gpu_present_supported.load(std::memory_order_relaxed);
+        if (client_video_output_storage(true, output_capabilities) == ClientVideoOutputStorage::DrmPrime)
         {
             feedback.flags |= WD_CLIENT_STATS_GPU_PRESENT_CAPABLE;
         }

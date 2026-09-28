@@ -6,6 +6,7 @@
 #include "waydisplay/wd_io_uring.h"
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_protocol_codec.h"
+#include "waydisplay/wd_socket_pin.h"
 
 #include <cerrno>
 #include <cstddef>
@@ -14,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <liburing.h>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <sys/socket.h>
@@ -49,6 +51,7 @@ struct ClientAsyncTcpSender {
     std::mutex mutex;
     io_uring   ring{};
     bool       ring_ready = false;
+    wd_socket_pin socket_pin = WD_SOCKET_PIN_INITIALIZER;
 
     Message* head = nullptr;
     Message* tail = nullptr;
@@ -63,6 +66,8 @@ struct ClientAsyncTcpSender {
     uint64_t overflows         = 0;
     uint64_t partial_resubmits = 0;
     uint64_t coalesced         = 0;
+    bool     submit_retry_pending = false;
+    bool     syscall_fallback  = false;
     bool     fatal             = false;
 };
 
@@ -115,6 +120,65 @@ void pending_remove(ClientAsyncTcpSender* sender, Message* msg) {
     msg->prev = nullptr;
 }
 
+int syscall_send_once_locked(ClientAsyncTcpSender* sender, Message* msg) {
+    if (!sender || !msg || sender->socket_pin.io_fd < 0 || msg->bytes_sent >= msg->bytes.size())
+    {
+        return -EINVAL;
+    }
+    const ssize_t result = ::send(sender->socket_pin.io_fd, msg->bytes.data() + msg->bytes_sent,
+                                  msg->bytes.size() - msg->bytes_sent,
+                                  MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (result < 0)
+    {
+        return -errno;
+    }
+    if (result > std::numeric_limits<int>::max())
+    {
+        return -EOVERFLOW;
+    }
+    return static_cast<int>(result);
+}
+
+bool progress_syscall_fallback_locked(ClientAsyncTcpSender* sender) {
+    if (!sender || !sender->syscall_fallback || sender->inflight != 0)
+    {
+        return true;
+    }
+
+    for (uint32_t i = 0; sender->head && i < 16; ++i)
+    {
+        Message* msg = sender->head;
+        const int result = syscall_send_once_locked(sender, msg);
+        if (result == -EINTR || result == -EAGAIN)
+        {
+            return true;
+        }
+
+        const wd_async_tcp_send_progress progress =
+            wd_async_tcp_advance(msg->bytes.size(), &msg->bytes_sent, result);
+        if (progress == WD_ASYNC_TCP_SEND_FAILED)
+        {
+            sender->failed++;
+            sender->fatal = true;
+            (void)wd_socket_pin_shutdown(&sender->socket_pin);
+            pending_remove(sender, msg);
+            delete msg;
+            return false;
+        }
+        if (progress == WD_ASYNC_TCP_SEND_COMPLETE)
+        {
+            sender->completed++;
+            pending_remove(sender, msg);
+            delete msg;
+            continue;
+        }
+
+        sender->partial_resubmits++;
+        return true;
+    }
+    return true;
+}
+
 bool is_pointer_motion_message(const Message* msg) {
     if (!msg || msg->message_type != WD_MSG_POINTER_EVENT || msg->bytes.size() < WD_TCP_HEADER_WIRE_SIZE)
     {
@@ -131,6 +195,23 @@ bool is_pointer_motion_message(const Message* msg) {
     wd_pointer_event_payload pointer{};
     std::memcpy(&pointer, payload, sizeof(pointer));
     return pointer.event_type == WD_POINTER_EVENT_MOTION;
+}
+
+uint64_t stale_unsubmitted_pointer_motion_bytes_locked(const ClientAsyncTcpSender* sender, int fd) {
+    if (!sender || fd < 0)
+    {
+        return 0;
+    }
+
+    uint64_t bytes = 0;
+    for (const Message* msg = sender->head; msg; msg = msg->next)
+    {
+        if (!msg->submitted && msg->fd == fd && is_pointer_motion_message(msg))
+        {
+            bytes += msg->bytes.size();
+        }
+    }
+    return bytes;
 }
 
 uint64_t drop_stale_unsubmitted_pointer_motion_locked(ClientAsyncTcpSender* sender, int fd) {
@@ -153,6 +234,23 @@ uint64_t drop_stale_unsubmitted_pointer_motion_locked(ClientAsyncTcpSender* send
         msg = next;
     }
     return dropped;
+}
+
+bool bind_socket_locked(ClientAsyncTcpSender* sender, int fd) {
+    if (!sender || fd < 0)
+    {
+        return false;
+    }
+    if (wd_socket_pin_matches(&sender->socket_pin, fd))
+    {
+        sender->socket_pin.source_fd = fd;
+        return true;
+    }
+    if (sender->head || sender->inflight != 0)
+    {
+        return false;
+    }
+    return wd_socket_pin_bind(&sender->socket_pin, fd);
 }
 
 Message* create_message(int fd, uint16_t message_type, const void* payload, uint32_t payload_size) {
@@ -192,6 +290,28 @@ Message* create_message(int fd, uint16_t message_type, const void* payload, uint
     return msg;
 }
 
+wd_async_tcp_submit_progress flush_submit_locked(ClientAsyncTcpSender* sender) {
+    if (!sender || !sender->ring_ready)
+    {
+        return WD_ASYNC_TCP_SUBMIT_FAILED;
+    }
+
+    const int rc = io_uring_submit(&sender->ring);
+    const wd_async_tcp_submit_progress progress = wd_async_tcp_submit_result(rc);
+    sender->submit_retry_pending = progress == WD_ASYNC_TCP_SUBMIT_RETRY;
+    return progress;
+}
+
+void retire_ring_locked(ClientAsyncTcpSender* sender) {
+    if (!sender || !sender->ring_ready)
+    {
+        return;
+    }
+    io_uring_queue_exit(&sender->ring);
+    sender->ring_ready = false;
+    sender->submit_retry_pending = false;
+}
+
 bool submit_message_locked(ClientAsyncTcpSender* sender, Message* msg) {
     if (!sender || !sender->ring_ready || !msg || msg->submitted || msg->fd < 0 || msg->bytes_sent >= msg->bytes.size())
     {
@@ -204,7 +324,7 @@ bool submit_message_locked(ClientAsyncTcpSender* sender, Message* msg) {
         return false;
     }
 
-    io_uring_prep_send(sqe, msg->fd, msg->bytes.data() + msg->bytes_sent, msg->bytes.size() - msg->bytes_sent, MSG_NOSIGNAL);
+    io_uring_prep_send(sqe, sender->socket_pin.io_fd, msg->bytes.data() + msg->bytes_sent, msg->bytes.size() - msg->bytes_sent, MSG_NOSIGNAL);
     io_uring_sqe_set_data(sqe, msg);
 
     msg->submitted = true;
@@ -214,9 +334,13 @@ bool submit_message_locked(ClientAsyncTcpSender* sender, Message* msg) {
         sender->inflight_max = sender->inflight;
     }
 
-    const int rc = io_uring_submit(&sender->ring);
-    if (rc <= 0)
+    const wd_async_tcp_submit_progress submit_progress = flush_submit_locked(sender);
+    if (submit_progress == WD_ASYNC_TCP_SUBMIT_FAILED)
     {
+        /* A prepared SQE may already have been published to the userspace SQ
+         * ring when io_uring_submit() reports a fatal enter error. Retire the
+         * ring before releasing the message that the SQE references. */
+        retire_ring_locked(sender);
         msg->submitted = false;
         if (sender->inflight > 0)
         {
@@ -234,15 +358,17 @@ bool try_start_head_locked(ClientAsyncTcpSender* sender) {
         return true;
     }
 
+    if (sender->syscall_fallback)
+    {
+        return progress_syscall_fallback_locked(sender);
+    }
+
     if (!submit_message_locked(sender, sender->head))
     {
         Message* failed = sender->head;
         sender->failed++;
         sender->fatal = true;
-        if (failed->fd >= 0)
-        {
-            (void)::shutdown(failed->fd, SHUT_RDWR);
-        }
+        (void)wd_socket_pin_shutdown(&sender->socket_pin);
         pending_remove(sender, failed);
         delete failed;
         return false;
@@ -255,6 +381,40 @@ void reap_locked(ClientAsyncTcpSender* sender) {
     if (!sender || !sender->ring_ready)
     {
         return;
+    }
+
+    if (sender->syscall_fallback && sender->inflight == 0)
+    {
+        (void)progress_syscall_fallback_locked(sender);
+        return;
+    }
+
+    if (sender->submit_retry_pending)
+    {
+        const wd_async_tcp_submit_progress submit_progress = flush_submit_locked(sender);
+        if (submit_progress == WD_ASYNC_TCP_SUBMIT_RETRY)
+        {
+            return;
+        }
+        if (submit_progress == WD_ASYNC_TCP_SUBMIT_FAILED)
+        {
+            Message* failed = sender->head;
+            sender->failed++;
+            sender->fatal = true;
+            if (failed)
+            {
+                (void)wd_socket_pin_shutdown(&sender->socket_pin);
+            }
+            retire_ring_locked(sender);
+            if (failed)
+            {
+                failed->submitted = false;
+                sender->inflight = 0;
+                pending_remove(sender, failed);
+                delete failed;
+            }
+            return;
+        }
     }
 
     io_uring_cqe* cqe = nullptr;
@@ -278,6 +438,20 @@ void reap_locked(ClientAsyncTcpSender* sender) {
             }
         }
 
+        if (msg && wd_async_tcp_cqe_should_try_syscall(cqe->res))
+        {
+            if (!sender->syscall_fallback)
+            {
+                WD_LOG_WARN("client io_uring TCP send result=%d for fd=%d message_type=%u; validating with nonblocking syscall fallback",
+                            cqe->res, msg->fd, msg->message_type);
+            }
+            sender->syscall_fallback = true;
+            io_uring_cqe_seen(&sender->ring, cqe);
+            cqe = nullptr;
+            (void)progress_syscall_fallback_locked(sender);
+            continue;
+        }
+
         if (!msg)
         {
             sender->failed++;
@@ -286,10 +460,7 @@ void reap_locked(ClientAsyncTcpSender* sender) {
         {
             sender->failed++;
             sender->fatal = true;
-            if (msg->fd >= 0)
-            {
-                (void)::shutdown(msg->fd, SHUT_RDWR);
-            }
+            (void)wd_socket_pin_shutdown(&sender->socket_pin);
             pending_remove(sender, msg);
             delete msg;
             try_start_head_locked(sender);
@@ -313,10 +484,7 @@ void reap_locked(ClientAsyncTcpSender* sender) {
                 {
                     sender->failed++;
                     sender->fatal = true;
-                    if (msg->fd >= 0)
-                    {
-                        (void)::shutdown(msg->fd, SHUT_RDWR);
-                    }
+                    (void)wd_socket_pin_shutdown(&sender->socket_pin);
                     pending_remove(sender, msg);
                     delete msg;
                     try_start_head_locked(sender);
@@ -355,12 +523,9 @@ bool has_submitted_locked(const ClientAsyncTcpSender* sender) {
 }
 
 void shutdown_pending_fds_locked(ClientAsyncTcpSender* sender) {
-    for (Message* msg = sender ? sender->head : nullptr; msg; msg = msg->next)
+    if (sender && sender->head)
     {
-        if (msg->fd >= 0)
-        {
-            (void)::shutdown(msg->fd, SHUT_RDWR);
-        }
+        (void)wd_socket_pin_shutdown(&sender->socket_pin);
     }
 }
 
@@ -506,6 +671,7 @@ ClientAsyncTcpSenderStats client_async_tcp_sender_destroy(ClientAsyncTcpSender* 
         }
         fail_all_after_ring_exit_locked(sender);
         final_stats = snapshot_stats_locked(sender);
+        wd_socket_pin_reset(&sender->socket_pin);
     }
 
     delete sender;
@@ -536,6 +702,12 @@ bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_
         return false;
     }
 
+    if (!bind_socket_locked(sender, fd))
+    {
+        sender->failed++;
+        return false;
+    }
+
     uint32_t wire_payload_size = 0;
     if (!wd_protocol_payload_wire_size(message_type, payload, payload_size, &wire_payload_size))
     {
@@ -544,19 +716,18 @@ bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_
     }
 
     const uint64_t total_size = static_cast<uint64_t>(WD_TCP_HEADER_WIRE_SIZE) + static_cast<uint64_t>(wire_payload_size);
-    if (!wd_async_tcp_can_enqueue(sender->pending_bytes, total_size, sender->max_pending_bytes))
+    const bool coalesce_pointer_motion = message_type == WD_MSG_POINTER_EVENT && payload_size == sizeof(wd_pointer_event_payload) &&
+                                         payload &&
+                                         static_cast<const wd_pointer_event_payload*>(payload)->event_type == WD_POINTER_EVENT_MOTION;
+    const uint64_t replaceable_bytes = coalesce_pointer_motion
+                                           ? stale_unsubmitted_pointer_motion_bytes_locked(sender, fd)
+                                           : 0;
+    if (!wd_async_tcp_can_enqueue_after_replacing(sender->pending_bytes, replaceable_bytes, total_size,
+                                                   sender->max_pending_bytes))
     {
         sender->overflows++;
         sender->failed++;
         return false;
-    }
-
-    const bool coalesce_pointer_motion = message_type == WD_MSG_POINTER_EVENT && payload_size == sizeof(wd_pointer_event_payload) &&
-                                         payload &&
-                                         static_cast<const wd_pointer_event_payload*>(payload)->event_type == WD_POINTER_EVENT_MOTION;
-    if (coalesce_pointer_motion)
-    {
-        sender->coalesced += drop_stale_unsubmitted_pointer_motion_locked(sender, fd);
     }
 
     Message* msg = create_message(fd, message_type, payload, payload_size);
@@ -564,6 +735,11 @@ bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_
     {
         sender->failed++;
         return false;
+    }
+
+    if (coalesce_pointer_motion)
+    {
+        sender->coalesced += drop_stale_unsubmitted_pointer_motion_locked(sender, fd);
     }
 
     pending_add(sender, msg);

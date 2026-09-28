@@ -7,8 +7,8 @@
 
 static bool wd_aux_identity_matches(uint8_t session_id, uint64_t connection_token,
                                     const struct wd_aux_channel_policy* policy) {
-    return policy && policy->session_id != 0 && policy->connection_token != 0 && session_id == policy->session_id &&
-           connection_token == policy->connection_token;
+    return policy && policy->identity.session_id != 0 && policy->identity.connection_token != 0 &&
+           session_id == policy->identity.session_id && connection_token == policy->identity.connection_token;
 }
 
 enum wd_aux_channel_kind wd_aux_channel_validate_hello(uint16_t message_type, const void* payload, uint32_t payload_size,

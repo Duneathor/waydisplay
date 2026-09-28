@@ -16,6 +16,11 @@ int main() {
     CHECK(!wd_async_tcp_can_enqueue(UINT64_MAX - 1, 3, UINT64_MAX));
     CHECK(!wd_async_tcp_can_enqueue(0, 21, 20));
 
+    CHECK(wd_async_tcp_can_enqueue_after_replacing(20, 10, 10, 20));
+    CHECK(wd_async_tcp_can_enqueue_after_replacing(20, 10, 9, 20));
+    CHECK(!wd_async_tcp_can_enqueue_after_replacing(20, 9, 10, 20));
+    CHECK(!wd_async_tcp_can_enqueue_after_replacing(10, 11, 1, 20));
+
     wd_async_tcp_owned_send_plan plan{};
     CHECK(wd_async_tcp_plan_owned_send(80, 257, 0, &plan));
     CHECK(plan.inline_offset == 0);
@@ -71,6 +76,22 @@ int main() {
     CHECK(!wd_async_tcp_plan_owned_send(
         std::numeric_limits<size_t>::max(), 1, 0, &plan));
     CHECK(!wd_async_tcp_plan_owned_send(80, 257, 0, nullptr));
+
+    CHECK(wd_async_tcp_submit_result(1) == WD_ASYNC_TCP_SUBMIT_ACCEPTED);
+    CHECK(wd_async_tcp_submit_result(3) == WD_ASYNC_TCP_SUBMIT_ACCEPTED);
+    CHECK(wd_async_tcp_submit_result(0) == WD_ASYNC_TCP_SUBMIT_RETRY);
+    CHECK(wd_async_tcp_submit_result(-EINTR) == WD_ASYNC_TCP_SUBMIT_RETRY);
+    CHECK(wd_async_tcp_submit_result(-EAGAIN) == WD_ASYNC_TCP_SUBMIT_RETRY);
+    CHECK(wd_async_tcp_submit_result(-EBUSY) == WD_ASYNC_TCP_SUBMIT_RETRY);
+    CHECK(wd_async_tcp_submit_result(-EBADF) == WD_ASYNC_TCP_SUBMIT_FAILED);
+    CHECK(wd_async_tcp_submit_result(-EINVAL) == WD_ASYNC_TCP_SUBMIT_FAILED);
+
+    CHECK(wd_async_tcp_cqe_should_try_syscall(-EOPNOTSUPP));
+    CHECK(wd_async_tcp_cqe_should_try_syscall(-EBADF));
+    CHECK(!wd_async_tcp_cqe_should_try_syscall(-EPIPE));
+    CHECK(!wd_async_tcp_cqe_should_try_syscall(-ECONNRESET));
+    CHECK(!wd_async_tcp_cqe_should_try_syscall(0));
+    CHECK(!wd_async_tcp_cqe_should_try_syscall(4));
 
     size_t sent = 0;
     CHECK(wd_async_tcp_advance(10, &sent, 4) == WD_ASYNC_TCP_SEND_PARTIAL && sent == 4);

@@ -7,9 +7,11 @@
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_protocol_codec.h"
 #include "waydisplay/wd_protocol_dispatch.h"
+#include "waydisplay/wd_socket_pin.h"
 
 #include <errno.h>
 #include <liburing.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +28,9 @@
 #ifndef WD_ASYNC_TCP_DRAIN_SLEEP_US
 #define WD_ASYNC_TCP_DRAIN_SLEEP_US WD_ASYNC_SENDER_DRAIN_SLEEP_US
 #endif
+
+struct wd_async_tcp_sender;
+static bool wd_async_tcp_sender_bind_socket(struct wd_async_tcp_sender* sender, int fd);
 
 static char wd_async_tcp_cancel_cqe_tag;
 #define WD_ASYNC_TCP_CANCEL_CQE ((void*)&wd_async_tcp_cancel_cqe_tag)
@@ -53,6 +58,7 @@ struct wd_async_tcp_message {
 struct wd_async_tcp_sender {
     struct io_uring ring;
     bool            ring_ready;
+    struct wd_socket_pin socket_pin;
 
     struct wd_async_tcp_message* pending_head;
     struct wd_async_tcp_message* pending_tail;
@@ -66,9 +72,12 @@ struct wd_async_tcp_sender {
     uint64_t failed;
     uint64_t overflows;
     uint64_t partial_resubmits;
+    bool     submit_retry_pending;
+    bool     syscall_fallback;
     uint64_t transport_failures;
     int      last_transport_result;
     int      last_transport_fd;
+    uint64_t last_transport_cookie;
     uint16_t last_transport_message_type;
 };
 
@@ -81,6 +90,7 @@ static void wd_async_tcp_record_transport_failure(struct wd_async_tcp_sender* se
     sender->transport_failures++;
     sender->last_transport_result       = result;
     sender->last_transport_fd           = msg ? msg->fd : -1;
+    sender->last_transport_cookie       = sender->socket_pin.cookie;
     sender->last_transport_message_type = msg ? msg->message_type : 0;
 }
 
@@ -148,6 +158,135 @@ static void wd_async_tcp_pending_remove(struct wd_async_tcp_sender* sender, stru
     msg->prev = NULL;
 }
 
+static int wd_async_tcp_syscall_send_once(struct wd_async_tcp_sender* sender,
+                                          struct wd_async_tcp_message* msg) {
+    if (!sender || !msg || sender->socket_pin.io_fd < 0 || msg->bytes_sent >= msg->total_size)
+    {
+        return -EINVAL;
+    }
+
+    ssize_t result = -1;
+    const int flags = MSG_NOSIGNAL | MSG_DONTWAIT;
+    if (msg->payload_owner)
+    {
+        struct wd_async_tcp_owned_send_plan plan = {0};
+        if (!wd_async_tcp_plan_owned_send(msg->inline_size, msg->payload_size, msg->bytes_sent, &plan))
+        {
+            return -EINVAL;
+        }
+
+        struct iovec iov[2];
+        unsigned iov_count = 0;
+        if (plan.inline_size != 0)
+        {
+            iov[iov_count].iov_base = msg->bytes + plan.inline_offset;
+            iov[iov_count].iov_len  = plan.inline_size;
+            iov_count++;
+        }
+        if (plan.payload_size != 0)
+        {
+            iov[iov_count].iov_base =
+                (void*)(wd_buffer_const_data(msg->payload_owner) + msg->payload_offset + plan.payload_offset);
+            iov[iov_count].iov_len = plan.payload_size;
+            iov_count++;
+        }
+        if (iov_count == 0)
+        {
+            return -EINVAL;
+        }
+
+        struct msghdr send_msg;
+        memset(&send_msg, 0, sizeof(send_msg));
+        send_msg.msg_iov    = iov;
+        send_msg.msg_iovlen = iov_count;
+        result = sendmsg(sender->socket_pin.io_fd, &send_msg, flags);
+    }
+    else
+    {
+        result = send(sender->socket_pin.io_fd, msg->bytes + msg->bytes_sent,
+                      msg->total_size - msg->bytes_sent, flags);
+    }
+
+    if (result < 0)
+    {
+        return -errno;
+    }
+    if (result > INT_MAX)
+    {
+        return -EOVERFLOW;
+    }
+    return (int)result;
+}
+
+static bool wd_async_tcp_progress_syscall_fallback(struct wd_async_tcp_sender* sender) {
+    if (!sender || !sender->syscall_fallback || sender->inflight != 0)
+    {
+        return true;
+    }
+
+    /* Bound work per reap so a large control backlog cannot monopolize the
+     * server loop after the ring has fallen back to nonblocking syscalls. */
+    for (uint32_t i = 0; sender->pending_head && i < 16; ++i)
+    {
+        struct wd_async_tcp_message* msg = sender->pending_head;
+        const int result = wd_async_tcp_syscall_send_once(sender, msg);
+        if (result == -EINTR || result == -EAGAIN)
+        {
+            return true;
+        }
+
+        const enum wd_async_tcp_send_progress progress =
+            wd_async_tcp_advance(msg->total_size, &msg->bytes_sent, result);
+        if (progress == WD_ASYNC_TCP_SEND_FAILED)
+        {
+            sender->failed++;
+            wd_async_tcp_record_transport_failure(sender, msg, result);
+            wd_async_tcp_pending_remove(sender, msg);
+            wd_async_tcp_complete_message(msg, false);
+            wd_async_tcp_message_destroy(msg);
+            return false;
+        }
+        if (progress == WD_ASYNC_TCP_SEND_COMPLETE)
+        {
+            sender->completed++;
+            wd_async_tcp_pending_remove(sender, msg);
+            wd_async_tcp_complete_message(msg, true);
+            wd_async_tcp_message_destroy(msg);
+            continue;
+        }
+
+        sender->partial_resubmits++;
+        return true;
+    }
+    return true;
+}
+
+static enum wd_async_tcp_submit_progress wd_async_tcp_flush_submit(struct wd_async_tcp_sender* sender, int* out_result) {
+    if (!sender || !sender->ring_ready)
+    {
+        return WD_ASYNC_TCP_SUBMIT_FAILED;
+    }
+
+    const int rc = io_uring_submit(&sender->ring);
+    if (out_result)
+    {
+        *out_result = rc;
+    }
+    const enum wd_async_tcp_submit_progress progress = wd_async_tcp_submit_result(rc);
+    sender->submit_retry_pending = progress == WD_ASYNC_TCP_SUBMIT_RETRY;
+    return progress;
+}
+
+static void wd_async_tcp_retire_ring(struct wd_async_tcp_sender* sender) {
+    if (!sender || !sender->ring_ready)
+    {
+        return;
+    }
+    io_uring_queue_exit(&sender->ring);
+    sender->ring_ready = false;
+    sender->submit_retry_pending = false;
+}
+
 static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, struct wd_async_tcp_message* msg) {
     if (!sender || !sender->ring_ready || !msg || msg->submitted || msg->fd < 0 || msg->bytes_sent >= msg->total_size)
     {
@@ -206,7 +345,7 @@ static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, stru
 
         msg->submit_msg.msg_iov    = msg->submit_iov;
         msg->submit_msg.msg_iovlen = iov_count;
-        io_uring_prep_sendmsg(sqe, msg->fd, &msg->submit_msg, MSG_NOSIGNAL);
+        io_uring_prep_sendmsg(sqe, sender->socket_pin.io_fd, &msg->submit_msg, MSG_NOSIGNAL);
     }
     else
     {
@@ -216,7 +355,7 @@ static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, stru
         {
             return false;
         }
-        io_uring_prep_send(sqe, msg->fd, send_data, send_size, MSG_NOSIGNAL);
+        io_uring_prep_send(sqe, sender->socket_pin.io_fd, send_data, send_size, MSG_NOSIGNAL);
     }
     io_uring_sqe_set_data(sqe, msg);
 
@@ -228,9 +367,12 @@ static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, stru
         sender->inflight_max = sender->inflight;
     }
 
-    int rc = io_uring_submit(&sender->ring);
-    if (rc <= 0)
+    int submit_result = 0;
+    const enum wd_async_tcp_submit_progress submit_progress = wd_async_tcp_flush_submit(sender, &submit_result);
+    if (submit_progress == WD_ASYNC_TCP_SUBMIT_FAILED)
     {
+        wd_async_tcp_record_transport_failure(sender, msg, submit_result);
+        wd_async_tcp_retire_ring(sender);
         msg->submitted = false;
         if (sender->inflight > 0)
         {
@@ -252,6 +394,11 @@ static bool wd_async_tcp_try_start_head(struct wd_async_tcp_sender* sender, stru
     if (!sender || sender->inflight != 0 || !sender->pending_head)
     {
         return true;
+    }
+
+    if (sender->syscall_fallback)
+    {
+        return wd_async_tcp_progress_syscall_fallback(sender);
     }
 
     if (!wd_async_tcp_submit_message(sender, sender->pending_head))
@@ -362,6 +509,12 @@ bool wd_async_tcp_send_prepared_message(struct wd_async_tcp_sender* sender, int 
     }
 
     wd_async_tcp_sender_reap(sender);
+    if (!wd_async_tcp_sender_bind_socket(sender, fd))
+    {
+        sender->failed++;
+        wd_async_tcp_message_destroy(msg);
+        return false;
+    }
     const uint32_t payload_size = (uint32_t)(msg->total_size - WD_TCP_HEADER_WIRE_SIZE);
     const void* payload = msg->bytes + WD_TCP_HEADER_WIRE_SIZE;
     uint32_t wire_size = 0;
@@ -473,6 +626,11 @@ bool wd_async_tcp_send_owned_message_ex(struct wd_async_tcp_sender* sender, int 
         return false;
     }
     wd_async_tcp_sender_reap(sender);
+    if (!wd_async_tcp_sender_bind_socket(sender, fd))
+    {
+        sender->failed++;
+        return false;
+    }
 
     struct wd_async_tcp_message* msg =
         wd_async_tcp_owned_message_create(fd, message_type, prefix, prefix_size, payload,
@@ -543,6 +701,7 @@ bool wd_async_tcp_sender_create(struct wd_async_tcp_sender** out_sender, uint32_
     }
 
     sender->ring_ready        = true;
+    sender->socket_pin        = (struct wd_socket_pin)WD_SOCKET_PIN_INITIALIZER;
     sender->max_pending_bytes = WD_ASYNC_TCP_DEFAULT_MAX_PENDING_BYTES;
     *out_sender               = sender;
     return true;
@@ -552,6 +711,38 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
     if (!sender || !sender->ring_ready)
     {
         return;
+    }
+
+    if (sender->syscall_fallback && sender->inflight == 0)
+    {
+        (void)wd_async_tcp_progress_syscall_fallback(sender);
+        return;
+    }
+
+    if (sender->submit_retry_pending)
+    {
+        int submit_result = 0;
+        const enum wd_async_tcp_submit_progress submit_progress = wd_async_tcp_flush_submit(sender, &submit_result);
+        if (submit_progress == WD_ASYNC_TCP_SUBMIT_RETRY)
+        {
+            return;
+        }
+        if (submit_progress == WD_ASYNC_TCP_SUBMIT_FAILED)
+        {
+            struct wd_async_tcp_message* failed_msg = sender->pending_head;
+            wd_async_tcp_record_transport_failure(sender, failed_msg, submit_result);
+            wd_async_tcp_retire_ring(sender);
+            if (failed_msg)
+            {
+                failed_msg->submitted = false;
+                sender->inflight = 0;
+                sender->failed++;
+                wd_async_tcp_pending_remove(sender, failed_msg);
+                wd_async_tcp_complete_message(failed_msg, false);
+                wd_async_tcp_message_destroy(failed_msg);
+            }
+            return;
+        }
     }
 
     struct io_uring_cqe* cqe = NULL;
@@ -577,6 +768,20 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
             {
                 sender->inflight--;
             }
+        }
+
+        if (msg && wd_async_tcp_cqe_should_try_syscall(cqe->res))
+        {
+            if (!sender->syscall_fallback)
+            {
+                WD_LOG_WARN("io_uring TCP send result=%d for fd=%d message_type=%u; validating with nonblocking syscall fallback",
+                            cqe->res, msg->fd, msg->message_type);
+            }
+            sender->syscall_fallback = true;
+            io_uring_cqe_seen(&sender->ring, cqe);
+            cqe = NULL;
+            (void)wd_async_tcp_progress_syscall_fallback(sender);
+            continue;
         }
 
         if (!msg)
@@ -624,6 +829,23 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
     }
 }
 
+static bool wd_async_tcp_sender_bind_socket(struct wd_async_tcp_sender* sender, int fd) {
+    if (!sender || fd < 0)
+    {
+        return false;
+    }
+    if (wd_socket_pin_matches(&sender->socket_pin, fd))
+    {
+        sender->socket_pin.source_fd = fd;
+        return true;
+    }
+    if (sender->pending_head || sender->inflight != 0)
+    {
+        return false;
+    }
+    return wd_socket_pin_bind(&sender->socket_pin, fd);
+}
+
 bool wd_async_tcp_send_message_ex(struct wd_async_tcp_sender* sender, int fd, uint16_t message_type, const void* payload,
                                   uint32_t payload_size, wd_async_tcp_complete_fn complete, void* user_data) {
     if (!sender || !sender->ring_ready || fd < 0)
@@ -632,6 +854,11 @@ bool wd_async_tcp_send_message_ex(struct wd_async_tcp_sender* sender, int fd, ui
     }
 
     wd_async_tcp_sender_reap(sender);
+    if (!wd_async_tcp_sender_bind_socket(sender, fd))
+    {
+        sender->failed++;
+        return false;
+    }
 
     uint32_t wire_payload_size = 0;
     if (!wd_protocol_payload_wire_size(message_type, payload, payload_size, &wire_payload_size))
@@ -767,6 +994,15 @@ int wd_async_tcp_sender_last_transport_fd(const struct wd_async_tcp_sender* send
     return sender ? sender->last_transport_fd : -1;
 }
 
+bool wd_async_tcp_sender_last_transport_matches_fd(const struct wd_async_tcp_sender* sender, int fd) {
+    if (!sender || sender->last_transport_cookie == 0 || fd < 0)
+    {
+        return false;
+    }
+    uint64_t cookie = 0;
+    return wd_socket_cookie(fd, &cookie) && cookie == sender->last_transport_cookie;
+}
+
 uint16_t wd_async_tcp_sender_last_transport_message_type(const struct wd_async_tcp_sender* sender) {
     return sender ? sender->last_transport_message_type : 0;
 }
@@ -806,12 +1042,9 @@ static void wd_async_tcp_sender_fail_unsubmitted(struct wd_async_tcp_sender* sen
 }
 
 static void wd_async_tcp_sender_shutdown_pending_fds(struct wd_async_tcp_sender* sender) {
-    for (struct wd_async_tcp_message* msg = sender ? sender->pending_head : NULL; msg; msg = msg->next)
+    if (sender && sender->pending_head)
     {
-        if (msg->fd >= 0)
-        {
-            (void)shutdown(msg->fd, SHUT_RDWR);
-        }
+        (void)wd_socket_pin_shutdown(&sender->socket_pin);
     }
 }
 
@@ -903,5 +1136,6 @@ void wd_async_tcp_sender_destroy(struct wd_async_tcp_sender* sender) {
     }
 
     wd_async_tcp_sender_fail_all_after_ring_exit(sender);
+    wd_socket_pin_reset(&sender->socket_pin);
     free(sender);
 }

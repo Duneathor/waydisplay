@@ -4,6 +4,7 @@
 
 #include <arpa/inet.h>
 #include <stdbool.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +32,25 @@ struct completion_probe {
 struct owner_release_probe {
     unsigned calls;
 };
+
+static void move_socket_endpoint_to_fd(int source_fd, int* peer_fd, int target_fd) {
+    if (source_fd == target_fd)
+    {
+        return;
+    }
+
+    if (*peer_fd == target_fd)
+    {
+        const int moved_peer = dup(*peer_fd);
+        CHECK(moved_peer >= 0);
+        CHECK(fcntl(moved_peer, F_SETFD, FD_CLOEXEC) == 0);
+        close(*peer_fd);
+        *peer_fd = moved_peer;
+    }
+
+    CHECK(dup2(source_fd, target_fd) == target_fd);
+    CHECK(fcntl(target_fd, F_SETFD, FD_CLOEXEC) == 0);
+}
 
 static void release_owner(void* user_data, uint8_t* data, size_t size) {
     struct owner_release_probe* probe = user_data;
@@ -123,6 +143,52 @@ static int test_tcp_forced_teardown(void) {
     return 0;
 }
 
+static int test_tcp_teardown_does_not_hit_reused_fd(void) {
+    struct wd_async_tcp_sender* sender = NULL;
+    if (!wd_async_tcp_sender_create(&sender, 8))
+    {
+        return 77;
+    }
+
+    int old_pair[2] = {-1, -1};
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, old_pair) == 0);
+    int send_buffer_size = 4096;
+    CHECK(setsockopt(old_pair[0], SOL_SOCKET, SO_SNDBUF, &send_buffer_size, sizeof(send_buffer_size)) == 0);
+
+    const uint32_t payload_size = (uint32_t)sizeof(struct wd_video_frame_payload_header) + TEST_VIDEO_BYTES;
+    uint8_t* payload = calloc(1, payload_size);
+    CHECK(payload != NULL);
+    ((struct wd_video_frame_payload_header*)payload)->data_size = TEST_VIDEO_BYTES;
+    CHECK(wd_async_tcp_send_message(sender, old_pair[0], WD_MSG_VIDEO_FRAME, payload, payload_size));
+    free(payload);
+
+    const int recycled_fd = old_pair[0];
+    close(old_pair[0]);
+    old_pair[0] = -1;
+
+    int replacement[2] = {-1, -1};
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, replacement) == 0);
+    if (replacement[0] != recycled_fd)
+    {
+        move_socket_endpoint_to_fd(replacement[0], &replacement[1], recycled_fd);
+        close(replacement[0]);
+        replacement[0] = recycled_fd;
+    }
+
+    wd_async_tcp_sender_destroy(sender);
+
+    const uint8_t byte = 0xa5;
+    uint8_t received = 0;
+    CHECK(send(replacement[0], &byte, 1, MSG_NOSIGNAL) == 1);
+    CHECK(recv(replacement[1], &received, 1, MSG_WAITALL) == 1);
+    CHECK(received == byte);
+
+    close(old_pair[1]);
+    close(replacement[0]);
+    close(replacement[1]);
+    return 0;
+}
+
 static int test_udp_forced_teardown(void) {
     struct wd_async_udp_sender* sender = NULL;
     if (!wd_async_udp_sender_create(&sender, 8))
@@ -165,6 +231,11 @@ static int test_udp_forced_teardown(void) {
 
 int main(void) {
     int rc = test_tcp_forced_teardown();
+    if (rc != 0)
+    {
+        return rc;
+    }
+    rc = test_tcp_teardown_does_not_hit_reused_fd();
     if (rc != 0)
     {
         return rc;

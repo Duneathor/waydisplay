@@ -30,8 +30,7 @@ void claim_tile_present_telemetry(const std::vector<ClientPendingTileTelemetry>&
                                   const std::vector<ClientTileGenerationUpdate>& updates, uint64_t content_epoch, uint64_t claimed_ns,
                                   ClientPresentTelemetryBatch& out_batch) {
     out_batch.clear();
-    out_batch.content_epoch = content_epoch;
-    out_batch.claimed_ns    = claimed_ns;
+    out_batch.claimed_ns = claimed_ns;
 
     std::unordered_set<uint64_t> claimed_completion_ids;
     claimed_completion_ids.reserve(updates.size());
@@ -48,6 +47,10 @@ void claim_tile_present_telemetry(const std::vector<ClientPendingTileTelemetry>&
             continue;
         }
 
+        if (out_batch.content_epoch == 0)
+        {
+            out_batch.content_epoch = content_epoch;
+        }
         out_batch.tile_count++;
         if (item.completed_ns != 0)
         {

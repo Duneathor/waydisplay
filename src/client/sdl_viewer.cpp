@@ -7,6 +7,7 @@
 #include "content_order.hpp"
 #include "render_planning.hpp"
 #include "tile_render_policy.hpp"
+#include "tile_recovery_image.hpp"
 #include "tile_upload_epoch.hpp"
 #include "video_presentation_geometry.hpp"
 #include "sdl_input.hpp"
@@ -1468,20 +1469,11 @@ bool upload_completed_tiles_direct(ClientState& state, SDL_Texture* texture,
                 lock_wait_sum_ns += wait_ns;
                 lock_wait_max_ns = std::max(lock_wait_max_ns, wait_ns);
             }
-            if (state.framebuffer.size() <
-                static_cast<size_t>(state.config.width) * state.config.height)
+            if (!client_apply_tile_upload_to_recovery(state.framebuffer, state.config.width,
+                                                      state.config.height, upload))
             {
                 publish_batch();
                 return false;
-            }
-            for (uint32_t row = 0; row < upload.rect.h; ++row)
-            {
-                const uint8_t* src = upload.pixels.data() +
-                                     static_cast<size_t>(row) * upload.source_pitch;
-                uint32_t* dst = state.framebuffer.data() +
-                                static_cast<size_t>(upload.rect.y + row) * state.config.width +
-                                upload.rect.x;
-                std::memcpy(dst, src, static_cast<size_t>(upload.rect.w) * WD_BYTES_PER_PIXEL);
             }
         }
         uploaded_rects.push_back(upload.rect);
@@ -2293,6 +2285,11 @@ int run_sdl_viewer(ClientState& state) {
 
     const char* renderer_name = SDL_GetRendererName(renderer);
     WD_LOG_INFO("SDL renderer: requested=%s active=%s", renderer_driver, renderer_name ? renderer_name : "unknown");
+
+    /* SDL_UpdateYUVTexture is the only implemented video upload path here.
+     * Do not let the decoder retain DRM-PRIME frames merely because the SDL
+     * renderer itself happens to use Vulkan internally. */
+    state.video_gpu_present_supported.store(false, std::memory_order_release);
 
     if (!SDL_SetRenderVSync(renderer, state.stream_config.disable_vsync ? SDL_RENDERER_VSYNC_DISABLED : 1))
     {

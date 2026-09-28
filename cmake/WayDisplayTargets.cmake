@@ -106,6 +106,7 @@ add_library(waydisplay_client_runtime STATIC
     src/client/video_keyframe_recovery.c
     src/client/video_present_queue.cpp
     src/client/tile_present_queue.cpp
+    src/client/tile_recovery_image.cpp
 )
 
 waydisplay_apply_common_warnings(waydisplay_client_runtime)
