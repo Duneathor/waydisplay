@@ -203,6 +203,49 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.tile_upload_epoch
+        TARGET waydisplay_test_tile_upload_epoch
+        SOURCES tests/test_tile_upload_epoch.cpp src/client/stream_ownership.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "unit;regression;client;tiles;render;ownership"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.tile_bootstrap_present_component
+        TARGET waydisplay_test_tile_bootstrap_present_component
+        SOURCES
+            tests/test_tile_bootstrap_present_component.cpp
+            src/client/tile_present_queue.cpp
+            src/client/stream_ownership.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "component;regression;client;sdl;tiles;render;ownership"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.remote_tile_present_policy
+        TARGET waydisplay_test_remote_tile_present_policy
+        SOURCES tests/test_remote_tile_present_policy.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+        LABELS "unit;client;sdl;tiles;render"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.sdl_direct_tile_regression
+        TARGET waydisplay_test_sdl_direct_tile_regression
+        SOURCES tests/test_sdl_direct_tile_regression.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+        LABELS "regression;client;sdl;tiles;render"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.direct_tile_render_component
+        TARGET waydisplay_test_direct_tile_render_component
+        SOURCES tests/test_direct_tile_render_component.cpp src/client/tile_present_queue.cpp
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LABELS "component;client;sdl;tiles;render"
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.client_video_frame_storage
         TARGET waydisplay_test_client_video_frame_storage
         SOURCES tests/test_client_video_frame_storage.cpp

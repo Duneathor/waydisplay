@@ -6,6 +6,8 @@
 #include "client_telemetry.hpp"
 #include "content_order.hpp"
 #include "render_planning.hpp"
+#include "tile_render_policy.hpp"
+#include "tile_upload_epoch.hpp"
 #include "video_presentation_geometry.hpp"
 #include "sdl_input.hpp"
 #include "window_render_policy.hpp"
@@ -1436,8 +1438,7 @@ bool upload_completed_tiles_direct(ClientState& state, SDL_Texture* texture,
     const auto ownership = wd_client_stream_ownership_snapshot(&state.stream_ownership);
     for (ClientTileUpload& upload : uploads)
     {
-        if (!upload.valid() || ownership.owner != WD_CLIENT_CONTENT_OWNER_TILES ||
-            upload.content_epoch != ownership.epoch)
+        if (!upload.valid() || !client_tile_upload_matches_ownership(upload, ownership))
         {
             continue;
         }
@@ -1596,6 +1597,18 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
     const uint64_t started_ns        = wd_now_ns();
     uint64_t       frame_epoch       = 0;
     bool           dropped_for_audio = false;
+    uint64_t       video_content_epoch = 0;
+    {
+        /* Content transitions take remote_content_mutex before the dirty/video
+         * queue locks. Snapshot the remote epoch before touching the present
+         * queue so the render thread never inverts that order against the
+         * decoder publication path. */
+        std::lock_guard<std::mutex> content_lock(state.remote_content_mutex);
+        if (state.remote_content_owner == WD_CLIENT_CONTENT_OWNER_VIDEO)
+        {
+            video_content_epoch = state.remote_content_epoch;
+        }
+    }
     {
         std::scoped_lock dirty_video_lock(state.dirty_rect_mutex, state.video_frame_mutex);
         if (!state.pending_video_frame_dirty.load(std::memory_order_acquire))
@@ -1690,11 +1703,8 @@ VideoTextureUploadResult upload_pending_video_texture(ClientState& state, SDL_Te
             present_info.frame_id = selected.frame_id;
             present_info.pts_usec = selected.pts_usec;
             frame_epoch           = selected.epoch;
-            present_info.epoch    = frame_epoch;
-            {
-                std::lock_guard<std::mutex> content_lock(state.remote_content_mutex);
-                present_info.content_epoch = state.remote_content_owner == WD_CLIENT_CONTENT_OWNER_VIDEO ? state.remote_content_epoch : 0;
-            }
+            present_info.epoch         = frame_epoch;
+            present_info.content_epoch = video_content_epoch;
             state.pending_video_frame_dirty.store(!state.video_present_queue.empty(), std::memory_order_release);
             break;
         }
@@ -2556,11 +2566,16 @@ int run_sdl_viewer(ClientState& state) {
                     }
 
                     const uint64_t source_dirty_rect_count = dirty_rects.size();
-                    if (remote_frame_dirty && !texture_needs_full_upload && !stale_video_needs_tile_restore && source_dirty_rect_count == 0)
+                    const ClientRemoteTilePresentDecision tile_present_decision =
+                        client_remote_tile_present_decide(remote_frame_dirty, direct_tile_updated,
+                                                          texture_needs_full_upload,
+                                                          stale_video_needs_tile_restore,
+                                                          source_dirty_rect_count);
+                    if (tile_present_decision.count_empty_remote_wakeup)
                     {
                         state.stats.sdl_empty_remote_wakeups.fetch_add(1, std::memory_order_relaxed);
-                        remote_frame_dirty = false;
                     }
+                    remote_frame_dirty = tile_present_decision.remote_frame_dirty;
 
                     DirtyTextureUploadPlan upload_plan{};
                     if (!texture_needs_full_upload && !stale_video_needs_tile_restore && source_dirty_rect_count != 0)

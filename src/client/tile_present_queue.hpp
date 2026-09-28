@@ -12,7 +12,7 @@ namespace waydisplay {
 
 struct ClientTileUpload {
     ClientDirtyRect      rect{};
-    uint64_t             content_epoch = 0;
+    uint64_t             ownership_epoch = 0;
     uint64_t             generation    = 0;
     uint32_t             source_pitch  = 0;
     std::vector<uint8_t> pixels{};

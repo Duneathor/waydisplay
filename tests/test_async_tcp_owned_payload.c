@@ -387,6 +387,90 @@ static bool test_drop_unsubmitted_releases_owner(void) {
     return true;
 }
 
+static bool test_sender_rotation_isolates_session_state(void) {
+    struct wd_async_tcp_sender* old_sender = NULL;
+    if (!wd_async_tcp_sender_create(&old_sender, 8))
+    {
+        return true;
+    }
+
+    int old_sockets[2] = {-1, -1};
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, old_sockets) == 0);
+    int send_buffer = 4096;
+    CHECK(setsockopt(old_sockets[0], SOL_SOCKET, SO_SNDBUF, &send_buffer, sizeof(send_buffer)) == 0);
+
+    const uint32_t large_size = 512u * 1024u;
+    struct release_probe old_probe = {0};
+    struct wd_buffer* old_owner = make_external_buffer(large_size, &old_probe);
+    CHECK(old_owner != NULL);
+    struct wd_video_frame_payload_header old_prefix = {0};
+    old_prefix.session_id = 1;
+    old_prefix.content_epoch = 1;
+    old_prefix.codec = WD_VIDEO_CODEC_H265;
+    old_prefix.frame_id = 1;
+    old_prefix.width = 1920;
+    old_prefix.height = 1080;
+    old_prefix.coded_width = 1920;
+    old_prefix.coded_height = 1080;
+    old_prefix.data_size = large_size;
+    CHECK(wd_async_tcp_send_owned_message(old_sender, old_sockets[0], WD_MSG_VIDEO_FRAME,
+                                          &old_prefix, sizeof(old_prefix), old_owner, 0, large_size));
+    wd_buffer_release(old_owner);
+    CHECK(old_probe.calls == 0);
+
+    /* A session boundary must destroy the old sender rather than reuse its
+     * pending CQEs/counters for the next connection. */
+    wd_async_tcp_sender_destroy(old_sender);
+    old_sender = NULL;
+    CHECK(old_probe.calls == 1);
+    close(old_sockets[0]);
+    close(old_sockets[1]);
+
+    struct wd_async_tcp_sender* new_sender = NULL;
+    CHECK(wd_async_tcp_sender_create(&new_sender, 8));
+    int new_sockets[2] = {-1, -1};
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, new_sockets) == 0);
+
+    struct release_probe new_probe = {0};
+    struct wd_buffer* new_owner = make_external_buffer(64, &new_probe);
+    CHECK(new_owner != NULL);
+    struct wd_video_frame_payload_header new_prefix = {0};
+    new_prefix.session_id = 2;
+    new_prefix.content_epoch = 2;
+    new_prefix.codec = WD_VIDEO_CODEC_H265;
+    new_prefix.frame_id = 1;
+    new_prefix.width = 64;
+    new_prefix.height = 64;
+    new_prefix.coded_width = 64;
+    new_prefix.coded_height = 64;
+    new_prefix.data_size = 64;
+    CHECK(wd_async_tcp_send_owned_message(new_sender, new_sockets[0], WD_MSG_VIDEO_FRAME,
+                                          &new_prefix, sizeof(new_prefix), new_owner, 0, 64));
+    wd_buffer_release(new_owner);
+
+    uint8_t wire_header[WD_TCP_HEADER_WIRE_SIZE] = {0};
+    CHECK(recv_exact_with_progress(new_sender, new_sockets[1], wire_header, sizeof(wire_header)));
+    struct wd_tcp_header decoded_header = {0};
+    CHECK(wd_tcp_header_decode(wire_header, &decoded_header));
+    CHECK(decoded_header.message_type == WD_MSG_VIDEO_FRAME);
+    CHECK(decoded_header.payload_size == sizeof(new_prefix) + 64);
+    struct wd_video_frame_payload_header received_prefix = {0};
+    CHECK(recv_exact_with_progress(new_sender, new_sockets[1], &received_prefix, sizeof(received_prefix)));
+    CHECK(received_prefix.session_id == 2);
+    uint8_t received_payload[64] = {0};
+    CHECK(recv_exact_with_progress(new_sender, new_sockets[1], received_payload, sizeof(received_payload)));
+
+    reap_until_idle(new_sender);
+    CHECK(wd_async_tcp_sender_completed(new_sender) == 1);
+    CHECK(wd_async_tcp_sender_failed(new_sender) == 0);
+    CHECK(new_probe.calls == 1);
+
+    wd_async_tcp_sender_destroy(new_sender);
+    close(new_sockets[0]);
+    close(new_sockets[1]);
+    return true;
+}
+
 int main(void) {
     struct wd_async_tcp_sender* probe = NULL;
     if (!wd_async_tcp_sender_create(&probe, 8))
@@ -398,7 +482,8 @@ int main(void) {
     if (!test_owned_slice_wire_and_lifetime() ||
         !test_hevc_owned_payload_wire_integrity() ||
         !test_invalid_ranges_and_overflow_release_temporary_refs() ||
-        !test_drop_unsubmitted_releases_owner())
+        !test_drop_unsubmitted_releases_owner() ||
+        !test_sender_rotation_isolates_session_state())
     {
         return 1;
     }

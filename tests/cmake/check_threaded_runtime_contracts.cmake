@@ -59,6 +59,19 @@ if(session_policy_begin EQUAL -1)
     message(FATAL_ERROR "new connections must enter through the centralized stream-policy session boundary")
 endif()
 
+string(FIND "${server_net_source}" "wd_tcp_reader_destroy(&video_reader);" disconnect_start)
+string(FIND "${server_net_source}" "WD_LOG_INFO(\"client disconnected; waiting for reconnect\");" disconnect_end)
+if(disconnect_start EQUAL -1 OR disconnect_end EQUAL -1 OR disconnect_end LESS disconnect_start)
+    message(FATAL_ERROR "could not locate client disconnect teardown")
+endif()
+math(EXPR disconnect_length "${disconnect_end} - ${disconnect_start}")
+string(SUBSTRING "${server_net_source}" ${disconnect_start} ${disconnect_length} disconnect_teardown)
+string(FIND "${disconnect_teardown}" "wd_server_rotate_session_tcp_senders" sender_rotation)
+if(sender_rotation EQUAL -1)
+    message(FATAL_ERROR
+        "client disconnect must rotate async TCP senders so prior-session completions cannot tear down a reconnect")
+endif()
+
 string(FIND "${server_net_source}"
        "wd_server_request_display_mode(server, requested_width, requested_height, requested_refresh_hz)"
        client_mode_request)
@@ -158,6 +171,23 @@ foreach(required_render_contract
         message(FATAL_ERROR "resize rendering must retain ${required_render_contract}")
     endif()
 endforeach()
+string(FIND "${sdl_viewer_source}" "VideoTextureUploadResult upload_pending_video_texture" video_upload_start)
+string(FIND "${sdl_viewer_source}" "struct StagedTextureRect" video_upload_end)
+if(video_upload_start EQUAL -1 OR video_upload_end EQUAL -1 OR video_upload_end LESS video_upload_start)
+    message(FATAL_ERROR "could not locate upload_pending_video_texture")
+endif()
+math(EXPR video_upload_length "${video_upload_end} - ${video_upload_start}")
+string(SUBSTRING "${sdl_viewer_source}" ${video_upload_start} ${video_upload_length} video_upload_function)
+string(FIND "${video_upload_function}" "state.remote_content_mutex" video_content_lock)
+string(FIND "${video_upload_function}" "std::scoped_lock dirty_video_lock" video_present_lock)
+if(video_content_lock EQUAL -1 OR video_present_lock EQUAL -1)
+    message(FATAL_ERROR "video presentation must snapshot remote content and protect the present queue")
+endif()
+if(video_content_lock GREATER video_present_lock)
+    message(FATAL_ERROR
+        "video presentation must acquire remote-content state before dirty/video queue state to preserve the canonical lock order")
+endif()
+
 string(FIND "${sdl_viewer_source}" "bool apply_pending_server_config" config_apply_start)
 string(FIND "${sdl_viewer_source}" "bool upload_argb_texture_locked" config_apply_end)
 if(config_apply_start EQUAL -1 OR config_apply_end EQUAL -1 OR config_apply_end LESS config_apply_start)

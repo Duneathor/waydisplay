@@ -10,7 +10,7 @@ static ClientTileUpload make_upload(uint16_t x, uint16_t y, uint16_t w, uint16_t
                                     uint64_t epoch, uint64_t generation, uint8_t value) {
     ClientTileUpload upload;
     upload.rect = {x, y, w, h};
-    upload.content_epoch = epoch;
+    upload.ownership_epoch = epoch;
     upload.generation = generation;
     upload.source_pitch = static_cast<uint32_t>(w) * 4u;
     upload.pixels.assign(static_cast<size_t>(w) * h * 4u, value);

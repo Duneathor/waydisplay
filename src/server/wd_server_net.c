@@ -397,6 +397,69 @@ bool wd_net_wait_until_ready(struct wd_server* server) {
     return ready;
 }
 
+static bool wd_server_create_session_tcp_senders(struct wd_async_tcp_sender** out_control_tx,
+                                                 struct wd_async_tcp_sender** out_video_tx) {
+    struct wd_async_tcp_sender* control_tx = NULL;
+    struct wd_async_tcp_sender* video_tx   = NULL;
+
+    if (!out_control_tx || !out_video_tx)
+    {
+        return false;
+    }
+    *out_control_tx = NULL;
+    *out_video_tx   = NULL;
+
+    if (!wd_async_tcp_sender_create(&control_tx, WD_SERVER_CONTROL_TX_RING_ENTRIES) ||
+        !wd_async_tcp_sender_create(&video_tx, WD_SERVER_VIDEO_TX_RING_ENTRIES))
+    {
+        wd_async_tcp_sender_destroy(control_tx);
+        wd_async_tcp_sender_destroy(video_tx);
+        return false;
+    }
+
+    wd_async_tcp_sender_set_max_pending_bytes(control_tx, WD_SERVER_CONTROL_TX_PENDING_BYTES);
+    wd_async_tcp_sender_set_max_pending_bytes(video_tx, WD_SERVER_VIDEO_TX_PENDING_BYTES);
+    *out_control_tx = control_tx;
+    *out_video_tx   = video_tx;
+    return true;
+}
+
+static bool wd_server_rotate_session_tcp_senders(struct wd_server* server) {
+    struct wd_async_tcp_sender* replacement_control_tx = NULL;
+    struct wd_async_tcp_sender* replacement_video_tx   = NULL;
+    if (!server || !wd_server_create_session_tcp_senders(&replacement_control_tx, &replacement_video_tx))
+    {
+        return false;
+    }
+
+    struct wd_net_state* net = &server->net;
+    pthread_mutex_lock(&net->lock);
+    struct wd_async_tcp_sender* retired_control_tx = net->control_tx;
+    struct wd_async_tcp_sender* retired_video_tx   = net->video_tx;
+    net->control_tx = replacement_control_tx;
+    net->video_tx   = replacement_video_tx;
+
+    /* Sender counters are local to the io_uring instance. A fresh session
+     * must never compare a new sender against counters sampled from the
+     * retired connection. */
+    net->control_tx_failed_seen   = 0;
+    net->control_tx_queued_seen   = 0;
+    net->control_tx_completed_seen = 0;
+    net->control_tx_partial_seen  = 0;
+    net->control_tx_overflow_seen = 0;
+    net->video_tx_failed_seen     = 0;
+
+    /* Sender completion callbacks run under net->lock during normal reaping.
+     * Preserve that contract while retiring the old session: callbacks may
+     * update summary accounting even though their connection epoch is stale.
+     * The old descriptors are still open here, so cancellation/shutdown also
+     * completes before those descriptor numbers can be reused. */
+    wd_async_tcp_sender_destroy(retired_control_tx);
+    wd_async_tcp_sender_destroy(retired_video_tx);
+    pthread_mutex_unlock(&net->lock);
+    return true;
+}
+
 bool wd_net_init(struct wd_server* server, uint16_t tcp_port, struct in_addr listen_address) {
     struct wd_net_state* net = &server->net;
 
@@ -474,14 +537,8 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port, struct in_addr lis
     net->summary_dirty_tiles             = calloc(server->total_tiles, sizeof(*net->summary_dirty_tiles));
     net->summary_dirty_queue             = calloc(server->total_tiles, sizeof(*net->summary_dirty_queue));
     const bool async_transport_ready =
-        wd_async_tcp_sender_create(&net->control_tx, WD_SERVER_CONTROL_TX_RING_ENTRIES) &&
-        wd_async_tcp_sender_create(&net->video_tx, WD_SERVER_VIDEO_TX_RING_ENTRIES) &&
+        wd_server_create_session_tcp_senders(&net->control_tx, &net->video_tx) &&
         wd_async_udp_sender_create(&net->udp_tx, WD_SERVER_UDP_TX_RING_ENTRIES);
-    if (async_transport_ready)
-    {
-        wd_async_tcp_sender_set_max_pending_bytes(net->control_tx, WD_SERVER_CONTROL_TX_PENDING_BYTES);
-        wd_async_tcp_sender_set_max_pending_bytes(net->video_tx, WD_SERVER_VIDEO_TX_PENDING_BYTES);
-    }
     if (!wd_video_encoder_create(&net->video_encoder, server->video_encoder_backend))
     {
         net->video_encoder = NULL;
@@ -2620,6 +2677,12 @@ void* wd_net_thread_main(void* arg) {
 
         pthread_mutex_unlock(&net->lock);
         wd_server_wake_input(server);
+
+        if (!wd_server_rotate_session_tcp_senders(server))
+        {
+            WD_LOG_ERROR("failed to rotate async TCP senders at client session boundary; stopping network service");
+            wd_net_run_state_set(&net->run_state, false);
+        }
 
         if (!wd_server_request_display_mode(server, server->display_width, server->display_height, WD_SERVER_IDLE_REFRESH_HZ))
         {

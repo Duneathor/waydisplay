@@ -17,7 +17,7 @@ bool ClientTilePresentQueue::push(ClientTileUpload&& upload) {
     {
         if (it->rect.x == upload.rect.x && it->rect.y == upload.rect.y &&
             it->rect.w == upload.rect.w && it->rect.h == upload.rect.h &&
-            it->content_epoch == upload.content_epoch)
+            it->ownership_epoch == upload.ownership_epoch)
         {
             if (upload.generation < it->generation)
             {

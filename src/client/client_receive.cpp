@@ -9,6 +9,7 @@
 #include "client_telemetry.hpp"
 #include "render_planning.hpp"
 #include "tile_reassembly.hpp"
+#include "tile_upload_epoch.hpp"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_tile.h"
@@ -297,7 +298,8 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
             const bool queue_was_empty = state.tile_present_queue.empty();
             ClientTileUpload upload;
             upload.rect          = dirty_rect;
-            upload.content_epoch = completed.content_epoch;
+            const auto ownership = wd_client_stream_ownership_snapshot(&state.stream_ownership);
+            upload.ownership_epoch = client_tile_upload_epoch(ownership);
             upload.generation    = completed.generation;
             upload.source_pitch  = static_cast<uint32_t>(completed.tile_width) * WD_BYTES_PER_PIXEL;
             upload.pixels        = std::move(completed.tile_bytes);
