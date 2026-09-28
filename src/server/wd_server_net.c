@@ -398,56 +398,72 @@ bool wd_net_wait_until_ready(struct wd_server* server) {
 }
 
 static bool wd_server_create_session_tcp_senders(struct wd_async_tcp_sender** out_control_tx,
+                                                 struct wd_async_tcp_sender** out_selection_tx,
                                                  struct wd_async_tcp_sender** out_video_tx) {
-    struct wd_async_tcp_sender* control_tx = NULL;
-    struct wd_async_tcp_sender* video_tx   = NULL;
+    struct wd_async_tcp_sender* control_tx   = NULL;
+    struct wd_async_tcp_sender* selection_tx = NULL;
+    struct wd_async_tcp_sender* video_tx     = NULL;
 
-    if (!out_control_tx || !out_video_tx)
+    if (!out_control_tx || !out_selection_tx || !out_video_tx)
     {
         return false;
     }
-    *out_control_tx = NULL;
-    *out_video_tx   = NULL;
+    *out_control_tx   = NULL;
+    *out_selection_tx = NULL;
+    *out_video_tx     = NULL;
 
     if (!wd_async_tcp_sender_create(&control_tx, WD_SERVER_CONTROL_TX_RING_ENTRIES) ||
+        !wd_async_tcp_sender_create(&selection_tx, WD_SERVER_CONTROL_TX_RING_ENTRIES) ||
         !wd_async_tcp_sender_create(&video_tx, WD_SERVER_VIDEO_TX_RING_ENTRIES))
     {
         wd_async_tcp_sender_destroy(control_tx);
+        wd_async_tcp_sender_destroy(selection_tx);
         wd_async_tcp_sender_destroy(video_tx);
         return false;
     }
 
     wd_async_tcp_sender_set_max_pending_bytes(control_tx, WD_SERVER_CONTROL_TX_PENDING_BYTES);
+    wd_async_tcp_sender_set_max_pending_bytes(selection_tx, WD_SERVER_CONTROL_TX_PENDING_BYTES);
     wd_async_tcp_sender_set_max_pending_bytes(video_tx, WD_SERVER_VIDEO_TX_PENDING_BYTES);
-    *out_control_tx = control_tx;
-    *out_video_tx   = video_tx;
+    *out_control_tx   = control_tx;
+    *out_selection_tx = selection_tx;
+    *out_video_tx     = video_tx;
     return true;
 }
 
 static bool wd_server_rotate_session_tcp_senders(struct wd_server* server) {
-    struct wd_async_tcp_sender* replacement_control_tx = NULL;
-    struct wd_async_tcp_sender* replacement_video_tx   = NULL;
-    if (!server || !wd_server_create_session_tcp_senders(&replacement_control_tx, &replacement_video_tx))
+    struct wd_async_tcp_sender* replacement_control_tx   = NULL;
+    struct wd_async_tcp_sender* replacement_selection_tx = NULL;
+    struct wd_async_tcp_sender* replacement_video_tx     = NULL;
+    if (!server || !wd_server_create_session_tcp_senders(&replacement_control_tx, &replacement_selection_tx,
+                                                          &replacement_video_tx))
     {
         return false;
     }
 
     struct wd_net_state* net = &server->net;
     pthread_mutex_lock(&net->lock);
-    struct wd_async_tcp_sender* retired_control_tx = net->control_tx;
-    struct wd_async_tcp_sender* retired_video_tx   = net->video_tx;
-    net->control_tx = replacement_control_tx;
-    net->video_tx   = replacement_video_tx;
+    struct wd_async_tcp_sender* retired_control_tx   = net->control_tx;
+    struct wd_async_tcp_sender* retired_selection_tx = net->selection_tx;
+    struct wd_async_tcp_sender* retired_video_tx     = net->video_tx;
+    net->control_tx   = replacement_control_tx;
+    net->selection_tx = replacement_selection_tx;
+    net->video_tx     = replacement_video_tx;
 
     /* Sender counters are local to the io_uring instance. A fresh session
      * must never compare a new sender against counters sampled from the
      * retired connection. */
-    net->control_tx_failed_seen   = 0;
-    net->control_tx_queued_seen   = 0;
-    net->control_tx_completed_seen = 0;
-    net->control_tx_partial_seen  = 0;
-    net->control_tx_overflow_seen = 0;
-    net->video_tx_failed_seen     = 0;
+    net->control_tx_transport_failed_seen     = 0;
+    net->control_tx_queued_seen               = 0;
+    net->control_tx_completed_seen            = 0;
+    net->control_tx_partial_seen              = 0;
+    net->control_tx_overflow_seen             = 0;
+    net->selection_tx_transport_failed_seen   = 0;
+    net->selection_tx_queued_seen             = 0;
+    net->selection_tx_completed_seen          = 0;
+    net->selection_tx_partial_seen            = 0;
+    net->selection_tx_overflow_seen           = 0;
+    net->video_tx_transport_failed_seen       = 0;
 
     /* Sender completion callbacks run under net->lock during normal reaping.
      * Preserve that contract while retiring the old session: callbacks may
@@ -455,6 +471,7 @@ static bool wd_server_rotate_session_tcp_senders(struct wd_server* server) {
      * The old descriptors are still open here, so cancellation/shutdown also
      * completes before those descriptor numbers can be reused. */
     wd_async_tcp_sender_destroy(retired_control_tx);
+    wd_async_tcp_sender_destroy(retired_selection_tx);
     wd_async_tcp_sender_destroy(retired_video_tx);
     pthread_mutex_unlock(&net->lock);
     return true;
@@ -513,6 +530,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port, struct in_addr lis
     net->audio_tcp_fd                    = -1;
     net->listen_fd                       = -1;
     net->control_tx                      = NULL;
+    net->selection_tx                    = NULL;
     net->video_tx                        = NULL;
     net->udp_tx                          = NULL;
     net->video_encoder                   = NULL;
@@ -537,7 +555,7 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port, struct in_addr lis
     net->summary_dirty_tiles             = calloc(server->total_tiles, sizeof(*net->summary_dirty_tiles));
     net->summary_dirty_queue             = calloc(server->total_tiles, sizeof(*net->summary_dirty_queue));
     const bool async_transport_ready =
-        wd_server_create_session_tcp_senders(&net->control_tx, &net->video_tx) &&
+        wd_server_create_session_tcp_senders(&net->control_tx, &net->selection_tx, &net->video_tx) &&
         wd_async_udp_sender_create(&net->udp_tx, WD_SERVER_UDP_TX_RING_ENTRIES);
     if (!wd_video_encoder_create(&net->video_encoder, server->video_encoder_backend))
     {
@@ -566,12 +584,14 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port, struct in_addr lis
         free(net->summary_dirty_tiles);
         free(net->summary_dirty_queue);
         wd_async_tcp_sender_destroy(net->control_tx);
+        wd_async_tcp_sender_destroy(net->selection_tx);
         wd_async_tcp_sender_destroy(net->video_tx);
         wd_async_udp_sender_destroy(net->udp_tx);
         wd_video_encoder_destroy(net->video_encoder);
         wd_audio_stream_destroy(net->audio_stream);
         pthread_mutex_destroy(&net->video_encoder_lock);
         net->control_tx                      = NULL;
+        net->selection_tx                    = NULL;
         net->video_tx                        = NULL;
         net->udp_tx                          = NULL;
         net->video_encoder                   = NULL;
@@ -659,12 +679,14 @@ void wd_net_destroy(struct wd_server* server) {
     }
 
     wd_async_tcp_sender_destroy(net->control_tx);
+    wd_async_tcp_sender_destroy(net->selection_tx);
     wd_async_tcp_sender_destroy(net->video_tx);
     wd_async_udp_sender_destroy(net->udp_tx);
     wd_video_encoder_destroy(net->video_encoder);
     wd_audio_stream_destroy(net->audio_stream);
     pthread_mutex_destroy(&net->video_encoder_lock);
     net->control_tx    = NULL;
+    net->selection_tx  = NULL;
     net->video_tx      = NULL;
     net->udp_tx        = NULL;
     net->video_encoder = NULL;

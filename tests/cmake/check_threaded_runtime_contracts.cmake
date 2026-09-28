@@ -220,3 +220,63 @@ foreach(required_dependency "waydisplay_common" "Threads::Threads")
             "waydisplay_client_runtime must link ${required_dependency} transitively")
     endif()
 endforeach()
+
+# Reconnects multiplex several independent TCP channels. Selection traffic
+# must never share the control sender's failure domain, and local enqueue
+# pressure for coalescible control traffic must not be escalated into a
+# transport teardown.
+string(FIND "${server_internal_source}" "struct wd_async_tcp_sender* selection_tx;" selection_sender_state)
+if(selection_sender_state EQUAL -1)
+    message(FATAL_ERROR "selection traffic must use a session-owned async sender distinct from control")
+endif()
+
+read_source("src/server/wd_async_tcp.h" async_tcp_header_source)
+string(FIND "${async_tcp_header_source}" "wd_async_tcp_sender_transport_failures" transport_failure_api)
+if(transport_failure_api EQUAL -1)
+    message(FATAL_ERROR "async TCP senders must distinguish transport failures from local enqueue failures")
+endif()
+
+read_source("src/server/wd_clipboard.c" clipboard_source)
+string(FIND "${clipboard_source}" "static bool send_local_selection_locked" selection_send_start)
+string(FIND "${clipboard_source}" "void wd_clipboard_send_pending_locked" selection_send_end)
+if(selection_send_start EQUAL -1 OR selection_send_end EQUAL -1 OR selection_send_end LESS selection_send_start)
+    message(FATAL_ERROR "could not locate send_local_selection_locked")
+endif()
+math(EXPR selection_send_length "${selection_send_end} - ${selection_send_start}")
+string(SUBSTRING "${clipboard_source}" ${selection_send_start} ${selection_send_length} selection_send_function)
+string(FIND "${selection_send_function}" "net->selection_tx" selection_sender_use)
+if(selection_sender_use EQUAL -1)
+    message(FATAL_ERROR "clipboard selection writes must be queued on selection_tx")
+endif()
+require_absent("${selection_send_function}" "net->control_tx"
+               "clipboard selection writes must not share the control sender")
+
+read_source("src/server/wd_cursor.c" cursor_source)
+string(FIND "${cursor_source}" "static bool wd_cursor_send_shape_locked" cursor_send_start)
+string(FIND "${cursor_source}" "bool wd_cursor_flush_pending_locked" cursor_send_end)
+if(cursor_send_start EQUAL -1 OR cursor_send_end EQUAL -1 OR cursor_send_end LESS cursor_send_start)
+    message(FATAL_ERROR "could not locate wd_cursor_send_shape_locked")
+endif()
+math(EXPR cursor_send_length "${cursor_send_end} - ${cursor_send_start}")
+string(SUBSTRING "${cursor_source}" ${cursor_send_start} ${cursor_send_length} cursor_send_function)
+require_absent("${cursor_send_function}" "shutdown(net->tcp_fd"
+               "coalescible cursor enqueue pressure must not close the control channel")
+
+string(FIND "${stream_source}" "static bool wd_stream_send_generation_summary_kind_locked" summary_send_start)
+string(FIND "${stream_source}" "bool wd_stream_send_generation_summary_locked" summary_send_end)
+if(summary_send_start EQUAL -1 OR summary_send_end EQUAL -1 OR summary_send_end LESS summary_send_start)
+    message(FATAL_ERROR "could not locate wd_stream_send_generation_summary_kind_locked")
+endif()
+math(EXPR summary_send_length "${summary_send_end} - ${summary_send_start}")
+string(SUBSTRING "${stream_source}" ${summary_send_start} ${summary_send_length} summary_send_function)
+require_absent("${summary_send_function}" "shutdown(net->tcp_fd"
+               "generation-summary enqueue pressure must not close the control channel")
+
+string(FIND "${server_source}" "wd_async_tcp_sender_transport_failures(server->net.control_tx)" control_transport_sampling)
+if(control_transport_sampling EQUAL -1)
+    message(FATAL_ERROR "control teardown must be driven by transport failures, not aggregate enqueue failures")
+endif()
+string(FIND "${server_source}" "wd_async_tcp_sender_transport_failures(server->net.selection_tx)" selection_transport_sampling)
+if(selection_transport_sampling EQUAL -1)
+    message(FATAL_ERROR "selection transport failures must be sampled independently")
+endif()

@@ -61,6 +61,10 @@ uint64_t wd_async_tcp_sender_queued(const struct wd_async_tcp_sender* sender);
 uint64_t wd_async_tcp_sender_completed(const struct wd_async_tcp_sender* sender);
 uint64_t wd_async_tcp_sender_failed(const struct wd_async_tcp_sender* sender);
 uint64_t wd_async_tcp_sender_overflows(const struct wd_async_tcp_sender* sender);
+uint64_t wd_async_tcp_sender_transport_failures(const struct wd_async_tcp_sender* sender);
+int      wd_async_tcp_sender_last_transport_result(const struct wd_async_tcp_sender* sender);
+int      wd_async_tcp_sender_last_transport_fd(const struct wd_async_tcp_sender* sender);
+uint16_t wd_async_tcp_sender_last_transport_message_type(const struct wd_async_tcp_sender* sender);
 uint64_t wd_async_tcp_sender_partial_resubmits(const struct wd_async_tcp_sender* sender);
 uint64_t wd_async_tcp_sender_inflight_max(const struct wd_async_tcp_sender* sender);
 

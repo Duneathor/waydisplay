@@ -305,7 +305,10 @@ void reap_locked(ClientAsyncTcpSender* sender) {
             }
             else
             {
-                sender->partial_resubmits++;
+                if (cqe->res > 0)
+                {
+                    sender->partial_resubmits++;
+                }
                 if (!submit_message_locked(sender, msg))
                 {
                     sender->failed++;

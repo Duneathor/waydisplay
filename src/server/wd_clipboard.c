@@ -643,18 +643,18 @@ static bool send_local_selection_locked(struct wd_server* server, bool primary) 
     const uint16_t                message_type = primary ? WD_MSG_PRIMARY_SET : WD_MSG_CLIPBOARD_SET;
 
     if (!wd_selection_delivery_pending(delivery, &text, &text_size) || !net->client_connected ||
-        net->selection_tcp_fd < 0 || !net->control_tx || net->session_id == 0 || net->connection_token == 0)
+        net->selection_tcp_fd < 0 || !net->selection_tx || net->session_id == 0 || net->connection_token == 0)
     {
         return false;
     }
 
-    if (wd_async_tcp_sender_has_message_type(net->control_tx, message_type))
+    if (wd_async_tcp_sender_has_message_type(net->selection_tx, message_type))
     {
         return false;
     }
 
     const size_t capacity = sizeof(struct wd_selection_payload_header) + (size_t)text_size;
-    if (capacity > UINT32_MAX || !wd_async_tcp_sender_can_queue(net->control_tx, (uint32_t)capacity))
+    if (capacity > UINT32_MAX || !wd_async_tcp_sender_can_queue(net->selection_tx, (uint32_t)capacity))
     {
         return false;
     }
@@ -669,7 +669,7 @@ static bool send_local_selection_locked(struct wd_server* server, bool primary) 
     const bool encoded = wd_selection_payload_encode(net->session_id, net->connection_token, WD_SELECTION_MIME_TEXT_UTF8, text, text_size,
                                                      payload, capacity, &payload_size);
     const bool queued = encoded &&
-                        wd_async_tcp_send_message(net->control_tx, net->selection_tcp_fd, message_type, payload, payload_size);
+                        wd_async_tcp_send_message(net->selection_tx, net->selection_tcp_fd, message_type, payload, payload_size);
     free(payload);
 
     if (queued)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -71,7 +72,13 @@ enum wd_async_tcp_send_progress {
 
 /* Never advance beyond the retained message buffer, even for a bad CQE. */
 static inline enum wd_async_tcp_send_progress wd_async_tcp_advance(size_t total, size_t* sent, int result) {
-    if (!sent || *sent > total || result <= 0 || (size_t)result > total - *sent) {
+    if (!sent || *sent > total) {
+        return WD_ASYNC_TCP_SEND_FAILED;
+    }
+    if (result == -EINTR || result == -EAGAIN) {
+        return WD_ASYNC_TCP_SEND_PARTIAL;
+    }
+    if (result <= 0 || (size_t)result > total - *sent) {
         return WD_ASYNC_TCP_SEND_FAILED;
     }
     *sent += (size_t)result;

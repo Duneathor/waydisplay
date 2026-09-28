@@ -66,7 +66,23 @@ struct wd_async_tcp_sender {
     uint64_t failed;
     uint64_t overflows;
     uint64_t partial_resubmits;
+    uint64_t transport_failures;
+    int      last_transport_result;
+    int      last_transport_fd;
+    uint16_t last_transport_message_type;
 };
+
+static void wd_async_tcp_record_transport_failure(struct wd_async_tcp_sender* sender,
+                                                  const struct wd_async_tcp_message* msg, int result) {
+    if (!sender)
+    {
+        return;
+    }
+    sender->transport_failures++;
+    sender->last_transport_result       = result;
+    sender->last_transport_fd           = msg ? msg->fd : -1;
+    sender->last_transport_message_type = msg ? msg->message_type : 0;
+}
 
 static void wd_async_tcp_complete_message(struct wd_async_tcp_message* msg, bool success) {
     if (msg && msg->complete)
@@ -570,6 +586,7 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
         else if (wd_async_tcp_advance(msg->total_size, &msg->bytes_sent, cqe->res) == WD_ASYNC_TCP_SEND_FAILED)
         {
             sender->failed++;
+            wd_async_tcp_record_transport_failure(sender, msg, cqe->res);
             wd_async_tcp_pending_remove(sender, msg);
             wd_async_tcp_complete_message(msg, false);
             wd_async_tcp_message_destroy(msg);
@@ -736,6 +753,22 @@ uint64_t wd_async_tcp_sender_failed(const struct wd_async_tcp_sender* sender) {
 
 uint64_t wd_async_tcp_sender_overflows(const struct wd_async_tcp_sender* sender) {
     return sender ? sender->overflows : 0;
+}
+
+uint64_t wd_async_tcp_sender_transport_failures(const struct wd_async_tcp_sender* sender) {
+    return sender ? sender->transport_failures : 0;
+}
+
+int wd_async_tcp_sender_last_transport_result(const struct wd_async_tcp_sender* sender) {
+    return sender ? sender->last_transport_result : 0;
+}
+
+int wd_async_tcp_sender_last_transport_fd(const struct wd_async_tcp_sender* sender) {
+    return sender ? sender->last_transport_fd : -1;
+}
+
+uint16_t wd_async_tcp_sender_last_transport_message_type(const struct wd_async_tcp_sender* sender) {
+    return sender ? sender->last_transport_message_type : 0;
 }
 
 uint64_t wd_async_tcp_sender_partial_resubmits(const struct wd_async_tcp_sender* sender) {

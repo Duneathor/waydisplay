@@ -453,16 +453,17 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
     }
 
     wd_async_tcp_sender_reap(server->net.control_tx);
+    wd_async_tcp_sender_reap(server->net.selection_tx);
     wd_async_tcp_sender_reap(server->net.video_tx);
     wd_async_udp_sender_reap(server->net.udp_tx);
 
     if (server->net.control_tx)
     {
-        uint64_t queued    = wd_async_tcp_sender_queued(server->net.control_tx);
-        uint64_t completed = wd_async_tcp_sender_completed(server->net.control_tx);
-        uint64_t failed    = wd_async_tcp_sender_failed(server->net.control_tx);
-        uint64_t partial   = wd_async_tcp_sender_partial_resubmits(server->net.control_tx);
-        uint64_t overflows = wd_async_tcp_sender_overflows(server->net.control_tx);
+        uint64_t queued             = wd_async_tcp_sender_queued(server->net.control_tx);
+        uint64_t completed          = wd_async_tcp_sender_completed(server->net.control_tx);
+        uint64_t transport_failed   = wd_async_tcp_sender_transport_failures(server->net.control_tx);
+        uint64_t partial            = wd_async_tcp_sender_partial_resubmits(server->net.control_tx);
+        uint64_t overflows          = wd_async_tcp_sender_overflows(server->net.control_tx);
         if (queued > server->net.control_tx_queued_seen)
         {
             server->net.stats.tcp_async_queued += queued - server->net.control_tx_queued_seen;
@@ -488,10 +489,14 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
         {
             server->net.stats.tcp_async_inflight_max = inflight_max;
         }
-        if (failed > server->net.control_tx_failed_seen)
+        if (transport_failed > server->net.control_tx_transport_failed_seen)
         {
-            server->net.stats.tcp_async_completion_failed += failed - server->net.control_tx_failed_seen;
-            server->net.control_tx_failed_seen = failed;
+            server->net.stats.tcp_async_completion_failed += transport_failed - server->net.control_tx_transport_failed_seen;
+            server->net.control_tx_transport_failed_seen = transport_failed;
+            WD_LOG_ERROR("control TCP async transport failure: result=%d fd=%d message_type=%u",
+                         wd_async_tcp_sender_last_transport_result(server->net.control_tx),
+                         wd_async_tcp_sender_last_transport_fd(server->net.control_tx),
+                         wd_async_tcp_sender_last_transport_message_type(server->net.control_tx));
             if (server->net.tcp_fd >= 0)
             {
                 (void)shutdown(server->net.tcp_fd, SHUT_RDWR);
@@ -499,18 +504,68 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
         }
     }
 
+    if (server->net.selection_tx)
+    {
+        uint64_t queued           = wd_async_tcp_sender_queued(server->net.selection_tx);
+        uint64_t completed        = wd_async_tcp_sender_completed(server->net.selection_tx);
+        uint64_t transport_failed = wd_async_tcp_sender_transport_failures(server->net.selection_tx);
+        uint64_t partial          = wd_async_tcp_sender_partial_resubmits(server->net.selection_tx);
+        uint64_t overflows        = wd_async_tcp_sender_overflows(server->net.selection_tx);
+        if (queued > server->net.selection_tx_queued_seen)
+        {
+            server->net.stats.tcp_async_queued += queued - server->net.selection_tx_queued_seen;
+            server->net.selection_tx_queued_seen = queued;
+        }
+        if (completed > server->net.selection_tx_completed_seen)
+        {
+            server->net.stats.tcp_async_completed += completed - server->net.selection_tx_completed_seen;
+            server->net.selection_tx_completed_seen = completed;
+        }
+        if (partial > server->net.selection_tx_partial_seen)
+        {
+            server->net.stats.tcp_async_partial_resubmits += partial - server->net.selection_tx_partial_seen;
+            server->net.selection_tx_partial_seen = partial;
+        }
+        if (overflows > server->net.selection_tx_overflow_seen)
+        {
+            server->net.stats.tcp_async_queue_overflow += overflows - server->net.selection_tx_overflow_seen;
+            server->net.selection_tx_overflow_seen = overflows;
+        }
+        uint64_t inflight_max = wd_async_tcp_sender_inflight_max(server->net.selection_tx);
+        if (inflight_max > server->net.stats.tcp_async_inflight_max)
+        {
+            server->net.stats.tcp_async_inflight_max = inflight_max;
+        }
+        if (transport_failed > server->net.selection_tx_transport_failed_seen)
+        {
+            server->net.stats.tcp_async_completion_failed += transport_failed - server->net.selection_tx_transport_failed_seen;
+            server->net.selection_tx_transport_failed_seen = transport_failed;
+            WD_LOG_ERROR("selection TCP async transport failure: result=%d fd=%d message_type=%u",
+                         wd_async_tcp_sender_last_transport_result(server->net.selection_tx),
+                         wd_async_tcp_sender_last_transport_fd(server->net.selection_tx),
+                         wd_async_tcp_sender_last_transport_message_type(server->net.selection_tx));
+            if (server->net.selection_tcp_fd >= 0)
+            {
+                (void)shutdown(server->net.selection_tcp_fd, SHUT_RDWR);
+            }
+        }
+    }
+
     if (server->net.video_tx)
     {
-        const uint64_t failed = wd_async_tcp_sender_failed(server->net.video_tx);
-        if (failed > server->net.video_tx_failed_seen)
+        const uint64_t transport_failed = wd_async_tcp_sender_transport_failures(server->net.video_tx);
+        if (transport_failed > server->net.video_tx_transport_failed_seen)
         {
-            const uint64_t new_failures      = failed - server->net.video_tx_failed_seen;
-            server->net.video_tx_failed_seen = failed;
+            const uint64_t new_failures = transport_failed - server->net.video_tx_transport_failed_seen;
+            server->net.video_tx_transport_failed_seen = transport_failed;
             server->net.stats.video_tcp_send_failed += new_failures;
 
             if (server->net.video_tcp_fd >= 0)
             {
-                WD_LOG_ERROR("video TCP async completion failed; returning display ownership to tiles");
+                WD_LOG_ERROR("video TCP async transport failure: result=%d fd=%d message_type=%u; returning display ownership to tiles",
+                             wd_async_tcp_sender_last_transport_result(server->net.video_tx),
+                             wd_async_tcp_sender_last_transport_fd(server->net.video_tx),
+                             wd_async_tcp_sender_last_transport_message_type(server->net.video_tx));
                 wd_stream_video_reset_locked(server, "video async completion failed", false, false);
                 wd_stream_invalidate_all_tiles_locked(server);
                 wd_server_mark_scene_dirty(server);

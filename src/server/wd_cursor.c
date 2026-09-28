@@ -95,11 +95,11 @@ static bool wd_cursor_send_shape_locked(struct wd_server* server, uint16_t shape
         ok = wd_async_tcp_send_message(net->control_tx, net->tcp_fd, WD_MSG_CURSOR_SHAPE, &payload, sizeof(payload));
         if (!ok)
         {
+            /* Cursor shape is coalescible state. A local queue-pressure or
+             * allocation failure should leave it pending for retry; an actual
+             * socket failure is reported by the sender transport-failure
+             * counter and handled by the session reaper. */
             net->stats.tcp_async_send_failed++;
-            if (net->tcp_fd >= 0)
-            {
-                (void)shutdown(net->tcp_fd, SHUT_RDWR);
-            }
         }
     }
     else

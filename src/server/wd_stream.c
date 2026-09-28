@@ -5167,11 +5167,11 @@ static bool wd_stream_send_generation_summary_kind_locked(struct wd_server* serv
     }
     else
     {
+        /* Summaries are repair metadata and can be rebuilt on the next
+         * interval. Do not turn local async queue pressure into a control
+         * channel disconnect; genuine transport errors are sampled from the
+         * sender separately. */
         net->stats.tcp_async_send_failed++;
-        if (net->tcp_fd >= 0)
-        {
-            (void)shutdown(net->tcp_fd, SHUT_RDWR);
-        }
     }
 
     if (ok)

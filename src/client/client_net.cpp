@@ -1912,6 +1912,19 @@ enum class ClientTcpDrainResult : uint8_t {
     Failed,
 };
 
+const char* client_tcp_drain_result_name(ClientTcpDrainResult result) {
+    switch (result)
+    {
+    case ClientTcpDrainResult::Healthy:
+        return "healthy";
+    case ClientTcpDrainResult::PeerClosed:
+        return "peer-closed";
+    case ClientTcpDrainResult::Failed:
+        return "failed";
+    }
+    return "unknown";
+}
+
 using ClientTcpMessageHandler = bool (*)(ClientState&, wd_tcp_message&);
 
 ClientTcpDrainResult drain_tcp_channel(ClientState& state, int fd, wd_tcp_reader& reader, wd_protocol_channel channel,
@@ -2220,6 +2233,7 @@ void client_network_reader_main(ClientState* state) {
                               WD_CLIENT_TCP_DRAIN_BATCH);
         if (control_result != ClientTcpDrainResult::Healthy)
         {
+            WD_LOG_WARN("control TCP channel %s; reconnecting", client_tcp_drain_result_name(control_result));
             break;
         }
 
@@ -2228,6 +2242,7 @@ void client_network_reader_main(ClientState* state) {
                               handle_selection_tcp_message, WD_CLIENT_TCP_DRAIN_BATCH);
         if (selection_result != ClientTcpDrainResult::Healthy)
         {
+            WD_LOG_WARN("selection TCP channel %s; reconnecting", client_tcp_drain_result_name(selection_result));
             break;
         }
 
@@ -2470,13 +2485,21 @@ void client_disconnect(ClientState& state) {
 
 void client_reap_async_sends(ClientState& state) {
     std::lock_guard<std::mutex> lock(state.session.async_tcp_stats_mutex);
-    const bool healthy = update_async_seen(state, state.session.control_tcp_sender, state.session.control_tcp_seen) &&
-                         update_async_seen(state, state.session.input_tcp_sender, state.session.input_tcp_seen) &&
-                         update_async_seen(state, state.session.selection_tcp_sender, state.session.selection_tcp_seen);
-    if (!healthy)
+    const bool control_healthy = update_async_seen(state, state.session.control_tcp_sender, state.session.control_tcp_seen);
+    const bool input_healthy = update_async_seen(state, state.session.input_tcp_sender, state.session.input_tcp_seen);
+    const bool selection_healthy = update_async_seen(state, state.session.selection_tcp_sender, state.session.selection_tcp_seen);
+    if (!control_healthy || !input_healthy || !selection_healthy)
     {
-        WD_LOG_ERROR("client io_uring TCP sender failed; reconnecting the session");
-        state.session.running.store(false, std::memory_order_release);
+        /* client_disconnect() deliberately shuts the sockets down before it
+         * reaps/destroys the io_uring senders. Do not report those expected
+         * cancellation completions as the cause of a reconnect. */
+        const bool was_running = state.session.running.exchange(false, std::memory_order_acq_rel);
+        if (was_running)
+        {
+            WD_LOG_ERROR("client io_uring TCP sender failed: control=%s input=%s selection=%s; reconnecting the session",
+                         control_healthy ? "ok" : "failed", input_healthy ? "ok" : "failed",
+                         selection_healthy ? "ok" : "failed");
+        }
     }
 }
 

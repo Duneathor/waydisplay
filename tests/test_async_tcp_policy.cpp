@@ -1,5 +1,6 @@
 #include "waydisplay/wd_async_tcp_policy.h"
 
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -73,8 +74,13 @@ int main() {
 
     size_t sent = 0;
     CHECK(wd_async_tcp_advance(10, &sent, 4) == WD_ASYNC_TCP_SEND_PARTIAL && sent == 4);
+    /* io_uring may surface transient send errors in a CQE. They must leave
+     * the retained message offset untouched so the sender can resubmit it
+     * instead of poisoning the whole reconnecting session. */
+    CHECK(wd_async_tcp_advance(10, &sent, -EINTR) == WD_ASYNC_TCP_SEND_PARTIAL && sent == 4);
+    CHECK(wd_async_tcp_advance(10, &sent, -EAGAIN) == WD_ASYNC_TCP_SEND_PARTIAL && sent == 4);
+    CHECK(wd_async_tcp_advance(10, &sent, -EPIPE) == WD_ASYNC_TCP_SEND_FAILED && sent == 4);
     CHECK(wd_async_tcp_advance(10, &sent, 0) == WD_ASYNC_TCP_SEND_FAILED && sent == 4);
-    CHECK(wd_async_tcp_advance(10, &sent, -1) == WD_ASYNC_TCP_SEND_FAILED && sent == 4);
     CHECK(wd_async_tcp_advance(10, &sent, 7) == WD_ASYNC_TCP_SEND_FAILED && sent == 4);
     CHECK(wd_async_tcp_advance(10, &sent, 6) == WD_ASYNC_TCP_SEND_COMPLETE && sent == 10);
     CHECK(wd_async_tcp_advance(10, &sent, 1) == WD_ASYNC_TCP_SEND_FAILED && sent == 10);

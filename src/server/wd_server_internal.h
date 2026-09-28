@@ -802,6 +802,7 @@ struct wd_net_state {
     bool     pending_cursor_shape_dirty;
 
     struct wd_async_tcp_sender* control_tx;
+    struct wd_async_tcp_sender* selection_tx;
     struct wd_async_tcp_sender* video_tx;
     struct wd_async_udp_sender* udp_tx;
     struct wd_audio_stream*     audio_stream;
@@ -812,12 +813,17 @@ struct wd_net_state {
     uint64_t                    audio_queue_drops_seen;
     uint64_t                    audio_discontinuities_seen;
     uint64_t                    audio_encode_failures_seen;
-    uint64_t                    control_tx_failed_seen;
+    uint64_t                    control_tx_transport_failed_seen;
     uint64_t                    control_tx_queued_seen;
     uint64_t                    control_tx_completed_seen;
     uint64_t                    control_tx_partial_seen;
     uint64_t                    control_tx_overflow_seen;
-    uint64_t                    video_tx_failed_seen;
+    uint64_t                    selection_tx_transport_failed_seen;
+    uint64_t                    selection_tx_queued_seen;
+    uint64_t                    selection_tx_completed_seen;
+    uint64_t                    selection_tx_partial_seen;
+    uint64_t                    selection_tx_overflow_seen;
+    uint64_t                    video_tx_transport_failed_seen;
     uint64_t                    udp_tx_failed_seen;
     uint64_t                    udp_tx_queued_seen;
     uint64_t                    udp_tx_completed_seen;
