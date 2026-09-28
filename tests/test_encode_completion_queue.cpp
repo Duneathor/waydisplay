@@ -17,13 +17,18 @@ void test_fifo_order() {
     uint16_t storage[4]{};
     wd_encode_completion_queue queue{};
     wd_encode_completion_queue_init(&queue, storage, 4);
+    require(wd_encode_completion_queue_size(&queue) == 0, "new queue starts empty");
+    require(wd_encode_completion_queue_capacity(&queue) == 4, "queue reports configured capacity");
 
     require(wd_encode_completion_queue_push(&queue, 3), "push first completion");
+    require(wd_encode_completion_queue_size(&queue) == 1, "push updates queue depth");
     require(wd_encode_completion_queue_push(&queue, 1), "push second completion");
 
     uint16_t job = 0;
     require(wd_encode_completion_queue_pop(&queue, &job) && job == 3, "completion order preserves worker finish order");
+    require(wd_encode_completion_queue_size(&queue) == 1, "pop updates queue depth");
     require(wd_encode_completion_queue_pop(&queue, &job) && job == 1, "second completion follows first");
+    require(wd_encode_completion_queue_size(&queue) == 0, "queue returns to empty");
     require(!wd_encode_completion_queue_pop(&queue, &job), "empty queue does not pop");
 }
 
@@ -53,6 +58,10 @@ void test_invalid_storage_is_safe() {
     uint16_t job = 0;
     require(!wd_encode_completion_queue_push(&queue, 1), "zero-capacity queue rejects push");
     require(!wd_encode_completion_queue_pop(&queue, &job), "zero-capacity queue rejects pop");
+    require(wd_encode_completion_queue_size(&queue) == 0, "zero-capacity queue reports zero depth");
+    require(wd_encode_completion_queue_capacity(&queue) == 0, "zero-capacity queue reports zero capacity");
+    require(wd_encode_completion_queue_size(nullptr) == 0, "null queue reports zero depth");
+    require(wd_encode_completion_queue_capacity(nullptr) == 0, "null queue reports zero capacity");
 }
 
 } // namespace

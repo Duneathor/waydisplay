@@ -11,17 +11,17 @@
 extern "C" {
 #endif
 
-#define WD_PROTOCOL_VERSION 0u
+#define WD_PROTOCOL_VERSION 1u
 
 #if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
-#error "WayDisplay protocol version 0 requires a little-endian host"
+#error "WayDisplay protocol version 1 requires a little-endian host"
 #endif
 
 /*
- * Protocol version 0 intentionally supports only little-endian Linux peers.
+ * Protocol version 1 intentionally supports only little-endian Linux peers.
  * Fixed-width packed C structures are the wire ABI. GCC-compatible packing,
  * the asserted structure sizes below, and little-endian field order are part
- * of the undeployed protocol-zero contract.
+ * of the protocol-v1 contract.
  */
 #define WD_TCP_MAGIC                    0x54434457u
 #define WD_TCP_HEADER_WIRE_SIZE          12u
@@ -357,8 +357,11 @@ enum wd_client_stats_flags {
     WD_CLIENT_STATS_RENDER_VISIBLE = 1u << 0,
     /* Independent of visibility: an unfocused SDL window may remain visible. */
     WD_CLIENT_STATS_WINDOW_FOCUSED = 1u << 1,
+    /* The active presenter can import decoded DRM PRIME frames without a CPU copy. */
+    WD_CLIENT_STATS_GPU_PRESENT_CAPABLE = 1u << 2,
 };
-#define WD_CLIENT_STATS_FLAG_MASK (WD_CLIENT_STATS_RENDER_VISIBLE | WD_CLIENT_STATS_WINDOW_FOCUSED)
+#define WD_CLIENT_STATS_FLAG_MASK \
+    (WD_CLIENT_STATS_RENDER_VISIBLE | WD_CLIENT_STATS_WINDOW_FOCUSED | WD_CLIENT_STATS_GPU_PRESENT_CAPABLE)
 
 enum wd_client_audio_playback_state {
     WD_CLIENT_AUDIO_PLAYBACK_DISABLED  = 0,
@@ -449,6 +452,18 @@ struct wd_client_stats_payload {
     uint8_t  video_waiting_keyframe;
     uint32_t audio_video_sync_hold_current_ms;
     uint32_t audio_video_sync_hold_max_ms;
+
+    /* Protocol v1 performance telemetry. These are interval deltas except the
+     * depth/max fields, which describe the reporting interval. */
+    uint64_t video_gpu_frames_presented;
+    uint64_t video_gpu_present_failures;
+    uint64_t video_gpu_present_fallbacks;
+    uint64_t tile_present_direct;
+    uint64_t tile_present_overflow_fallbacks;
+    uint32_t tile_present_queue_depth_max;
+    uint64_t lock_wait_samples;
+    uint64_t lock_wait_sum_ns;
+    uint64_t lock_wait_max_ns;
 };
 
 struct wd_input_channel_hello_payload {
@@ -599,7 +614,7 @@ enum wd_tile_size {
     WD_TILE_16x16  = 3,
 };
 
-/* Protocol zero uses one canonical base header for every tile fragment.
+/* Protocol v1 uses one canonical base header for every tile fragment.
  * tile_payload_size is the total compressed or uncompressed tile payload.
  * The optional input sequence extension is legal only on packet zero. */
 struct wd_udp_tile_packet_header {
@@ -959,7 +974,7 @@ static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_m
 static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
 static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
-static_assert(sizeof(struct wd_client_stats_payload) == 486, "unexpected wd_client_stats_payload size");
+static_assert(sizeof(struct wd_client_stats_payload) == 554, "unexpected wd_client_stats_payload size");
 static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
 static_assert(sizeof(struct wd_selection_channel_hello_payload) == 9, "unexpected wd_selection_channel_hello_payload size");
 static_assert(sizeof(struct wd_video_channel_hello_payload) == 15, "unexpected wd_video_channel_hello_payload size");
@@ -989,7 +1004,7 @@ _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_
 _Static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 _Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
 _Static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
-_Static_assert(sizeof(struct wd_client_stats_payload) == 486, "unexpected wd_client_stats_payload size");
+_Static_assert(sizeof(struct wd_client_stats_payload) == 554, "unexpected wd_client_stats_payload size");
 _Static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_selection_channel_hello_payload) == 9, "unexpected wd_selection_channel_hello_payload size");
 _Static_assert(sizeof(struct wd_video_channel_hello_payload) == 15, "unexpected wd_video_channel_hello_payload size");

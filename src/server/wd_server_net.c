@@ -2186,6 +2186,8 @@ void* wd_net_thread_main(void* arg) {
                 }
 
                 const uint16_t type         = control_message.message_type;
+                /* Non-owning view into control_message.buffer. Release the
+                 * message, never payload directly. */
                 uint8_t* const payload       = control_message.payload;
                 const uint32_t payload_size  = control_message.payload_size;
 
@@ -2193,7 +2195,7 @@ void* wd_net_thread_main(void* arg) {
                                                  WD_PROTOCOL_CLIENT_TO_SERVER, payload_size))
                 {
                     WD_LOG_WARN("rejected control message=%s(%u) size=%u", wd_protocol_message_name(type), type, payload_size);
-                    free(payload);
+                    wd_tcp_message_release(&control_message);
                     break;
                 }
 
@@ -2213,7 +2215,7 @@ void* wd_net_thread_main(void* arg) {
                         if (rh.content_epoch != net->content_epoch || !wd_tile_repair_count_is_valid(rh.request_count, server->total_tiles))
                         {
                             pthread_mutex_unlock(&net->lock);
-                            free(payload);
+                            wd_tcp_message_release(&control_message);
                             continue;
                         }
 
@@ -2377,6 +2379,14 @@ void* wd_net_thread_main(void* arg) {
                         {
                             net->stats.client_window_unfocused_reports++;
                         }
+                        if ((cs.flags & WD_CLIENT_STATS_GPU_PRESENT_CAPABLE) != 0)
+                        {
+                            net->stats.client_gpu_present_capable_reports++;
+                        }
+                        else
+                        {
+                            net->stats.client_gpu_present_incapable_reports++;
+                        }
                         if (cs.udp_interarrival_max_ns > net->stats.client_udp_interarrival_max_ns)
                         {
                             net->stats.client_udp_interarrival_max_ns = cs.udp_interarrival_max_ns;
@@ -2419,6 +2429,21 @@ void* wd_net_thread_main(void* arg) {
                         }
                         net->stats.client_video_present_latency_samples += cs.video_present_latency_samples;
                         net->stats.client_video_present_latency_sum_ns += cs.video_present_latency_sum_ns;
+                        net->stats.client_video_gpu_frames_presented += cs.video_gpu_frames_presented;
+                        net->stats.client_video_gpu_present_failures += cs.video_gpu_present_failures;
+                        net->stats.client_video_gpu_present_fallbacks += cs.video_gpu_present_fallbacks;
+                        net->stats.client_tile_present_direct += cs.tile_present_direct;
+                        net->stats.client_tile_present_overflow_fallbacks += cs.tile_present_overflow_fallbacks;
+                        if (cs.tile_present_queue_depth_max > net->stats.client_tile_present_queue_depth_max)
+                        {
+                            net->stats.client_tile_present_queue_depth_max = cs.tile_present_queue_depth_max;
+                        }
+                        net->stats.client_lock_wait_samples += cs.lock_wait_samples;
+                        net->stats.client_lock_wait_sum_ns += cs.lock_wait_sum_ns;
+                        if (cs.lock_wait_max_ns > net->stats.client_lock_wait_max_ns)
+                        {
+                            net->stats.client_lock_wait_max_ns = cs.lock_wait_max_ns;
+                        }
                         net->stats.client_audio_messages_rx += cs.audio_messages_rx;
                         net->stats.client_audio_packets_rx += cs.audio_packets_rx;
                         net->stats.client_audio_bytes_rx += cs.audio_bytes_rx;
@@ -2502,7 +2527,7 @@ void* wd_net_thread_main(void* arg) {
                             pthread_mutex_unlock(&net->lock);
                             if (!config_sent)
                             {
-                                free(payload);
+                                wd_tcp_message_release(&control_message);
                                 break;
                             }
 
@@ -2515,7 +2540,7 @@ void* wd_net_thread_main(void* arg) {
                     }
                 }
 
-                free(payload);
+                wd_tcp_message_release(&control_message);
             }
         }
 

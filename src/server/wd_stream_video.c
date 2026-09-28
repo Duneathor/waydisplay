@@ -7,6 +7,7 @@
 #include "wd_video_transition.h"
 #include "video_encode_pacing.h"
 #include "video_encoder_clock.h"
+#include "video_gpu_capture_runtime_policy.h"
 #include "video_snapshot_admission.h"
 
 #include <stdint.h>
@@ -141,6 +142,8 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     struct wd_video_encoder_packet packet;
     memset(&packet, 0, sizeof(packet));
 
+    const bool                           gpu_input =
+        wd_frame_valid(&job->frame) && job->frame.storage == WD_FRAME_STORAGE_DRM_PRIME;
     const uint64_t                       encode_start_ns = wd_now_ns();
     bool                                 encoded         = false;
     bool                                 no_output       = false;
@@ -201,10 +204,28 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
     }
     pthread_mutex_unlock(&net->video_encoder_lock);
 
-    const uint64_t encode_ns = wd_now_ns() - encode_start_ns;
+    const uint64_t encode_done_ns = wd_now_ns();
+    const uint64_t encode_ns      = encode_done_ns - encode_start_ns;
 
     pthread_mutex_lock(&net->lock);
     net->stats.video_encode_ns += encode_ns;
+    if (gpu_input)
+    {
+        net->stats.video_gpu_encode_attempts++;
+        if (encoded)
+        {
+            net->stats.video_gpu_encode_success++;
+        }
+        else
+        {
+            net->stats.video_gpu_encode_failed++;
+            const uint64_t deadline = wd_video_gpu_capture_backoff_deadline(encode_done_ns);
+            if (deadline > net->video_gpu_capture_backoff_until_ns)
+            {
+                net->video_gpu_capture_backoff_until_ns = deadline;
+            }
+        }
+    }
 
     if (!encoded || payload_invalid)
     {
@@ -626,13 +647,22 @@ bool wd_stream_video_gpu_capture_needed(struct wd_server* server) {
     }
 
     struct wd_net_state* net = &server->net;
+    const uint64_t now_ns = wd_now_ns();
+
     pthread_mutex_lock(&net->lock);
     const bool transport_ready =
         wd_stream_mode_video_owns_display(net->stream_policy.stream_mode) &&
         net->video_worker && net->video_stream_negotiated &&
         net->video_tcp_fd >= 0 && net->video_tx;
+    const bool backoff_active =
+        transport_ready &&
+        wd_video_gpu_capture_backoff_active(now_ns, net->video_gpu_capture_backoff_until_ns);
+    if (backoff_active)
+    {
+        net->stats.video_gpu_backoff_frames++;
+    }
     pthread_mutex_unlock(&net->lock);
-    if (!transport_ready)
+    if (!transport_ready || backoff_active)
     {
         return false;
     }
@@ -640,6 +670,13 @@ bool wd_stream_video_gpu_capture_needed(struct wd_server* server) {
     pthread_mutex_lock(&net->video_encoder_lock);
     const bool import_ready = wd_video_encoder_supports_drm_prime(net->video_encoder);
     pthread_mutex_unlock(&net->video_encoder_lock);
+
+    if (!import_ready)
+    {
+        pthread_mutex_lock(&net->lock);
+        net->stats.video_gpu_unavailable_frames++;
+        pthread_mutex_unlock(&net->lock);
+    }
     return import_ready;
 }
 

@@ -10,6 +10,7 @@ struct ClientReceiveStatsBatch {
     uint64_t udp_bytes_rx                    = 0;
     uint64_t udp_interarrival_samples        = 0;
     uint64_t udp_interarrival_sum_ns         = 0;
+    uint64_t udp_interarrival_max_ns         = 0;
     uint64_t udp_interarrival_jitter_samples = 0;
     uint64_t udp_interarrival_jitter_sum_ns  = 0;
     uint64_t tile_assembly_samples           = 0;
@@ -17,6 +18,11 @@ struct ClientReceiveStatsBatch {
     uint64_t udp_completed_compressed_bytes  = 0;
     uint64_t udp_completed_packets           = 0;
     uint64_t udp_tiles_completed             = 0;
+    uint64_t tile_present_overflow_fallbacks = 0;
+    uint64_t tile_present_queue_depth_max    = 0;
+    uint64_t lock_wait_samples               = 0;
+    uint64_t lock_wait_sum_ns                = 0;
+    uint64_t lock_wait_max_ns                = 0;
 
     void note_udp_packet(std::size_t packet_size) noexcept
     {
@@ -28,12 +34,39 @@ struct ClientReceiveStatsBatch {
     {
         ++udp_interarrival_samples;
         udp_interarrival_sum_ns += interarrival_ns;
+        if (interarrival_ns > udp_interarrival_max_ns)
+        {
+            udp_interarrival_max_ns = interarrival_ns;
+        }
     }
 
     void note_jitter(uint64_t jitter_ns) noexcept
     {
         ++udp_interarrival_jitter_samples;
         udp_interarrival_jitter_sum_ns += jitter_ns;
+    }
+
+    void note_tile_present_queue_depth(uint64_t depth) noexcept
+    {
+        if (depth > tile_present_queue_depth_max)
+        {
+            tile_present_queue_depth_max = depth;
+        }
+    }
+
+    void note_tile_present_overflow() noexcept
+    {
+        ++tile_present_overflow_fallbacks;
+    }
+
+    void note_lock_wait(uint64_t wait_ns) noexcept
+    {
+        ++lock_wait_samples;
+        lock_wait_sum_ns += wait_ns;
+        if (wait_ns > lock_wait_max_ns)
+        {
+            lock_wait_max_ns = wait_ns;
+        }
     }
 
     void note_completed_tile(uint64_t compressed_bytes, uint64_t packet_count, bool has_assembly_sample,

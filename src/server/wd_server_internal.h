@@ -262,6 +262,7 @@ struct wd_stats {
     uint64_t compression_forced_choices;
     uint64_t compression_ns;
     uint64_t compression_saved_wire_bytes;
+    uint64_t candidate_prediction_evaluations;
     uint64_t candidate_prediction_skips;
     uint64_t candidate_prediction_probes;
 
@@ -323,6 +324,15 @@ struct wd_stats {
     uint64_t video_tcp_bytes_tx;
     uint64_t video_encode_ns;
     uint64_t video_encode_failed;
+    uint64_t video_gpu_capture_attempts;
+    uint64_t video_gpu_export_success;
+    uint64_t video_gpu_export_failed;
+    uint64_t video_gpu_frame_ineligible;
+    uint64_t video_gpu_unavailable_frames;
+    uint64_t video_gpu_backoff_frames;
+    uint64_t video_gpu_encode_attempts;
+    uint64_t video_gpu_encode_success;
+    uint64_t video_gpu_encode_failed;
     uint64_t video_tcp_send_failed;
     uint64_t video_keyframe_skipped_pending;
     uint64_t video_control_frames_tx;
@@ -391,6 +401,17 @@ struct wd_stats {
     uint64_t client_video_last_frame_id_presented;
     uint64_t client_video_present_latency_samples;
     uint64_t client_video_present_latency_sum_ns;
+    uint64_t client_video_gpu_frames_presented;
+    uint64_t client_video_gpu_present_failures;
+    uint64_t client_video_gpu_present_fallbacks;
+    uint64_t client_gpu_present_capable_reports;
+    uint64_t client_gpu_present_incapable_reports;
+    uint64_t client_tile_present_direct;
+    uint64_t client_tile_present_overflow_fallbacks;
+    uint32_t client_tile_present_queue_depth_max;
+    uint64_t client_lock_wait_samples;
+    uint64_t client_lock_wait_sum_ns;
+    uint64_t client_lock_wait_max_ns;
     uint64_t client_audio_messages_rx;
     uint64_t client_audio_packets_rx;
     uint64_t client_audio_bytes_rx;
@@ -522,6 +543,10 @@ struct wd_stats {
     uint64_t encode_batch_jobs_peak;
     uint64_t encode_worker_threads;
     uint64_t encode_thread_wakeups;
+    uint64_t encode_completion_depth_samples;
+    uint64_t encode_completion_depth_sum;
+    uint64_t encode_completion_depth_peak;
+    uint64_t encode_completion_push_failures;
 
     uint64_t dirty_tiles_stale_skipped;
     uint64_t retx_tiles_superseded_by_fresh;
@@ -749,6 +774,9 @@ struct wd_net_state {
     uint64_t                 video_worker_epoch;
     struct wd_video_encoder* video_encoder;
     pthread_mutex_t          video_encoder_lock;
+    /* A failed DRM PRIME encode temporarily routes subsequent video frames
+     * through CPU readback so a driver/import failure cannot spin every frame. */
+    uint64_t                 video_gpu_capture_backoff_until_ns;
 
     uint16_t* dirty_queue;
     bool*     dirty_queued;

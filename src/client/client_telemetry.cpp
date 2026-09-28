@@ -88,6 +88,9 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.video_last_frame_id_presented = std::max(dst.video_last_frame_id_presented, src.video_last_frame_id_presented);
     dst.video_present_latency_samples += src.video_present_latency_samples;
     dst.video_present_latency_sum_ns += src.video_present_latency_sum_ns;
+    dst.video_gpu_frames_presented += src.video_gpu_frames_presented;
+    dst.video_gpu_present_failures += src.video_gpu_present_failures;
+    dst.video_gpu_present_fallbacks += src.video_gpu_present_fallbacks;
     dst.audio_video_sync_holds += src.audio_video_sync_holds;
     dst.audio_video_sync_drops += src.audio_video_sync_drops;
     dst.audio_video_startup_timeouts += src.audio_video_startup_timeouts;
@@ -134,6 +137,10 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.tile_assembly_sum_ns += src.tile_assembly_sum_ns;
     dst.tile_present_samples += src.tile_present_samples;
     dst.tile_present_sum_ns += src.tile_present_sum_ns;
+    dst.tile_present_direct += src.tile_present_direct;
+    dst.tile_present_overflow_fallbacks += src.tile_present_overflow_fallbacks;
+    dst.tile_present_queue_depth_max =
+        std::max(dst.tile_present_queue_depth_max, src.tile_present_queue_depth_max);
     dst.input_to_present_samples += src.input_to_present_samples;
     dst.input_to_present_sum_ns += src.input_to_present_sum_ns;
     dst.input_seq_present_samples += src.input_seq_present_samples;
@@ -167,6 +174,9 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.framebuffer_lock_wait_samples += src.framebuffer_lock_wait_samples;
     dst.framebuffer_lock_wait_sum_ns += src.framebuffer_lock_wait_sum_ns;
     dst.framebuffer_lock_wait_max_ns = std::max(dst.framebuffer_lock_wait_max_ns, src.framebuffer_lock_wait_max_ns);
+    dst.lock_wait_samples += src.lock_wait_samples;
+    dst.lock_wait_sum_ns += src.lock_wait_sum_ns;
+    dst.lock_wait_max_ns = std::max(dst.lock_wait_max_ns, src.lock_wait_max_ns);
     dst.framebuffer_lock_hold_samples += src.framebuffer_lock_hold_samples;
     dst.framebuffer_lock_hold_sum_ns += src.framebuffer_lock_hold_sum_ns;
     dst.framebuffer_lock_hold_max_ns = std::max(dst.framebuffer_lock_hold_max_ns, src.framebuffer_lock_hold_max_ns);
@@ -681,6 +691,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t video_last_frame_id_presented = state.stats.video_last_frame_id_presented.load(std::memory_order_relaxed);
     const uint64_t video_present_latency_samples = take_stat(state.stats.video_present_latency_samples);
     const uint64_t video_present_latency_sum_ns  = take_stat(state.stats.video_present_latency_sum_ns);
+    const uint64_t video_gpu_frames_presented    = take_stat(state.stats.video_gpu_frames_presented);
+    const uint64_t video_gpu_present_failures    = take_stat(state.stats.video_gpu_present_failures);
+    const uint64_t video_gpu_present_fallbacks   = take_stat(state.stats.video_gpu_present_fallbacks);
     const uint64_t audio_video_sync_holds        = take_stat(state.stats.audio_video_sync_holds);
     const uint64_t audio_video_sync_drops        = take_stat(state.stats.audio_video_sync_drops);
     const uint64_t audio_video_startup_timeouts   = take_stat(state.stats.audio_video_startup_timeouts);
@@ -743,6 +756,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t tile_assembly_sum_ns               = take_stat(state.stats.tile_assembly_sum_ns);
     const uint64_t tile_present_samples               = take_stat(state.stats.tile_present_latency_samples);
     const uint64_t tile_present_sum_ns                = take_stat(state.stats.tile_present_latency_sum_ns);
+    const uint64_t tile_present_direct                = take_stat(state.stats.tile_present_direct);
+    const uint64_t tile_present_overflow_fallbacks    = take_stat(state.stats.tile_present_overflow_fallbacks);
+    const uint64_t tile_present_queue_depth_max       = take_stat(state.stats.tile_present_queue_depth_max);
     const uint64_t input_to_present_samples           = take_stat(state.stats.input_to_present_latency_samples);
     const uint64_t input_to_present_sum_ns            = take_stat(state.stats.input_to_present_latency_sum_ns);
     const uint64_t input_seq_present_samples          = take_stat(state.stats.input_sequence_present_latency_samples);
@@ -776,6 +792,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t framebuffer_lock_wait_samples      = take_stat(state.stats.framebuffer_lock_wait_samples);
     const uint64_t framebuffer_lock_wait_sum_ns       = take_stat(state.stats.framebuffer_lock_wait_sum_ns);
     const uint64_t framebuffer_lock_wait_max_ns       = take_stat(state.stats.framebuffer_lock_wait_max_ns);
+    const uint64_t lock_wait_samples                  = take_stat(state.stats.lock_wait_samples);
+    const uint64_t lock_wait_sum_ns                   = take_stat(state.stats.lock_wait_sum_ns);
+    const uint64_t lock_wait_max_ns                   = take_stat(state.stats.lock_wait_max_ns);
     const uint64_t framebuffer_lock_hold_samples      = take_stat(state.stats.framebuffer_lock_hold_samples);
     const uint64_t framebuffer_lock_hold_sum_ns       = take_stat(state.stats.framebuffer_lock_hold_sum_ns);
     const uint64_t framebuffer_lock_hold_max_ns       = take_stat(state.stats.framebuffer_lock_hold_max_ns);
@@ -857,6 +876,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.video_last_frame_id_presented      = video_last_frame_id_presented;
     sample.video_present_latency_samples      = video_present_latency_samples;
     sample.video_present_latency_sum_ns       = video_present_latency_sum_ns;
+    sample.video_gpu_frames_presented         = video_gpu_frames_presented;
+    sample.video_gpu_present_failures         = video_gpu_present_failures;
+    sample.video_gpu_present_fallbacks        = video_gpu_present_fallbacks;
     sample.audio_video_sync_holds             = audio_video_sync_holds;
     sample.audio_video_sync_drops             = audio_video_sync_drops;
     sample.audio_video_startup_timeouts        = audio_video_startup_timeouts;
@@ -903,6 +925,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.tile_assembly_sum_ns               = tile_assembly_sum_ns;
     sample.tile_present_samples               = tile_present_samples;
     sample.tile_present_sum_ns                = tile_present_sum_ns;
+    sample.tile_present_direct                = tile_present_direct;
+    sample.tile_present_overflow_fallbacks    = tile_present_overflow_fallbacks;
+    sample.tile_present_queue_depth_max       = tile_present_queue_depth_max;
     sample.input_to_present_samples           = input_to_present_samples;
     sample.input_to_present_sum_ns            = input_to_present_sum_ns;
     sample.input_seq_present_samples          = input_seq_present_samples;
@@ -936,6 +961,9 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.framebuffer_lock_wait_samples      = framebuffer_lock_wait_samples;
     sample.framebuffer_lock_wait_sum_ns       = framebuffer_lock_wait_sum_ns;
     sample.framebuffer_lock_wait_max_ns       = framebuffer_lock_wait_max_ns;
+    sample.lock_wait_samples                  = lock_wait_samples;
+    sample.lock_wait_sum_ns                   = lock_wait_sum_ns;
+    sample.lock_wait_max_ns                   = lock_wait_max_ns;
     sample.framebuffer_lock_hold_samples      = framebuffer_lock_hold_samples;
     sample.framebuffer_lock_hold_sum_ns       = framebuffer_lock_hold_sum_ns;
     sample.framebuffer_lock_hold_max_ns       = framebuffer_lock_hold_max_ns;
@@ -954,7 +982,10 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         video_publish_failed != 0 || video_control_frames_rx != 0 || video_invalid_frames_rx != 0 || video_stale_frames_dropped != 0 ||
         video_need_keyframe_drops != 0 || video_decoder_resets != 0 || audio_messages_rx != 0 || audio_packets_rx != 0 ||
         audio_decode_failed != 0 || audio_decode_queue_drops != 0 || audio_discontinuities != 0 || audio_late_drops != 0 || audio_video_sync_holds != 0 ||
-        audio_video_sync_drops != 0 || audio_video_startup_timeouts != 0 || video_queue_depth != 0 || video_queue_overflow_drops != 0 || video_decode_queue_drops != 0 || tile_frames_presented != 0;
+        audio_video_sync_drops != 0 || audio_video_startup_timeouts != 0 || video_queue_depth != 0 || video_queue_overflow_drops != 0 ||
+        video_decode_queue_drops != 0 || tile_frames_presented != 0 || video_gpu_frames_presented != 0 ||
+        video_gpu_present_failures != 0 || video_gpu_present_fallbacks != 0 || tile_present_direct != 0 ||
+        tile_present_overflow_fallbacks != 0 || lock_wait_samples != 0;
 
     if (feedback_activity)
     {
@@ -967,6 +998,10 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         feedback.flags = client_window_feedback_flags(
             state.render_feedback_visible.load(std::memory_order_relaxed),
             state.render_feedback_focused.load(std::memory_order_relaxed));
+        if (state.video_gpu_present_supported.load(std::memory_order_relaxed))
+        {
+            feedback.flags |= WD_CLIENT_STATS_GPU_PRESENT_CAPABLE;
+        }
         feedback.udp_packets_rx                  = udp_packets;
         feedback.udp_bytes_rx                    = udp_bytes;
         feedback.udp_tiles_completed             = completed;
@@ -1036,6 +1071,16 @@ void sample_client_stats(ClientState& state, bool log_stats) {
         feedback.tile_frames_presented         = tile_frames_presented;
         feedback.tile_content_epoch_presented   = tile_content_epoch_presented;
         feedback.video_content_epoch_presented  = video_content_epoch_presented;
+        feedback.video_gpu_frames_presented     = video_gpu_frames_presented;
+        feedback.video_gpu_present_failures     = video_gpu_present_failures;
+        feedback.video_gpu_present_fallbacks    = video_gpu_present_fallbacks;
+        feedback.tile_present_direct            = tile_present_direct;
+        feedback.tile_present_overflow_fallbacks = tile_present_overflow_fallbacks;
+        feedback.tile_present_queue_depth_max   =
+            static_cast<uint32_t>(std::min<uint64_t>(tile_present_queue_depth_max, UINT32_MAX));
+        feedback.lock_wait_samples              = lock_wait_samples;
+        feedback.lock_wait_sum_ns               = lock_wait_sum_ns;
+        feedback.lock_wait_max_ns               = lock_wait_max_ns;
         if (feedback.session_id != 0)
         {
             client_send_stats(state, feedback);

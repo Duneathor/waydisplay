@@ -154,6 +154,16 @@ void test_reconnect_telemetry_survives_protocol_copy() {
     sent.tile_frames_presented          = 1;
     sent.tile_content_epoch_presented    = 12;
     sent.video_content_epoch_presented   = 11;
+    sent.flags                          = WD_CLIENT_STATS_GPU_PRESENT_CAPABLE;
+    sent.video_gpu_frames_presented     = 9;
+    sent.video_gpu_present_failures     = 2;
+    sent.video_gpu_present_fallbacks    = 3;
+    sent.tile_present_direct            = 41;
+    sent.tile_present_overflow_fallbacks = 4;
+    sent.tile_present_queue_depth_max   = 17;
+    sent.lock_wait_samples              = 12;
+    sent.lock_wait_sum_ns               = 48000;
+    sent.lock_wait_max_ns               = 9000;
 
     wd_client_stats_payload received{};
     std::memcpy(&received, &sent, sizeof(received));
@@ -175,7 +185,17 @@ void test_reconnect_telemetry_survives_protocol_copy() {
                 received.audio_video_delta_samples == sent.audio_video_delta_samples &&
                 received.tile_frames_presented == sent.tile_frames_presented &&
                 received.tile_content_epoch_presented == sent.tile_content_epoch_presented &&
-                received.video_content_epoch_presented == sent.video_content_epoch_presented,
+                received.video_content_epoch_presented == sent.video_content_epoch_presented &&
+                received.flags == sent.flags &&
+                received.video_gpu_frames_presented == sent.video_gpu_frames_presented &&
+                received.video_gpu_present_failures == sent.video_gpu_present_failures &&
+                received.video_gpu_present_fallbacks == sent.video_gpu_present_fallbacks &&
+                received.tile_present_direct == sent.tile_present_direct &&
+                received.tile_present_overflow_fallbacks == sent.tile_present_overflow_fallbacks &&
+                received.tile_present_queue_depth_max == sent.tile_present_queue_depth_max &&
+                received.lock_wait_samples == sent.lock_wait_samples &&
+                received.lock_wait_sum_ns == sent.lock_wait_sum_ns &&
+                received.lock_wait_max_ns == sent.lock_wait_max_ns,
             "reconnect health and recovery telemetry should survive the wire payload");
 }
 

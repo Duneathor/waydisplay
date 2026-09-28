@@ -1416,6 +1416,23 @@ bool upload_completed_tiles_direct(ClientState& state, SDL_Texture* texture,
         return true;
     }
 
+    uint64_t direct_present_count = 0;
+    uint64_t lock_wait_samples    = 0;
+    uint64_t lock_wait_sum_ns     = 0;
+    uint64_t lock_wait_max_ns     = 0;
+    const auto publish_batch = [&]() {
+        if (direct_present_count != 0)
+        {
+            state.stats.tile_present_direct.fetch_add(direct_present_count, std::memory_order_relaxed);
+        }
+        if (lock_wait_samples != 0)
+        {
+            state.stats.lock_wait_samples.fetch_add(lock_wait_samples, std::memory_order_relaxed);
+            state.stats.lock_wait_sum_ns.fetch_add(lock_wait_sum_ns, std::memory_order_relaxed);
+            record_atomic_max(state.stats.lock_wait_max_ns, lock_wait_max_ns);
+        }
+    };
+
     const auto ownership = wd_client_stream_ownership_snapshot(&state.stream_ownership);
     for (ClientTileUpload& upload : uploads)
     {
@@ -1431,17 +1448,29 @@ bool upload_completed_tiles_direct(ClientState& state, SDL_Texture* texture,
         if (!SDL_UpdateTexture(texture, &rect, upload.pixels.data(),
                                static_cast<int>(upload.source_pitch)))
         {
+            publish_batch();
             return false;
         }
+        ++direct_present_count;
 
         /* The renderer, not the network thread, owns mutation of the CPU
          * recovery image for directly queued tiles. Keep it current for a
          * later full upload without bouncing pixels through a staging copy. */
         {
-            std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
+            std::unique_lock<std::mutex> framebuffer_lock(state.framebuffer_mutex, std::defer_lock);
+            if (!framebuffer_lock.try_lock())
+            {
+                const uint64_t lock_started_ns = wd_now_ns();
+                framebuffer_lock.lock();
+                const uint64_t wait_ns = wd_now_ns() - lock_started_ns;
+                ++lock_wait_samples;
+                lock_wait_sum_ns += wait_ns;
+                lock_wait_max_ns = std::max(lock_wait_max_ns, wait_ns);
+            }
             if (state.framebuffer.size() <
                 static_cast<size_t>(state.config.width) * state.config.height)
             {
+                publish_batch();
                 return false;
             }
             for (uint32_t row = 0; row < upload.rect.h; ++row)
@@ -1456,9 +1485,9 @@ bool upload_completed_tiles_direct(ClientState& state, SDL_Texture* texture,
         }
         uploaded_rects.push_back(upload.rect);
     }
+    publish_batch();
     return true;
 }
-
 
 void recycle_direct_tile_upload_buffers(ClientState& state,
                                         std::vector<ClientTileUpload>& uploads) {
@@ -1485,6 +1514,9 @@ void record_framebuffer_lock_stats(ClientState& state, uint64_t wait_ns, uint64_
     state.stats.framebuffer_lock_wait_samples.fetch_add(1, std::memory_order_relaxed);
     state.stats.framebuffer_lock_wait_sum_ns.fetch_add(wait_ns, std::memory_order_relaxed);
     record_atomic_max(state.stats.framebuffer_lock_wait_max_ns, wait_ns);
+    state.stats.lock_wait_samples.fetch_add(1, std::memory_order_relaxed);
+    state.stats.lock_wait_sum_ns.fetch_add(wait_ns, std::memory_order_relaxed);
+    record_atomic_max(state.stats.lock_wait_max_ns, wait_ns);
     state.stats.framebuffer_lock_hold_samples.fetch_add(1, std::memory_order_relaxed);
     state.stats.framebuffer_lock_hold_sum_ns.fetch_add(hold_ns, std::memory_order_relaxed);
     record_atomic_max(state.stats.framebuffer_lock_hold_max_ns, hold_ns);

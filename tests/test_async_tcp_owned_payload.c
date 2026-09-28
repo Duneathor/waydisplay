@@ -121,7 +121,7 @@ static bool recv_exact_with_progress(struct wd_async_tcp_sender* sender, int fd,
         {
             continue;
         }
-        if (rc < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        if (rc < 0 && errno == EAGAIN)
         {
             /*
              * A stream send may complete short even for a small message.

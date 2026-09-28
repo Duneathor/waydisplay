@@ -16,8 +16,10 @@ struct wd_encode_completion_queue {
 };
 
 void wd_encode_completion_queue_init(struct wd_encode_completion_queue* queue, uint16_t* storage, uint16_t capacity);
-bool wd_encode_completion_queue_push(struct wd_encode_completion_queue* queue, uint16_t job_index);
-bool wd_encode_completion_queue_pop(struct wd_encode_completion_queue* queue, uint16_t* out_job_index);
+bool     wd_encode_completion_queue_push(struct wd_encode_completion_queue* queue, uint16_t job_index);
+bool     wd_encode_completion_queue_pop(struct wd_encode_completion_queue* queue, uint16_t* out_job_index);
+uint16_t wd_encode_completion_queue_size(const struct wd_encode_completion_queue* queue);
+uint16_t wd_encode_completion_queue_capacity(const struct wd_encode_completion_queue* queue);
 
 #ifdef __cplusplus
 }

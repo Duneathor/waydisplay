@@ -1091,6 +1091,21 @@ void wd_server_mark_view_move_dirty(struct wd_view* view, int old_x, int old_y) 
     }
 }
 
+struct wd_display_geometry_snapshot {
+    uint32_t display_width;
+    uint32_t display_height;
+    uint16_t tiles_x;
+    uint16_t tiles_y;
+    uint16_t total_tiles;
+    uint16_t base_tile_width;
+    uint16_t base_tile_height;
+    uint16_t base_tiles_x;
+    uint16_t base_tiles_y;
+    uint32_t total_base_tiles;
+    uint32_t framebuffer_pixels;
+    uint32_t framebuffer_bytes;
+};
+
 bool wd_server_set_tile_size(struct wd_server* server, uint16_t tile_width, uint16_t tile_height) {
     if (!server || tile_width == 0 || tile_height == 0)
     {
@@ -1117,6 +1132,70 @@ bool wd_server_set_tile_size(struct wd_server* server, uint16_t tile_width, uint
     return true;
 }
 
+static bool wd_server_compute_geometry(const struct wd_server* server, uint32_t width, uint32_t height,
+                                       struct wd_display_geometry_snapshot* geometry) {
+    if (!server || !geometry || width == 0 || height == 0 ||
+        width > WD_MAX_RENDER_WIDTH || height > WD_MAX_RENDER_HEIGHT ||
+        server->tile_width == 0 || server->tile_height == 0)
+    {
+        return false;
+    }
+
+    const uint16_t tiles_x          = wd_tiles_for_width_with_tile(width, server->tile_width);
+    const uint16_t tiles_y          = wd_tiles_for_height_with_tile(height, server->tile_height);
+    const uint32_t total_tiles      = (uint32_t)tiles_x * (uint32_t)tiles_y;
+    const uint16_t base_tile_width  = WD_BASE_TILE_WIDTH;
+    const uint16_t base_tile_height = WD_BASE_TILE_HEIGHT;
+    const uint16_t base_tiles_x     = wd_tiles_for_width_with_tile(width, base_tile_width);
+    const uint16_t base_tiles_y     = wd_tiles_for_height_with_tile(height, base_tile_height);
+    const uint32_t total_base_tiles = (uint32_t)base_tiles_x * (uint32_t)base_tiles_y;
+    const uint64_t framebuffer_pixels = (uint64_t)width * (uint64_t)height;
+    const uint64_t framebuffer_bytes  = framebuffer_pixels * WD_BYTES_PER_PIXEL;
+
+    if (tiles_x == 0 || tiles_y == 0 || total_tiles == 0 || total_tiles > UINT16_MAX ||
+        base_tiles_x == 0 || base_tiles_y == 0 || total_base_tiles == 0 ||
+        framebuffer_pixels > UINT32_MAX || framebuffer_bytes > UINT32_MAX)
+    {
+        return false;
+    }
+
+    memset(geometry, 0, sizeof(*geometry));
+    geometry->display_width      = width;
+    geometry->display_height     = height;
+    geometry->tiles_x            = tiles_x;
+    geometry->tiles_y            = tiles_y;
+    geometry->total_tiles        = (uint16_t)total_tiles;
+    geometry->base_tile_width    = base_tile_width;
+    geometry->base_tile_height   = base_tile_height;
+    geometry->base_tiles_x       = base_tiles_x;
+    geometry->base_tiles_y       = base_tiles_y;
+    geometry->total_base_tiles   = total_base_tiles;
+    geometry->framebuffer_pixels = (uint32_t)framebuffer_pixels;
+    geometry->framebuffer_bytes  = (uint32_t)framebuffer_bytes;
+    return true;
+}
+
+static void wd_server_apply_geometry_snapshot(struct wd_server* server,
+                                              const struct wd_display_geometry_snapshot* geometry) {
+    if (!server || !geometry)
+    {
+        return;
+    }
+
+    server->display_width      = geometry->display_width;
+    server->display_height     = geometry->display_height;
+    server->tiles_x            = geometry->tiles_x;
+    server->tiles_y            = geometry->tiles_y;
+    server->total_tiles        = geometry->total_tiles;
+    server->base_tile_width    = geometry->base_tile_width;
+    server->base_tile_height   = geometry->base_tile_height;
+    server->base_tiles_x       = geometry->base_tiles_x;
+    server->base_tiles_y       = geometry->base_tiles_y;
+    server->total_base_tiles   = geometry->total_base_tiles;
+    server->framebuffer_pixels = geometry->framebuffer_pixels;
+    server->framebuffer_bytes  = geometry->framebuffer_bytes;
+}
+
 bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t height) {
     if (!server || width == 0 || height == 0 || width > WD_MAX_RENDER_WIDTH || height > WD_MAX_RENDER_HEIGHT)
     {
@@ -1131,34 +1210,13 @@ bool wd_server_set_geometry(struct wd_server* server, uint32_t width, uint32_t h
         }
     }
 
-    const uint16_t tiles_x          = wd_tiles_for_width_with_tile(width, server->tile_width);
-    const uint16_t tiles_y          = wd_tiles_for_height_with_tile(height, server->tile_height);
-    const uint32_t total_tiles      = (uint32_t)tiles_x * (uint32_t)tiles_y;
-    const uint16_t base_tile_width  = WD_BASE_TILE_WIDTH;
-    const uint16_t base_tile_height = WD_BASE_TILE_HEIGHT;
-    const uint16_t base_tiles_x     = wd_tiles_for_width_with_tile(width, base_tile_width);
-    const uint16_t base_tiles_y     = wd_tiles_for_height_with_tile(height, base_tile_height);
-    const uint32_t total_base_tiles = (uint32_t)base_tiles_x * (uint32_t)base_tiles_y;
-
-    if (tiles_x == 0 || tiles_y == 0 || total_tiles == 0 || total_tiles > UINT16_MAX || base_tiles_x == 0 || base_tiles_y == 0 ||
-        total_base_tiles == 0)
+    struct wd_display_geometry_snapshot geometry;
+    if (!wd_server_compute_geometry(server, width, height, &geometry))
     {
         return false;
     }
 
-    server->display_width      = width;
-    server->display_height     = height;
-    server->tiles_x            = tiles_x;
-    server->tiles_y            = tiles_y;
-    server->total_tiles        = (uint16_t)total_tiles;
-    server->base_tile_width    = base_tile_width;
-    server->base_tile_height   = base_tile_height;
-    server->base_tiles_x       = base_tiles_x;
-    server->base_tiles_y       = base_tiles_y;
-    server->total_base_tiles   = total_base_tiles;
-    server->framebuffer_pixels = server->display_width * server->display_height;
-    server->framebuffer_bytes  = server->framebuffer_pixels * WD_BYTES_PER_PIXEL;
-
+    wd_server_apply_geometry_snapshot(server, &geometry);
     return true;
 }
 
@@ -1208,21 +1266,6 @@ bool wd_server_request_display_size(struct wd_server* server, uint32_t width, ui
     return wd_server_request_display_mode(server, width, height, refresh_hz);
 }
 
-struct wd_display_geometry_snapshot {
-    uint32_t display_width;
-    uint32_t display_height;
-    uint16_t tiles_x;
-    uint16_t tiles_y;
-    uint16_t total_tiles;
-    uint16_t base_tile_width;
-    uint16_t base_tile_height;
-    uint16_t base_tiles_x;
-    uint16_t base_tiles_y;
-    uint32_t total_base_tiles;
-    uint32_t framebuffer_pixels;
-    uint32_t framebuffer_bytes;
-};
-
 struct wd_resize_allocations {
     uint32_t*             framebuffer_xrgb8888;
     uint32_t*             framebuffer_shadow_xrgb8888;
@@ -1242,49 +1285,6 @@ struct wd_resize_allocations {
     bool*                 summary_dirty_tiles;
     uint16_t*             summary_dirty_queue;
 };
-
-static struct wd_display_geometry_snapshot wd_server_capture_geometry(const struct wd_server* server) {
-    struct wd_display_geometry_snapshot geometry;
-    memset(&geometry, 0, sizeof(geometry));
-    if (!server)
-    {
-        return geometry;
-    }
-
-    geometry.display_width      = server->display_width;
-    geometry.display_height     = server->display_height;
-    geometry.tiles_x            = server->tiles_x;
-    geometry.tiles_y            = server->tiles_y;
-    geometry.total_tiles        = server->total_tiles;
-    geometry.base_tile_width    = server->base_tile_width;
-    geometry.base_tile_height   = server->base_tile_height;
-    geometry.base_tiles_x       = server->base_tiles_x;
-    geometry.base_tiles_y       = server->base_tiles_y;
-    geometry.total_base_tiles   = server->total_base_tiles;
-    geometry.framebuffer_pixels = server->framebuffer_pixels;
-    geometry.framebuffer_bytes  = server->framebuffer_bytes;
-    return geometry;
-}
-
-static void wd_server_restore_geometry(struct wd_server* server, const struct wd_display_geometry_snapshot* geometry) {
-    if (!server || !geometry)
-    {
-        return;
-    }
-
-    server->display_width      = geometry->display_width;
-    server->display_height     = geometry->display_height;
-    server->tiles_x            = geometry->tiles_x;
-    server->tiles_y            = geometry->tiles_y;
-    server->total_tiles        = geometry->total_tiles;
-    server->base_tile_width    = geometry->base_tile_width;
-    server->base_tile_height   = geometry->base_tile_height;
-    server->base_tiles_x       = geometry->base_tiles_x;
-    server->base_tiles_y       = geometry->base_tiles_y;
-    server->total_base_tiles   = geometry->total_base_tiles;
-    server->framebuffer_pixels = geometry->framebuffer_pixels;
-    server->framebuffer_bytes  = geometry->framebuffer_bytes;
-}
 
 static void wd_resize_allocations_free(struct wd_resize_allocations* allocs) {
     if (!allocs)
@@ -1312,31 +1312,33 @@ static void wd_resize_allocations_free(struct wd_resize_allocations* allocs) {
     memset(allocs, 0, sizeof(*allocs));
 }
 
-static bool wd_resize_allocations_prepare(struct wd_resize_allocations* allocs, const struct wd_server* server) {
-    if (!allocs || !server || server->total_tiles == 0 || server->total_base_tiles == 0 || server->framebuffer_pixels == 0)
+static bool wd_resize_allocations_prepare(struct wd_resize_allocations* allocs,
+                                          const struct wd_display_geometry_snapshot* geometry) {
+    if (!allocs || !geometry || geometry->total_tiles == 0 || geometry->total_base_tiles == 0 ||
+        geometry->framebuffer_pixels == 0)
     {
         return false;
     }
 
     memset(allocs, 0, sizeof(*allocs));
 
-    allocs->framebuffer_xrgb8888            = calloc(server->framebuffer_pixels, sizeof(*allocs->framebuffer_xrgb8888));
-    allocs->framebuffer_shadow_xrgb8888     = calloc(server->framebuffer_pixels, sizeof(*allocs->framebuffer_shadow_xrgb8888));
-    allocs->tiles                           = calloc(server->total_tiles, sizeof(*allocs->tiles));
-    allocs->damage_tiles                    = calloc(server->total_base_tiles, sizeof(*allocs->damage_tiles));
-    allocs->dirty_regions                   = calloc(server->total_tiles, sizeof(*allocs->dirty_regions));
-    allocs->dirty_region_queued             = calloc(server->total_tiles, sizeof(*allocs->dirty_region_queued));
-    allocs->dirty_region_enqueued_ns        = calloc(server->total_tiles, sizeof(*allocs->dirty_region_enqueued_ns));
-    allocs->dirty_epochs                    = calloc(server->total_tiles, sizeof(*allocs->dirty_epochs));
-    allocs->dirty_queue                     = calloc(server->total_tiles, sizeof(*allocs->dirty_queue));
-    allocs->dirty_queued                    = calloc(server->total_tiles, sizeof(*allocs->dirty_queued));
-    allocs->dirty_queue_enqueued_ns         = calloc(server->total_tiles, sizeof(*allocs->dirty_queue_enqueued_ns));
-    allocs->retransmit_queue                = calloc(server->total_tiles, sizeof(*allocs->retransmit_queue));
-    allocs->retransmit_queued               = calloc(server->total_tiles, sizeof(*allocs->retransmit_queued));
-    allocs->retransmit_queue_enqueued_ns    = calloc(server->total_tiles, sizeof(*allocs->retransmit_queue_enqueued_ns));
-    allocs->retransmit_requested_generation = calloc(server->total_tiles, sizeof(*allocs->retransmit_requested_generation));
-    allocs->summary_dirty_tiles             = calloc(server->total_tiles, sizeof(*allocs->summary_dirty_tiles));
-    allocs->summary_dirty_queue             = calloc(server->total_tiles, sizeof(*allocs->summary_dirty_queue));
+    allocs->framebuffer_xrgb8888            = calloc(geometry->framebuffer_pixels, sizeof(*allocs->framebuffer_xrgb8888));
+    allocs->framebuffer_shadow_xrgb8888     = calloc(geometry->framebuffer_pixels, sizeof(*allocs->framebuffer_shadow_xrgb8888));
+    allocs->tiles                           = calloc(geometry->total_tiles, sizeof(*allocs->tiles));
+    allocs->damage_tiles                    = calloc(geometry->total_base_tiles, sizeof(*allocs->damage_tiles));
+    allocs->dirty_regions                   = calloc(geometry->total_tiles, sizeof(*allocs->dirty_regions));
+    allocs->dirty_region_queued             = calloc(geometry->total_tiles, sizeof(*allocs->dirty_region_queued));
+    allocs->dirty_region_enqueued_ns        = calloc(geometry->total_tiles, sizeof(*allocs->dirty_region_enqueued_ns));
+    allocs->dirty_epochs                    = calloc(geometry->total_tiles, sizeof(*allocs->dirty_epochs));
+    allocs->dirty_queue                     = calloc(geometry->total_tiles, sizeof(*allocs->dirty_queue));
+    allocs->dirty_queued                    = calloc(geometry->total_tiles, sizeof(*allocs->dirty_queued));
+    allocs->dirty_queue_enqueued_ns         = calloc(geometry->total_tiles, sizeof(*allocs->dirty_queue_enqueued_ns));
+    allocs->retransmit_queue                = calloc(geometry->total_tiles, sizeof(*allocs->retransmit_queue));
+    allocs->retransmit_queued               = calloc(geometry->total_tiles, sizeof(*allocs->retransmit_queued));
+    allocs->retransmit_queue_enqueued_ns    = calloc(geometry->total_tiles, sizeof(*allocs->retransmit_queue_enqueued_ns));
+    allocs->retransmit_requested_generation = calloc(geometry->total_tiles, sizeof(*allocs->retransmit_requested_generation));
+    allocs->summary_dirty_tiles             = calloc(geometry->total_tiles, sizeof(*allocs->summary_dirty_tiles));
+    allocs->summary_dirty_queue             = calloc(geometry->total_tiles, sizeof(*allocs->summary_dirty_queue));
 
     if (!allocs->framebuffer_xrgb8888 || !allocs->framebuffer_shadow_xrgb8888 || !allocs->tiles || !allocs->damage_tiles ||
         !allocs->dirty_regions || !allocs->dirty_region_queued || !allocs->dirty_region_enqueued_ns || !allocs->dirty_epochs ||
@@ -1436,25 +1438,32 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
         return true;
     }
 
-    const struct wd_display_geometry_snapshot old_geometry = wd_server_capture_geometry(server);
-
-    if (!wd_server_set_geometry(server, width, height))
+    struct wd_display_geometry_snapshot next_geometry;
+    if (!wd_server_compute_geometry(server, width, height, &next_geometry))
     {
-        wd_server_restore_geometry(server, &old_geometry);
         return false;
     }
 
+    /*
+     * Build the replacement storage without publishing the new geometry.
+     * Readers must never observe dimensions/tile counts for the next mode while
+     * the live framebuffer and stream arrays still describe the old mode.
+     */
     struct wd_resize_allocations next_allocs;
-    if (!wd_resize_allocations_prepare(&next_allocs, server))
+    if (!wd_resize_allocations_prepare(&next_allocs, &next_geometry))
     {
-        wd_server_restore_geometry(server, &old_geometry);
         return false;
     }
 
-    if (!wd_wlroots_resize_headless_output(server))
+    /*
+     * wlroots needs the requested mode before we swap stream state, but the
+     * compositor thread does not dispatch another frame while this resize
+     * transaction is executing. Keep server->display_* on the old geometry
+     * until the stream lock protects the pointer/geometry swap below.
+     */
+    if (!wd_wlroots_resize_headless_output_to(server, width, height))
     {
         wd_resize_allocations_free(&next_allocs);
-        wd_server_restore_geometry(server, &old_geometry);
         return false;
     }
 
@@ -1476,6 +1485,12 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     uint32_t* old_framebuffer_shadow = server->framebuffer_shadow_xrgb8888;
     wd_server_free_resize_stream_state(server);
 
+    /*
+     * Geometry and its backing allocations become visible as one locked state
+     * transition. Network/stream readers therefore see either the complete old
+     * configuration or the complete new one, never a mixed pair.
+     */
+    wd_server_apply_geometry_snapshot(server, &next_geometry);
     server->framebuffer_xrgb8888                = next_allocs.framebuffer_xrgb8888;
     server->framebuffer_shadow_xrgb8888         = next_allocs.framebuffer_shadow_xrgb8888;
     server->framebuffer_shadow_valid            = false;

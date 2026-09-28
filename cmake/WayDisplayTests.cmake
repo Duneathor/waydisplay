@@ -18,6 +18,28 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     add_test(
+        NAME waydisplay.resize_transaction_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_resize_transaction_contract.cmake
+    )
+    set_tests_properties(waydisplay.resize_transaction_contract PROPERTIES
+        LABELS "unit;cmake;resize;server;threading"
+        TIMEOUT 10
+    )
+
+    add_test(
+        NAME waydisplay.control_reader_ownership_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_control_reader_ownership_contract.cmake
+    )
+    set_tests_properties(waydisplay.control_reader_ownership_contract PROPERTIES
+        LABELS "unit;cmake;network;server;ownership"
+        TIMEOUT 10
+    )
+
+    add_test(
         NAME waydisplay.cmake_build_profiles
         COMMAND ${CMAKE_COMMAND}
             -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -154,6 +176,14 @@ if(WAYDISPLAY_BUILD_TESTS)
         LIBRARIES waydisplay_common
         INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server ${CMAKE_CURRENT_SOURCE_DIR}/include
         LABELS "unit;server;video;vaapi;ownership"
+    )
+
+    waydisplay_add_test(
+        NAME waydisplay.video_gpu_capture_runtime_policy
+        TARGET waydisplay_test_video_gpu_capture_runtime_policy
+        SOURCES tests/test_video_gpu_capture_runtime_policy.c
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;server;video;vaapi;recovery"
     )
 
     waydisplay_add_test(

@@ -36,3 +36,11 @@ bool wd_encode_completion_queue_pop(struct wd_encode_completion_queue* queue, ui
     queue->count--;
     return true;
 }
+
+uint16_t wd_encode_completion_queue_size(const struct wd_encode_completion_queue* queue) {
+    return queue ? queue->count : 0;
+}
+
+uint16_t wd_encode_completion_queue_capacity(const struct wd_encode_completion_queue* queue) {
+    return queue ? queue->capacity : 0;
+}

@@ -19,6 +19,7 @@ bool wd_wlroots_init(struct wd_server* server);
 bool wd_wlroots_start(struct wd_server* server);
 bool wd_wlroots_create_headless_output(struct wd_server* server);
 bool wd_wlroots_resize_headless_output(struct wd_server* server);
+bool wd_wlroots_resize_headless_output_to(struct wd_server* server, uint32_t width, uint32_t height);
 
 #if WAYDISPLAY_ENABLE_XWAYLAND
 bool wd_xwayland_init(struct wd_server* server);

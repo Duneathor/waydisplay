@@ -201,6 +201,9 @@ struct ClientStats {
     std::atomic<uint64_t> video_last_frame_id_presented{0};
     std::atomic<uint64_t> video_present_latency_samples{0};
     std::atomic<uint64_t> video_present_latency_sum_ns{0};
+    std::atomic<uint64_t> video_gpu_frames_presented{0};
+    std::atomic<uint64_t> video_gpu_present_failures{0};
+    std::atomic<uint64_t> video_gpu_present_fallbacks{0};
     std::atomic<uint64_t> audio_video_sync_holds{0};
     std::atomic<uint64_t> audio_video_sync_hold_start_ns{0};
     std::atomic<uint32_t> audio_video_sync_hold_current_ms{0};
@@ -235,6 +238,9 @@ struct ClientStats {
     std::atomic<uint64_t> tile_assembly_sum_ns{0};
     std::atomic<uint64_t> tile_present_latency_samples{0};
     std::atomic<uint64_t> tile_present_latency_sum_ns{0};
+    std::atomic<uint64_t> tile_present_direct{0};
+    std::atomic<uint64_t> tile_present_overflow_fallbacks{0};
+    std::atomic<uint64_t> tile_present_queue_depth_max{0};
     std::atomic<uint64_t> input_to_present_latency_samples{0};
     std::atomic<uint64_t> input_to_present_latency_sum_ns{0};
     std::atomic<uint64_t> input_sequence_present_latency_samples{0};
@@ -270,6 +276,11 @@ struct ClientStats {
     std::atomic<uint64_t> framebuffer_lock_wait_samples{0};
     std::atomic<uint64_t> framebuffer_lock_wait_sum_ns{0};
     std::atomic<uint64_t> framebuffer_lock_wait_max_ns{0};
+    /* Aggregate mutex wait telemetry. Specific lock families may also keep
+     * dedicated counters for local diagnosis. */
+    std::atomic<uint64_t> lock_wait_samples{0};
+    std::atomic<uint64_t> lock_wait_sum_ns{0};
+    std::atomic<uint64_t> lock_wait_max_ns{0};
     std::atomic<uint64_t> framebuffer_lock_hold_samples{0};
     std::atomic<uint64_t> framebuffer_lock_hold_sum_ns{0};
     std::atomic<uint64_t> framebuffer_lock_hold_max_ns{0};
@@ -352,6 +363,9 @@ struct ClientStatsSnapshot {
     uint64_t video_last_frame_id_presented      = 0;
     uint64_t video_present_latency_samples      = 0;
     uint64_t video_present_latency_sum_ns       = 0;
+    uint64_t video_gpu_frames_presented         = 0;
+    uint64_t video_gpu_present_failures         = 0;
+    uint64_t video_gpu_present_fallbacks        = 0;
     uint64_t audio_video_sync_holds             = 0;
     uint64_t audio_video_sync_drops             = 0;
     uint64_t audio_video_startup_timeouts        = 0;
@@ -398,6 +412,9 @@ struct ClientStatsSnapshot {
     uint64_t tile_assembly_sum_ns               = 0;
     uint64_t tile_present_samples               = 0;
     uint64_t tile_present_sum_ns                = 0;
+    uint64_t tile_present_direct                = 0;
+    uint64_t tile_present_overflow_fallbacks    = 0;
+    uint64_t tile_present_queue_depth_max       = 0;
     uint64_t input_to_present_samples           = 0;
     uint64_t input_to_present_sum_ns            = 0;
     uint64_t input_seq_present_samples          = 0;
@@ -431,6 +448,9 @@ struct ClientStatsSnapshot {
     uint64_t framebuffer_lock_wait_samples      = 0;
     uint64_t framebuffer_lock_wait_sum_ns       = 0;
     uint64_t framebuffer_lock_wait_max_ns       = 0;
+    uint64_t lock_wait_samples                  = 0;
+    uint64_t lock_wait_sum_ns                   = 0;
+    uint64_t lock_wait_max_ns                   = 0;
     uint64_t framebuffer_lock_hold_samples      = 0;
     uint64_t framebuffer_lock_hold_sum_ns       = 0;
     uint64_t framebuffer_lock_hold_max_ns       = 0;

@@ -78,9 +78,12 @@ void test_window_focus_feedback_without_decoder_reset() {
     CHECK(client_window_feedback_flags(false, focused) == 0);
     focused = client_window_focus_after_event(focused, ClientWindowFocusChange::Gained);
     CHECK(focused);
-    CHECK(client_window_feedback_flags(true, focused) == WD_CLIENT_STATS_FLAG_MASK);
+    constexpr uint32_t window_flags =
+        WD_CLIENT_STATS_RENDER_VISIBLE | WD_CLIENT_STATS_WINDOW_FOCUSED;
+    CHECK(client_window_feedback_flags(true, focused) == window_flags);
     CHECK(client_window_feedback_flags(false, focused) == 0);
-    CHECK((WD_CLIENT_STATS_FLAG_MASK & ~((1u << 2) - 1u)) == 0);
+    CHECK((window_flags & WD_CLIENT_STATS_GPU_PRESENT_CAPABLE) == 0);
+    CHECK((WD_CLIENT_STATS_FLAG_MASK & ~((1u << 3) - 1u)) == 0);
     std::puts("PASS: focus events retain visibility and send independent stats flags");
 }
 

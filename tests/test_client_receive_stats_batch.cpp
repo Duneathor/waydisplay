@@ -11,6 +11,13 @@ int main()
     batch.note_interarrival(2'000'000);
     batch.note_interarrival(3'000'000);
     batch.note_jitter(1'000'000);
+    batch.note_tile_present_queue_depth(3);
+    batch.note_tile_present_queue_depth(7);
+    batch.note_tile_present_queue_depth(4);
+    batch.note_tile_present_overflow();
+    batch.note_tile_present_overflow();
+    batch.note_lock_wait(900);
+    batch.note_lock_wait(2'400);
     batch.note_completed_tile(4096, 4, true, 750'000);
     batch.note_completed_tile(2048, 2, false, 0);
     batch.note_completed_tile(512, 1, true, 0);
@@ -19,6 +26,7 @@ int main()
     assert(batch.udp_bytes_rx == 1328);
     assert(batch.udp_interarrival_samples == 2);
     assert(batch.udp_interarrival_sum_ns == 5'000'000);
+    assert(batch.udp_interarrival_max_ns == 3'000'000);
     assert(batch.udp_interarrival_jitter_samples == 1);
     assert(batch.udp_interarrival_jitter_sum_ns == 1'000'000);
     assert(batch.udp_tiles_completed == 3);
@@ -26,5 +34,10 @@ int main()
     assert(batch.udp_completed_packets == 7);
     assert(batch.tile_assembly_samples == 2);
     assert(batch.tile_assembly_sum_ns == 750'000);
+    assert(batch.tile_present_queue_depth_max == 7);
+    assert(batch.tile_present_overflow_fallbacks == 2);
+    assert(batch.lock_wait_samples == 2);
+    assert(batch.lock_wait_sum_ns == 3'300);
+    assert(batch.lock_wait_max_ns == 2'400);
     return 0;
 }

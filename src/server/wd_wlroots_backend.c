@@ -340,8 +340,12 @@ bool wd_wlroots_create_headless_output(struct wd_server* server) {
     return true;
 }
 
-bool wd_wlroots_resize_headless_output(struct wd_server* server) {
-    if (!server || !server->output)
+bool wd_wlroots_resize_headless_output_to(struct wd_server* server, uint32_t width, uint32_t height) {
+    if (!server || width == 0 || height == 0)
+    {
+        return false;
+    }
+    if (!server->output)
     {
         return true;
     }
@@ -350,7 +354,7 @@ bool wd_wlroots_resize_headless_output(struct wd_server* server) {
     wlr_output_state_init(&state);
 
     wlr_output_state_set_enabled(&state, true);
-    wlr_output_state_set_custom_mode(&state, (int)server->display_width, (int)server->display_height, (int)server->output_refresh_mhz);
+    wlr_output_state_set_custom_mode(&state, (int)width, (int)height, (int)server->output_refresh_mhz);
     wlr_output_state_set_scale(&state, server->output_scale);
     wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
 
@@ -374,8 +378,16 @@ bool wd_wlroots_resize_headless_output(struct wd_server* server) {
         wlr_scene_output_set_position(server->scene_output, 0, 0);
     }
 
-    WD_LOG_INFO("updated headless output mode to %ux%u refresh=%.3fHz", server->display_width, server->display_height,
+    WD_LOG_INFO("updated headless output mode to %ux%u refresh=%.3fHz", width, height,
                 (double)server->output_refresh_mhz / 1000.0);
 
     return true;
+}
+
+bool wd_wlroots_resize_headless_output(struct wd_server* server) {
+    if (!server)
+    {
+        return false;
+    }
+    return wd_wlroots_resize_headless_output_to(server, server->display_width, server->display_height);
 }

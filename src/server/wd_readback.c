@@ -193,17 +193,38 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
      * before committing the wlroots output state. Tile ownership and every
      * unsupported GPU path continue through the existing CPU readback below. */
     wd_frame_reset(&server->captured_video_frame);
-    if (wd_stream_video_gpu_capture_needed(server) &&
-        wd_gpu_capture_export_wlr_buffer(state.buffer, 0, &server->captured_video_frame))
+    const bool gpu_capture_requested = wd_stream_video_gpu_capture_needed(server);
+    if (gpu_capture_requested)
     {
-        if (wd_video_gpu_capture_frame_eligible(&server->captured_video_frame,
-                                                server->display_width,
-                                                server->display_height))
+        pthread_mutex_lock(&server->net.lock);
+        server->net.stats.video_gpu_capture_attempts++;
+        pthread_mutex_unlock(&server->net.lock);
+
+        if (wd_gpu_capture_export_wlr_buffer(state.buffer, 0, &server->captured_video_frame))
         {
-            result = WD_RENDER_RESULT_FRAME;
-            goto commit_only;
+            pthread_mutex_lock(&server->net.lock);
+            server->net.stats.video_gpu_export_success++;
+            pthread_mutex_unlock(&server->net.lock);
+
+            if (wd_video_gpu_capture_frame_eligible(&server->captured_video_frame,
+                                                    server->display_width,
+                                                    server->display_height))
+            {
+                result = WD_RENDER_RESULT_FRAME;
+                goto commit_only;
+            }
+
+            pthread_mutex_lock(&server->net.lock);
+            server->net.stats.video_gpu_frame_ineligible++;
+            pthread_mutex_unlock(&server->net.lock);
+            wd_frame_reset(&server->captured_video_frame);
         }
-        wd_frame_reset(&server->captured_video_frame);
+        else
+        {
+            pthread_mutex_lock(&server->net.lock);
+            server->net.stats.video_gpu_export_failed++;
+            pthread_mutex_unlock(&server->net.lock);
+        }
     }
 
     int read_width = state.buffer->width < (int)server->display_width ? state.buffer->width : (int)server->display_width;

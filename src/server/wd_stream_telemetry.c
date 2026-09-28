@@ -61,6 +61,7 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->compression_forced_choices += src->compression_forced_choices;
     dst->compression_ns += src->compression_ns;
     dst->compression_saved_wire_bytes += src->compression_saved_wire_bytes;
+    dst->candidate_prediction_evaluations += src->candidate_prediction_evaluations;
     dst->candidate_prediction_skips += src->candidate_prediction_skips;
     dst->candidate_prediction_probes += src->candidate_prediction_probes;
     dst->stream_mode_frame_samples += src->stream_mode_frame_samples;
@@ -122,6 +123,15 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->video_tcp_bytes_tx += src->video_tcp_bytes_tx;
     dst->video_encode_ns += src->video_encode_ns;
     dst->video_encode_failed += src->video_encode_failed;
+    dst->video_gpu_capture_attempts += src->video_gpu_capture_attempts;
+    dst->video_gpu_export_success += src->video_gpu_export_success;
+    dst->video_gpu_export_failed += src->video_gpu_export_failed;
+    dst->video_gpu_frame_ineligible += src->video_gpu_frame_ineligible;
+    dst->video_gpu_unavailable_frames += src->video_gpu_unavailable_frames;
+    dst->video_gpu_backoff_frames += src->video_gpu_backoff_frames;
+    dst->video_gpu_encode_attempts += src->video_gpu_encode_attempts;
+    dst->video_gpu_encode_success += src->video_gpu_encode_success;
+    dst->video_gpu_encode_failed += src->video_gpu_encode_failed;
     dst->video_tcp_send_failed += src->video_tcp_send_failed;
     dst->video_keyframe_skipped_pending += src->video_keyframe_skipped_pending;
     dst->video_control_frames_tx += src->video_control_frames_tx;
@@ -180,6 +190,8 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->client_render_hidden_reports += src->client_render_hidden_reports;
     dst->client_window_focused_reports += src->client_window_focused_reports;
     dst->client_window_unfocused_reports += src->client_window_unfocused_reports;
+    dst->client_gpu_present_capable_reports += src->client_gpu_present_capable_reports;
+    dst->client_gpu_present_incapable_reports += src->client_gpu_present_incapable_reports;
     if (src->client_udp_interarrival_max_ns > dst->client_udp_interarrival_max_ns)
     {
         dst->client_udp_interarrival_max_ns = src->client_udp_interarrival_max_ns;
@@ -222,6 +234,21 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     }
     dst->client_video_present_latency_samples += src->client_video_present_latency_samples;
     dst->client_video_present_latency_sum_ns += src->client_video_present_latency_sum_ns;
+    dst->client_video_gpu_frames_presented += src->client_video_gpu_frames_presented;
+    dst->client_video_gpu_present_failures += src->client_video_gpu_present_failures;
+    dst->client_video_gpu_present_fallbacks += src->client_video_gpu_present_fallbacks;
+    dst->client_tile_present_direct += src->client_tile_present_direct;
+    dst->client_tile_present_overflow_fallbacks += src->client_tile_present_overflow_fallbacks;
+    if (src->client_tile_present_queue_depth_max > dst->client_tile_present_queue_depth_max)
+    {
+        dst->client_tile_present_queue_depth_max = src->client_tile_present_queue_depth_max;
+    }
+    dst->client_lock_wait_samples += src->client_lock_wait_samples;
+    dst->client_lock_wait_sum_ns += src->client_lock_wait_sum_ns;
+    if (src->client_lock_wait_max_ns > dst->client_lock_wait_max_ns)
+    {
+        dst->client_lock_wait_max_ns = src->client_lock_wait_max_ns;
+    }
     dst->client_audio_messages_rx += src->client_audio_messages_rx;
     dst->client_audio_packets_rx += src->client_audio_packets_rx;
     dst->client_audio_bytes_rx += src->client_audio_bytes_rx;
@@ -368,6 +395,13 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     }
     dst->encode_worker_threads += src->encode_worker_threads;
     dst->encode_thread_wakeups += src->encode_thread_wakeups;
+    dst->encode_completion_depth_samples += src->encode_completion_depth_samples;
+    dst->encode_completion_depth_sum += src->encode_completion_depth_sum;
+    if (src->encode_completion_depth_peak > dst->encode_completion_depth_peak)
+    {
+        dst->encode_completion_depth_peak = src->encode_completion_depth_peak;
+    }
+    dst->encode_completion_push_failures += src->encode_completion_push_failures;
     dst->dirty_tiles_stale_skipped += src->dirty_tiles_stale_skipped;
     dst->retx_tiles_superseded_by_fresh += src->retx_tiles_superseded_by_fresh;
     dst->dirty_queue_age_samples += src->dirty_queue_age_samples;
@@ -639,7 +673,8 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
         s.udp_async_send_failed != 0 || s.udp_async_queued != 0 || s.udp_async_completed != 0 || s.udp_async_completion_failed != 0 ||
         s.udp_async_sqe_exhausted != 0 || s.tile_choice_compressed != 0 || s.tile_choice_uncompressed != 0 || s.compression_attempts != 0 ||
         s.compression_entropy_skips != 0 || s.compression_adaptive_skips != 0 || s.compression_nonwins != 0 ||
-        s.compression_forced_choices != 0 || s.candidate_prediction_skips != 0 || s.candidate_prediction_probes != 0 ||
+        s.compression_forced_choices != 0 || s.candidate_prediction_evaluations != 0 ||
+        s.candidate_prediction_skips != 0 || s.candidate_prediction_probes != 0 ||
         s.dirty_queue_age_samples != 0 || s.retx_queue_age_samples != 0 ||
         s.dirty_region_probes != 0 || s.dirty_region_hits != 0 || s.dirty_budget_blocked != 0 || s.partial_tile_sends != 0 ||
         s.dirty_detect_ns != 0 || s.framebuffer_diff_candidates != 0 || s.dirty_region_select_ns != 0 || s.tile_encode_ns != 0 ||
@@ -656,13 +691,15 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
             "choice_chosen_wire_avg_bytes=%.1f choice_saved_kib=%.1f pressure_drops=%llu async_queued=%llu async_completed=%llu "
             "async_failed=%llu async_completion_failed=%llu async_fallback=%llu async_inflight_max=%llu submit_calls=%llu "
             "partial_submits=%llu pkts_per_submit=%.2f zstd_mode=%s zstd_attempts=%llu zstd_wins=%llu zstd_nonwins=%llu zstd_forced=%llu "
-            "zstd_entropy_skip=%llu zstd_adaptive_skip=%llu predict_skip=%llu predict_probe=%llu zstd_total_ms=%.2f zstd_saved_kib=%.1f "
+            "zstd_entropy_skip=%llu zstd_adaptive_skip=%llu predict_eval=%llu predict_skip=%llu predict_probe=%llu "
+            "predict_skip_pct=%.1f predict_probe_pct=%.1f zstd_total_ms=%.2f zstd_saved_kib=%.1f "
             "dirty_q_avg_ms=%.2f retx_q_avg_ms=%.2f "
             "dirty_region_probes=%llu dirty_region_hits=%llu dirty_budget_blocked=%llu dirty_budget_blocked_full_refresh=%llu "
             "partial_tiles=%llu partial_pkts=%llu detect_total_ms=%.2f diff_candidates=%llu diff_changed=%llu diff_unchanged=%llu diff_full=%llu "
             "diff_total_ms=%.2f region_pick_total_ms=%.2f encode_total_ms=%.2f udp_send_total_ms=%.2f summary_total_ms=%.2f "
             "tile_sizes=128x64:%llu,64x64:%llu,32x32:%llu,16x16:%llu encode_jobs=%llu/%llu stale=%llu encode_wait_total_ms=%.2f "
-            "encode_worker_total_ms=%.2f encode_batches=%llu encode_batch_peak=%llu encode_workers_avg=%.1f encode_wakeups=%llu",
+            "encode_worker_total_ms=%.2f encode_batches=%llu encode_batch_peak=%llu encode_workers_avg=%.1f encode_wakeups=%llu "
+            "completion_q_avg=%.2f completion_q_peak=%llu completion_push_fail=%llu",
             (unsigned long long)s.dirty_tiles, (unsigned long long)s.dirty_tiles_stale_skipped, (unsigned long long)s.udp_tiles_sent,
             (unsigned long long)s.udp_fresh_tiles_sent, (unsigned long long)s.udp_retx_tiles_sent, (unsigned long long)s.udp_packets_sent,
             (double)s.udp_bytes_sent / 1024.0, (double)s.udp_fresh_bytes_sent / 1024.0,
@@ -686,8 +723,15 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
             wd_tile_compression_benchmark_mode_name(compression_benchmark_mode), (unsigned long long)s.compression_attempts,
             (unsigned long long)s.compression_wins, (unsigned long long)s.compression_nonwins,
             (unsigned long long)s.compression_forced_choices, (unsigned long long)s.compression_entropy_skips,
-            (unsigned long long)s.compression_adaptive_skips, (unsigned long long)s.candidate_prediction_skips,
-            (unsigned long long)s.candidate_prediction_probes, (double)s.compression_ns / 1000000.0,
+            (unsigned long long)s.compression_adaptive_skips, (unsigned long long)s.candidate_prediction_evaluations,
+            (unsigned long long)s.candidate_prediction_skips, (unsigned long long)s.candidate_prediction_probes,
+            s.candidate_prediction_evaluations
+                ? (double)s.candidate_prediction_skips * 100.0 / (double)s.candidate_prediction_evaluations
+                : 0.0,
+            s.candidate_prediction_evaluations
+                ? (double)s.candidate_prediction_probes * 100.0 / (double)s.candidate_prediction_evaluations
+                : 0.0,
+            (double)s.compression_ns / 1000000.0,
             (double)s.compression_saved_wire_bytes / 1024.0, wd_avg_ms(s.dirty_queue_age_sum_ns, s.dirty_queue_age_samples),
             wd_avg_ms(s.retx_queue_age_sum_ns, s.retx_queue_age_samples), (unsigned long long)s.dirty_region_probes,
             (unsigned long long)s.dirty_region_hits, (unsigned long long)s.dirty_budget_blocked,
@@ -702,7 +746,12 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
             (unsigned long long)s.encode_jobs_submitted, (unsigned long long)s.encode_jobs_stale, (double)s.encode_wait_ns / 1000000.0,
             (double)s.encode_worker_ns / 1000000.0, (unsigned long long)s.encode_batches, (unsigned long long)s.encode_batch_jobs_peak,
             s.encode_batches ? (double)s.encode_worker_threads / (double)s.encode_batches : 0.0,
-            (unsigned long long)s.encode_thread_wakeups);
+            (unsigned long long)s.encode_thread_wakeups,
+            s.encode_completion_depth_samples
+                ? (double)s.encode_completion_depth_sum / (double)s.encode_completion_depth_samples
+                : 0.0,
+            (unsigned long long)s.encode_completion_depth_peak,
+            (unsigned long long)s.encode_completion_push_failures);
     }
 
     if (s.server_frame_timer_samples != 0 || s.server_render_readback_samples != 0)
@@ -752,7 +801,8 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                                  s.video_keyframe_attempts != 0 || s.video_keyframes_tx != 0 || s.video_tcp_bytes_tx != 0 ||
                                  s.video_encode_failed != 0 || s.video_tcp_send_failed != 0 || s.video_keyframe_skipped_pending != 0 ||
                                  s.video_control_frames_tx != 0 || s.video_end_of_stream_tx != 0 || s.video_resize_resets != 0 ||
-                                 s.video_resets != 0;
+                                 s.video_resets != 0 || s.video_gpu_capture_attempts != 0 || s.video_gpu_unavailable_frames != 0 ||
+                                 s.video_gpu_backoff_frames != 0 || s.video_gpu_encode_attempts != 0;
     if (video_stream_activity)
     {
         WD_LOG_STATS("video-admission/interval: considered=%llu preflight_accepted=%llu "
@@ -806,6 +856,26 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
             (double)s.video_tcp_bytes_tx / 1024.0, (double)s.video_encode_ns / 1000000.0, (unsigned long long)s.video_encode_failed,
             (unsigned long long)s.video_tcp_send_failed, (unsigned long long)s.video_keyframe_skipped_pending,
             (unsigned long long)s.video_resets, (unsigned long long)s.video_resize_resets);
+
+        if (s.video_gpu_capture_attempts != 0 || s.video_gpu_unavailable_frames != 0 ||
+            s.video_gpu_backoff_frames != 0 || s.video_gpu_encode_attempts != 0)
+        {
+            WD_LOG_STATS(
+                "video-gpu/interval: capture_attempts=%llu export_ok=%llu export_failed=%llu ineligible=%llu "
+                "import_unavailable=%llu backoff_frames=%llu encode_attempts=%llu encode_ok=%llu encode_failed=%llu zero_copy_pct=%.1f",
+                (unsigned long long)s.video_gpu_capture_attempts,
+                (unsigned long long)s.video_gpu_export_success,
+                (unsigned long long)s.video_gpu_export_failed,
+                (unsigned long long)s.video_gpu_frame_ineligible,
+                (unsigned long long)s.video_gpu_unavailable_frames,
+                (unsigned long long)s.video_gpu_backoff_frames,
+                (unsigned long long)s.video_gpu_encode_attempts,
+                (unsigned long long)s.video_gpu_encode_success,
+                (unsigned long long)s.video_gpu_encode_failed,
+                s.video_gpu_encode_attempts
+                    ? (double)s.video_gpu_encode_success * 100.0 / (double)s.video_gpu_encode_attempts
+                    : 0.0);
+        }
     }
 
     bool repair_activity = s.retx_req_rx != 0 || s.retx_tiles_req != 0 || s.retx_req_ignored_live != 0 ||
@@ -833,25 +903,34 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                            s.client_old_generation_tiles != 0 || s.client_retx_requests_tx != 0 || s.client_udp_interarrival_samples != 0 ||
                            s.client_render_frames != 0 || s.client_present_samples != 0 || s.client_input_present_samples != 0 ||
                            s.client_render_visible_reports != 0 || s.client_render_hidden_reports != 0 ||
-                           s.client_tile_frames_presented != 0;
+                           s.client_tile_frames_presented != 0 || s.client_tile_present_direct != 0 ||
+                           s.client_tile_present_overflow_fallbacks != 0 || s.client_lock_wait_samples != 0;
     if (client_activity)
     {
-        WD_LOG_STATS("client/interval: reports=%llu visible=%llu hidden=%llu completed=%llu udp_kib=%.1f partial_timeouts=%llu old_gen=%llu "
-                     "retx_req_tx=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f remote_render_frames=%llu "
-                     "tile_presented=%llu present_avg_ms=%.2f present_max_ms=%.2f input_present_avg_ms=%.2f",
+        WD_LOG_STATS("client/interval: reports=%llu visible=%llu hidden=%llu gpu_capable=%llu/%llu completed=%llu udp_kib=%.1f "
+                     "partial_timeouts=%llu old_gen=%llu retx_req_tx=%llu interarrival_avg_ms=%.2f jitter_avg_ms=%.2f max_gap_ms=%.2f "
+                     "remote_render_frames=%llu tile_presented=%llu tile_direct=%llu tile_fallback=%llu tile_q_peak=%u "
+                     "present_avg_ms=%.2f present_max_ms=%.2f input_present_avg_ms=%.2f lock_wait_avg_us=%.2f lock_wait_max_us=%.2f",
                      (unsigned long long)s.client_stats_rx, (unsigned long long)s.client_render_visible_reports,
-                     (unsigned long long)s.client_render_hidden_reports, (unsigned long long)s.client_tiles_completed,
+                     (unsigned long long)s.client_render_hidden_reports, (unsigned long long)s.client_gpu_present_capable_reports,
+                     (unsigned long long)s.client_gpu_present_incapable_reports, (unsigned long long)s.client_tiles_completed,
                      (double)s.client_udp_bytes_rx / 1024.0, (unsigned long long)s.client_partial_tiles_timed_out,
                      (unsigned long long)s.client_old_generation_tiles, (unsigned long long)s.client_retx_requests_tx,
                      wd_avg_ms(s.client_udp_interarrival_sum_ns, s.client_udp_interarrival_samples),
                      wd_avg_ms(s.client_udp_interarrival_jitter_sum_ns, s.client_udp_interarrival_jitter_samples),
                      (double)s.client_udp_interarrival_max_ns / 1000000.0, (unsigned long long)s.client_render_frames,
-                     (unsigned long long)s.client_tile_frames_presented, wd_avg_ms(s.client_present_sum_ns, s.client_present_samples),
-                     (double)s.client_present_max_ns / 1000000.0, wd_avg_ms(s.client_input_present_sum_ns, s.client_input_present_samples));
+                     (unsigned long long)s.client_tile_frames_presented, (unsigned long long)s.client_tile_present_direct,
+                     (unsigned long long)s.client_tile_present_overflow_fallbacks,
+                     (unsigned)s.client_tile_present_queue_depth_max,
+                     wd_avg_ms(s.client_present_sum_ns, s.client_present_samples),
+                     (double)s.client_present_max_ns / 1000000.0, wd_avg_ms(s.client_input_present_sum_ns, s.client_input_present_samples),
+                     s.client_lock_wait_samples ? (double)s.client_lock_wait_sum_ns / (double)s.client_lock_wait_samples / 1000.0 : 0.0,
+                     (double)s.client_lock_wait_max_ns / 1000.0);
     }
 
     if (s.client_video_messages_rx != 0 || s.client_video_data_frames_rx != 0 || s.client_video_frames_rx != 0 ||
-        s.client_video_frames_decoded != 0 || s.client_video_frames_presented != 0 || s.client_video_decode_failed != 0 ||
+        s.client_video_frames_decoded != 0 || s.client_video_frames_presented != 0 || s.client_video_gpu_frames_presented != 0 ||
+        s.client_video_gpu_present_failures != 0 || s.client_video_gpu_present_fallbacks != 0 || s.client_video_decode_failed != 0 ||
         s.client_video_publish_failed != 0 || s.client_video_control_frames_rx != 0 || s.client_video_invalid_frames_rx != 0 ||
         s.client_video_stale_frames_dropped != 0 || s.client_video_need_keyframe_drops != 0 || s.client_video_decoder_resets != 0 ||
         s.client_video_queue_depth != 0 || s.client_video_queue_overflow_drops != 0 ||
@@ -891,6 +970,17 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      (unsigned long long)s.audio_encoded_packets, (double)s.audio_encoded_bytes / 1024.0,
                      (unsigned long long)s.audio_capture_overruns, (unsigned long long)s.audio_queue_drops,
                      (unsigned long long)s.audio_discontinuities, (unsigned long long)s.audio_encode_failures);
+    }
+
+    if (s.client_video_gpu_frames_presented != 0 || s.client_video_gpu_present_failures != 0 ||
+        s.client_video_gpu_present_fallbacks != 0 || s.client_gpu_present_capable_reports != 0)
+    {
+        WD_LOG_STATS("client-gpu-present/interval: frames=%llu failures=%llu fallbacks=%llu capable_reports=%llu incapable_reports=%llu",
+                     (unsigned long long)s.client_video_gpu_frames_presented,
+                     (unsigned long long)s.client_video_gpu_present_failures,
+                     (unsigned long long)s.client_video_gpu_present_fallbacks,
+                     (unsigned long long)s.client_gpu_present_capable_reports,
+                     (unsigned long long)s.client_gpu_present_incapable_reports);
     }
 
     if (s.client_audio_messages_rx != 0 || s.client_audio_packets_rx != 0 || s.client_audio_decode_failed != 0 ||

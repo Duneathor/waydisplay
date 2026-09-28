@@ -31,6 +31,20 @@ struct ClientReceiveState {
 
 namespace {
 
+std::unique_lock<std::mutex> lock_with_contention_sample(std::mutex& mutex,
+                                                         ClientReceiveStatsBatch& batch) {
+    std::unique_lock<std::mutex> lock(mutex, std::defer_lock);
+    if (lock.try_lock())
+    {
+        return lock;
+    }
+
+    const uint64_t started_ns = wd_now_ns();
+    lock.lock();
+    batch.note_lock_wait(wd_now_ns() - started_ns);
+    return lock;
+}
+
 bool tile_upload_geometry(const ClientState& state, uint16_t tile_id, uint16_t tile_width,
                           uint16_t tile_height, const std::vector<uint8_t>& tile_bytes,
                           ClientDirtyRect& dirty_rect) {
@@ -237,7 +251,6 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
     {
         const uint64_t interarrival_ns = packet_rx_ns - prev_rx_ns;
         batch.note_interarrival(interarrival_ns);
-        record_atomic_max(state.stats.udp_interarrival_max_ns, interarrival_ns);
 
         const uint64_t prev_interarrival_ns = state.stats.last_udp_interarrival_ns.exchange(interarrival_ns, std::memory_order_relaxed);
         if (prev_interarrival_ns != 0)
@@ -260,7 +273,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
     ClientDirtyRect dirty_rect{};
     bool            wake_render = false;
     {
-        std::lock_guard<std::mutex> content_lock(state.remote_content_mutex);
+        auto content_lock = lock_with_contention_sample(state.remote_content_mutex, batch);
         if (completed.content_epoch != state.remote_content_epoch || state.remote_content_owner != WD_CLIENT_CONTENT_OWNER_TILES) [[unlikely]]
         {
             reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
@@ -280,7 +293,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
 
         bool queued_direct = false;
         {
-            std::lock_guard<std::mutex> upload_lock(state.tile_present_mutex);
+            auto upload_lock = lock_with_contention_sample(state.tile_present_mutex, batch);
             const bool queue_was_empty = state.tile_present_queue.empty();
             ClientTileUpload upload;
             upload.rect          = dirty_rect;
@@ -291,8 +304,9 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
             queued_direct = state.tile_present_queue.push(std::move(upload));
             if (queued_direct)
             {
-                state.pending_tile_upload_count.store(state.tile_present_queue.size(),
-                                                      std::memory_order_release);
+                const uint64_t queue_depth = state.tile_present_queue.size();
+                state.pending_tile_upload_count.store(queue_depth, std::memory_order_release);
+                batch.note_tile_present_queue_depth(queue_depth);
                 wake_render = queue_was_empty;
             }
             else
@@ -303,11 +317,12 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
 
         if (!queued_direct)
         {
+            batch.note_tile_present_overflow();
             /* Bounded-queue overflow retains the old framebuffer path. It is
              * slower but lossless, so renderer backpressure cannot create a
              * visual hole or advance generations without presentable pixels. */
             {
-                std::lock_guard<std::mutex> framebuffer_lock(state.framebuffer_mutex);
+                auto framebuffer_lock = lock_with_contention_sample(state.framebuffer_mutex, batch);
                 if (!blit_tile_xrgb8888(state, completed.tile_width,
                                         completed.tile_bytes, dirty_rect)) [[unlikely]]
                 {
@@ -319,7 +334,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
             }
             reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
 
-            std::lock_guard<std::mutex> dirty_lock(state.dirty_rect_mutex);
+            auto dirty_lock = lock_with_contention_sample(state.dirty_rect_mutex, batch);
             const bool dirty_was_empty = state.pending_dirty_tiles.dirty_tile_count() == 0;
             if (!state.pending_dirty_tiles.mark_rect(dirty_rect)) [[unlikely]]
             {
@@ -405,6 +420,7 @@ void publish_receive_stats_batch(ClientState& state, const ClientReceiveStatsBat
     {
         state.stats.udp_interarrival_samples.fetch_add(batch.udp_interarrival_samples, std::memory_order_relaxed);
         state.stats.udp_interarrival_sum_ns.fetch_add(batch.udp_interarrival_sum_ns, std::memory_order_relaxed);
+        record_atomic_max(state.stats.udp_interarrival_max_ns, batch.udp_interarrival_max_ns);
     }
     if (batch.udp_interarrival_jitter_samples != 0)
     {
@@ -421,6 +437,21 @@ void publish_receive_stats_batch(ClientState& state, const ClientReceiveStatsBat
         state.stats.udp_completed_compressed_bytes.fetch_add(batch.udp_completed_compressed_bytes, std::memory_order_relaxed);
         state.stats.udp_completed_packets.fetch_add(batch.udp_completed_packets, std::memory_order_relaxed);
         state.stats.udp_tiles_completed.fetch_add(batch.udp_tiles_completed, std::memory_order_relaxed);
+    }
+    if (batch.tile_present_overflow_fallbacks != 0)
+    {
+        state.stats.tile_present_overflow_fallbacks.fetch_add(batch.tile_present_overflow_fallbacks,
+                                                              std::memory_order_relaxed);
+    }
+    if (batch.tile_present_queue_depth_max != 0)
+    {
+        record_atomic_max(state.stats.tile_present_queue_depth_max, batch.tile_present_queue_depth_max);
+    }
+    if (batch.lock_wait_samples != 0)
+    {
+        state.stats.lock_wait_samples.fetch_add(batch.lock_wait_samples, std::memory_order_relaxed);
+        state.stats.lock_wait_sum_ns.fetch_add(batch.lock_wait_sum_ns, std::memory_order_relaxed);
+        record_atomic_max(state.stats.lock_wait_max_ns, batch.lock_wait_max_ns);
     }
 }
 

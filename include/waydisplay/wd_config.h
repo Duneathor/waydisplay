@@ -51,7 +51,7 @@ extern "C" {
 #define WD_DISPLAY_WIDTH  800u
 #define WD_DISPLAY_HEIGHT 600u
 
-/* Protocol zero uses 16-bit base-tile IDs and counts. Keep the advertised
+/* Protocol v1 uses 16-bit base-tile IDs and counts. Keep the advertised
  * render surface within a documented 4K-class envelope that is safely
  * representable by the fixed 16x16 base grid. */
 #define WD_MAX_RENDER_WIDTH  4096u

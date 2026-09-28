@@ -2820,6 +2820,7 @@ struct wd_parallel_encode_job {
     uint64_t                          compression_forced_choices;
     uint64_t                          compression_ns;
     uint64_t                          compression_saved_wire_bytes;
+    uint64_t                          candidate_prediction_evaluations;
     uint64_t                          candidate_prediction_skips;
     uint64_t                          candidate_prediction_probes;
     struct wd_parallel_encode_result* result;
@@ -2845,6 +2846,10 @@ struct wd_parallel_encode_batch {
     uint16_t                           next_job;
     uint16_t                           completed_jobs;
     struct wd_encode_completion_queue  completions;
+    uint64_t                           completion_depth_samples;
+    uint64_t                           completion_depth_sum;
+    uint16_t                           completion_depth_peak;
+    uint16_t                           completion_push_failures;
     bool                               active;
 };
 
@@ -3644,6 +3649,7 @@ static bool wd_stream_prediction_allows_candidate(struct wd_parallel_encode_job*
     const uint16_t normalized_payload =
         wd_tile_normalize_udp_payload_target(job->udp_payload_target, WD_UDP_PAYLOAD_TARGET, WD_UDP_TILE_PAYLOAD_MAX);
     bool probe = false;
+    job->candidate_prediction_evaluations++;
     const bool attempt = wd_tile_payload_predictor_should_attempt(
         &worker->payload_predictors[wd_stream_compression_advisor_index(tile_width, tile_height)], uncompressed_size,
         (uint32_t)wire_limit, normalized_payload, WD_UDP_TILE_HEADER_MIN_SIZE,
@@ -3853,7 +3859,20 @@ static void* wd_stream_encoder_worker_main(void* data) {
         wd_stream_parallel_encode_one_job(&batch->jobs[index], worker);
 
         pthread_mutex_lock(&pool->lock);
-        (void)wd_encode_completion_queue_push(&batch->completions, index);
+        if (wd_encode_completion_queue_push(&batch->completions, index))
+        {
+            const uint16_t depth = wd_encode_completion_queue_size(&batch->completions);
+            batch->completion_depth_samples++;
+            batch->completion_depth_sum += depth;
+            if (depth > batch->completion_depth_peak)
+            {
+                batch->completion_depth_peak = depth;
+            }
+        }
+        else
+        {
+            batch->completion_push_failures++;
+        }
         batch->completed_jobs++;
         if (batch->completed_jobs >= batch->job_count)
         {
@@ -4095,6 +4114,7 @@ static void wd_stream_note_encode_job_stats_locked(struct wd_net_state* net, con
     net->stats.compression_forced_choices += job->compression_forced_choices;
     net->stats.compression_ns += job->compression_ns;
     net->stats.compression_saved_wire_bytes += job->compression_saved_wire_bytes;
+    net->stats.candidate_prediction_evaluations += job->candidate_prediction_evaluations;
     net->stats.candidate_prediction_skips += job->candidate_prediction_skips;
     net->stats.candidate_prediction_probes += job->candidate_prediction_probes;
 }
@@ -4162,6 +4182,13 @@ static void wd_stream_end_encode_batch_locked(struct wd_server* server, struct w
     pthread_mutex_unlock(&net->lock);
     wd_stream_encoder_pool_finish(server, batch);
     pthread_mutex_lock(&net->lock);
+    net->stats.encode_completion_depth_samples += batch->completion_depth_samples;
+    net->stats.encode_completion_depth_sum += batch->completion_depth_sum;
+    if (batch->completion_depth_peak > net->stats.encode_completion_depth_peak)
+    {
+        net->stats.encode_completion_depth_peak = batch->completion_depth_peak;
+    }
+    net->stats.encode_completion_push_failures += batch->completion_push_failures;
     net->encoder_batch_active = false;
     pthread_cond_broadcast(&net->encoder_idle_cond);
 }
