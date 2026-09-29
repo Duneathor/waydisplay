@@ -81,6 +81,10 @@ struct wd_async_tcp_sender {
     uint16_t last_transport_message_type;
 };
 
+static bool wd_async_tcp_sender_available(const struct wd_async_tcp_sender* sender) {
+    return sender && (sender->ring_ready || sender->syscall_fallback);
+}
+
 static void wd_async_tcp_record_transport_failure(struct wd_async_tcp_sender* sender,
                                                   const struct wd_async_tcp_message* msg, int result) {
     if (!sender)
@@ -296,7 +300,11 @@ static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, stru
     struct io_uring_sqe* sqe = io_uring_get_sqe(&sender->ring);
     if (!sqe)
     {
-        return false;
+        WD_LOG_WARN("server io_uring TCP SQ unavailable for fd=%d message_type=%u; switching to nonblocking syscall fallback",
+                    msg->fd, msg->message_type);
+        wd_async_tcp_retire_ring(sender);
+        sender->syscall_fallback = true;
+        return true;
     }
 
     size_t send_size = 0;
@@ -371,14 +379,19 @@ static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, stru
     const enum wd_async_tcp_submit_progress submit_progress = wd_async_tcp_flush_submit(sender, &submit_result);
     if (submit_progress == WD_ASYNC_TCP_SUBMIT_FAILED)
     {
-        wd_async_tcp_record_transport_failure(sender, msg, submit_result);
+        /* io_uring_submit() is a local backend operation. A fatal submit
+         * result does not prove that the socket peer failed, so retire the
+         * ring and preserve the queued message for the syscall fallback. */
+        WD_LOG_WARN("server io_uring TCP submit failed: result=%d fd=%d message_type=%u; switching to nonblocking syscall fallback",
+                    submit_result, msg->fd, msg->message_type);
         wd_async_tcp_retire_ring(sender);
         msg->submitted = false;
         if (sender->inflight > 0)
         {
             sender->inflight--;
         }
-        return false;
+        sender->syscall_fallback = true;
+        return true;
     }
 
     return true;
@@ -502,7 +515,7 @@ bool wd_async_tcp_send_prepared_message(struct wd_async_tcp_sender* sender, int 
     {
         return false;
     }
-    if (!sender || !sender->ring_ready || fd < 0)
+    if (!wd_async_tcp_sender_available(sender) || fd < 0)
     {
         wd_async_tcp_message_destroy(msg);
         return false;
@@ -621,7 +634,7 @@ bool wd_async_tcp_send_owned_message_ex(struct wd_async_tcp_sender* sender, int 
                                         const void* prefix, uint32_t prefix_size, struct wd_buffer* payload,
                                         size_t payload_offset, uint32_t payload_size,
                                         wd_async_tcp_complete_fn complete, void* user_data) {
-    if (!sender || !sender->ring_ready || fd < 0)
+    if (!wd_async_tcp_sender_available(sender) || fd < 0)
     {
         return false;
     }
@@ -708,7 +721,7 @@ bool wd_async_tcp_sender_create(struct wd_async_tcp_sender** out_sender, uint32_
 }
 
 void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
-    if (!sender || !sender->ring_ready)
+    if (!sender)
     {
         return;
     }
@@ -716,6 +729,11 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
     if (sender->syscall_fallback && sender->inflight == 0)
     {
         (void)wd_async_tcp_progress_syscall_fallback(sender);
+        return;
+    }
+
+    if (!sender->ring_ready)
+    {
         return;
     }
 
@@ -729,18 +747,18 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
         }
         if (submit_progress == WD_ASYNC_TCP_SUBMIT_FAILED)
         {
-            struct wd_async_tcp_message* failed_msg = sender->pending_head;
-            wd_async_tcp_record_transport_failure(sender, failed_msg, submit_result);
+            struct wd_async_tcp_message* pending_msg = sender->pending_head;
+            WD_LOG_WARN("server io_uring TCP resubmit failed: result=%d fd=%d message_type=%u; switching to nonblocking syscall fallback",
+                        submit_result, pending_msg ? pending_msg->fd : -1,
+                        pending_msg ? pending_msg->message_type : 0);
             wd_async_tcp_retire_ring(sender);
-            if (failed_msg)
+            if (pending_msg)
             {
-                failed_msg->submitted = false;
-                sender->inflight = 0;
-                sender->failed++;
-                wd_async_tcp_pending_remove(sender, failed_msg);
-                wd_async_tcp_complete_message(failed_msg, false);
-                wd_async_tcp_message_destroy(failed_msg);
+                pending_msg->submitted = false;
             }
+            sender->inflight = 0;
+            sender->syscall_fallback = true;
+            (void)wd_async_tcp_progress_syscall_fallback(sender);
             return;
         }
     }
@@ -824,6 +842,13 @@ void wd_async_tcp_sender_reap(struct wd_async_tcp_sender* sender) {
             }
         }
 
+        /* submit_message may retire the ring while handling this CQE.
+         * queue_exit consumes the CQ state, so never touch the retired ring. */
+        if (!sender->ring_ready)
+        {
+            cqe = NULL;
+            break;
+        }
         io_uring_cqe_seen(&sender->ring, cqe);
         cqe = NULL;
     }
@@ -848,7 +873,7 @@ static bool wd_async_tcp_sender_bind_socket(struct wd_async_tcp_sender* sender, 
 
 bool wd_async_tcp_send_message_ex(struct wd_async_tcp_sender* sender, int fd, uint16_t message_type, const void* payload,
                                   uint32_t payload_size, wd_async_tcp_complete_fn complete, void* user_data) {
-    if (!sender || !sender->ring_ready || fd < 0)
+    if (!wd_async_tcp_sender_available(sender) || fd < 0)
     {
         return false;
     }
@@ -899,7 +924,7 @@ bool wd_async_tcp_send_message(struct wd_async_tcp_sender* sender, int fd, uint1
 }
 
 bool wd_async_tcp_sender_can_queue(const struct wd_async_tcp_sender* sender, uint32_t payload_size) {
-    if (!sender || !sender->ring_ready)
+    if (!wd_async_tcp_sender_available(sender))
     {
         return false;
     }

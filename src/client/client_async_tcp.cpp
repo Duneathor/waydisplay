@@ -290,13 +290,17 @@ Message* create_message(int fd, uint16_t message_type, const void* payload, uint
     return msg;
 }
 
-wd_async_tcp_submit_progress flush_submit_locked(ClientAsyncTcpSender* sender) {
+wd_async_tcp_submit_progress flush_submit_locked(ClientAsyncTcpSender* sender, int* out_result = nullptr) {
     if (!sender || !sender->ring_ready)
     {
         return WD_ASYNC_TCP_SUBMIT_FAILED;
     }
 
     const int rc = io_uring_submit(&sender->ring);
+    if (out_result)
+    {
+        *out_result = rc;
+    }
     const wd_async_tcp_submit_progress progress = wd_async_tcp_submit_result(rc);
     sender->submit_retry_pending = progress == WD_ASYNC_TCP_SUBMIT_RETRY;
     return progress;
@@ -321,7 +325,11 @@ bool submit_message_locked(ClientAsyncTcpSender* sender, Message* msg) {
     io_uring_sqe* sqe = io_uring_get_sqe(&sender->ring);
     if (!sqe)
     {
-        return false;
+        WD_LOG_WARN("client io_uring TCP SQ unavailable for fd=%d message_type=%u; switching to nonblocking syscall fallback",
+                    msg->fd, msg->message_type);
+        retire_ring_locked(sender);
+        sender->syscall_fallback = true;
+        return true;
     }
 
     io_uring_prep_send(sqe, sender->socket_pin.io_fd, msg->bytes.data() + msg->bytes_sent, msg->bytes.size() - msg->bytes_sent, MSG_NOSIGNAL);
@@ -334,19 +342,23 @@ bool submit_message_locked(ClientAsyncTcpSender* sender, Message* msg) {
         sender->inflight_max = sender->inflight;
     }
 
-    const wd_async_tcp_submit_progress submit_progress = flush_submit_locked(sender);
+    int submit_result = 0;
+    const wd_async_tcp_submit_progress submit_progress = flush_submit_locked(sender, &submit_result);
     if (submit_progress == WD_ASYNC_TCP_SUBMIT_FAILED)
     {
-        /* A prepared SQE may already have been published to the userspace SQ
-         * ring when io_uring_submit() reports a fatal enter error. Retire the
-         * ring before releasing the message that the SQE references. */
+        /* io_uring_submit() failing is a local backend failure, not proof of
+         * a broken peer. Retire the ring before reusing the retained message
+         * through the nonblocking syscall fallback. */
+        WD_LOG_WARN("client io_uring TCP submit failed: result=%d fd=%d message_type=%u; switching to nonblocking syscall fallback",
+                    submit_result, msg->fd, msg->message_type);
         retire_ring_locked(sender);
         msg->submitted = false;
         if (sender->inflight > 0)
         {
             sender->inflight--;
         }
-        return false;
+        sender->syscall_fallback = true;
+        return true;
     }
 
     return true;
@@ -378,7 +390,7 @@ bool try_start_head_locked(ClientAsyncTcpSender* sender) {
 }
 
 void reap_locked(ClientAsyncTcpSender* sender) {
-    if (!sender || !sender->ring_ready)
+    if (!sender)
     {
         return;
     }
@@ -389,30 +401,32 @@ void reap_locked(ClientAsyncTcpSender* sender) {
         return;
     }
 
+    if (!sender->ring_ready)
+    {
+        return;
+    }
+
     if (sender->submit_retry_pending)
     {
-        const wd_async_tcp_submit_progress submit_progress = flush_submit_locked(sender);
+        int submit_result = 0;
+        const wd_async_tcp_submit_progress submit_progress = flush_submit_locked(sender, &submit_result);
         if (submit_progress == WD_ASYNC_TCP_SUBMIT_RETRY)
         {
             return;
         }
         if (submit_progress == WD_ASYNC_TCP_SUBMIT_FAILED)
         {
-            Message* failed = sender->head;
-            sender->failed++;
-            sender->fatal = true;
-            if (failed)
-            {
-                (void)wd_socket_pin_shutdown(&sender->socket_pin);
-            }
+            Message* pending = sender->head;
+            WD_LOG_WARN("client io_uring TCP resubmit failed: result=%d fd=%d message_type=%u; switching to nonblocking syscall fallback",
+                        submit_result, pending ? pending->fd : -1, pending ? pending->message_type : 0);
             retire_ring_locked(sender);
-            if (failed)
+            if (pending)
             {
-                failed->submitted = false;
-                sender->inflight = 0;
-                pending_remove(sender, failed);
-                delete failed;
+                pending->submitted = false;
             }
+            sender->inflight = 0;
+            sender->syscall_fallback = true;
+            (void)progress_syscall_fallback_locked(sender);
             return;
         }
     }
@@ -492,6 +506,13 @@ void reap_locked(ClientAsyncTcpSender* sender) {
             }
         }
 
+        /* submit_message may retire the ring while handling this CQE.
+         * queue_exit consumes the CQ state, so never touch the retired ring. */
+        if (!sender->ring_ready)
+        {
+            cqe = nullptr;
+            break;
+        }
         io_uring_cqe_seen(&sender->ring, cqe);
         cqe = nullptr;
     }

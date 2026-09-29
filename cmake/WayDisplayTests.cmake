@@ -1338,6 +1338,17 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     add_test(
+        NAME waydisplay.async_tcp_submit_fallback_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_async_tcp_submit_fallback_contract.cmake
+    )
+    set_tests_properties(waydisplay.async_tcp_submit_fallback_contract PROPERTIES
+        LABELS "unit;network;threading;cmake"
+        TIMEOUT 10
+    )
+
+    add_test(
         NAME waydisplay.video_session_mode_transition_contract
         COMMAND ${CMAKE_COMMAND}
             -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
