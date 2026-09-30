@@ -95,6 +95,25 @@ uint32_t wd_tile_visible_height_for_tile(uint32_t display_height, uint16_t tile_
     return remaining < tile_height ? remaining : tile_height;
 }
 
+bool wd_tile_id_for_pixel(uint32_t x, uint32_t y, uint16_t tiles_x, uint16_t total_tiles,
+                          uint16_t tile_width, uint16_t tile_height, uint16_t* out_tile_id) {
+    if (!out_tile_id || tiles_x == 0 || total_tiles == 0 || tile_width == 0 || tile_height == 0)
+    {
+        return false;
+    }
+
+    const uint64_t tile_x = (uint64_t)x / tile_width;
+    const uint64_t tile_y = (uint64_t)y / tile_height;
+    const uint64_t tile_id = tile_y * tiles_x + tile_x;
+    if (tile_x >= tiles_x || tile_id >= total_tiles || tile_id > UINT16_MAX)
+    {
+        return false;
+    }
+
+    *out_tile_id = (uint16_t)tile_id;
+    return true;
+}
+
 uint32_t wd_tile_start_x_for(uint16_t tile_id, uint16_t tiles_x) {
     return wd_tile_start_x_for_tile(tile_id, tiles_x, WD_TILE_WIDTH);
 }
@@ -121,16 +140,21 @@ static bool wd_tile_layout_is_valid(uint32_t framebuffer_width, uint32_t framebu
         return false;
     }
 
-    /* Extraction uses a uint32_t byte count; reject sizes that would wrap it. */
-    return (uint64_t)tile_width * tile_height * WD_BYTES_PER_PIXEL <= UINT32_MAX;
+    /* Extraction uses a uint32_t tile byte count, while framebuffer pointer
+     * arithmetic must remain representable by size_t on this architecture. */
+    const uint64_t tile_bytes = (uint64_t)tile_width * tile_height * WD_BYTES_PER_PIXEL;
+    const uint64_t framebuffer_pixels = (uint64_t)framebuffer_width * framebuffer_height;
+    return tile_bytes <= UINT32_MAX && framebuffer_pixels <= SIZE_MAX / sizeof(uint32_t);
 }
 
-uint32_t wd_fnv1a_tile_hash_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
-                                              uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width,
-                                              uint16_t tile_height) {
-    if (!framebuffer_xrgb8888 || !wd_tile_layout_is_valid(framebuffer_width, framebuffer_height, tiles_x, total_tiles, tile_id, tile_width, tile_height))
+bool wd_fnv1a_tile_hash_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width,
+                                          uint32_t framebuffer_height, uint16_t tiles_x, uint16_t total_tiles,
+                                          uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
+                                          uint32_t* out_hash) {
+    if (!framebuffer_xrgb8888 || !out_hash ||
+        !wd_tile_layout_is_valid(framebuffer_width, framebuffer_height, tiles_x, total_tiles, tile_id, tile_width, tile_height))
     {
-        return 0;
+        return false;
     }
 
     const uint32_t start_x        = wd_tile_start_x_for_tile(tile_id, tiles_x, tile_width);
@@ -142,7 +166,8 @@ uint32_t wd_fnv1a_tile_hash_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb88
 
     for (uint32_t y = 0; y < visible_height; ++y)
     {
-        const uint32_t* row = framebuffer_xrgb8888 + (start_y + y) * framebuffer_width + start_x;
+        const size_t row_index = (size_t)(start_y + y) * framebuffer_width + start_x;
+        const uint32_t* row = framebuffer_xrgb8888 + row_index;
 
         for (uint32_t x = 0; x < visible_width; ++x)
         {
@@ -151,7 +176,8 @@ uint32_t wd_fnv1a_tile_hash_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb88
         }
     }
 
-    return h;
+    *out_hash = h;
+    return true;
 }
 
 bool wd_extract_tile_xrgb8888_for_tile_sized(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width,
@@ -174,7 +200,8 @@ bool wd_extract_tile_xrgb8888_for_tile_sized(const uint32_t* framebuffer_xrgb888
 
     for (uint32_t y = 0; y < visible_height; ++y)
     {
-        const uint8_t* src = (const uint8_t*)(framebuffer_xrgb8888 + (start_y + y) * framebuffer_width + start_x);
+        const size_t row_index = (size_t)(start_y + y) * framebuffer_width + start_x;
+        const uint8_t* src = (const uint8_t*)(framebuffer_xrgb8888 + row_index);
         uint8_t*       dst = out_tile_bytes + y * tile_width * WD_BYTES_PER_PIXEL;
 
         memcpy(dst, src, visible_width * WD_BYTES_PER_PIXEL);
@@ -200,7 +227,8 @@ bool wd_blit_tile_xrgb8888_for_tile_sized(uint32_t* framebuffer_xrgb8888, uint32
 
     for (uint32_t y = 0; y < visible_height; ++y)
     {
-        uint8_t*       dst = (uint8_t*)(framebuffer_xrgb8888 + (start_y + y) * framebuffer_width + start_x);
+        const size_t row_index = (size_t)(start_y + y) * framebuffer_width + start_x;
+        uint8_t*       dst = (uint8_t*)(framebuffer_xrgb8888 + row_index);
         const uint8_t* src = tile_bytes + y * tile_width * WD_BYTES_PER_PIXEL;
 
         memcpy(dst, src, visible_width * WD_BYTES_PER_PIXEL);
@@ -225,10 +253,11 @@ bool wd_blit_tile_xrgb8888_for_tile(uint32_t* framebuffer_xrgb8888, uint32_t fra
                                                 (size_t)tile_width * tile_height * WD_BYTES_PER_PIXEL);
 }
 
-uint32_t wd_fnv1a_tile_hash_xrgb8888_for(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
-                                         uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id) {
-    return wd_fnv1a_tile_hash_xrgb8888_for_tile(framebuffer_xrgb8888, framebuffer_width, framebuffer_height, tiles_x, total_tiles, tile_id,
-                                                WD_TILE_WIDTH, WD_TILE_HEIGHT);
+bool wd_fnv1a_tile_hash_xrgb8888_for(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width,
+                                     uint32_t framebuffer_height, uint16_t tiles_x, uint16_t total_tiles,
+                                     uint16_t tile_id, uint32_t* out_hash) {
+    return wd_fnv1a_tile_hash_xrgb8888_for_tile(framebuffer_xrgb8888, framebuffer_width, framebuffer_height, tiles_x,
+                                                total_tiles, tile_id, WD_TILE_WIDTH, WD_TILE_HEIGHT, out_hash);
 }
 
 bool wd_extract_tile_xrgb8888_for(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
@@ -263,8 +292,9 @@ uint32_t wd_tile_start_y(uint16_t tile_id) {
     return wd_tile_start_y_for(tile_id, WD_TILES_X);
 }
 
-uint32_t wd_fnv1a_tile_hash_xrgb8888(const uint32_t* framebuffer_xrgb8888, uint16_t tile_id) {
-    return wd_fnv1a_tile_hash_xrgb8888_for(framebuffer_xrgb8888, WD_DISPLAY_WIDTH, WD_DISPLAY_HEIGHT, WD_TILES_X, WD_TOTAL_TILES, tile_id);
+bool wd_fnv1a_tile_hash_xrgb8888(const uint32_t* framebuffer_xrgb8888, uint16_t tile_id, uint32_t* out_hash) {
+    return wd_fnv1a_tile_hash_xrgb8888_for(framebuffer_xrgb8888, WD_DISPLAY_WIDTH, WD_DISPLAY_HEIGHT, WD_TILES_X,
+                                           WD_TOTAL_TILES, tile_id, out_hash);
 }
 
 bool wd_extract_tile_xrgb8888(const uint32_t* framebuffer_xrgb8888, uint16_t tile_id, uint8_t* out_tile_bytes) {

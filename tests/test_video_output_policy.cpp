@@ -15,7 +15,7 @@ int main() {
     ClientVideoOutputCapabilities dmabuf{};
     dmabuf.drm_prime_import = true;
     CHECK(client_video_output_storage(false, dmabuf) == ClientVideoOutputStorage::CpuIYUV);
-    CHECK(client_video_output_storage(true, dmabuf) == ClientVideoOutputStorage::DrmPrime);
+    CHECK(client_video_output_storage(true, dmabuf) == ClientVideoOutputStorage::CpuIYUV);
 
     dmabuf.modifiers = true;
     CHECK(client_video_output_storage(true, dmabuf) == ClientVideoOutputStorage::DrmPrime);

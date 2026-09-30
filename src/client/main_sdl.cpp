@@ -99,7 +99,10 @@ int main(int argc, char** argv) {
 
     if (!waydisplay::client_request_server_selections(state))
     {
-        WD_LOG_WARN("failed to request initial server clipboard selections");
+        WD_LOG_ERROR("failed to request initial server clipboard selections");
+        waydisplay::client_disconnect(state);
+        SDL_Quit();
+        return 1;
     }
 
     const int rc = waydisplay::run_sdl_viewer(state);

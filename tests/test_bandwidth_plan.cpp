@@ -31,7 +31,8 @@ int main() {
     CHECK(video.control_bytes_per_second == pct(link, 10u));
     CHECK(video.audio_cap_bytes_per_second == pct(link, 10u));
     CHECK(video.overhead_bytes_per_second == pct(link, 5u));
-    CHECK(video.audio_reserved_bytes_per_second > 128000u / 8u);
+    CHECK(video.audio_required_bytes_per_second > 128000u / 8u);
+    CHECK(video.audio_reserved_bytes_per_second == video.audio_required_bytes_per_second);
     CHECK(video.audio_reserved_bytes_per_second < video.audio_cap_bytes_per_second);
     CHECK(wd_bandwidth_plan_media_bytes(&video, WD_BANDWIDTH_MODE_VIDEO) == video.video_bytes_per_second);
 
@@ -45,8 +46,16 @@ int main() {
     CHECK(nominal_tile_media - tile_media <= 1u);
 
     const auto slow = wd_bandwidth_plan_build(64u * 1024u, WD_BANDWIDTH_MODE_VIDEO, true, 128000u);
-    CHECK(wd_bandwidth_plan_is_valid(&slow, WD_BANDWIDTH_MODE_VIDEO));
+    CHECK(!wd_bandwidth_plan_is_valid(&slow, WD_BANDWIDTH_MODE_VIDEO));
+    CHECK(slow.audio_required_bytes_per_second > slow.audio_cap_bytes_per_second);
     CHECK(slow.audio_reserved_bytes_per_second == slow.audio_cap_bytes_per_second);
+
+    const uint32_t slow_bitrate = wd_bandwidth_audio_select_bitrate(64u * 1024u, WD_AUDIO_BITRATE_DEFAULT, WD_AUDIO_BITRATE_MIN);
+    CHECK(slow_bitrate >= WD_AUDIO_BITRATE_MIN && slow_bitrate < WD_AUDIO_BITRATE_DEFAULT);
+    const auto slow_fitted = wd_bandwidth_plan_build(64u * 1024u, WD_BANDWIDTH_MODE_VIDEO, true, slow_bitrate);
+    CHECK(wd_bandwidth_plan_is_valid(&slow_fitted, WD_BANDWIDTH_MODE_VIDEO));
+    CHECK(slow_fitted.audio_required_bytes_per_second <= slow_fitted.audio_cap_bytes_per_second);
+    CHECK(wd_bandwidth_audio_select_bitrate(24u * 1024u, WD_AUDIO_BITRATE_DEFAULT, WD_AUDIO_BITRATE_MIN) == 0);
 
     const auto silent = wd_bandwidth_plan_build(link, WD_BANDWIDTH_MODE_TILES, false, 0);
     CHECK(silent.audio_reserved_bytes_per_second == 0);
@@ -54,8 +63,10 @@ int main() {
     const uint64_t odd_links[] = {1u, 99u, 101u, 100003u, UINT64_C(123456789)};
     for (uint64_t odd_link : odd_links)
     {
-        const auto odd_video = wd_bandwidth_plan_build(odd_link, WD_BANDWIDTH_MODE_VIDEO, true, 128000u);
-        const auto odd_tiles = wd_bandwidth_plan_build(odd_link, WD_BANDWIDTH_MODE_TILES, true, 128000u);
+        const uint32_t odd_bitrate = wd_bandwidth_audio_select_bitrate(odd_link, WD_AUDIO_BITRATE_DEFAULT, WD_AUDIO_BITRATE_MIN);
+        const bool odd_audio = odd_bitrate != 0;
+        const auto odd_video = wd_bandwidth_plan_build(odd_link, WD_BANDWIDTH_MODE_VIDEO, odd_audio, odd_bitrate);
+        const auto odd_tiles = wd_bandwidth_plan_build(odd_link, WD_BANDWIDTH_MODE_TILES, odd_audio, odd_bitrate);
         CHECK(wd_bandwidth_plan_is_valid(&odd_video, WD_BANDWIDTH_MODE_VIDEO));
         CHECK(wd_bandwidth_plan_is_valid(&odd_tiles, WD_BANDWIDTH_MODE_TILES));
         CHECK(odd_video.video_bytes_per_second + odd_video.audio_cap_bytes_per_second +
@@ -66,6 +77,18 @@ int main() {
                   odd_tiles.overhead_bytes_per_second <=
               odd_link);
     }
+
+    wd_bandwidth_plan impossible{};
+    impossible.link_bytes_per_second = UINT64_MAX;
+    impossible.overhead_bytes_per_second = UINT64_MAX;
+    impossible.control_bytes_per_second = UINT64_MAX;
+    impossible.audio_cap_bytes_per_second = UINT64_MAX;
+    impossible.audio_required_bytes_per_second = UINT64_MAX;
+    impossible.audio_reserved_bytes_per_second = UINT64_MAX;
+    impossible.video_bytes_per_second = UINT64_MAX;
+    CHECK(!wd_bandwidth_plan_is_valid(&impossible, WD_BANDWIDTH_MODE_VIDEO));
+    CHECK(!wd_bandwidth_plan_is_valid(&video, static_cast<wd_bandwidth_mode>(255)));
+    CHECK(wd_bandwidth_plan_media_bytes(&video, static_cast<wd_bandwidth_mode>(255)) == 0);
 
     wd_bandwidth_bucket bucket{};
     CHECK(wd_bandwidth_bucket_available(&bucket, 1000u, 250u, 1000000000ull) == 0u);

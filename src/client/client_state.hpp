@@ -78,6 +78,7 @@ struct ClientSessionRuntime {
     std::mutex        audio_tcp_mutex;
 
     std::mutex              async_tcp_stats_mutex;
+    std::mutex              async_udp_stats_mutex;
     ClientAsyncTcpStatsSeen control_tcp_seen{};
     ClientAsyncTcpStatsSeen input_tcp_seen{};
     ClientAsyncTcpStatsSeen selection_tcp_seen{};
@@ -253,8 +254,7 @@ struct ClientStats {
     std::atomic<uint64_t> sdl_texture_full_uploads{0};
     std::atomic<uint64_t> sdl_texture_partial_uploads{0};
     std::atomic<uint64_t> sdl_texture_dirty_rects{0};
-    std::atomic<uint64_t> sdl_texture_source_dirty_rects{0};
-    std::atomic<uint64_t> sdl_texture_coalesced_dirty_rects{0};
+    std::atomic<uint64_t> sdl_texture_grid_rects{0};
     std::atomic<uint64_t> sdl_texture_bounds_uploads{0};
     std::atomic<uint64_t> sdl_texture_cost_full_uploads{0};
     std::atomic<uint64_t> sdl_texture_lock_calls{0};
@@ -425,8 +425,7 @@ struct ClientStatsSnapshot {
     uint64_t sdl_texture_full_uploads           = 0;
     uint64_t sdl_texture_partial_uploads        = 0;
     uint64_t sdl_texture_dirty_rects            = 0;
-    uint64_t sdl_texture_source_dirty_rects     = 0;
-    uint64_t sdl_texture_coalesced_dirty_rects  = 0;
+    uint64_t sdl_texture_grid_rects             = 0;
     uint64_t sdl_texture_bounds_uploads         = 0;
     uint64_t sdl_texture_cost_full_uploads      = 0;
     uint64_t sdl_texture_lock_calls             = 0;

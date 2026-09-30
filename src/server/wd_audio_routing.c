@@ -30,9 +30,15 @@ bool wd_audio_routing_env_build(struct wd_audio_routing_env* env, const char* si
     }
     memset(env, 0, sizeof(*env));
 
-    if (!sink_name || sink_name[0] == '\0' || !target || target[0] == '\0')
+    const bool have_sink   = sink_name && sink_name[0] != '\0';
+    const bool have_target = target && target[0] != '\0';
+    if (!have_sink && !have_target)
     {
         return true;
+    }
+    if (have_sink != have_target)
+    {
+        return false;
     }
     if (!wd_audio_routing_identifier_valid(sink_name) || !wd_audio_routing_identifier_valid(target))
     {
@@ -55,6 +61,9 @@ bool wd_audio_routing_env_build(struct wd_audio_routing_env* env, const char* si
      * may be created by the same process. */
     written = snprintf(env->pulse_props, sizeof(env->pulse_props),
                        "node.dont-fallback=true "
+                       "node.dont-reconnect=true "
+                       "node.dont-move=true "
+                       "state.restore-props=false "
                        "waydisplay.audio.scope=%s",
                        env->scope);
     if (written < 0 || (size_t)written >= sizeof(env->pulse_props))

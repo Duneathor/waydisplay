@@ -5,6 +5,7 @@
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_time.h"
 
+#include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,9 +33,16 @@ struct wd_audio_capture {
     bool                      shutting_down;
     uint64_t                  delivery_generation;
     uint32_t                  active_callbacks;
+    bool                      pending_discontinuity;
     char                      sink_name[WD_AUDIO_ROUTING_SINK_MAX];
     char                      sink_target[WD_AUDIO_ROUTING_TARGET_MAX];
 };
+
+static pthread_once_t wd_audio_pipewire_init_once = PTHREAD_ONCE_INIT;
+
+static void wd_audio_pipewire_init(void) {
+    pw_init(NULL, NULL);
+}
 
 static void wd_audio_capture_process(void* userdata) {
     struct wd_audio_capture* capture = userdata;
@@ -58,29 +66,42 @@ static void wd_audio_capture_process(void* userdata) {
     const uint32_t          frame_size = (uint32_t)capture->channels * sizeof(float);
     const float*            samples    = NULL;
     uint32_t                frames     = 0;
+    bool                    silent     = false;
+    bool                    corrupted  = false;
 
-    if (data && data->data && chunk && frame_size != 0)
+    if (data && chunk && frame_size != 0 && data->maxsize != 0)
     {
-        const uint32_t offset = SPA_MIN(chunk->offset, data->maxsize);
+        corrupted = (chunk->flags & SPA_CHUNK_FLAG_CORRUPTED) != 0;
+        silent    = (chunk->flags & SPA_CHUNK_FLAG_EMPTY) != 0;
+        const uint32_t offset = chunk->offset % data->maxsize;
         const uint32_t bytes  = SPA_MIN(chunk->size, data->maxsize - offset);
-        samples               = SPA_PTROFF(data->data, offset, const float);
         frames                = bytes / frame_size;
+        if (!silent && data->data)
+        {
+            samples = SPA_PTROFF(data->data, offset, const float);
+        }
     }
 
-    if (samples && frames > 0 && generation == __atomic_load_n(&capture->delivery_generation, __ATOMIC_ACQUIRE) &&
-        __atomic_load_n(&capture->delivery_enabled, __ATOMIC_ACQUIRE))
+    if (corrupted)
     {
-        struct pw_time                       time      = {0};
-        const bool                           have_time = pw_stream_get_time_n(capture->stream, &time, sizeof(time)) >= 0;
-        const struct wd_audio_capture_timing timing    = {
+        capture->pending_discontinuity = true;
+    }
+    else if ((samples || silent) && frames > 0 && generation == __atomic_load_n(&capture->delivery_generation, __ATOMIC_ACQUIRE) &&
+             __atomic_load_n(&capture->delivery_enabled, __ATOMIC_ACQUIRE))
+    {
+        struct pw_time                 time      = {0};
+        const bool                     have_time = pw_stream_get_time_n(capture->stream, &time, sizeof(time)) >= 0;
+        const struct wd_audio_capture_timing timing = {
             .cycle_start_ns    = have_time && time.now > 0 ? (uint64_t)time.now : wd_now_ns(),
             .position          = have_time ? time.ticks : 0,
             .clock_id          = 0,
             .rate_num          = have_time ? time.rate.num : 0,
             .rate_denom        = have_time ? time.rate.denom : 0,
             .position_reliable = have_time && time.rate.num != 0 && time.rate.denom != 0,
-            .discontinuity     = false,
+            .discontinuity     = capture->pending_discontinuity,
+            .silent            = silent,
         };
+        capture->pending_discontinuity = false;
         capture->callback(capture->userdata, samples, frames, capture->channels, &timing);
     }
 
@@ -151,12 +172,19 @@ static void wd_audio_capture_cleanup(struct wd_audio_capture* capture) {
 }
 
 bool wd_audio_capture_create(struct wd_audio_capture** out_capture, uint8_t channels, wd_audio_capture_callback callback, void* userdata) {
-    if (!out_capture || !callback || channels == 0 || channels > WD_AUDIO_CHANNELS_MAX)
+    if (!out_capture)
     {
         return false;
     }
     *out_capture = NULL;
-    pw_init(NULL, NULL);
+    if (!callback || channels == 0 || channels > WD_AUDIO_CHANNELS_MAX)
+    {
+        return false;
+    }
+    if (pthread_once(&wd_audio_pipewire_init_once, wd_audio_pipewire_init) != 0)
+    {
+        return false;
+    }
 
     struct wd_audio_capture* capture = calloc(1, sizeof(*capture));
     if (!capture)

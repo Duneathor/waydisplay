@@ -47,6 +47,7 @@ void wd_frame_pacing_reset(struct wd_frame_pacing_state* state) {
         return;
     }
     state->next_deadline_ns = 0;
+    state->last_admitted_ns = 0;
     state->capture_fps      = 0;
 }
 
@@ -71,11 +72,20 @@ bool wd_frame_pacing_due(struct wd_frame_pacing_state* state, uint64_t now_ns, u
     }
 
     const uint64_t interval_ns = wd_frame_interval_ns(capture_fps);
-    if (state->capture_fps != capture_fps || state->next_deadline_ns == 0)
+    if (state->last_admitted_ns == 0)
     {
-        state->capture_fps = capture_fps;
+        state->capture_fps      = capture_fps;
+        state->last_admitted_ns = now_ns != 0 ? now_ns : 1u;
         state->next_deadline_ns = UINT64_MAX - now_ns < interval_ns ? UINT64_MAX : now_ns + interval_ns;
         return true;
+    }
+
+    if (state->capture_fps != capture_fps)
+    {
+        state->capture_fps = capture_fps;
+        state->next_deadline_ns = UINT64_MAX - state->last_admitted_ns < interval_ns
+                                      ? UINT64_MAX
+                                      : state->last_admitted_ns + interval_ns;
     }
 
     if (now_ns < state->next_deadline_ns)
@@ -83,15 +93,21 @@ bool wd_frame_pacing_due(struct wd_frame_pacing_state* state, uint64_t now_ns, u
         return false;
     }
 
-    const uint64_t overdue_ns = now_ns - state->next_deadline_ns;
-    const uint64_t periods    = overdue_ns / interval_ns + 1u;
-    if (periods > (UINT64_MAX - state->next_deadline_ns) / interval_ns)
+    state->last_admitted_ns = now_ns;
+    const uint64_t lateness_ns = now_ns - state->next_deadline_ns;
+    if (lateness_ns >= interval_ns)
     {
-        state->next_deadline_ns = UINT64_MAX;
+        /* A long idle interval is not pacing debt. Restart from the admitted
+         * frame so later wakeups cannot burst trying to catch up. */
+        state->next_deadline_ns = UINT64_MAX - now_ns < interval_ns ? UINT64_MAX : now_ns + interval_ns;
     }
     else
     {
-        state->next_deadline_ns += periods * interval_ns;
+        /* Preserve the fractional cadence when ordinary polling wakes a little
+         * after the deadline; this avoids accumulating poll jitter. */
+        state->next_deadline_ns = UINT64_MAX - state->next_deadline_ns < interval_ns
+                                      ? UINT64_MAX
+                                      : state->next_deadline_ns + interval_ns;
     }
     return true;
 }

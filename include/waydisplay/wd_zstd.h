@@ -10,6 +10,8 @@ extern "C" {
 
 struct wd_zstd_compressor;
 
+/* A compressor context is mutable and single-owner: calls using the same
+ * context must be externally serialized. */
 size_t                     wd_zstd_compress_bound(size_t src_size);
 struct wd_zstd_compressor* wd_zstd_compressor_create(void);
 void                       wd_zstd_compressor_destroy(struct wd_zstd_compressor* compressor);

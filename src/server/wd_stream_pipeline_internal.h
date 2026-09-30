@@ -10,17 +10,24 @@
 #include <stdint.h>
 
 /* Internal contracts between the stream orchestrator and its video stage.
- * Callers hold server->net.lock unless a function name says otherwise. */
+ * Functions suffixed _locked require server->net.lock. Worker/mailbox and
+ * orchestration helpers synchronize internally or are compositor-thread-only
+ * as defined by their implementation; callers must not pre-lock net.lock for
+ * those helpers. Pure policy/formatting helpers require no server lock. */
 
 struct wd_stream_damage_view {
     const bool* tiles;
     bool        all_tiles;
+    /* tile_count is the number of addressable entries in tiles;
+     * dirty_tile_count is the number currently set. Both are base-grid units. */
     uint32_t    tile_count;
+    uint32_t    dirty_tile_count;
 };
 
 struct wd_stream_frame_analysis {
     const bool* changed_tiles;
     uint16_t    changed_tile_count;
+    uint32_t    changed_base_tile_count;
     uint32_t    candidate_count;
     uint32_t    unchanged_count;
     uint64_t    diff_ns;
@@ -42,7 +49,8 @@ bool wd_stream_frame_worker_idle(struct wd_server* server);
 bool wd_stream_frame_worker_submit(struct wd_server* server);
 void wd_stream_frame_worker_request_service(struct wd_server* server);
 bool wd_stream_analyze_frame(struct wd_server* server, const struct wd_stream_damage_view* damage, bool force_full_refresh,
-                             bool* changed_tiles, uint32_t changed_capacity, struct wd_stream_frame_analysis* analysis);
+                             bool cpu_framebuffer_refreshed, bool* changed_tiles, uint32_t changed_capacity,
+                             struct wd_stream_frame_analysis* analysis);
 bool wd_stream_frame_force_full_refresh(struct wd_server* server);
 bool wd_stream_process_frame(struct wd_server* server, const struct wd_stream_damage_view* damage,
                              const struct wd_stream_frame_analysis* analysis, struct wd_stream_video_snapshot* video_snapshot);

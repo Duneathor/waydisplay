@@ -25,15 +25,20 @@ uint32_t wd_tile_start_x_for_tile(uint16_t tile_id, uint16_t tiles_x, uint16_t t
 uint32_t wd_tile_start_y_for_tile(uint16_t tile_id, uint16_t tiles_x, uint16_t tile_height);
 uint32_t wd_tile_visible_width_for_tile(uint32_t display_width, uint16_t tile_id, uint16_t tiles_x, uint16_t tile_width);
 uint32_t wd_tile_visible_height_for_tile(uint32_t display_height, uint16_t tile_id, uint16_t tiles_x, uint16_t tile_height);
+/* Map one pixel coordinate to the tile that contains it. Returns false when
+ * the grid or coordinate cannot identify a tile in [0, total_tiles). */
+bool wd_tile_id_for_pixel(uint32_t x, uint32_t y, uint16_t tiles_x, uint16_t total_tiles,
+                          uint16_t tile_width, uint16_t tile_height, uint16_t* out_tile_id);
 
 uint32_t wd_tile_start_x_for(uint16_t tile_id, uint16_t tiles_x);
 uint32_t wd_tile_start_y_for(uint16_t tile_id, uint16_t tiles_x);
 uint32_t wd_tile_visible_width_for(uint32_t display_width, uint16_t tile_id, uint16_t tiles_x);
 uint32_t wd_tile_visible_height_for(uint32_t display_height, uint16_t tile_id, uint16_t tiles_x);
 
-uint32_t wd_fnv1a_tile_hash_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
-                                              uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width,
-                                              uint16_t tile_height);
+bool wd_fnv1a_tile_hash_xrgb8888_for_tile(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width,
+                                          uint32_t framebuffer_height, uint16_t tiles_x, uint16_t total_tiles,
+                                          uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
+                                          uint32_t* out_hash);
 
 /* Prefer sized entry points for externally allocated buffers. On failure they
  * neither read from nor write to the tile buffer. Legacy unsized entry points
@@ -56,8 +61,9 @@ bool wd_blit_tile_xrgb8888_for_tile(uint32_t* framebuffer_xrgb8888, uint32_t fra
                                     uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint16_t tile_width, uint16_t tile_height,
                                     const uint8_t* tile_bytes);
 
-uint32_t wd_fnv1a_tile_hash_xrgb8888_for(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
-                                         uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id);
+bool wd_fnv1a_tile_hash_xrgb8888_for(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width,
+                                     uint32_t framebuffer_height, uint16_t tiles_x, uint16_t total_tiles,
+                                     uint16_t tile_id, uint32_t* out_hash);
 
 bool wd_extract_tile_xrgb8888_for(const uint32_t* framebuffer_xrgb8888, uint32_t framebuffer_width, uint32_t framebuffer_height,
                                   uint16_t tiles_x, uint16_t total_tiles, uint16_t tile_id, uint8_t* out_tile_bytes);
@@ -70,7 +76,7 @@ uint16_t wd_tile_x(uint16_t tile_id);
 uint16_t wd_tile_y(uint16_t tile_id);
 uint32_t wd_tile_start_x(uint16_t tile_id);
 uint32_t wd_tile_start_y(uint16_t tile_id);
-uint32_t wd_fnv1a_tile_hash_xrgb8888(const uint32_t* framebuffer_xrgb8888, uint16_t tile_id);
+bool     wd_fnv1a_tile_hash_xrgb8888(const uint32_t* framebuffer_xrgb8888, uint16_t tile_id, uint32_t* out_hash);
 bool     wd_extract_tile_xrgb8888(const uint32_t* framebuffer_xrgb8888, uint16_t tile_id, uint8_t* out_tile_bytes);
 bool     wd_blit_tile_xrgb8888(uint32_t* framebuffer_xrgb8888, uint16_t tile_id, const uint8_t* tile_bytes);
 

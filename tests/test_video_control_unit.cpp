@@ -212,6 +212,14 @@ void test_queue_pressure_is_not_decoder_failure() {
     CHECK(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_NORMAL);
     CHECK(wd_video_cadence_downshift_target(60, 60, 60, true, 5, 2, 75) == 45);
 
+    const wd_client_video_decode_queue_plan zero_capacity_key =
+        wd_client_video_decode_queue_plan_compute(0, 0, false, true, false);
+    CHECK(zero_capacity_key.action == WD_CLIENT_VIDEO_DECODE_QUEUE_RECOVER_OVERFLOW);
+    CHECK(zero_capacity_key.wait_for_keyframe && !zero_capacity_key.clear_queue);
+    const wd_client_video_decode_queue_plan zero_capacity_control =
+        wd_client_video_decode_queue_plan_compute(0, 0, false, false, true);
+    CHECK(zero_capacity_control.action == WD_CLIENT_VIDEO_DECODE_QUEUE_RECOVER_OVERFLOW);
+
     const wd_client_video_decode_queue_plan plan = wd_client_video_decode_queue_plan_compute(4, 4, false, false, false);
     CHECK(plan.action == WD_CLIENT_VIDEO_DECODE_QUEUE_RECOVER_OVERFLOW);
     CHECK(plan.clear_queue && plan.wait_for_keyframe);

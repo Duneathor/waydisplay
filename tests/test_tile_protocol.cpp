@@ -162,7 +162,8 @@ void test_typed_protocol_dispatch() {
         WD_MSG_CLIENT_STATS,           WD_MSG_LINK_PROBE_PING,        WD_MSG_LINK_PROBE_PONG,
         WD_MSG_VIDEO_CHANNEL_HELLO,    WD_MSG_VIDEO_FRAME,            WD_MSG_CONFIG_APPLIED,
         WD_MSG_AUDIO_CHANNEL_HELLO,    WD_MSG_AUDIO_CONFIG,           WD_MSG_AUDIO_PACKET,
-        WD_MSG_VIDEO_FEEDBACK, WD_MSG_LAUNCH_COMMAND,
+        WD_MSG_VIDEO_FEEDBACK,         WD_MSG_LAUNCH_COMMAND,          WD_MSG_CLIPBOARD_PASTE,
+        WD_MSG_PRIMARY_PASTE,
     };
     for (const uint16_t message_type : message_types)
     {
@@ -189,6 +190,15 @@ void test_typed_protocol_dispatch() {
     require(!wd_protocol_message_allowed(WD_MSG_CLIPBOARD_SET, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED,
                                          WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_selection_payload_header)),
             "clipboard updates should be rejected on the control channel");
+    require(wd_protocol_message_allowed(WD_MSG_CLIPBOARD_PASTE, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                        WD_PROTOCOL_CLIENT_TO_SERVER, 0),
+            "clipboard paste actions should be ordered on the selection channel");
+    require(wd_protocol_message_allowed(WD_MSG_PRIMARY_PASTE, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                        WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_pointer_event_payload)),
+            "primary paste actions should carry their click coordinates on the selection channel");
+    require(!wd_protocol_message_allowed(WD_MSG_PRIMARY_PASTE, WD_PROTOCOL_CHANNEL_INPUT, WD_PROTOCOL_PHASE_ESTABLISHED,
+                                         WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_pointer_event_payload)),
+            "primary paste actions should not use the independent input channel");
     require(!wd_protocol_message_allowed(WD_MSG_KEYBOARD_KEY, WD_PROTOCOL_CHANNEL_VIDEO, WD_PROTOCOL_PHASE_ESTABLISHED,
                                          WD_PROTOCOL_CLIENT_TO_SERVER, sizeof(wd_keyboard_event_payload)),
             "keyboard input should be rejected on the video channel");
@@ -436,6 +446,10 @@ void test_client_hello_strict_validation() {
     hello.client_udp_port = 6000;
     hello.video_mode      = WD_VIDEO_MODE_AUTO;
     require(wd_client_hello_payload_is_valid(&hello, sizeof(hello)), "non-video client hello should validate");
+    hello.capabilities = WD_CLIENT_CAP_VIDEO_FEEDBACK;
+    require(!wd_client_hello_payload_is_valid(&hello, sizeof(hello)),
+            "video feedback without a video stream capability should be rejected");
+    hello.capabilities = 0;
 
     hello.capabilities    = WD_CLIENT_CAP_VIDEO_STREAM;
     hello.video_codecs    = WD_VIDEO_CODEC_H265;

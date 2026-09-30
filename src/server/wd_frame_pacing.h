@@ -3,8 +3,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* now_ns and stored deadlines use one monotonic clock domain. All operations
+ * on a pacing state require external serialization. */
 struct wd_frame_pacing_state {
     uint64_t next_deadline_ns;
+    uint64_t last_admitted_ns;
     uint16_t capture_fps;
 };
 

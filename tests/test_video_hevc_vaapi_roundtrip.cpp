@@ -46,8 +46,36 @@ void fill_pattern(std::vector<uint32_t>& pixels, uint32_t frame_number) {
     }
 }
 
+struct DecodedContentStats {
+    uint32_t decoded_frames = 0;
+    uint32_t spatially_varied_frames = 0;
+    uint32_t signature_changes = 0;
+    uint64_t previous_signature = 0;
+    bool     have_signature = false;
+};
+
+uint64_t sampled_luma_signature(const ClientVideoFrameBuffer& frame,
+                                uint8_t& min_luma, uint8_t& max_luma) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    min_luma = UINT8_MAX;
+    max_luma = 0;
+    for (uint32_t y = 0; y < frame.height; y += 8u)
+    {
+        const uint8_t* row = frame.bytes.data() + static_cast<size_t>(y) * frame.y_pitch;
+        for (uint32_t x = 0; x < frame.width; x += 8u)
+        {
+            const uint8_t sample = row[x];
+            min_luma = std::min(min_luma, sample);
+            max_luma = std::max(max_luma, sample);
+            hash ^= sample;
+            hash *= UINT64_C(1099511628211);
+        }
+    }
+    return hash;
+}
+
 bool drain_decoded(ClientVideoDecoder* decoder, ClientDecodedVideoFrame decoded,
-                   uint32_t& decoded_frames) {
+                   DecodedContentStats& stats) {
     for (;;)
     {
         if (decoded.format == ClientVideoPixelFormat::None)
@@ -64,7 +92,22 @@ bool drain_decoded(ClientVideoDecoder* decoder, ClientDecodedVideoFrame decoded,
         CHECK(output.valid());
         CHECK(output.width == kWidth);
         CHECK(output.height == kHeight);
-        decoded_frames++;
+        CHECK(output.cpu_valid());
+
+        uint8_t min_luma = 0;
+        uint8_t max_luma = 0;
+        const uint64_t signature = sampled_luma_signature(output, min_luma, max_luma);
+        if (static_cast<uint32_t>(max_luma) - static_cast<uint32_t>(min_luma) >= 12u)
+        {
+            stats.spatially_varied_frames++;
+        }
+        if (stats.have_signature && signature != stats.previous_signature)
+        {
+            stats.signature_changes++;
+        }
+        stats.previous_signature = signature;
+        stats.have_signature = true;
+        stats.decoded_frames++;
 
         decoded = ClientDecodedVideoFrame{};
         if (!waydisplay::client_video_decoder_take_frame(decoder, &decoded))
@@ -123,7 +166,7 @@ bool run_hevc_roundtrip() {
 
     std::vector<uint32_t> pixels(static_cast<size_t>(kWidth) * kHeight);
     uint32_t packets_submitted = 0;
-    uint32_t decoded_frames = 0;
+    DecodedContentStats decoded_stats{};
     bool saw_keyframe = false;
     bool saw_interframe = false;
 
@@ -168,13 +211,15 @@ bool run_hevc_roundtrip() {
         packets_submitted++;
         wd_video_encoder_packet_release(&encoded);
 
-        CHECK(drain_decoded(decoder, decoded, decoded_frames));
+        CHECK(drain_decoded(decoder, decoded, decoded_stats));
     }
 
     CHECK(packets_submitted >= 2);
     CHECK(saw_keyframe);
     CHECK(saw_interframe);
-    CHECK(decoded_frames >= 2);
+    CHECK(decoded_stats.decoded_frames >= 2);
+    CHECK(decoded_stats.spatially_varied_frames == decoded_stats.decoded_frames);
+    CHECK(decoded_stats.signature_changes > 0);
 
     waydisplay::client_video_decoder_destroy(decoder);
     wd_video_encoder_destroy(encoder);

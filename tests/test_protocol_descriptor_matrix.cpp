@@ -29,7 +29,7 @@ struct Expected {
     uint32_t entry;
 };
 
-constexpr std::array<Expected, 29> ExpectedMessages{{
+constexpr std::array<Expected, 31> ExpectedMessages{{
     {WD_MSG_CLIENT_HELLO, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION, WD_PROTOCOL_CLIENT_TO_SERVER,
      WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_client_hello_payload), 0},
     {WD_MSG_SERVER_CONFIG, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION | WD_PROTOCOL_PHASE_ESTABLISHED,
@@ -50,12 +50,12 @@ constexpr std::array<Expected, 29> ExpectedMessages{{
      WD_PROTOCOL_CLIENT_TO_SERVER | WD_PROTOCOL_SERVER_TO_CLIENT, WD_PROTOCOL_PAYLOAD_OPAQUE_TAIL,
      sizeof(wd_selection_payload_header), 0},
     {WD_MSG_CLIPBOARD_REQUEST, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
-     WD_PROTOCOL_CLIENT_TO_SERVER | WD_PROTOCOL_SERVER_TO_CLIENT, WD_PROTOCOL_PAYLOAD_EMPTY, 0, 0},
+     WD_PROTOCOL_CLIENT_TO_SERVER, WD_PROTOCOL_PAYLOAD_EMPTY, 0, 0},
     {WD_MSG_PRIMARY_SET, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
      WD_PROTOCOL_CLIENT_TO_SERVER | WD_PROTOCOL_SERVER_TO_CLIENT, WD_PROTOCOL_PAYLOAD_OPAQUE_TAIL,
      sizeof(wd_selection_payload_header), 0},
     {WD_MSG_PRIMARY_REQUEST, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
-     WD_PROTOCOL_CLIENT_TO_SERVER | WD_PROTOCOL_SERVER_TO_CLIENT, WD_PROTOCOL_PAYLOAD_EMPTY, 0, 0},
+     WD_PROTOCOL_CLIENT_TO_SERVER, WD_PROTOCOL_PAYLOAD_EMPTY, 0, 0},
     {WD_MSG_CURSOR_SHAPE, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_SERVER_TO_CLIENT,
      WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_cursor_shape_payload), 0},
     {WD_MSG_DISPLAY_RESIZE, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER,
@@ -70,7 +70,7 @@ constexpr std::array<Expected, 29> ExpectedMessages{{
      WD_PROTOCOL_CLIENT_TO_SERVER, WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_selection_channel_hello_payload), 0},
     {WD_MSG_CLIENT_STATS, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER,
      WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_client_stats_payload), 0},
-    {WD_MSG_LINK_PROBE_PING, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION | WD_PROTOCOL_PHASE_ESTABLISHED,
+    {WD_MSG_LINK_PROBE_PING, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
      WD_PROTOCOL_SERVER_TO_CLIENT, WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_link_probe_payload), 0},
     {WD_MSG_LINK_PROBE_PONG, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION, WD_PROTOCOL_CLIENT_TO_SERVER,
      WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_link_probe_payload), 0},
@@ -90,6 +90,10 @@ constexpr std::array<Expected, 29> ExpectedMessages{{
      WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_video_feedback_payload), 0},
     {WD_MSG_LAUNCH_COMMAND, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER,
      WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_launch_command_payload), 0},
+    {WD_MSG_CLIPBOARD_PASTE, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
+     WD_PROTOCOL_CLIENT_TO_SERVER, WD_PROTOCOL_PAYLOAD_EMPTY, 0, 0},
+    {WD_MSG_PRIMARY_PASTE, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
+     WD_PROTOCOL_CLIENT_TO_SERVER, WD_PROTOCOL_PAYLOAD_FIXED, sizeof(wd_pointer_event_payload), 0},
 }};
 
 void test_descriptor_completeness_and_sizes() {
@@ -139,8 +143,8 @@ void test_descriptor_completeness_and_sizes() {
         }
     }
     CHECK(wd_protocol_message_descriptor_find(0) == nullptr);
-    CHECK(wd_protocol_message_descriptor_find(30) == nullptr);
-    CHECK(!wd_protocol_payload_size_is_valid(30, 0));
+    CHECK(wd_protocol_message_descriptor_find(32) == nullptr);
+    CHECK(!wd_protocol_payload_size_is_valid(32, 0));
 }
 
 void test_every_descriptor_has_an_allowed_route() {
@@ -175,6 +179,22 @@ void test_every_descriptor_has_an_allowed_route() {
         }
         CHECK(allowed != 0);
     }
+}
+
+void test_runtime_routes_must_be_concrete() {
+    CHECK(!wd_protocol_message_allowed(WD_MSG_SERVER_CONFIG,
+                                       static_cast<wd_protocol_channel>(WD_PROTOCOL_CHANNEL_CONTROL | WD_PROTOCOL_CHANNEL_VIDEO),
+                                       WD_PROTOCOL_PHASE_NEGOTIATION, WD_PROTOCOL_SERVER_TO_CLIENT,
+                                       sizeof(wd_server_config_payload)));
+    CHECK(!wd_protocol_message_allowed(WD_MSG_SERVER_CONFIG, WD_PROTOCOL_CHANNEL_CONTROL,
+                                       static_cast<wd_protocol_phase>(WD_PROTOCOL_PHASE_NEGOTIATION | WD_PROTOCOL_PHASE_ESTABLISHED),
+                                       WD_PROTOCOL_SERVER_TO_CLIENT, sizeof(wd_server_config_payload)));
+    CHECK(!wd_protocol_message_allowed(WD_MSG_SERVER_CONFIG, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
+                                       static_cast<wd_protocol_direction>(WD_PROTOCOL_CLIENT_TO_SERVER | WD_PROTOCOL_SERVER_TO_CLIENT),
+                                       sizeof(wd_server_config_payload)));
+    CHECK(wd_protocol_channel_max_payload(
+              static_cast<wd_protocol_channel>(WD_PROTOCOL_CHANNEL_CONTROL | WD_PROTOCOL_CHANNEL_VIDEO),
+              WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_SERVER_TO_CLIENT) == 0);
 }
 
 void test_launch_request_contract() {
@@ -244,6 +264,7 @@ void test_channel_caps_cover_all_allowed_messages() {
 
 int main() {
     test_descriptor_completeness_and_sizes();
+    test_runtime_routes_must_be_concrete();
     test_launch_request_contract();
     test_every_descriptor_has_an_allowed_route();
     test_channel_caps_cover_all_allowed_messages();

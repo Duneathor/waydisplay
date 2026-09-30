@@ -186,6 +186,8 @@ struct ClientVideoDecoder {
     bool                                using_vaapi          = false;
     bool                                vaapi_auto_disabled  = false;
     bool                                vaapi_disable_logged = false;
+    bool                                vaapi_probe_complete = false;
+    uint32_t                            vaapi_supported_codecs = 0;
     std::vector<SubmittedFrameMetadata> submitted_frames{};
     std::deque<QueuedDecodedFrame>      decoded_frames{};
 #endif
@@ -249,7 +251,7 @@ const AVCodec* find_decoder_for_codec(uint32_t codec) {
     }
 }
 
-uint32_t supported_decoder_codecs() {
+uint32_t supported_software_decoder_codecs() {
     uint32_t codecs = 0;
 #if WAYDISPLAY_HAVE_H264_CLIENT_DECODER
     if (avcodec_find_decoder(AV_CODEC_ID_H264))
@@ -264,12 +266,155 @@ uint32_t supported_decoder_codecs() {
     }
 #endif
 #if WAYDISPLAY_HAVE_AV1_CLIENT_DECODER
-    if (find_av1_software_decoder() || avcodec_find_decoder_by_name("av1"))
+    /* FFmpeg's native av1 decoder may be hardware-only.  Only advertise a
+     * software AV1 path when an implementation that can actually decode in
+     * software is present. */
+    if (find_av1_software_decoder())
     {
         codecs |= WD_VIDEO_CODEC_AV1;
     }
 #endif
     return codecs;
+}
+
+#if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
+static bool vaapi_profile_has_vld(VADisplay display, VAProfile profile) {
+    if (!display)
+    {
+        return false;
+    }
+
+    const int capacity = vaMaxNumEntrypoints(display);
+    if (capacity <= 0)
+    {
+        return false;
+    }
+    std::vector<VAEntrypoint> entrypoints(static_cast<size_t>(capacity));
+    int count = 0;
+    if (vaQueryConfigEntrypoints(display, profile, entrypoints.data(), &count) != VA_STATUS_SUCCESS ||
+        count < 0 || count > capacity)
+    {
+        return false;
+    }
+    return std::find(entrypoints.begin(), entrypoints.begin() + count, VAEntrypointVLD) !=
+           entrypoints.begin() + count;
+}
+
+static uint32_t vaapi_device_decode_codecs(const AVBufferRef* device) {
+    if (!device || !device->data)
+    {
+        return 0;
+    }
+    const auto* hw_device = reinterpret_cast<const AVHWDeviceContext*>(device->data);
+    const auto* va_device = hw_device ? static_cast<const AVVAAPIDeviceContext*>(hw_device->hwctx) : nullptr;
+    const VADisplay display = va_device ? va_device->display : nullptr;
+    if (!display)
+    {
+        return 0;
+    }
+
+    const int profile_capacity = vaMaxNumProfiles(display);
+    if (profile_capacity <= 0)
+    {
+        return 0;
+    }
+    std::vector<VAProfile> profiles(static_cast<size_t>(profile_capacity));
+    int count = 0;
+    if (vaQueryConfigProfiles(display, profiles.data(), &count) != VA_STATUS_SUCCESS ||
+        count < 0 || count > profile_capacity)
+    {
+        return 0;
+    }
+    const auto has_profile = [&](VAProfile profile) {
+        return std::find(profiles.begin(), profiles.begin() + count, profile) != profiles.begin() + count &&
+               vaapi_profile_has_vld(display, profile);
+    };
+
+    uint32_t codecs = 0;
+#if WAYDISPLAY_HAVE_H264_CLIENT_DECODER
+    if (has_profile(VAProfileH264High) || has_profile(VAProfileH264Main) || has_profile(VAProfileH264ConstrainedBaseline))
+    {
+        codecs |= WD_VIDEO_CODEC_H264;
+    }
+#endif
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER
+    if (has_profile(VAProfileHEVCMain))
+    {
+        codecs |= WD_VIDEO_CODEC_H265;
+    }
+#endif
+#if WAYDISPLAY_HAVE_AV1_CLIENT_DECODER
+    if (has_profile(VAProfileAV1Profile0))
+    {
+        codecs |= WD_VIDEO_CODEC_AV1;
+    }
+#endif
+    return codecs;
+}
+
+static bool vaapi_device_matches_decode_codec(const AVBufferRef* device, void* userdata) {
+    if (!userdata)
+    {
+        return false;
+    }
+    const uint32_t codec = *static_cast<const uint32_t*>(userdata);
+    return (vaapi_device_decode_codecs(device) & codec) != 0;
+}
+
+static bool open_vaapi_decode_device(uint32_t codec, AVBufferRef** out_device, char* selected_device, size_t selected_size) {
+    if (!out_device || (codec != WD_VIDEO_CODEC_H264 && codec != WD_VIDEO_CODEC_H265 && codec != WD_VIDEO_CODEC_AV1))
+    {
+        return false;
+    }
+    return wd_vaapi_open_matching_device(out_device, selected_device, selected_size,
+                                         vaapi_device_matches_decode_codec, &codec) >= 0;
+}
+
+static uint32_t supported_vaapi_decoder_codecs(ClientVideoDecoder* decoder) {
+    if (!decoder)
+    {
+        return 0;
+    }
+    if (decoder->vaapi_probe_complete)
+    {
+        return decoder->vaapi_supported_codecs;
+    }
+
+    decoder->vaapi_probe_complete = true;
+    for (const uint32_t codec : {WD_VIDEO_CODEC_H264, WD_VIDEO_CODEC_H265, WD_VIDEO_CODEC_AV1})
+    {
+        AVBufferRef* device = nullptr;
+        if (open_vaapi_decode_device(codec, &device, nullptr, 0))
+        {
+            decoder->vaapi_supported_codecs |= codec;
+        }
+        av_buffer_unref(&device);
+    }
+    WD_LOG_DEBUG("VAAPI video decode codecs: h264=%s h265=%s av1=%s",
+                 (decoder->vaapi_supported_codecs & WD_VIDEO_CODEC_H264) != 0 ? "yes" : "no",
+                 (decoder->vaapi_supported_codecs & WD_VIDEO_CODEC_H265) != 0 ? "yes" : "no",
+                 (decoder->vaapi_supported_codecs & WD_VIDEO_CODEC_AV1) != 0 ? "yes" : "no");
+    return decoder->vaapi_supported_codecs;
+}
+#else
+static uint32_t supported_vaapi_decoder_codecs(ClientVideoDecoder*) {
+    return 0;
+}
+#endif
+
+static uint32_t supported_decoder_codecs_for_mode(ClientVideoDecoder* decoder, uint8_t decode_mode) {
+    switch (decode_mode)
+    {
+    case WD_CLIENT_VIDEO_DECODER_SOFTWARE:
+        return supported_software_decoder_codecs();
+    case WD_CLIENT_VIDEO_DECODER_VAAPI:
+        return supported_vaapi_decoder_codecs(decoder);
+    case WD_CLIENT_VIDEO_DECODER_AUTO:
+        return supported_software_decoder_codecs() | supported_vaapi_decoder_codecs(decoder);
+    case WD_CLIENT_VIDEO_DECODER_OFF:
+    default:
+        return 0;
+    }
 }
 
 bool decoder_config_matches(const ClientVideoDecoder* decoder, const ClientVideoDecoderConfig& config) {
@@ -278,7 +423,8 @@ bool decoder_config_matches(const ClientVideoDecoder* decoder, const ClientVideo
            decoder->config.width == config.width && decoder->config.height == config.height &&
            decoder->config.coded_width == config.coded_width && decoder->config.coded_height == config.coded_height &&
            decoder->config.target_fps == config.target_fps && decoder->config.codec == config.codec &&
-           decoder->config.decode_mode == config.decode_mode;
+           decoder->config.decode_mode == config.decode_mode &&
+           decoder->config.prefer_gpu_output == config.prefer_gpu_output;
 }
 
 #if WAYDISPLAY_HAVE_VAAPI_CLIENT_DECODER
@@ -286,59 +432,6 @@ bool decoder_config_matches(const ClientVideoDecoder* decoder, const ClientVideo
  * establish that the selected GPU supports that codec. In particular, an AV1
  * encoder may be present on devices without AV1 Profile 0 *decoding*. Check
  * the actual libva display before passing a hardware context to FFmpeg. */
-bool vaapi_device_decodes_av1_profile0(const AVBufferRef* device) {
-    if (!device || !device->data)
-    {
-        return false;
-    }
-    const auto* hw_device = reinterpret_cast<const AVHWDeviceContext*>(device->data);
-    const auto* va_device = hw_device ? static_cast<const AVVAAPIDeviceContext*>(hw_device->hwctx) : nullptr;
-    const VADisplay display = va_device ? va_device->display : nullptr;
-    if (!display)
-    {
-        return false;
-    }
-
-    const int profile_capacity = vaMaxNumProfiles(display);
-    if (profile_capacity <= 0)
-    {
-        return false;
-    }
-    std::vector<VAProfile> profiles(static_cast<size_t>(profile_capacity));
-    int                    count = 0;
-    if (vaQueryConfigProfiles(display, profiles.data(), &count) != VA_STATUS_SUCCESS || count < 0 || count > profile_capacity)
-    {
-        return false;
-    }
-    if (std::find(profiles.begin(), profiles.begin() + count, VAProfileAV1Profile0) == profiles.begin() + count)
-    {
-        return false;
-    }
-
-    const int entrypoint_capacity = vaMaxNumEntrypoints(display);
-    if (entrypoint_capacity <= 0)
-    {
-        return false;
-    }
-    std::vector<VAEntrypoint> entrypoints(static_cast<size_t>(entrypoint_capacity));
-    count = 0;
-    if (vaQueryConfigEntrypoints(display, VAProfileAV1Profile0, entrypoints.data(), &count) != VA_STATUS_SUCCESS || count < 0 || count > entrypoint_capacity)
-    {
-        return false;
-    }
-    if (std::find(entrypoints.begin(), entrypoints.begin() + count, VAEntrypointVLD) == entrypoints.begin() + count)
-    {
-        return false;
-    }
-    VAConfigID config_id = 0;
-    if (vaCreateConfig(display, VAProfileAV1Profile0, VAEntrypointVLD, nullptr, 0, &config_id) != VA_STATUS_SUCCESS)
-    {
-        return false;
-    }
-    (void)vaDestroyConfig(display, config_id);
-    return true;
-}
-
 /* libavcodec's default get_format may select a hardware pixel format even
  * without an attached device. AV1 in particular advertises VAAPI/CUDA/
  * VDPAU/Vulkan before software YUV: after a rejected AV1 VAAPI probe, that
@@ -781,7 +874,7 @@ bool client_video_decoder_take_frame(ClientVideoDecoder* decoder, ClientDecodedV
 
 bool client_video_decoder_available(const ClientVideoDecoder* decoder) {
 #if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER || WAYDISPLAY_HAVE_AV1_CLIENT_DECODER
-    return decoder && supported_decoder_codecs() != 0;
+    return decoder && supported_decoder_codecs_for_mode(const_cast<ClientVideoDecoder*>(decoder), WD_CLIENT_VIDEO_DECODER_AUTO) != 0;
 #else
     (void)decoder;
     return false;
@@ -790,9 +883,19 @@ bool client_video_decoder_available(const ClientVideoDecoder* decoder) {
 
 uint32_t client_video_decoder_supported_codecs(const ClientVideoDecoder* decoder) {
 #if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER || WAYDISPLAY_HAVE_AV1_CLIENT_DECODER
-    return decoder ? supported_decoder_codecs() : 0;
+    return decoder ? supported_decoder_codecs_for_mode(const_cast<ClientVideoDecoder*>(decoder), WD_CLIENT_VIDEO_DECODER_AUTO) : 0;
 #else
     (void)decoder;
+    return 0;
+#endif
+}
+
+uint32_t client_video_decoder_supported_codecs_for_mode(const ClientVideoDecoder* decoder, uint8_t decode_mode) {
+#if WAYDISPLAY_HAVE_H265_CLIENT_DECODER || WAYDISPLAY_HAVE_H264_CLIENT_DECODER || WAYDISPLAY_HAVE_AV1_CLIENT_DECODER
+    return decoder ? supported_decoder_codecs_for_mode(const_cast<ClientVideoDecoder*>(decoder), decode_mode) : 0;
+#else
+    (void)decoder;
+    (void)decode_mode;
     return 0;
 #endif
 }
@@ -808,31 +911,31 @@ const char* client_video_decoder_backend_name(const ClientVideoDecoder* decoder)
     {
         return decoder->codec->name;
     }
-    if (supported_decoder_codecs() == WD_VIDEO_CODEC_MASK)
+    if (supported_decoder_codecs_for_mode(const_cast<ClientVideoDecoder*>(decoder), WD_CLIENT_VIDEO_DECODER_AUTO) == WD_VIDEO_CODEC_MASK)
     {
         return "h264/hevc/av1";
     }
-    if (supported_decoder_codecs() == (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_AV1))
+    if (supported_decoder_codecs_for_mode(const_cast<ClientVideoDecoder*>(decoder), WD_CLIENT_VIDEO_DECODER_AUTO) == (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_AV1))
     {
         return "h264/av1";
     }
-    if (supported_decoder_codecs() == (WD_VIDEO_CODEC_H265 | WD_VIDEO_CODEC_AV1))
+    if (supported_decoder_codecs_for_mode(const_cast<ClientVideoDecoder*>(decoder), WD_CLIENT_VIDEO_DECODER_AUTO) == (WD_VIDEO_CODEC_H265 | WD_VIDEO_CODEC_AV1))
     {
         return "hevc/av1";
     }
-    if (supported_decoder_codecs() == (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265))
+    if (supported_decoder_codecs_for_mode(const_cast<ClientVideoDecoder*>(decoder), WD_CLIENT_VIDEO_DECODER_AUTO) == (WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265))
     {
         return "h264/hevc";
     }
-    if ((supported_decoder_codecs() & WD_VIDEO_CODEC_H264) != 0)
+    if ((supported_decoder_codecs_for_mode(const_cast<ClientVideoDecoder*>(decoder), WD_CLIENT_VIDEO_DECODER_AUTO) & WD_VIDEO_CODEC_H264) != 0)
     {
         return "h264";
     }
-    if ((supported_decoder_codecs() & WD_VIDEO_CODEC_H265) != 0)
+    if ((supported_decoder_codecs_for_mode(const_cast<ClientVideoDecoder*>(decoder), WD_CLIENT_VIDEO_DECODER_AUTO) & WD_VIDEO_CODEC_H265) != 0)
     {
         return "hevc";
     }
-    if ((supported_decoder_codecs() & WD_VIDEO_CODEC_AV1) != 0)
+    if ((supported_decoder_codecs_for_mode(const_cast<ClientVideoDecoder*>(decoder), WD_CLIENT_VIDEO_DECODER_AUTO) & WD_VIDEO_CODEC_AV1) != 0)
     {
         return "av1";
     }
@@ -929,24 +1032,8 @@ bool client_video_decoder_configure(ClientVideoDecoder* decoder, const ClientVid
     if (decoder->vaapi_requested)
     {
         char selected_device[PATH_MAX] = {};
-        if (wd_vaapi_open_automatic_device(&decoder->hw_device_ctx, selected_device, sizeof(selected_device)) >= 0)
+        if (open_vaapi_decode_device(config.codec, &decoder->hw_device_ctx, selected_device, sizeof(selected_device)))
         {
-            if (config.codec == WD_VIDEO_CODEC_AV1 && !vaapi_device_decodes_av1_profile0(decoder->hw_device_ctx))
-            {
-                av_buffer_unref(&decoder->hw_device_ctx);
-                if (decoder->vaapi_required)
-                {
-                    WD_LOG_WARN("AV1 VAAPI decode unavailable: selected device does not advertise AV1 Profile 0 VLD");
-                    release_decoder_backend(decoder);
-                    return false;
-                }
-                (void)mark_vaapi_auto_failed(decoder, "selected device lacks AV1 Profile 0 VLD");
-                /* The native FFmpeg av1 decoder is hardware-only. Retrying it
-                 * with a software pixel format still fails with ENOSYS. Open
-                 * libdav1d/libaom-av1 instead, before submitting this frame. */
-                release_decoder_backend(decoder);
-                return client_video_decoder_configure(decoder, config);
-            }
             if (decoder->hw_device_ctx)
             {
                 WD_LOG_INFO("VAAPI video decode device initialized: %s", selected_device);

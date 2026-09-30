@@ -24,6 +24,7 @@ struct wd_stream_frame_worker {
     uint32_t          damage_capacity;
     struct wd_stream_video_snapshot video_snapshot;
     struct wd_frame                 captured_video_frame;
+    bool                            cpu_framebuffer_refreshed;
     bool                            damage_all_tiles;
     uint32_t          damage_tile_count;
 };
@@ -82,7 +83,8 @@ static void* stream_frame_worker_main(void* data) {
         struct wd_stream_damage_view damage = {
             .tiles      = worker->damage_tiles,
             .all_tiles  = worker->damage_all_tiles,
-            .tile_count = worker->damage_tile_count,
+            .tile_count = worker->server->total_base_tiles,
+            .dirty_tile_count = worker->damage_tile_count,
         };
         pthread_mutex_unlock(&worker->lock);
 
@@ -91,8 +93,8 @@ static void* stream_frame_worker_main(void* data) {
             struct wd_stream_frame_analysis analysis;
             memset(&analysis, 0, sizeof(analysis));
             const bool force_full_refresh = wd_stream_frame_force_full_refresh(worker->server);
-            if (wd_stream_analyze_frame(worker->server, &damage, force_full_refresh, worker->changed_tiles,
-                                        worker->damage_capacity, &analysis))
+            if (wd_stream_analyze_frame(worker->server, &damage, force_full_refresh, worker->cpu_framebuffer_refreshed,
+                                        worker->changed_tiles, worker->damage_capacity, &analysis))
             {
                 worker->video_snapshot.ready   = false;
                 worker->video_snapshot.copy_ns = 0;
@@ -136,6 +138,9 @@ static void* stream_frame_worker_main(void* data) {
                 (void)wd_stream_process_frame(worker->server, &damage, &analysis, &worker->video_snapshot);
                 wd_frame_reset(&worker->video_snapshot.gpu_frame);
             }
+            /* A GPU-only mailbox item is useful only for this render. Do not
+             * retain duplicated plane FDs after a rejected tile handoff. */
+            wd_frame_reset(&worker->captured_video_frame);
         }
         else
         {
@@ -271,6 +276,7 @@ bool wd_stream_frame_worker_submit(struct wd_server* server) {
     wd_frame_reset(&worker->captured_video_frame);
     worker->captured_video_frame = server->captured_video_frame;
     wd_frame_init(&server->captured_video_frame);
+    worker->cpu_framebuffer_refreshed = server->framebuffer_refreshed_by_render;
     worker->frame_pending     = true;
     worker->service_pending   = false;
 

@@ -37,12 +37,12 @@ int main(void) {
     close(pipefd[1]);
     CHECK(wd_frame_valid(&frame));
     CHECK(frame.data.drm.planes[0].fd >= 0);
-    CHECK(fcntl(frame.data.drm.planes[0].fd, F_GETFD) >= 0);
+    CHECK((fcntl(frame.data.drm.planes[0].fd, F_GETFD) & FD_CLOEXEC) != 0);
     CHECK(wd_frame_clone(&clone, &frame));
     CHECK(clone.data.drm.planes[0].fd != frame.data.drm.planes[0].fd);
     wd_frame_reset(&frame);
     CHECK(wd_frame_valid(&clone));
-    CHECK(fcntl(clone.data.drm.planes[0].fd, F_GETFD) >= 0);
+    CHECK((fcntl(clone.data.drm.planes[0].fd, F_GETFD) & FD_CLOEXEC) != 0);
     wd_frame_reset(&clone);
 
     CHECK(!wd_frame_valid(&clone));

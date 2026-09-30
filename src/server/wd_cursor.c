@@ -154,10 +154,10 @@ bool wd_cursor_flush_pending_locked(struct wd_server* server) {
     return ok;
 }
 
-void wd_cursor_set_shape(struct wd_server* server, uint16_t shape) {
+bool wd_cursor_set_shape(struct wd_server* server, uint16_t shape) {
     if (!server)
     {
-        return;
+        return false;
     }
 
     if (shape >= WD_CURSOR_SHAPE_COUNT)
@@ -165,16 +165,16 @@ void wd_cursor_set_shape(struct wd_server* server, uint16_t shape) {
         shape = WD_CURSOR_SHAPE_DEFAULT;
     }
 
-    if (server->cursor_shape == shape)
-    {
-        return;
-    }
-
-    server->cursor_shape = shape;
-
+    bool changed = false;
     pthread_mutex_lock(&server->net.lock);
-    wd_cursor_queue_current_locked(server);
+    if (server->cursor_shape != shape)
+    {
+        server->cursor_shape = shape;
+        wd_cursor_queue_current_locked(server);
+        changed = true;
+    }
     pthread_mutex_unlock(&server->net.lock);
+    return changed;
 }
 
 uint16_t wd_cursor_shape_for_resize_edges(uint32_t edges) {
@@ -206,6 +206,45 @@ uint16_t wd_cursor_shape_for_resize_edges(uint32_t edges) {
     return WD_CURSOR_SHAPE_DEFAULT;
 }
 
+static bool wd_cursor_request_client_has_pointer_focus(struct wd_server* server, struct wlr_seat_client* seat_client) {
+    if (!server || !server->seat || !seat_client)
+    {
+        return false;
+    }
+
+    return server->seat->pointer_state.focused_client == seat_client;
+}
+
+static bool wd_cursor_request_serial_is_valid(struct wlr_seat_client* seat_client, uint32_t serial) {
+    return seat_client && serial != 0 && wlr_seat_client_validate_event_serial(seat_client, serial);
+}
+
+static void wd_cursor_record_shape_request(struct wd_server* server, bool rejected) {
+    pthread_mutex_lock(&server->net.lock);
+    server->net.stats.cursor_shape_requests++;
+    if (rejected)
+    {
+        server->net.stats.cursor_shape_rejected++;
+    }
+    pthread_mutex_unlock(&server->net.lock);
+}
+
+static void wd_cursor_record_set_cursor_request(struct wd_server* server, bool rejected) {
+    pthread_mutex_lock(&server->net.lock);
+    server->net.stats.cursor_set_cursor_requests++;
+    if (rejected)
+    {
+        server->net.stats.cursor_set_cursor_rejected++;
+    }
+    pthread_mutex_unlock(&server->net.lock);
+}
+
+static void wd_cursor_increment_stat(struct wd_server* server, uint64_t* counter) {
+    pthread_mutex_lock(&server->net.lock);
+    (*counter)++;
+    pthread_mutex_unlock(&server->net.lock);
+}
+
 static void handle_cursor_shape_request(struct wl_listener* listener, void* data) {
     struct wd_server*                                           server = wl_container_of(listener, server, request_cursor_shape);
     struct wlr_cursor_shape_manager_v1_request_set_shape_event* event  = data;
@@ -220,31 +259,30 @@ static void handle_cursor_shape_request(struct wl_listener* listener, void* data
         return;
     }
 
+    const bool has_focus = wd_cursor_request_client_has_pointer_focus(server, event->seat_client);
+    const bool serial_ok = wd_cursor_request_serial_is_valid(event->seat_client, event->serial);
+    const bool rejected  = !has_focus || !serial_ok;
+    wd_cursor_record_shape_request(server, rejected);
+
+    if (rejected)
+    {
+        WD_LOG_DEBUG("rejected cursor-shape request: focus=%s serial=%s", has_focus ? "yes" : "no",
+                     serial_ok ? "valid" : "invalid");
+        return;
+    }
+
     /*
      * In a normal hardware compositor this would load an XCursor locally. For
      * WayDisplay, relay the semantic cursor shape to the SDL viewer so the
      * user's host cursor changes.
      */
-    server->net.stats.cursor_shape_requests++;
-
     uint16_t shape   = wd_shape_from_wp_shape(event->shape);
-    bool     changed = server->cursor_shape != shape;
-    wd_cursor_set_shape(server, shape);
+    bool     changed = wd_cursor_set_shape(server, shape);
 
     if (changed)
     {
         WD_LOG_DEBUG("client requested cursor-shape=%s mapped=%u", wlr_cursor_shape_v1_name(event->shape), shape);
     }
-}
-
-static bool wd_cursor_request_client_has_pointer_focus(struct wd_server* server, struct wlr_seat_client* seat_client) {
-    if (!server || !server->seat || !seat_client)
-    {
-        return false;
-    }
-
-    struct wlr_seat_client* focused_client = server->seat->pointer_state.focused_client;
-    return focused_client && focused_client->client == seat_client->client;
 }
 
 static void handle_request_set_cursor(struct wl_listener* listener, void* data) {
@@ -256,18 +294,21 @@ static void handle_request_set_cursor(struct wl_listener* listener, void* data) 
         return;
     }
 
-    server->net.stats.cursor_set_cursor_requests++;
+    const bool has_focus = wd_cursor_request_client_has_pointer_focus(server, event->seat_client);
+    const bool serial_ok = wd_cursor_request_serial_is_valid(event->seat_client, event->serial);
+    const bool rejected  = !has_focus || !serial_ok;
+    wd_cursor_record_set_cursor_request(server, rejected);
 
-    if (!wd_cursor_request_client_has_pointer_focus(server, event->seat_client))
+    if (rejected)
     {
-        server->net.stats.cursor_set_cursor_rejected++;
-        WD_LOG_DEBUG("rejected wl_pointer.set_cursor from unfocused client");
+        WD_LOG_DEBUG("rejected wl_pointer.set_cursor: focus=%s serial=%s", has_focus ? "yes" : "no",
+                     serial_ok ? "valid" : "invalid");
         return;
     }
 
     if (!event->surface)
     {
-        server->net.stats.cursor_set_cursor_hidden++;
+        wd_cursor_increment_stat(server, &server->net.stats.cursor_set_cursor_hidden);
         wd_cursor_set_shape(server, WD_CURSOR_SHAPE_HIDDEN);
         return;
     }
@@ -280,7 +321,7 @@ static void handle_request_set_cursor(struct wl_listener* listener, void* data) 
      * A later cursor-image protocol can replace this fallback with the actual
      * surface contents and hotspot.
      */
-    server->net.stats.cursor_set_cursor_fallback++;
+    wd_cursor_increment_stat(server, &server->net.stats.cursor_set_cursor_fallback);
     wd_cursor_set_shape(server, WD_CURSOR_SHAPE_DEFAULT);
 }
 

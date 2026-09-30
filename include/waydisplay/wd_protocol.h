@@ -59,6 +59,8 @@ enum wd_message_type {
     WD_MSG_AUDIO_PACKET            = 27,
     WD_MSG_VIDEO_FEEDBACK          = 28,
     WD_MSG_LAUNCH_COMMAND          = 29,
+    WD_MSG_CLIPBOARD_PASTE         = 30,
+    WD_MSG_PRIMARY_PASTE           = 31,
 };
 
 enum wd_protocol_error_code {
@@ -636,6 +638,9 @@ struct wd_udp_tile_input_sequence_extension {
     uint64_t input_sequence;
 };
 
+WD_PACKED_END
+
+/* Host-side decoded representation; not part of the wire ABI. */
 struct wd_udp_tile_packet_decoded {
     uint8_t  session_id;
     uint64_t connection_token;
@@ -651,6 +656,8 @@ struct wd_udp_tile_packet_decoded {
     uint64_t input_sequence;
     uint16_t header_size;
 };
+
+WD_PACKED_BEGIN
 
 #define WD_UDP_TILE_HEADER_MIN_SIZE ((uint16_t)sizeof(struct wd_udp_tile_packet_header))
 #define WD_UDP_TILE_HEADER_MAX_SIZE                                                                                                        \
@@ -973,6 +980,8 @@ static_assert(sizeof(struct wd_mtu_probe_start_payload) == 11, "unexpected wd_mt
 static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_mtu_probe_result_payload size");
 static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
+static_assert(sizeof(struct wd_link_probe_payload) == 21, "unexpected wd_link_probe_payload size");
+static_assert(alignof(struct wd_udp_tile_packet_decoded) >= alignof(uint64_t), "decoded UDP header should have natural alignment");
 static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
 static_assert(sizeof(struct wd_client_stats_payload) == 554, "unexpected wd_client_stats_payload size");
 static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
@@ -1003,6 +1012,8 @@ _Static_assert(sizeof(struct wd_mtu_probe_start_payload) == 11, "unexpected wd_m
 _Static_assert(sizeof(struct wd_mtu_probe_result_payload) == 11, "unexpected wd_mtu_probe_result_payload size");
 _Static_assert(sizeof(struct wd_throughput_probe_start_payload) == 15, "unexpected wd_throughput_probe_start_payload size");
 _Static_assert(sizeof(struct wd_throughput_probe_result_payload) == 23, "unexpected wd_throughput_probe_result_payload size");
+_Static_assert(sizeof(struct wd_link_probe_payload) == 21, "unexpected wd_link_probe_payload size");
+_Static_assert(_Alignof(struct wd_udp_tile_packet_decoded) >= _Alignof(uint64_t), "decoded UDP header should have natural alignment");
 _Static_assert(sizeof(struct wd_tile_repair_entry) == 10, "unexpected wd_tile_repair_entry size");
 _Static_assert(sizeof(struct wd_client_stats_payload) == 554, "unexpected wd_client_stats_payload size");
 _Static_assert(sizeof(struct wd_input_channel_hello_payload) == 9, "unexpected wd_input_channel_hello_payload size");
@@ -1120,6 +1131,10 @@ static inline bool wd_client_hello_payload_is_valid(const struct wd_client_hello
 
     const bool video = (hello->capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0;
     const bool audio = (hello->capabilities & WD_CLIENT_CAP_AUDIO_STREAM) != 0;
+    if ((hello->capabilities & WD_CLIENT_CAP_VIDEO_FEEDBACK) != 0 && !video)
+    {
+        return false;
+    }
     if (video)
     {
         if (hello->video_codecs == 0 || hello->video_transport != WD_VIDEO_TRANSPORT_TCP)

@@ -69,7 +69,18 @@ bool wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_t
         return false;
     }
 
-    wd_net_listener_init(listener);
+    if (listener->listen_fd != -1 || listener->udp_fd != -1 || listener->tcp_port != 0 || listener->udp_port != 0)
+    {
+        if (failed_stage)
+        {
+            *failed_stage = WD_NET_LISTENER_STAGE_NONE;
+        }
+        if (error_code)
+        {
+            *error_code = EALREADY;
+        }
+        return false;
+    }
     if (failed_stage)
     {
         *failed_stage = WD_NET_LISTENER_STAGE_NONE;

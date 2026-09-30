@@ -220,17 +220,44 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
         return true;
     }
 
-    uint8_t  session_id       = 0;
-    uint64_t connection_token = 0;
+    wd_server_config_payload config{};
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
-        session_id       = state.config.session_id;
-        connection_token = state.config.connection_token;
+        config = state.config;
     }
 
-    if (session_id == 0 || udp_header.session_id != session_id || udp_header.connection_token != connection_token) [[unlikely]]
+    if (config.session_id == 0 || udp_header.session_id != config.session_id ||
+        udp_header.connection_token != config.connection_token) [[unlikely]]
     {
         state.stats.udp_ignored_stale_session.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    /* The UDP processing mutex held by the caller excludes config application,
+     * so this snapshot remains authoritative through reassembly. Validate every
+     * stateless geometry/fragment invariant before a packet is allowed to move
+     * global content ownership to a newer epoch. */
+    const uint16_t udp_payload_target = config.udp_payload_target != 0 ? config.udp_payload_target : WD_UDP_PAYLOAD_TARGET;
+    const TilePacketValidationResult validation =
+        validate_tile_packet_header(udp_header, packet_size, udp_payload_target, config);
+    if (validation != TilePacketValidationResult::Valid) [[unlikely]]
+    {
+        if (validation == TilePacketValidationResult::Identity)
+        {
+            state.stats.udp_ignored_stale_session.fetch_add(1, std::memory_order_relaxed);
+        }
+        else
+        {
+            state.stats.udp_ignored_invalid.fetch_add(1, std::memory_order_relaxed);
+            if (validation == TilePacketValidationResult::Geometry)
+            {
+                state.stats.udp_invalid_geometry.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                state.stats.udp_invalid_fragment.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
         return true;
     }
 
@@ -278,7 +305,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
         if (completed.content_epoch != state.remote_content_epoch || state.remote_content_owner != WD_CLIENT_CONTENT_OWNER_TILES) [[unlikely]]
         {
             reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
-            state.stats.udp_ignored_stale_session.fetch_add(1, std::memory_order_relaxed);
+            state.stats.udp_ignored_stale_epoch.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
 
@@ -293,6 +320,7 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
         }
 
         bool queued_direct = false;
+        bool presentation_satisfied = false;
         {
             auto upload_lock = lock_with_contention_sample(state.tile_present_mutex, batch);
             const bool queue_was_empty = state.tile_present_queue.empty();
@@ -303,7 +331,9 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
             upload.generation    = completed.generation;
             upload.source_pitch  = static_cast<uint32_t>(completed.tile_width) * WD_BYTES_PER_PIXEL;
             upload.pixels        = std::move(completed.tile_bytes);
-            queued_direct = state.tile_present_queue.push(std::move(upload));
+            const ClientTilePresentPushResult push_result = state.tile_present_queue.push(std::move(upload));
+            queued_direct = push_result == ClientTilePresentPushResult::Queued;
+            presentation_satisfied = push_result != ClientTilePresentPushResult::Rejected;
             if (queued_direct)
             {
                 const uint64_t queue_depth = state.tile_present_queue.size();
@@ -317,7 +347,14 @@ bool process_udp_datagram(ClientState& state, TileReassembler& reassembler, Clie
             }
         }
 
-        if (!queued_direct)
+        if (presentation_satisfied && !queued_direct)
+        {
+            /* A newer exact-rectangle upload is already queued. The older
+             * completion is intentionally suppressed, but its storage still
+             * belongs to the reassembler recycle pool. */
+            reassembler.recycle_completed_tile_buffer(std::move(completed.tile_bytes));
+        }
+        else if (!queued_direct)
         {
             batch.note_tile_present_overflow();
             /* Bounded-queue overflow retains the old framebuffer path. It is

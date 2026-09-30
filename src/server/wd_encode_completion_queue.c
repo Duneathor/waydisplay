@@ -14,7 +14,8 @@ void wd_encode_completion_queue_init(struct wd_encode_completion_queue* queue, u
 }
 
 bool wd_encode_completion_queue_push(struct wd_encode_completion_queue* queue, uint16_t job_index) {
-    if (!queue || !queue->storage || queue->capacity == 0 || queue->count >= queue->capacity)
+    if (!queue || !queue->storage || queue->capacity == 0 || queue->count >= queue->capacity ||
+        job_index >= queue->capacity)
     {
         return false;
     }

@@ -32,7 +32,7 @@ wd_video_frame_payload_header valid_header() {
 }
 
 void test_payload_identity_and_geometry() {
-    const wd_client_video_packet_expectation expected{7, 0x1122334455667788ull, 800, 600};
+    const wd_client_video_packet_expectation expected{7, 0x1122334455667788ull, 800, 600, WD_VIDEO_CODEC_H265};
     auto header = valid_header();
     bool control = true;
     CHECK(wd_client_video_packet_validate(&header, sizeof(header) + header.data_size, &expected, &control) ==
@@ -40,7 +40,8 @@ void test_payload_identity_and_geometry() {
     CHECK(!control);
 
     header.codec = WD_VIDEO_CODEC_AV1;
-    CHECK(wd_client_video_packet_validate(&header, sizeof(header) + header.data_size, &expected, &control) == WD_CLIENT_VIDEO_PACKET_VALID);
+    CHECK(wd_client_video_packet_validate(&header, sizeof(header) + header.data_size, &expected, &control) ==
+          WD_CLIENT_VIDEO_PACKET_INVALID_PAYLOAD);
     header.codec = WD_VIDEO_CODEC_H265;
     header.connection_token++;
     CHECK(wd_client_video_packet_validate(&header, sizeof(header) + header.data_size, &expected, &control) ==
@@ -58,12 +59,20 @@ void test_payload_identity_and_geometry() {
     CHECK(wd_client_video_packet_validate(&header, sizeof(header) + header.data_size, &expected, &control) ==
           WD_CLIENT_VIDEO_PACKET_INVALID_PAYLOAD);
     header = valid_header();
+    header.coded_width = static_cast<uint16_t>(WD_MAX_VIDEO_CODED_WIDTH + 1u);
+    CHECK(wd_client_video_packet_validate(&header, sizeof(header) + header.data_size, &expected, &control) ==
+          WD_CLIENT_VIDEO_PACKET_INVALID_GEOMETRY);
+    header = valid_header();
+    header.coded_height = static_cast<uint16_t>(WD_MAX_VIDEO_CODED_HEIGHT + 1u);
+    CHECK(wd_client_video_packet_validate(&header, sizeof(header) + header.data_size, &expected, &control) ==
+          WD_CLIENT_VIDEO_PACKET_INVALID_GEOMETRY);
+    header = valid_header();
     CHECK(wd_client_video_packet_validate(&header, sizeof(header) + header.data_size - 1, &expected, &control) ==
           WD_CLIENT_VIDEO_PACKET_INVALID_PAYLOAD);
 }
 
 void test_control_frames_may_carry_transition_geometry() {
-    const wd_client_video_packet_expectation expected{7, 0x1122334455667788ull, 800, 600};
+    const wd_client_video_packet_expectation expected{7, 0x1122334455667788ull, 800, 600, WD_VIDEO_CODEC_H265};
     auto header = valid_header();
     header.flags = WD_VIDEO_FRAME_RESIZE | WD_VIDEO_FRAME_END_OF_STREAM;
     header.width = 1366;

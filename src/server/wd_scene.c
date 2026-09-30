@@ -7,6 +7,7 @@
 
 static void                view_configure_idle(void* data);
 static void                view_schedule_initial_configure(struct wd_view* view);
+static void                view_reconstrain_reactive_popups(struct wd_view* view);
 static void                view_handle_commit(struct wl_listener* listener, void* data);
 static void                view_handle_map(struct wl_listener* listener, void* data);
 static void                view_handle_unmap(struct wl_listener* listener, void* data);
@@ -82,6 +83,7 @@ static void popup_commit_tracker_handle_reposition(struct wl_listener* listener,
 static void popup_commit_tracker_handle_destroy(struct wl_listener* listener, void* data);
 static void popup_commit_tracker_handle_view_destroy(struct wl_listener* listener, void* data);
 static void popup_commit_tracker_handle_scene_destroy(struct wl_listener* listener, void* data);
+static void popup_commit_tracker_mark_dirty(struct wd_popup_commit_tracker* state, const char* reason);
 static bool popup_commit_tracker_ensure_scene_tree(struct wd_popup_commit_tracker* state);
 static void surface_commit_tracker_handle_commit(struct wl_listener* listener, void* data);
 static void surface_commit_tracker_handle_destroy(struct wl_listener* listener, void* data);
@@ -130,6 +132,7 @@ void wd_scene_set_view_position(struct wd_view* view) {
 #endif
 
     (void)wd_scene_graph_set_view_position(view);
+    view_reconstrain_reactive_popups(view);
 }
 
 static struct wlr_surface* view_root_surface(struct wd_view* view) {
@@ -918,8 +921,30 @@ static void view_configure_idle(void* data) {
     uint32_t height = 0;
     view_pick_initial_size(view, &width, &height);
 
+    const bool requested_maximized  = view->xdg_surface->toplevel->requested.maximized;
+    const bool requested_fullscreen = view->xdg_surface->toplevel->requested.fullscreen;
+    if (requested_maximized || requested_fullscreen)
+    {
+        view->saved_x              = view->x;
+        view->saved_y              = view->y;
+        view->saved_width          = width;
+        view->saved_height         = height;
+        view->saved_geometry_valid = true;
+        view->maximized            = requested_maximized;
+        view->fullscreen           = requested_fullscreen;
+        view->minimized            = false;
+        view->tiled_edges          = 0;
+        view->x                    = 0;
+        view->y                    = 0;
+        width                      = output_logical_width(view->server);
+        height                     = output_logical_height(view->server);
+        wd_scene_set_view_position(view);
+    }
+
     view_set_bounds(view, width, height);
     wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, width, height);
+    wlr_xdg_toplevel_set_maximized(view->xdg_surface->toplevel, view->maximized);
+    wlr_xdg_toplevel_set_fullscreen(view->xdg_surface->toplevel, view->fullscreen);
 
     /*
      * Initial configure should not imply focus. Activate the view when it maps
@@ -1381,6 +1406,31 @@ static struct wd_popup_commit_tracker* popup_commit_tracker_for_surface(struct w
     return NULL;
 }
 
+static void view_reconstrain_reactive_popups(struct wd_view* view) {
+    if (!view || !view->server || !view->server->popup_commit_trackers.prev || !view->server->popup_commit_trackers.next)
+    {
+        return;
+    }
+
+    struct wd_popup_commit_tracker* state;
+    wl_list_for_each(state, &view->server->popup_commit_trackers, link) {
+        struct wlr_xdg_popup* popup = state->popup;
+        if (state->view != view || !popup || !popup->base || !xdg_surface_can_configure(popup->base) ||
+            (!popup->current.reactive && !popup->scheduled.rules.reactive))
+        {
+            continue;
+        }
+
+        /* wlroots unconstraining mutates scheduled.geometry in place. Rebuild
+         * the unconstrained geometry from the client's immutable positioner
+         * rules first so repeated parent moves don't reuse a previously
+         * flipped/slid result as the new starting point. */
+        wlr_xdg_positioner_rules_get_geometry(&popup->scheduled.rules, &popup->scheduled.geometry);
+        popup_unconstrain_now(view, popup);
+        popup_commit_tracker_mark_dirty(state, "reactive-parent-change");
+    }
+}
+
 static bool popup_commit_tracker_ensure_scene_tree(struct wd_popup_commit_tracker* state) {
     if (!state || state->scene_tree)
     {
@@ -1426,7 +1476,9 @@ static bool popup_commit_tracker_ensure_scene_tree(struct wd_popup_commit_tracke
     state->scene_tree = wlr_scene_xdg_surface_create(parent_tree, popup->base);
     if (!state->scene_tree)
     {
+        pthread_mutex_lock(&view->server->net.lock);
         view->server->net.stats.popup_explicit_scene_tree_failures++;
+        pthread_mutex_unlock(&view->server->net.lock);
         WD_LOG_ERROR("failed to create explicit xdg popup scene tree "
                      "popup=%p parent_view=%p parent_popup=%p parent_surface=%p",
                      (void*)popup, (void*)view, parent_popup ? (void*)parent_popup->popup : NULL,
@@ -1437,7 +1489,9 @@ static bool popup_commit_tracker_ensure_scene_tree(struct wd_popup_commit_tracke
     state->scene_destroy.notify = popup_commit_tracker_handle_scene_destroy;
     wl_signal_add(&state->scene_tree->node.events.destroy, &state->scene_destroy);
 
+    pthread_mutex_lock(&view->server->net.lock);
     view->server->net.stats.popup_explicit_scene_trees++;
+    pthread_mutex_unlock(&view->server->net.lock);
     state->scene_tree->node.data = view;
     wlr_scene_node_raise_to_top(&state->scene_tree->node);
     WD_LOG_DEBUG("created explicit xdg popup scene tree popup=%p "
@@ -1769,7 +1823,9 @@ static void view_handle_request_move(struct wl_listener* listener, void* data) {
     if (!view_request_has_valid_pointer_grab(view, event->seat, event->serial))
     {
         WD_LOG_DEBUG("ignoring xdg_toplevel.request_move with invalid pointer grab serial=%u", event->serial);
+        pthread_mutex_lock(&view->server->net.lock);
         view->server->net.stats.xdg_move_invalid_serial++;
+        pthread_mutex_unlock(&view->server->net.lock);
         return;
     }
 
@@ -1795,7 +1851,9 @@ static void view_handle_request_resize(struct wl_listener* listener, void* data)
     if (!view_request_has_valid_pointer_grab(view, event->seat, event->serial))
     {
         WD_LOG_DEBUG("ignoring xdg_toplevel.request_resize with invalid pointer grab serial=%u edges=%u", event->serial, event->edges);
+        pthread_mutex_lock(&view->server->net.lock);
         view->server->net.stats.xdg_resize_invalid_serial++;
+        pthread_mutex_unlock(&view->server->net.lock);
         return;
     }
 
@@ -1804,7 +1862,7 @@ static void view_handle_request_resize(struct wl_listener* listener, void* data)
 }
 
 static void view_restore_saved_geometry(struct wd_view* view) {
-    if (!view || !view->xdg_surface || !view->xdg_surface->toplevel)
+    if (!view || !view->xdg_surface || !view->xdg_surface->toplevel || !view->saved_geometry_valid)
     {
         return;
     }
@@ -1837,65 +1895,77 @@ static void view_save_geometry(struct wd_view* view) {
 
     if (width <= 0)
     {
-        width = (int)view->server->display_width;
+        width = (int)output_logical_width(view->server);
     }
 
     if (height <= 0)
     {
-        height = (int)view->server->display_height;
+        height = (int)output_logical_height(view->server);
     }
 
-    view->saved_width  = (uint32_t)width;
-    view->saved_height = (uint32_t)height;
+    view->saved_width          = (uint32_t)width;
+    view->saved_height         = (uint32_t)height;
+    view->saved_geometry_valid = true;
+}
+
+static void view_apply_special_state(struct wd_view* view, bool maximized, bool fullscreen) {
+    if (!view || !view->xdg_surface || !view->xdg_surface->toplevel)
+    {
+        return;
+    }
+
+    const bool was_special = view->maximized || view->fullscreen;
+    const bool is_special  = maximized || fullscreen;
+
+    if (is_special && !was_special)
+    {
+        view_save_geometry(view);
+    }
+
+    view->maximized   = maximized;
+    view->fullscreen  = fullscreen;
+    view->minimized   = false;
+    view->tiled_edges = 0;
+
+    if (is_special)
+    {
+        view_mark_geometry_before_change(view);
+        view->x = 0;
+        view->y = 0;
+        wd_scene_set_view_position(view);
+        if (xdg_toplevel_can_configure(view))
+        {
+            wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, output_logical_width(view->server),
+                                      output_logical_height(view->server));
+        }
+        view_mark_geometry_after_change(view);
+    }
+    else if (was_special)
+    {
+        view_restore_saved_geometry(view);
+        view->saved_geometry_valid = false;
+    }
+
+    if (xdg_toplevel_can_configure(view))
+    {
+        wlr_xdg_toplevel_set_maximized(view->xdg_surface->toplevel, maximized);
+        wlr_xdg_toplevel_set_fullscreen(view->xdg_surface->toplevel, fullscreen);
+    }
+
+    wd_scene_focus_view(view);
+    wd_server_mark_view_dirty(view);
 }
 
 static void view_handle_request_maximize(struct wl_listener* listener, void* data) {
     (void)data;
 
     struct wd_view* view = wl_container_of(listener, view, request_maximize);
-
     if (!view || !view->xdg_surface || !view->xdg_surface->toplevel)
     {
         return;
     }
 
-    bool maximize = view->xdg_surface->toplevel->requested.maximized;
-
-    if (maximize && !view->maximized)
-    {
-        view_mark_geometry_before_change(view);
-        view_save_geometry(view);
-
-        view->x = 0;
-        view->y = 0;
-        wd_scene_set_view_position(view);
-
-        double scale = view->server->output_scale;
-        if (scale <= 0.0)
-        {
-            scale = 1.0;
-        }
-
-        if (xdg_toplevel_can_configure(view))
-        {
-            wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, (uint32_t)((double)view->server->display_width / scale),
-                                      (uint32_t)((double)view->server->display_height / scale));
-        }
-    }
-    else if (!maximize && view->maximized)
-    {
-        view_restore_saved_geometry(view);
-    }
-
-    view->maximized   = maximize;
-    view->minimized   = false;
-    view->tiled_edges = 0;
-    if (xdg_toplevel_can_configure(view))
-    {
-        wlr_xdg_toplevel_set_maximized(view->xdg_surface->toplevel, maximize);
-    }
-    wd_scene_focus_view(view);
-    wd_server_mark_view_dirty(view);
+    view_apply_special_state(view, view->xdg_surface->toplevel->requested.maximized, view->fullscreen);
 }
 
 void wd_scene_handle_output_resize(struct wd_server* server) {
@@ -1929,6 +1999,10 @@ void wd_scene_handle_output_resize(struct wd_server* server) {
             wd_scene_set_view_position(view);
             wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, output_w, output_h);
         }
+        else
+        {
+            view_reconstrain_reactive_popups(view);
+        }
     }
 }
 
@@ -1936,48 +2010,12 @@ static void view_handle_request_fullscreen(struct wl_listener* listener, void* d
     (void)data;
 
     struct wd_view* view = wl_container_of(listener, view, request_fullscreen);
-
     if (!view || !view->xdg_surface || !view->xdg_surface->toplevel)
     {
         return;
     }
 
-    bool fullscreen = view->xdg_surface->toplevel->requested.fullscreen;
-
-    if (fullscreen && !view->fullscreen)
-    {
-        view_mark_geometry_before_change(view);
-        view_save_geometry(view);
-        view->x = 0;
-        view->y = 0;
-        wd_scene_set_view_position(view);
-
-        double scale = view->server->output_scale;
-        if (scale <= 0.0)
-        {
-            scale = 1.0;
-        }
-
-        if (xdg_toplevel_can_configure(view))
-        {
-            wlr_xdg_toplevel_set_size(view->xdg_surface->toplevel, (uint32_t)((double)view->server->display_width / scale),
-                                      (uint32_t)((double)view->server->display_height / scale));
-        }
-    }
-    else if (!fullscreen && view->fullscreen)
-    {
-        view_restore_saved_geometry(view);
-    }
-
-    view->fullscreen  = fullscreen;
-    view->minimized   = false;
-    view->tiled_edges = 0;
-    if (xdg_toplevel_can_configure(view))
-    {
-        wlr_xdg_toplevel_set_fullscreen(view->xdg_surface->toplevel, fullscreen);
-    }
-    wd_scene_focus_view(view);
-    wd_server_mark_view_dirty(view);
+    view_apply_special_state(view, view->maximized, view->xdg_surface->toplevel->requested.fullscreen);
 }
 
 static void view_handle_request_minimize(struct wl_listener* listener, void* data) {

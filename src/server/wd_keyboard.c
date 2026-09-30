@@ -83,6 +83,7 @@ static void wd_stats_note_input_inject_locked(struct wd_net_state* net, uint64_t
     net->stats.input_queue_latency_sum_ns += inject_timestamp_ns - server_rx_timestamp_ns;
     net->last_input_inject_ns        = inject_timestamp_ns;
     net->input_since_last_summary    = true;
+    net->summary_input_sequence      = net->last_input_sequence;
     net->input_since_last_fresh_tile = true;
 }
 
@@ -120,7 +121,11 @@ static ssize_t wd_keyboard_find_pressed_key(const struct wd_server* server, uint
         return -1;
     }
 
-    for (size_t i = 0; i < server->pressed_keycode_count; ++i)
+    const size_t count = server->pressed_keycode_count <= WD_SERVER_PRESSED_KEY_CAPACITY
+                             ? server->pressed_keycode_count
+                             : WD_SERVER_PRESSED_KEY_CAPACITY;
+
+    for (size_t i = 0; i < count; ++i)
     {
         if (server->pressed_keycodes[i] == evdev_key_code)
         {
@@ -134,6 +139,14 @@ static ssize_t wd_keyboard_find_pressed_key(const struct wd_server* server, uint
 void wd_keyboard_note_key_state(struct wd_server* server, uint32_t evdev_key_code, bool pressed) {
     if (!server)
     {
+        return;
+    }
+
+    if (server->pressed_keycode_count > WD_SERVER_PRESSED_KEY_CAPACITY)
+    {
+        WD_LOG_ERROR("refusing to mutate corrupt pressed-key state count=%zu capacity=%u", server->pressed_keycode_count,
+                     (unsigned)WD_SERVER_PRESSED_KEY_CAPACITY);
+        server->net.stats.key_events_dropped++;
         return;
     }
 
@@ -172,23 +185,23 @@ void wd_keyboard_note_key_state(struct wd_server* server, uint32_t evdev_key_cod
     server->pressed_keycode_count--;
 }
 
-void wd_keyboard_clear_pressed_keys(struct wd_server* server) {
-    if (!server)
-    {
-        return;
-    }
-
-    server->pressed_keycode_count = 0;
-}
-
 void wd_keyboard_notify_enter(struct wd_server* server, struct wlr_surface* surface) {
     if (!server || !server->seat || !server->keyboard || !surface)
     {
         return;
     }
 
+    const size_t pressed_count = server->pressed_keycode_count <= WD_SERVER_PRESSED_KEY_CAPACITY
+                                     ? server->pressed_keycode_count
+                                     : WD_SERVER_PRESSED_KEY_CAPACITY;
+    if (pressed_count != server->pressed_keycode_count)
+    {
+        WD_LOG_ERROR("clamping corrupt pressed-key state for keyboard enter count=%zu capacity=%u", server->pressed_keycode_count,
+                     (unsigned)WD_SERVER_PRESSED_KEY_CAPACITY);
+    }
+
     wlr_seat_set_keyboard(server->seat, server->keyboard);
-    wlr_seat_keyboard_notify_enter(server->seat, surface, server->pressed_keycodes, server->pressed_keycode_count,
+    wlr_seat_keyboard_notify_enter(server->seat, surface, server->pressed_keycodes, pressed_count,
                                    &server->keyboard->modifiers);
     server->net.stats.keyboard_enter_events++;
 }
@@ -204,6 +217,19 @@ static bool notify_key_and_modifiers(struct wd_server* server, const struct wd_q
         event->evdev_key_code, event->pressed);
     if (transition != WD_KEY_TRANSITION_ACCEPT)
     {
+        if (transition == WD_KEY_TRANSITION_INVALID_STATE)
+        {
+            WD_LOG_ERROR("invalid pressed-key state count=%zu capacity=%u", server->pressed_keycode_count,
+                         (unsigned)WD_SERVER_PRESSED_KEY_CAPACITY);
+            server->net.stats.key_events_dropped++;
+            return false;
+        }
+        if (transition == WD_KEY_TRANSITION_CAPACITY_FULL)
+        {
+            server->net.stats.key_events_dropped++;
+            return false;
+        }
+
         /* Count rejected duplicates/releases without applying a second XKB
          * transition or forwarding inconsistent key events to the seat. */
         wd_keyboard_note_key_state(server, event->evdev_key_code, event->pressed);
@@ -242,6 +268,49 @@ static bool notify_key_and_modifiers(struct wd_server* server, const struct wd_q
     return true;
 }
 
+void wd_keyboard_release_all_pressed_keys(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    if (server->pressed_keycode_count > WD_SERVER_PRESSED_KEY_CAPACITY)
+    {
+        WD_LOG_ERROR("discarding corrupt pressed-key state count=%zu capacity=%u during session reset", server->pressed_keycode_count,
+                     (unsigned)WD_SERVER_PRESSED_KEY_CAPACITY);
+        server->pressed_keycode_count = 0;
+        return;
+    }
+
+    if (!server->seat || !server->keyboard)
+    {
+        server->pressed_keycode_count = 0;
+        return;
+    }
+
+    /* Release from the end so successful transitions shrink the array without
+     * shifting the remaining keys.  Feeding the normal transition path keeps
+     * the XKB state, serialized modifiers, wlroots seat state, and our local
+     * bookkeeping synchronized. */
+    while (server->pressed_keycode_count > 0)
+    {
+        const uint32_t key = server->pressed_keycodes[server->pressed_keycode_count - 1u];
+        const struct wd_queued_key_event release = {
+            .evdev_key_code         = key,
+            .pressed                = false,
+            .client_timestamp_ns    = 0,
+            .input_sequence         = 0,
+            .server_rx_timestamp_ns = wd_now_ns(),
+        };
+
+        if (!notify_key_and_modifiers(server, &release))
+        {
+            WD_LOG_ERROR("failed to release key %u during session reset", key);
+            server->pressed_keycode_count--;
+        }
+    }
+}
+
 void wd_keyboard_drain_and_inject(struct wd_server* server) {
     struct wd_queued_key_event local[WD_SERVER_KEY_QUEUE_CAPACITY];
     size_t                     count = 0;
@@ -270,7 +339,7 @@ void wd_keyboard_drain_and_inject(struct wd_server* server) {
 
     if (reset_key_state)
     {
-        wd_keyboard_clear_pressed_keys(server);
+        wd_keyboard_release_all_pressed_keys(server);
     }
 
     if (count == 0 || !server->seat || !server->keyboard)

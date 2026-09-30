@@ -20,6 +20,10 @@ static bool wd_process_env_name_valid(const char* name) {
     return name && name[0] != '\0' && strchr(name, '=') == NULL;
 }
 
+static bool wd_process_env_action_valid(enum wd_process_env_action action) {
+    return action == WD_PROCESS_ENV_SET || action == WD_PROCESS_ENV_UNSET || action == WD_PROCESS_ENV_SET_IF_ABSENT;
+}
+
 static bool wd_process_env_entry_matches(const char* entry, const char* name) {
     const size_t name_length = strlen(name);
     return strncmp(entry, name, name_length) == 0 && entry[name_length] == '=';
@@ -75,13 +79,25 @@ static char** wd_process_build_environment(const struct wd_process_env_change* c
                                            int* error_code) {
     for (size_t i = 0; i < change_count; ++i)
     {
-        if (!wd_process_env_name_valid(changes[i].name) || (changes[i].action != WD_PROCESS_ENV_UNSET && !changes[i].value))
+        if (!wd_process_env_name_valid(changes[i].name) || !wd_process_env_action_valid(changes[i].action) ||
+            (changes[i].action != WD_PROCESS_ENV_UNSET && !changes[i].value))
         {
             if (error_code)
             {
                 *error_code = EINVAL;
             }
             return NULL;
+        }
+        for (size_t j = 0; j < i; ++j)
+        {
+            if (strcmp(changes[j].name, changes[i].name) == 0)
+            {
+                if (error_code)
+                {
+                    *error_code = EINVAL;
+                }
+                return NULL;
+            }
         }
     }
 
@@ -178,6 +194,10 @@ bool wd_spawn_shell_command(struct wd_spawned_process* process, const char* comm
     {
         *error_code = 0;
     }
+    if (process)
+    {
+        wd_spawned_process_init(process);
+    }
     if (!process || !command || command[0] == '\0' || (change_count != 0 && !changes))
     {
         if (error_code)
@@ -186,8 +206,6 @@ bool wd_spawn_shell_command(struct wd_spawned_process* process, const char* comm
         }
         return false;
     }
-
-    wd_spawned_process_init(process);
 
     size_t inherited_count   = 0;
     int    environment_error = 0;

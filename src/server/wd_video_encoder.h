@@ -45,6 +45,9 @@ bool wd_video_encoder_create(struct wd_video_encoder** out_encoder, const char* 
 void wd_video_encoder_destroy(struct wd_video_encoder* encoder);
 void wd_video_encoder_reset(struct wd_video_encoder* encoder);
 
+/* Capability/query helpers may inspect or update backend-probe caches. The
+ * owner must serialize them with configure/reset/encode using the same encoder
+ * lock; they are not safe to call merely because a separate session lock is held. */
 bool        wd_video_encoder_available(const struct wd_video_encoder* encoder);
 uint32_t    wd_video_encoder_supported_codecs(const struct wd_video_encoder* encoder);
 uint32_t    wd_video_encoder_choose_codec(struct wd_video_encoder* encoder, uint32_t client_codecs);

@@ -37,12 +37,12 @@ static const struct wd_protocol_message_descriptor wd_message_descriptors[] = {
               WD_PROTOCOL_CLIENT_TO_SERVER | WD_PROTOCOL_SERVER_TO_CLIENT, wd_selection_payload_header,
               sizeof(struct wd_selection_payload_header) + WD_SELECTION_MAX_TEXT_BYTES),
     WD_EMPTY(WD_MSG_CLIPBOARD_REQUEST, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
-             WD_PROTOCOL_CLIENT_TO_SERVER | WD_PROTOCOL_SERVER_TO_CLIENT),
+             WD_PROTOCOL_CLIENT_TO_SERVER),
     WD_OPAQUE(WD_MSG_PRIMARY_SET, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
               WD_PROTOCOL_CLIENT_TO_SERVER | WD_PROTOCOL_SERVER_TO_CLIENT, wd_selection_payload_header,
               sizeof(struct wd_selection_payload_header) + WD_SELECTION_MAX_TEXT_BYTES),
     WD_EMPTY(WD_MSG_PRIMARY_REQUEST, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
-             WD_PROTOCOL_CLIENT_TO_SERVER | WD_PROTOCOL_SERVER_TO_CLIENT),
+             WD_PROTOCOL_CLIENT_TO_SERVER),
     WD_FIXED(WD_MSG_CURSOR_SHAPE, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_SERVER_TO_CLIENT,
              wd_cursor_shape_payload),
     WD_FIXED(WD_MSG_DISPLAY_RESIZE, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER,
@@ -57,8 +57,8 @@ static const struct wd_protocol_message_descriptor wd_message_descriptors[] = {
              WD_PROTOCOL_CLIENT_TO_SERVER, wd_selection_channel_hello_payload),
     WD_FIXED(WD_MSG_CLIENT_STATS, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER,
              wd_client_stats_payload),
-    WD_FIXED(WD_MSG_LINK_PROBE_PING, WD_PROTOCOL_CHANNEL_CONTROL,
-             WD_PROTOCOL_PHASE_NEGOTIATION | WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_SERVER_TO_CLIENT, wd_link_probe_payload),
+    WD_FIXED(WD_MSG_LINK_PROBE_PING, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
+             WD_PROTOCOL_SERVER_TO_CLIENT, wd_link_probe_payload),
     WD_FIXED(WD_MSG_LINK_PROBE_PONG, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION, WD_PROTOCOL_CLIENT_TO_SERVER,
              wd_link_probe_payload),
     WD_FIXED(WD_MSG_VIDEO_CHANNEL_HELLO, WD_PROTOCOL_CHANNEL_AUX_HANDSHAKE, WD_PROTOCOL_PHASE_NEGOTIATION,
@@ -77,6 +77,10 @@ static const struct wd_protocol_message_descriptor wd_message_descriptors[] = {
              wd_video_feedback_payload),
     WD_FIXED(WD_MSG_LAUNCH_COMMAND, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_ESTABLISHED, WD_PROTOCOL_CLIENT_TO_SERVER,
              wd_launch_command_payload),
+    WD_EMPTY(WD_MSG_CLIPBOARD_PASTE, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
+             WD_PROTOCOL_CLIENT_TO_SERVER),
+    WD_FIXED(WD_MSG_PRIMARY_PASTE, WD_PROTOCOL_CHANNEL_SELECTION, WD_PROTOCOL_PHASE_ESTABLISHED,
+             WD_PROTOCOL_CLIENT_TO_SERVER, wd_pointer_event_payload),
 };
 
 #undef WD_FIXED
@@ -121,8 +125,23 @@ bool wd_protocol_payload_size_is_valid(uint16_t message_type, uint32_t payload_s
     return wd_protocol_descriptor_size_is_valid(wd_protocol_message_descriptor_find(message_type), payload_size);
 }
 
+static bool wd_protocol_route_is_concrete(uint32_t value, uint32_t allowed_mask) {
+    return value != 0 && (value & ~allowed_mask) == 0 && (value & (value - 1u)) == 0;
+}
+
 bool wd_protocol_message_allowed(uint16_t message_type, enum wd_protocol_channel channel, enum wd_protocol_phase phase,
                                  enum wd_protocol_direction direction, uint32_t payload_size) {
+    const uint32_t channel_mask = WD_PROTOCOL_CHANNEL_CONTROL | WD_PROTOCOL_CHANNEL_INPUT | WD_PROTOCOL_CHANNEL_SELECTION |
+                                  WD_PROTOCOL_CHANNEL_VIDEO | WD_PROTOCOL_CHANNEL_AUDIO | WD_PROTOCOL_CHANNEL_AUX_HANDSHAKE;
+    const uint32_t phase_mask = WD_PROTOCOL_PHASE_NEGOTIATION | WD_PROTOCOL_PHASE_ESTABLISHED;
+    const uint32_t direction_mask = WD_PROTOCOL_CLIENT_TO_SERVER | WD_PROTOCOL_SERVER_TO_CLIENT;
+    if (!wd_protocol_route_is_concrete((uint32_t)channel, channel_mask) ||
+        !wd_protocol_route_is_concrete((uint32_t)phase, phase_mask) ||
+        !wd_protocol_route_is_concrete((uint32_t)direction, direction_mask))
+    {
+        return false;
+    }
+
     const struct wd_protocol_message_descriptor* descriptor = wd_protocol_message_descriptor_find(message_type);
     return descriptor && (descriptor->channels & (uint32_t)channel) != 0 && (descriptor->phases & (uint32_t)phase) != 0 &&
            (descriptor->directions & (uint32_t)direction) != 0 && wd_protocol_descriptor_size_is_valid(descriptor, payload_size);
@@ -130,6 +149,17 @@ bool wd_protocol_message_allowed(uint16_t message_type, enum wd_protocol_channel
 
 uint32_t wd_protocol_channel_max_payload(enum wd_protocol_channel channel, enum wd_protocol_phase phase,
                                          enum wd_protocol_direction direction) {
+    const uint32_t channel_mask = WD_PROTOCOL_CHANNEL_CONTROL | WD_PROTOCOL_CHANNEL_INPUT | WD_PROTOCOL_CHANNEL_SELECTION |
+                                  WD_PROTOCOL_CHANNEL_VIDEO | WD_PROTOCOL_CHANNEL_AUDIO | WD_PROTOCOL_CHANNEL_AUX_HANDSHAKE;
+    const uint32_t phase_mask = WD_PROTOCOL_PHASE_NEGOTIATION | WD_PROTOCOL_PHASE_ESTABLISHED;
+    const uint32_t direction_mask = WD_PROTOCOL_CLIENT_TO_SERVER | WD_PROTOCOL_SERVER_TO_CLIENT;
+    if (!wd_protocol_route_is_concrete((uint32_t)channel, channel_mask) ||
+        !wd_protocol_route_is_concrete((uint32_t)phase, phase_mask) ||
+        !wd_protocol_route_is_concrete((uint32_t)direction, direction_mask))
+    {
+        return 0;
+    }
+
     uint32_t maximum = 0;
     for (size_t i = 0; i < sizeof(wd_message_descriptors) / sizeof(wd_message_descriptors[0]); ++i)
     {

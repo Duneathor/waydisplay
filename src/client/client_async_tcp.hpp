@@ -27,5 +27,6 @@ void client_async_tcp_sender_reap(ClientAsyncTcpSender* sender);
 bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_t message_type, const void* payload, uint32_t payload_size);
 
 ClientAsyncTcpSenderStats client_async_tcp_sender_stats(ClientAsyncTcpSender* sender);
+uint64_t                  client_async_tcp_sender_take_inflight_max(ClientAsyncTcpSender* sender);
 
 } // namespace waydisplay

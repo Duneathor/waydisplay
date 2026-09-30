@@ -80,7 +80,8 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
         return fail(ClientConfigValidationError::InvalidCapabilities, out_error);
     }
     const bool video = (config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0;
-    if ((video && (config.video_codecs == 0 || config.video_transport != WD_VIDEO_TRANSPORT_TCP)) ||
+    const bool one_video_codec = config.video_codecs != 0 && (config.video_codecs & (config.video_codecs - 1u)) == 0;
+    if ((video && (!one_video_codec || config.video_transport != WD_VIDEO_TRANSPORT_TCP)) ||
         (!video && (config.video_codecs != 0 || config.video_transport != 0)))
     {
         return fail(ClientConfigValidationError::InvalidCapabilities, out_error);
@@ -117,6 +118,38 @@ bool client_normalize_and_validate_server_config(wd_server_config_payload& confi
     return true;
 }
 
+
+bool client_server_config_matches_offer(const wd_server_config_payload& config, const wd_client_hello_payload& hello,
+                                        ClientConfigValidationError* out_error) {
+    if (out_error)
+    {
+        *out_error = ClientConfigValidationError::None;
+    }
+
+    const bool video = (config.capabilities & WD_SERVER_CAP_VIDEO_STREAM) != 0;
+    const bool feedback = (config.capabilities & WD_SERVER_CAP_VIDEO_FEEDBACK) != 0;
+    if ((video && ((hello.capabilities & WD_CLIENT_CAP_VIDEO_STREAM) == 0 ||
+                   (config.video_codecs & hello.video_codecs) != config.video_codecs ||
+                   config.video_transport != hello.video_transport)) ||
+        (feedback && (hello.capabilities & WD_CLIENT_CAP_VIDEO_FEEDBACK) == 0))
+    {
+        return fail(ClientConfigValidationError::ServerConfigOutsideOffer, out_error);
+    }
+
+    const bool audio = (config.capabilities & WD_SERVER_CAP_AUDIO_STREAM) != 0;
+    if (audio && ((hello.capabilities & WD_CLIENT_CAP_AUDIO_STREAM) == 0 ||
+                  (hello.audio_codecs & config.audio_codec) == 0 ||
+                  config.audio_transport != hello.audio_transport ||
+                  config.audio_channels > hello.audio_max_channels ||
+                  (hello.audio_target_latency_ms != 0 &&
+                   config.audio_target_latency_ms != hello.audio_target_latency_ms)))
+    {
+        return fail(ClientConfigValidationError::ServerConfigOutsideOffer, out_error);
+    }
+
+    return true;
+}
+
 const char* client_config_validation_error_name(ClientConfigValidationError error) {
     switch (error)
     {
@@ -142,6 +175,8 @@ const char* client_config_validation_error_name(ClientConfigValidationError erro
         return "unsupported compression";
     case ClientConfigValidationError::InvalidCapabilities:
         return "invalid capabilities";
+    case ClientConfigValidationError::ServerConfigOutsideOffer:
+        return "server config outside client offer";
     case ClientConfigValidationError::InvalidUdpPayloadTarget:
         return "invalid UDP payload target";
     }
@@ -176,12 +211,14 @@ uint32_t client_classify_server_config_change(const wd_server_config_payload& cu
     {
         flags |= ClientConfigChangeFormat;
     }
-    if (current.capabilities != next.capabilities || current.video_codecs != next.video_codecs ||
-        current.video_transport != next.video_transport)
+    const uint32_t video_cap_mask = WD_SERVER_CAP_VIDEO_STREAM | WD_SERVER_CAP_VIDEO_FEEDBACK;
+    if ((current.capabilities & video_cap_mask) != (next.capabilities & video_cap_mask) ||
+        current.video_codecs != next.video_codecs || current.video_transport != next.video_transport)
     {
         flags |= ClientConfigChangeVideo;
     }
-    if (current.media_clock_id != next.media_clock_id || current.audio_codec != next.audio_codec ||
+    if ((current.capabilities & WD_SERVER_CAP_AUDIO_STREAM) != (next.capabilities & WD_SERVER_CAP_AUDIO_STREAM) ||
+        current.media_clock_id != next.media_clock_id || current.audio_codec != next.audio_codec ||
         current.audio_transport != next.audio_transport || current.audio_sample_rate != next.audio_sample_rate ||
         current.audio_channels != next.audio_channels || current.audio_frame_samples != next.audio_frame_samples ||
         current.audio_target_latency_ms != next.audio_target_latency_ms || current.audio_bitrate != next.audio_bitrate)

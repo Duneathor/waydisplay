@@ -98,6 +98,13 @@ enum wd_async_tcp_send_progress {
     WD_ASYNC_TCP_SEND_COMPLETE,
 };
 
+/* A queued TCP frame may be discarded only before any byte can have reached
+ * the stream.  io_uring submission state alone is not enough: syscall
+ * fallback can leave submitted=false after a short send. */
+static inline bool wd_async_tcp_message_is_replaceable(bool submitted, size_t bytes_sent) {
+    return !submitted && bytes_sent == 0;
+}
+
 /* Some kernels/socket combinations can reject an io_uring send operation even
  * though the pinned socket is still valid for a normal nonblocking send.
  * Validate these ring-side errors through the pinned syscall path before
@@ -110,6 +117,9 @@ static inline bool wd_async_tcp_cqe_should_try_syscall(int result) {
 static inline enum wd_async_tcp_send_progress wd_async_tcp_advance(size_t total, size_t* sent, int result) {
     if (!sent || *sent > total) {
         return WD_ASYNC_TCP_SEND_FAILED;
+    }
+    if (*sent == total) {
+        return WD_ASYNC_TCP_SEND_COMPLETE;
     }
     if (result == -EINTR || result == -EAGAIN) {
         return WD_ASYNC_TCP_SEND_PARTIAL;

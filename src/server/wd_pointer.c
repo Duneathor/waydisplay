@@ -99,6 +99,7 @@ static void wd_stats_note_pointer_input_inject_locked(struct wd_net_state* net, 
     net->stats.input_queue_latency_sum_ns += inject_timestamp_ns - server_rx_timestamp_ns;
     net->last_input_inject_ns        = inject_timestamp_ns;
     net->input_since_last_summary    = true;
+    net->summary_input_sequence      = net->last_input_sequence;
     net->input_since_last_fresh_tile = true;
 }
 
@@ -130,10 +131,56 @@ void wd_pointer_queue_event_locked(struct wd_net_state* net, const struct wd_poi
 
     if (net->pointer_queue_count >= WD_SERVER_POINTER_QUEUE_CAPACITY)
     {
-        memmove(&net->pointer_queue[0], &net->pointer_queue[1], (WD_SERVER_POINTER_QUEUE_CAPACITY - 1u) * sizeof(net->pointer_queue[0]));
+        /* Button edges carry state and must survive queue pressure whenever
+         * possible.  Prefer sacrificing an old motion sample, then an axis
+         * sample.  If a queue made entirely of button edges is saturated,
+         * reset the session-owned pointer state rather than silently deleting
+         * one side of a press/release pair. */
+        size_t evict = net->pointer_queue_count;
+        for (size_t i = 0; i < net->pointer_queue_count; ++i)
+        {
+            if (net->pointer_queue[i].event.event_type == WD_POINTER_EVENT_MOTION)
+            {
+                evict = i;
+                break;
+            }
+        }
+        if (evict == net->pointer_queue_count)
+        {
+            for (size_t i = 0; i < net->pointer_queue_count; ++i)
+            {
+                if (net->pointer_queue[i].event.event_type == WD_POINTER_EVENT_AXIS)
+                {
+                    evict = i;
+                    break;
+                }
+            }
+        }
 
-        net->pointer_queue_count = WD_SERVER_POINTER_QUEUE_CAPACITY - 1u;
-        net->stats.pointer_events_dropped++;
+        if (evict < net->pointer_queue_count)
+        {
+            if (evict + 1u < net->pointer_queue_count)
+            {
+                memmove(&net->pointer_queue[evict], &net->pointer_queue[evict + 1u],
+                        (net->pointer_queue_count - evict - 1u) * sizeof(net->pointer_queue[0]));
+            }
+            net->pointer_queue_count--;
+            net->stats.pointer_events_dropped++;
+        }
+        else if (event->event_type != WD_POINTER_EVENT_BUTTON)
+        {
+            net->stats.pointer_events_dropped++;
+            net->stats.pointer_events_rx++;
+            return;
+        }
+        else
+        {
+            net->stats.pointer_events_dropped += net->pointer_queue_count + 1u;
+            net->stats.pointer_events_rx++;
+            net->pointer_queue_count         = 0;
+            net->pointer_state_reset_pending = true;
+            return;
+        }
     }
 
     struct wd_queued_pointer_event* dst = &net->pointer_queue[net->pointer_queue_count++];
@@ -141,6 +188,57 @@ void wd_pointer_queue_event_locked(struct wd_net_state* net, const struct wd_poi
     dst->server_rx_timestamp_ns         = server_rx_timestamp_ns;
 
     net->stats.pointer_events_rx++;
+}
+
+void wd_pointer_queue_click_locked(struct wd_net_state* net, const struct wd_pointer_event_payload* press,
+                                   uint64_t server_rx_timestamp_ns) {
+    if (!net || !press || press->event_type != WD_POINTER_EVENT_BUTTON ||
+        press->button_state != WD_POINTER_BUTTON_PRESSED)
+    {
+        return;
+    }
+
+    while (net->pointer_queue_count + 2u > WD_SERVER_POINTER_QUEUE_CAPACITY)
+    {
+        size_t evict = net->pointer_queue_count;
+        for (size_t i = 0; i < net->pointer_queue_count; ++i)
+        {
+            if (net->pointer_queue[i].event.event_type != WD_POINTER_EVENT_BUTTON)
+            {
+                evict = i;
+                break;
+            }
+        }
+
+        if (evict == net->pointer_queue_count)
+        {
+            net->stats.pointer_events_dropped += net->pointer_queue_count;
+            net->pointer_queue_count = 0;
+            net->pointer_state_reset_pending = true;
+            break;
+        }
+
+        if (evict + 1u < net->pointer_queue_count)
+        {
+            memmove(&net->pointer_queue[evict], &net->pointer_queue[evict + 1u],
+                    (net->pointer_queue_count - evict - 1u) * sizeof(net->pointer_queue[0]));
+        }
+        net->pointer_queue_count--;
+        net->stats.pointer_events_dropped++;
+    }
+
+    struct wd_pointer_event_payload release = *press;
+    release.button_state = WD_POINTER_BUTTON_RELEASED;
+
+    struct wd_queued_pointer_event* down = &net->pointer_queue[net->pointer_queue_count++];
+    down->event = *press;
+    down->server_rx_timestamp_ns = server_rx_timestamp_ns;
+
+    struct wd_queued_pointer_event* up = &net->pointer_queue[net->pointer_queue_count++];
+    up->event = release;
+    up->server_rx_timestamp_ns = server_rx_timestamp_ns;
+
+    net->stats.pointer_events_rx += 2u;
 }
 
 static struct wlr_surface* view_root_surface(struct wd_view* view) {
@@ -304,7 +402,9 @@ static void pointer_button_grab_surface_handle_destroy(struct wl_listener* liste
         return;
     }
 
+    pthread_mutex_lock(&server->net.lock);
     server->net.stats.pointer_button_grab_surface_destroyed++;
+    pthread_mutex_unlock(&server->net.lock);
     wd_pointer_clear_button_grab(server);
 }
 
@@ -322,6 +422,7 @@ static void pointer_button_grab_reset(struct wd_server* server, const char* reas
         WD_LOG_DEBUG("pointer button grab %s surface=%p view=%p count=%u buttons=0x%x", reason ? reason : "clear",
                      (void*)server->pointer_button_grab_surface, (void*)server->pointer_button_grab_view,
                      (unsigned)server->pointer_button_grab_count, (unsigned)server->pointer_button_grab_buttons);
+        pthread_mutex_lock(&server->net.lock);
         if (completed)
         {
             server->net.stats.pointer_button_grab_ended++;
@@ -330,6 +431,7 @@ static void pointer_button_grab_reset(struct wd_server* server, const char* reas
         {
             server->net.stats.pointer_button_grab_cleared++;
         }
+        pthread_mutex_unlock(&server->net.lock);
     }
 
     remove_listener_if_linked(&server->pointer_button_grab_surface_destroy);
@@ -367,6 +469,98 @@ void wd_pointer_clear_button_grab_for_surface(struct wd_server* server, struct w
     pointer_button_grab_reset(server, "surface gone", false);
 }
 
+static ssize_t pointer_pressed_button_find(const struct wd_server* server, uint32_t button) {
+    if (!server || server->pressed_pointer_button_count > WD_SERVER_PRESSED_BUTTON_CAPACITY)
+    {
+        return -1;
+    }
+
+    for (size_t i = 0; i < server->pressed_pointer_button_count; ++i)
+    {
+        if (server->pressed_pointer_buttons[i] == button)
+        {
+            return (ssize_t)i;
+        }
+    }
+    return -1;
+}
+
+static void pointer_note_button_state(struct wd_server* server, uint32_t button, bool pressed) {
+    if (!server || button == 0)
+    {
+        return;
+    }
+    if (server->pressed_pointer_button_count > WD_SERVER_PRESSED_BUTTON_CAPACITY)
+    {
+        WD_LOG_ERROR("discarding corrupt pressed-pointer state count=%zu capacity=%u", server->pressed_pointer_button_count,
+                     (unsigned)WD_SERVER_PRESSED_BUTTON_CAPACITY);
+        server->pressed_pointer_button_count = 0;
+    }
+
+    const ssize_t index = pointer_pressed_button_find(server, button);
+    if (pressed)
+    {
+        if (index >= 0)
+        {
+            return;
+        }
+        if (server->pressed_pointer_button_count >= WD_SERVER_PRESSED_BUTTON_CAPACITY)
+        {
+            WD_LOG_ERROR("pressed-pointer state capacity exceeded");
+            return;
+        }
+        server->pressed_pointer_buttons[server->pressed_pointer_button_count++] = button;
+        return;
+    }
+
+    if (index < 0)
+    {
+        return;
+    }
+    const size_t remove_index = (size_t)index;
+    if (remove_index + 1u < server->pressed_pointer_button_count)
+    {
+        memmove(&server->pressed_pointer_buttons[remove_index], &server->pressed_pointer_buttons[remove_index + 1u],
+                (server->pressed_pointer_button_count - remove_index - 1u) * sizeof(server->pressed_pointer_buttons[0]));
+    }
+    server->pressed_pointer_button_count--;
+}
+
+static void pointer_release_session_state(struct wd_server* server) {
+    if (!server)
+    {
+        return;
+    }
+
+    wd_pointer_end_move(server);
+    wd_pointer_end_resize(server);
+
+    if (server->pressed_pointer_button_count > WD_SERVER_PRESSED_BUTTON_CAPACITY)
+    {
+        WD_LOG_ERROR("discarding corrupt pressed-pointer state count=%zu capacity=%u during session reset",
+                     server->pressed_pointer_button_count, (unsigned)WD_SERVER_PRESSED_BUTTON_CAPACITY);
+        server->pressed_pointer_button_count = 0;
+    }
+
+    if (server->seat && server->pressed_pointer_button_count > 0)
+    {
+        const uint32_t time_msec = (uint32_t)(wd_now_ns() / WD_NSEC_PER_MSEC);
+        while (server->pressed_pointer_button_count > 0)
+        {
+            const uint32_t button = server->pressed_pointer_buttons[server->pressed_pointer_button_count - 1u];
+            wlr_seat_pointer_notify_button(server->seat, time_msec, button, WL_POINTER_BUTTON_STATE_RELEASED);
+            server->pressed_pointer_button_count--;
+        }
+        wlr_seat_pointer_notify_frame(server->seat);
+    }
+    else
+    {
+        server->pressed_pointer_button_count = 0;
+    }
+
+    wd_pointer_clear_button_grab(server);
+}
+
 static void pointer_button_grab_begin(struct wd_server* server, struct wd_view* view, struct wlr_surface* surface, double lx, double ly,
                                       double sx, double sy, uint32_t button) {
     if (!server || !surface)
@@ -389,7 +583,9 @@ static void pointer_button_grab_begin(struct wd_server* server, struct wd_view* 
     server->pointer_button_grab_surface_destroy.notify = pointer_button_grab_surface_handle_destroy;
     wl_signal_add(&surface->events.destroy, &server->pointer_button_grab_surface_destroy);
 
+    pthread_mutex_lock(&server->net.lock);
     server->net.stats.pointer_button_grab_started++;
+    pthread_mutex_unlock(&server->net.lock);
 
     WD_LOG_DEBUG("pointer button grab begin surface=%p view=%p layout=%.1f %.1f sx=%.1f sy=%.1f button=0x%x", (void*)surface, (void*)view,
                  lx, ly, sx, sy, button);
@@ -413,6 +609,9 @@ void wd_pointer_begin_move(struct wd_server* server, struct wd_view* view) {
     server->move_grab.grab_y = server->pointer_y;
     server->move_grab.view_x = view->x;
     server->move_grab.view_y = view->y;
+    server->move_grab.button = server->pressed_pointer_button_count > 0
+                                   ? server->pressed_pointer_buttons[server->pressed_pointer_button_count - 1u]
+                                   : WD_INPUT_BUTTON_LEFT;
     wd_cursor_set_shape(server, WD_CURSOR_SHAPE_MOVE);
 
     WD_LOG_DEBUG("begin move view=%p at pointer %.1f %.1f view=%d %d", (void*)view, server->pointer_x, server->pointer_y, view->x, view->y);
@@ -435,6 +634,12 @@ void wd_pointer_update_move(struct wd_server* server) {
     view->x = server->move_grab.view_x + (int)dx;
     view->y = server->move_grab.view_y + (int)dy;
 
+#if WAYDISPLAY_ENABLE_XWAYLAND
+    if (view->xwayland_surface)
+    {
+        wd_xwayland_view_configure_position(view);
+    }
+#endif
     wd_scene_set_view_position(view);
     wd_server_mark_view_move_dirty(view, old_x, old_y);
 }
@@ -454,6 +659,7 @@ void wd_pointer_end_move(struct wd_server* server) {
 
     server->move_grab.active = false;
     server->move_grab.view   = NULL;
+    server->move_grab.button = 0;
 }
 
 void wd_pointer_begin_resize(struct wd_server* server, struct wd_view* view, uint32_t edges) {
@@ -489,6 +695,9 @@ void wd_pointer_begin_resize(struct wd_server* server, struct wd_view* view, uin
     server->resize_grab.view_y      = view->y;
     server->resize_grab.view_width  = view_width(view);
     server->resize_grab.view_height = view_height(view);
+    server->resize_grab.button      = server->pressed_pointer_button_count > 0
+                                          ? server->pressed_pointer_buttons[server->pressed_pointer_button_count - 1u]
+                                          : WD_INPUT_BUTTON_LEFT;
     wd_cursor_set_shape(server, wd_cursor_shape_for_resize_edges(edges));
 
     if (view->xdg_surface && view->xdg_surface->toplevel)
@@ -622,6 +831,18 @@ void wd_pointer_end_resize(struct wd_server* server) {
     server->resize_grab.active = false;
     server->resize_grab.view   = NULL;
     server->resize_grab.edges  = WLR_EDGE_NONE;
+    server->resize_grab.button = 0;
+}
+
+static void pointer_forward_interactive_release_if_needed(struct wd_server* server, uint32_t time_msec, uint32_t button) {
+    if (!server || !server->seat || button == 0 || pointer_pressed_button_find(server, button) < 0)
+    {
+        return;
+    }
+
+    wlr_seat_pointer_notify_button(server->seat, time_msec, button, WL_POINTER_BUTTON_STATE_RELEASED);
+    pointer_note_button_state(server, button, false);
+    wlr_seat_pointer_notify_frame(server->seat);
 }
 
 static double clamp_layout_x(struct wd_server* server, uint16_t x) {
@@ -657,6 +878,12 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
 
     pthread_mutex_lock(&server->net.lock);
 
+    const bool reset_pointer_state = server->net.pointer_state_reset_pending;
+    if (reset_pointer_state)
+    {
+        server->net.pointer_state_reset_pending = false;
+    }
+
     count = server->net.pointer_queue_count;
 
     if (count > WD_SERVER_POINTER_QUEUE_CAPACITY)
@@ -672,6 +899,11 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
     }
 
     pthread_mutex_unlock(&server->net.lock);
+
+    if (reset_pointer_state)
+    {
+        pointer_release_session_state(server);
+    }
 
     if (count == 0)
     {
@@ -718,8 +950,10 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
                 continue;
             }
 
-            if (event->event_type == WD_POINTER_EVENT_BUTTON && event->button_state == WD_POINTER_BUTTON_RELEASED)
+            if (event->event_type == WD_POINTER_EVENT_BUTTON && event->button_state == WD_POINTER_BUTTON_RELEASED &&
+                event->button == server->move_grab.button)
             {
+                pointer_forward_interactive_release_if_needed(server, time_msec, event->button);
                 wd_pointer_update_move(server);
                 wd_pointer_end_move(server);
                 WD_CLEAR_POINTER_BUTTON_GRAB();
@@ -743,8 +977,9 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
             }
 
             if (event->event_type == WD_POINTER_EVENT_BUTTON && event->button_state == WD_POINTER_BUTTON_RELEASED &&
-                event->button == WD_INPUT_BUTTON_LEFT)
+                event->button == server->resize_grab.button)
             {
+                pointer_forward_interactive_release_if_needed(server, time_msec, event->button);
                 wd_pointer_update_resize(server);
                 wd_pointer_end_resize(server);
                 WD_CLEAR_POINTER_BUTTON_GRAB();
@@ -966,6 +1201,7 @@ void wd_pointer_drain_and_inject(struct wd_server* server) {
             wlr_seat_pointer_notify_button(server->seat, time_msec, event->button,
                                            event->button_state == WD_POINTER_BUTTON_PRESSED ? WL_POINTER_BUTTON_STATE_PRESSED
                                                                                             : WL_POINTER_BUTTON_STATE_RELEASED);
+            pointer_note_button_state(server, event->button, event->button_state == WD_POINTER_BUTTON_PRESSED);
             wlr_seat_pointer_notify_frame(server->seat);
 
             if (event->button_state == WD_POINTER_BUTTON_RELEASED && server->pointer_button_grab_count > 0)

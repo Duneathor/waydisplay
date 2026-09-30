@@ -1,6 +1,7 @@
 #include "client_async_udp.hpp"
 
 #include "waydisplay/wd_config.h"
+#include "waydisplay/wd_io_uring_policy.h"
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_io_uring.h"
 
@@ -62,6 +63,7 @@ struct ClientAsyncUdpReceiver {
 
     uint64_t inflight          = 0;
     uint64_t inflight_max      = 0;
+    uint64_t inflight_interval_max = 0;
     uint64_t submitted         = 0;
     uint64_t retired           = 0;
     uint64_t completed         = 0;
@@ -69,6 +71,7 @@ struct ClientAsyncUdpReceiver {
     uint64_t submit_failed     = 0;
     uint64_t cancels           = 0;
     uint64_t accounting_errors = 0;
+    uint32_t cancel_submit_pending = 0;
     bool     fatal             = false;
 };
 
@@ -117,15 +120,16 @@ bool flush_prepared_locked(ClientAsyncUdpReceiver* receiver) {
 
     const size_t prepared_count = receiver->prepared.size();
     const int    rc             = io_uring_submit(&receiver->ring);
-    if (rc < 0)
+    const wd_io_uring_submit_progress progress = wd_io_uring_submit_result(rc);
+    if (progress == WD_IO_URING_SUBMIT_RETRY)
     {
-        receiver->submit_failed += prepared_count;
-        receiver->fatal = true;
-        clear_prepared_locked(receiver);
-        return false;
+        if (rc < 0)
+        {
+            receiver->submit_failed++;
+        }
+        return true;
     }
-
-    if (rc == 0)
+    if (progress == WD_IO_URING_SUBMIT_FAILED)
     {
         receiver->submit_failed += prepared_count;
         receiver->fatal = true;
@@ -148,6 +152,10 @@ bool flush_prepared_locked(ClientAsyncUdpReceiver* receiver) {
         if (receiver->inflight > receiver->inflight_max)
         {
             receiver->inflight_max = receiver->inflight;
+        }
+        if (receiver->inflight > receiver->inflight_interval_max)
+        {
+            receiver->inflight_interval_max = receiver->inflight;
         }
     }
 
@@ -192,8 +200,13 @@ bool submit_prepared_for_shutdown_locked(ClientAsyncUdpReceiver* receiver) {
 
     const size_t prepared_count = receiver->prepared.size();
     const int    rc             = io_uring_submit(&receiver->ring);
-    if (rc <= 0)
+    const wd_io_uring_submit_progress progress = wd_io_uring_submit_result(rc);
+    if (progress != WD_IO_URING_SUBMIT_ACCEPTED)
     {
+        if (progress == WD_IO_URING_SUBMIT_FAILED || rc < 0)
+        {
+            receiver->submit_failed++;
+        }
         return false;
     }
 
@@ -210,6 +223,7 @@ bool submit_prepared_for_shutdown_locked(ClientAsyncUdpReceiver* receiver) {
         receiver->inflight++;
         receiver->submitted++;
         receiver->inflight_max = std::max(receiver->inflight_max, receiver->inflight);
+        receiver->inflight_interval_max = std::max(receiver->inflight_interval_max, receiver->inflight);
     }
     receiver->prepared.erase(receiver->prepared.begin(), receiver->prepared.begin() + static_cast<std::ptrdiff_t>(submitted_now));
     return receiver->prepared.empty();
@@ -280,23 +294,38 @@ void request_cancels_locked(ClientAsyncUdpReceiver* receiver) {
         io_uring_prep_cancel(sqe, &buffer, 0);
         io_uring_sqe_set_data(sqe, CANCEL_CQE);
         buffer.cancel_requested = true;
+        receiver->cancel_submit_pending++;
         requested.push_back(&buffer);
     }
 
-    if (requested.empty())
+    if (receiver->cancel_submit_pending == 0)
     {
         return;
     }
 
     const int submitted = io_uring_submit(&receiver->ring);
-    if (submitted <= 0)
+    const wd_io_uring_submit_progress progress = wd_io_uring_submit_result(submitted);
+    if (progress == WD_IO_URING_SUBMIT_ACCEPTED)
     {
+        const uint32_t submitted_now = std::min<uint32_t>(static_cast<uint32_t>(submitted), receiver->cancel_submit_pending);
+        receiver->cancel_submit_pending -= submitted_now;
+        return;
+    }
+
+    if (progress == WD_IO_URING_SUBMIT_FAILED)
+    {
+        receiver->submit_failed++;
         for (Buffer* buffer : requested)
         {
             if (buffer)
             {
                 buffer->cancel_requested = false;
             }
+        }
+        if (!requested.empty())
+        {
+            const uint32_t abandoned = std::min<uint32_t>(static_cast<uint32_t>(requested.size()), receiver->cancel_submit_pending);
+            receiver->cancel_submit_pending -= abandoned;
         }
     }
 }
@@ -564,6 +593,18 @@ bool client_async_udp_receiver_drain(ClientAsyncUdpReceiver* receiver, void* use
         }
         return !receiver->fatal;
     }
+}
+
+
+uint64_t client_async_udp_receiver_take_inflight_max(ClientAsyncUdpReceiver* receiver) {
+    if (!receiver)
+    {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(receiver->mutex);
+    const uint64_t value = receiver->inflight_interval_max;
+    receiver->inflight_interval_max = receiver->inflight;
+    return value;
 }
 
 ClientAsyncUdpReceiverStats client_async_udp_receiver_stats(ClientAsyncUdpReceiver* receiver) {

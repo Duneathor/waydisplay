@@ -19,7 +19,8 @@ uint64_t dirty_rect_pixel_count(const std::vector<ClientDirtyRect>& rects) {
 }
 
 bool clamp_dirty_rect(const ClientDirtyRect& in, uint32_t frame_width, uint32_t frame_height, ClientDirtyRect& out) {
-    if (in.w == 0 || in.h == 0 || in.x >= frame_width || in.y >= frame_height)
+    if (in.w == 0 || in.h == 0 || frame_width > UINT16_MAX || frame_height > UINT16_MAX ||
+        in.x >= frame_width || in.y >= frame_height)
     {
         return false;
     }
@@ -39,7 +40,8 @@ bool clamp_dirty_rect(const ClientDirtyRect& in, uint32_t frame_width, uint32_t 
 }
 
 bool ClientDirtyTileGrid::reset(uint32_t frame_width, uint32_t frame_height, uint16_t tile_width, uint16_t tile_height) {
-    if (frame_width == 0 || frame_height == 0 || tile_width == 0 || tile_height == 0)
+    if (frame_width == 0 || frame_height == 0 || frame_width > UINT16_MAX || frame_height > UINT16_MAX ||
+        tile_width == 0 || tile_height == 0)
     {
         clear();
         frame_width_  = 0;

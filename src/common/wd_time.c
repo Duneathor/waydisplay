@@ -4,18 +4,18 @@
 
 #include <errno.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <time.h>
 
 uint64_t wd_now_ns(void) {
-    struct timespec ts;
+    struct timespec ts = {0};
 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+    {
+        abort();
+    }
 
     return (uint64_t)ts.tv_sec * WD_NSEC_PER_SEC + (uint64_t)ts.tv_nsec;
-}
-
-uint32_t wd_now_ms32(void) {
-    return (uint32_t)(wd_now_ns() / 1000000ull);
 }
 
 void wd_sleep_ms(uint32_t ms) {

@@ -15,10 +15,6 @@ wd_client_video_packet_validate(const struct wd_video_frame_payload_header* head
     }
 
     const bool control = (header->flags & (WD_VIDEO_FRAME_END_OF_STREAM | WD_VIDEO_FRAME_RESIZE)) != 0;
-    if (control_frame)
-    {
-        *control_frame = control;
-    }
     if (header->data_size == 0 && !control)
     {
         return WD_CLIENT_VIDEO_PACKET_INVALID_PAYLOAD;
@@ -27,10 +23,22 @@ wd_client_video_packet_validate(const struct wd_video_frame_payload_header* head
     {
         return WD_CLIENT_VIDEO_PACKET_INVALID_IDENTITY;
     }
+    if (header->codec != expected->codec)
+    {
+        return WD_CLIENT_VIDEO_PACKET_INVALID_PAYLOAD;
+    }
+    if (header->coded_width > WD_MAX_VIDEO_CODED_WIDTH || header->coded_height > WD_MAX_VIDEO_CODED_HEIGHT)
+    {
+        return WD_CLIENT_VIDEO_PACKET_INVALID_GEOMETRY;
+    }
     if (!control && (header->width != expected->width || header->height != expected->height ||
                      header->coded_width < header->width || header->coded_height < header->height))
     {
         return WD_CLIENT_VIDEO_PACKET_INVALID_GEOMETRY;
+    }
+    if (control_frame)
+    {
+        *control_frame = control;
     }
     return WD_CLIENT_VIDEO_PACKET_VALID;
 }

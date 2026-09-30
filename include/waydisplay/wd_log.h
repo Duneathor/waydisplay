@@ -36,6 +36,8 @@ bool wd_log_would_log(enum wd_log_level level);
 
 void wd_log_message(enum wd_log_level level, const char* fmt, ...) WD_PRINTF_FORMAT(2, 3);
 void wd_log_message_va(enum wd_log_level level, const char* fmt, va_list args) WD_PRINTF_FORMAT(2, 0);
+/* last_log_ns is mutable caller state and must be thread-confined or protected
+ * by caller-provided synchronization. */
 bool wd_log_rate_limit_should_log(uint64_t* last_log_ns, uint64_t now_ns, uint64_t interval_ns);
 
 #ifndef WAYDISPLAY_LOG_LEVEL

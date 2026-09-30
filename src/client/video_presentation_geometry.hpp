@@ -39,7 +39,9 @@ inline ClientVideoPresentationRect client_video_presentation_rect(int output_wid
     {
         w = std::max(1, static_cast<int>(static_cast<uint64_t>(output_height) * source_width / source_height));
     }
-    return {(output_width - w) / 2, (output_height - h) / 2, w, h, false};
+    const bool pixel_exact = static_cast<uint32_t>(w) == source_width &&
+                             static_cast<uint32_t>(h) == source_height;
+    return {(output_width - w) / 2, (output_height - h) / 2, w, h, pixel_exact};
 }
 
 } // namespace waydisplay

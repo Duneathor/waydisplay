@@ -159,6 +159,20 @@ bool test_invalid_api() {
     return true;
 }
 
+const char* expected_software_backend(uint32_t codec) {
+    switch (codec)
+    {
+    case WD_VIDEO_CODEC_H264:
+        return "libx264";
+    case WD_VIDEO_CODEC_H265:
+        return "libx265";
+    case WD_VIDEO_CODEC_AV1:
+        return "libaom-av1";
+    default:
+        return nullptr;
+    }
+}
+
 bool test_codec(uint32_t codec) {
     wd_video_encoder* encoder = nullptr;
     CHECK(wd_video_encoder_create(&encoder, "software"));
@@ -175,7 +189,9 @@ bool test_codec(uint32_t codec) {
 
     CHECK(wd_video_encoder_configure(encoder, &config));
     CHECK(wd_video_encoder_configure(encoder, &config));
-    CHECK(std::strcmp(wd_video_encoder_backend_name(encoder), "software") != 0);
+    const char* expected_backend = expected_software_backend(codec);
+    CHECK(expected_backend != nullptr);
+    CHECK(std::strcmp(wd_video_encoder_backend_name(encoder), expected_backend) == 0);
 
     std::vector<uint32_t>   pixels(static_cast<size_t>(kStride) * kHeight);
     wd_video_encoder_packet first{};

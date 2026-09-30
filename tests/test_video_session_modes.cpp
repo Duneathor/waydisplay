@@ -23,6 +23,7 @@ static void test_mode_matrix() {
     check_offer(WD_VIDEO_MODE_OFF, WD_CLIENT_VIDEO_DECODER_AUTO, false);
     check_offer(WD_VIDEO_MODE_AUTO, WD_CLIENT_VIDEO_DECODER_OFF, false);
     check_offer(WD_VIDEO_MODE_FORCE, WD_CLIENT_VIDEO_DECODER_OFF, false);
+    check_offer(WD_VIDEO_MODE_AUTO, 255, false);
 
     const auto unsupported = wd_client_video_offer_decide(WD_VIDEO_MODE_AUTO,
                                                            WD_CLIENT_VIDEO_DECODER_AUTO,

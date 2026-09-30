@@ -10,6 +10,8 @@ extern "C" {
 
 struct wd_dirty_region_scheduler;
 
+/* Mutable scheduler state is not internally synchronized; all operations on a
+ * scheduler instance must be externally serialized. */
 struct wd_dirty_region_scheduler* wd_dirty_region_scheduler_create(uint16_t capacity, uint16_t regions_x, uint64_t starvation_ns);
 void                              wd_dirty_region_scheduler_destroy(struct wd_dirty_region_scheduler* scheduler);
 void                              wd_dirty_region_scheduler_reset(struct wd_dirty_region_scheduler* scheduler);

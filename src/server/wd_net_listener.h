@@ -27,6 +27,9 @@ struct wd_net_listener {
     uint16_t udp_port;
 };
 
+/* Initialize before first use. open() requires an initialized, closed listener
+ * and returns EALREADY rather than replacing live descriptors. close() is
+ * idempotent and returns the object to the initialized, closed state. */
 void        wd_net_listener_init(struct wd_net_listener* listener);
 bool        wd_net_listener_open(struct wd_net_listener* listener, uint16_t requested_tcp_port, const struct in_addr* bind_address,
                                  enum wd_net_listener_stage* failed_stage, int* error_code);

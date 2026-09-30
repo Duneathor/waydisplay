@@ -1,8 +1,10 @@
 #include "wd_audio_packetizer.h"
 #include "wd_audio_ring.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -13,9 +15,75 @@ void require(bool condition, const char* message) {
         std::exit(1);
     }
 }
+void test_concurrent_spsc_publication() {
+    constexpr uint32_t capacity = 64;
+    constexpr uint64_t frame_count = 100000;
+    constexpr uint64_t pts_base = 1000000;
+
+    wd_audio_pcm_ring ring{};
+    require(wd_audio_pcm_ring_init(&ring, capacity, 2), "initialize concurrent SPSC ring");
+
+    std::atomic<bool> start{false};
+    std::atomic<bool> failed{false};
+
+    std::thread producer([&]() {
+        while (!start.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        for (uint64_t index = 0; index < frame_count && !failed.load(std::memory_order_relaxed); ++index)
+        {
+            const float sample[2] = {static_cast<float>(index), -static_cast<float>(index)};
+            while (!wd_audio_pcm_ring_write(&ring, sample, 1, pts_base + index))
+            {
+                if (failed.load(std::memory_order_relaxed))
+                {
+                    return;
+                }
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    std::thread consumer([&]() {
+        while (!start.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        for (uint64_t index = 0; index < frame_count; ++index)
+        {
+            float output[2]{};
+            uint64_t pts = 0;
+            bool continuous = false;
+            while (wd_audio_pcm_ring_read(&ring, output, 1, &pts, &continuous) == 0)
+            {
+                if (failed.load(std::memory_order_relaxed))
+                {
+                    return;
+                }
+                std::this_thread::yield();
+            }
+            if (pts != pts_base + index || !continuous ||
+                output[0] != static_cast<float>(index) || output[1] != -static_cast<float>(index))
+            {
+                failed.store(true, std::memory_order_release);
+                return;
+            }
+        }
+    });
+
+    start.store(true, std::memory_order_release);
+    producer.join();
+    consumer.join();
+    require(!failed.load(std::memory_order_acquire), "concurrent SPSC samples and PTS stay paired across wraps");
+    require(wd_audio_pcm_ring_queued_frames(&ring) == 0, "concurrent SPSC ring drains completely");
+    wd_audio_pcm_ring_finish(&ring);
+}
+
 } // namespace
 
 int main() {
+    test_concurrent_spsc_publication();
     wd_audio_pcm_ring ring{};
     require(wd_audio_pcm_ring_init(&ring, 8, 2), "initialize bounded stereo ring");
 
@@ -52,6 +120,21 @@ int main() {
     require(wd_audio_pcm_ring_queued_frames(&ring) == 0, "reset empties ring");
     wd_audio_pcm_ring_finish(&ring);
 
+    wd_audio_pcm_ring mono{};
+    require(wd_audio_pcm_ring_init(&mono, 8, 1), "initialize bounded mono ring");
+    const float stereo_capture[] = {1.0f, -1.0f, 0.75f, 0.25f, -0.5f, -0.25f};
+    require(wd_audio_pcm_ring_write_capture(&mono, stereo_capture, 3, 2, false, 400),
+            "stereo capture should downmix into negotiated mono");
+    float mono_output[3]{};
+    require(wd_audio_pcm_ring_read(&mono, mono_output, 3, &pts, &continuous) == 3, "read downmixed mono capture");
+    require(mono_output[0] == 0.0f && mono_output[1] == 0.5f && mono_output[2] == -0.375f,
+            "mono capture should average left and right channels per frame");
+    require(wd_audio_pcm_ring_write_capture(&mono, nullptr, 2, 2, true, 500), "empty capture chunks should become silence");
+    float silence[2] = {1.0f, 1.0f};
+    require(wd_audio_pcm_ring_read(&mono, silence, 2, &pts, &continuous) == 2, "read synthesized silent capture");
+    require(silence[0] == 0.0f && silence[1] == 0.0f, "silent capture must not expose stale buffer contents");
+    wd_audio_pcm_ring_finish(&mono);
+
     wd_audio_packetizer packetizer{};
     wd_audio_packetizer_begin(&packetizer, 7, 8, 9, 10);
     wd_audio_packet_payload_header header{};
@@ -60,6 +143,11 @@ int main() {
             "first audio frame should establish a discontinuity boundary");
     require(wd_audio_packetizer_make_packet(&packetizer, 960, 960, 20, &header), "packetize continuous audio frame");
     require(header.sequence == 2 && header.flags == 0, "continuous audio should not carry a discontinuity flag");
+    packetizer.sequence = UINT64_MAX;
+    require(!wd_audio_packetizer_make_packet(&packetizer, 1920, 960, 20, &header), "packetizer sequence must never wrap to zero");
+    packetizer.sequence = 2;
+    require(!wd_audio_packetizer_make_packet(&packetizer, UINT64_MAX - 100, 960, 20, &header),
+            "packetizer must reject PTS ranges that overflow");
     require(wd_audio_packetizer_make_packet(&packetizer, 3000, 960, 20, &header), "packetize timestamp gap");
     require((header.flags & WD_AUDIO_PACKET_DISCONTINUITY) != 0, "timestamp gaps should be explicit on the wire");
     require(wd_audio_packetizer_make_eos(&packetizer, 3960, &header), "packetize audio EOS");

@@ -1,7 +1,7 @@
 #include "video_snapshot_admission.h"
 #include "wd_frame_pacing.h"
 
-#include <assert.h>
+#include "test_check.h"
 #include <stdint.h>
 
 static void test_continuous_60hz_compositor(void) {
@@ -16,9 +16,9 @@ static void test_continuous_60hz_compositor(void) {
         readbacks++;
         if (wd_video_snapshot_preflight_decide(true, false) == WD_VIDEO_SNAPSHOT_ACCEPT) snapshots++;
     }
-    assert(readbacks >= 3599 && readbacks <= 3601);
-    assert(snapshots == readbacks);
-    assert(wd_video_snapshot_admission_percent(snapshots, readbacks) == 100.0);
+    WD_TEST_CHECK(readbacks >= 3599 && readbacks <= 3601);
+    WD_TEST_CHECK(snapshots == readbacks);
+    WD_TEST_CHECK(wd_video_snapshot_admission_percent(snapshots, readbacks) == 100.0);
 }
 
 static void test_idle_and_backpressure(void) {
@@ -30,10 +30,10 @@ static void test_idle_and_backpressure(void) {
         readbacks++;
         if (wd_video_snapshot_preflight_decide(true, false) == WD_VIDEO_SNAPSHOT_ACCEPT) snapshots++;
     }
-    assert(readbacks == 20 && snapshots == 20);
-    assert(wd_video_snapshot_preflight_decide(true, true) == WD_VIDEO_SNAPSHOT_PENDING_SEND);
-    assert(wd_video_snapshot_preflight_decide(false, false) == WD_VIDEO_SNAPSHOT_UNAVAILABLE);
-    assert(wd_video_snapshot_admission_percent(0, 0) == 0.0);
+    WD_TEST_CHECK(readbacks == 20 && snapshots == 20);
+    WD_TEST_CHECK(wd_video_snapshot_preflight_decide(true, true) == WD_VIDEO_SNAPSHOT_PENDING_SEND);
+    WD_TEST_CHECK(wd_video_snapshot_preflight_decide(false, false) == WD_VIDEO_SNAPSHOT_UNAVAILABLE);
+    WD_TEST_CHECK(wd_video_snapshot_admission_percent(0, 0) == 0.0);
 }
 
 int main(void) {

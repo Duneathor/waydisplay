@@ -44,11 +44,12 @@ void test_wraparound_and_capacity() {
 
     uint16_t job = 0;
     require(wd_encode_completion_queue_pop(&queue, &job) && job == 0, "pop before wrap");
-    require(wd_encode_completion_queue_push(&queue, 3), "write index wraps");
+    require(!wd_encode_completion_queue_push(&queue, 3), "job indices outside the configured domain are rejected");
+    require(wd_encode_completion_queue_push(&queue, 0), "write index wraps independently of the job-index domain");
 
     require(wd_encode_completion_queue_pop(&queue, &job) && job == 1, "wrapped queue retains one");
     require(wd_encode_completion_queue_pop(&queue, &job) && job == 2, "wrapped queue retains two");
-    require(wd_encode_completion_queue_pop(&queue, &job) && job == 3, "wrapped queue retains new item");
+    require(wd_encode_completion_queue_pop(&queue, &job) && job == 0, "wrapped queue retains new item");
 }
 
 void test_invalid_storage_is_safe() {

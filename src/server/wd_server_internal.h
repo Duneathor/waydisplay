@@ -94,6 +94,7 @@ extern "C" {
 
 struct wd_server;
 struct wd_selection_capture;
+struct wd_selection_transfer;
 struct wd_video_encoder;
 struct wd_stream_frame_worker;
 
@@ -153,6 +154,8 @@ struct wd_view {
     struct wl_listener xwayland_commit;
     struct wl_listener xwayland_map_request;
     struct wl_listener xwayland_request_configure;
+    struct wl_listener xwayland_request_move;
+    struct wl_listener xwayland_request_resize;
     struct wl_listener xwayland_request_maximize;
     struct wl_listener xwayland_request_fullscreen;
     struct wl_listener xwayland_request_minimize;
@@ -189,6 +192,7 @@ struct wd_view {
     int      saved_y;
     uint32_t saved_width;
     uint32_t saved_height;
+    bool     saved_geometry_valid;
 };
 
 struct wd_move_grab {
@@ -198,8 +202,9 @@ struct wd_move_grab {
     double grab_x;
     double grab_y;
 
-    int view_x;
-    int view_y;
+    int      view_x;
+    int      view_y;
+    uint32_t button;
 };
 
 struct wd_resize_grab {
@@ -214,6 +219,7 @@ struct wd_resize_grab {
     int      view_y;
     uint32_t view_width;
     uint32_t view_height;
+    uint32_t button;
 };
 
 struct wd_tile_state {
@@ -467,6 +473,7 @@ struct wd_stats {
     uint64_t popup_explicit_scene_tree_failures;
 
     uint64_t cursor_shape_requests;
+    uint64_t cursor_shape_rejected;
     uint64_t cursor_shape_tx;
     uint64_t cursor_shape_coalesced;
     uint64_t cursor_set_cursor_requests;
@@ -508,7 +515,7 @@ struct wd_stats {
     uint64_t udp_async_send_failed;
     uint64_t udp_async_queued;
     uint64_t udp_async_completed;
-    uint64_t udp_async_completion_failed;
+    uint64_t udp_async_transport_failed;
     uint64_t udp_async_sqe_exhausted;
     uint64_t udp_async_inflight_max;
     uint64_t udp_async_submit_calls;
@@ -583,6 +590,7 @@ struct wd_stats_log_state {
     uint64_t            prev_tile_repair_kib_per_second;
     uint64_t            prev_video_kib_per_second;
     uint64_t            prev_control_kib_per_second;
+    uint64_t            prev_audio_required_kib_per_second;
     uint64_t            prev_audio_reserved_kib_per_second;
     uint64_t            prev_audio_cap_kib_per_second;
     uint64_t            prev_overhead_kib_per_second;
@@ -674,6 +682,7 @@ struct wd_stream_policy {
     uint64_t tile_repair_bytes_per_second;
     uint64_t video_bytes_per_second;
     uint64_t control_bytes_per_second;
+    uint64_t audio_required_bytes_per_second;
     uint64_t audio_cap_bytes_per_second;
     uint64_t audio_reserved_bytes_per_second;
     uint64_t overhead_bytes_per_second;
@@ -716,6 +725,9 @@ enum wd_net_startup_state {
 };
 
 struct wd_net_state {
+    /* Set only after every pthread primitive and required allocation is live. */
+    bool initialized;
+
     /*
      * Primary server runtime lock. The network thread owns transport mutation;
      * compositor callbacks may take this lock only for short state transfers.
@@ -872,6 +884,7 @@ struct wd_net_state {
     struct wd_stats       stats;
     uint64_t              last_input_inject_ns;
     bool                  input_since_last_summary;
+    uint64_t              summary_input_sequence;
     bool                  input_since_last_fresh_tile;
     uint64_t              last_input_sequence;
     uint64_t              input_correlation_inflight_sequence;
@@ -881,6 +894,7 @@ struct wd_net_state {
     struct wd_queued_key_event key_queue[WD_SERVER_KEY_QUEUE_CAPACITY];
     size_t                     key_queue_count;
     bool                       key_state_reset_pending;
+    bool                       pointer_state_reset_pending;
 
     struct wd_queued_pointer_event pointer_queue[WD_SERVER_POINTER_QUEUE_CAPACITY];
     size_t                         pointer_queue_count;
@@ -993,6 +1007,8 @@ struct wd_server {
     double              pointer_button_grab_surface_sy;
     uint32_t            pointer_button_grab_count;
     uint32_t            pointer_button_grab_buttons;
+    uint32_t            pressed_pointer_buttons[WD_SERVER_PRESSED_BUTTON_CAPACITY];
+    size_t              pressed_pointer_button_count;
 
     struct wd_move_grab   move_grab;
     struct wd_resize_grab resize_grab;
@@ -1028,6 +1044,7 @@ struct wd_server {
 
     struct wd_selection_capture* clipboard_capture;
     struct wd_selection_capture* primary_capture;
+    struct wd_selection_transfer* selection_transfers;
     struct wd_selection_delivery local_clipboard;
     struct wd_selection_delivery local_primary;
 
@@ -1038,8 +1055,15 @@ struct wd_server {
     struct wd_stats_log_state stats_log;
 
     uint32_t* framebuffer_xrgb8888;
+    /* Compositor-thread scratch capture. CPU readback is published to the live
+     * framebuffer only after the complete capture and output commit succeed. */
+    uint32_t* framebuffer_readback_xrgb8888;
     uint32_t* framebuffer_shadow_xrgb8888;
     bool      framebuffer_shadow_valid;
+    /* Compositor-thread capture metadata copied into the frame-worker mailbox.
+     * False means the last rendered frame exists only in captured_video_frame
+     * and must not satisfy a tile-recovery/full-refresh request. */
+    bool      framebuffer_refreshed_by_render;
     uint64_t  framebuffer_generation;
     struct wd_frame captured_video_frame;
 

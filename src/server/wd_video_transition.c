@@ -182,10 +182,12 @@ enum wd_client_video_health_class wd_video_health_for_window(enum wd_client_vide
 }
 
 enum wd_client_video_health_class wd_client_video_health_classify(const struct wd_client_video_health_metrics* metrics) {
-    if (!metrics || metrics->server_frames_tx == 0 || metrics->client_reports == 0)
+    if (!metrics || metrics->client_reports == 0)
     {
         return WD_CLIENT_VIDEO_HEALTH_IDLE;
     }
+    /* Explicit client-side failures/drops are evidence even if the server has
+     * not yet accounted a transmitted frame in this sampling interval. */
     if (metrics->client_decode_failures != 0 || metrics->client_publish_failures != 0)
     {
         return WD_CLIENT_VIDEO_HEALTH_HARD_FAILURE;
@@ -201,6 +203,10 @@ enum wd_client_video_health_class wd_client_video_health_classify(const struct w
     if (metrics->client_need_keyframe_drops != 0)
     {
         return WD_CLIENT_VIDEO_HEALTH_AWAITING_KEYFRAME;
+    }
+    if (metrics->server_frames_tx == 0)
+    {
+        return WD_CLIENT_VIDEO_HEALTH_IDLE;
     }
     if (metrics->client_frames_presented != 0)
     {

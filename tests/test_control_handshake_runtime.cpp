@@ -2,6 +2,7 @@
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_protocol_codec.h"
 #include "waydisplay/wd_protocol_dispatch.h"
+#include "waydisplay/wd_time.h"
 #include "wd_channel_binding.h"
 
 #include <array>
@@ -125,6 +126,32 @@ void test_frame_lifetime_and_idle_timeout() {
     wd_tcp_reader_destroy(&reader);
 }
 
+bool stop_waiting(void*) {
+    return false;
+}
+
+void test_wait_for_message_deadline_and_cancellation() {
+    SocketPair pair;
+    wd_tcp_reader reader{};
+    wd_tcp_reader_init(&reader, WD_TCP_MAX_PAYLOAD_SIZE);
+    wd_tcp_message message{};
+
+    CHECK(wd_tcp_reader_wait_for_message(&reader, pair.fd[1], 1000000ull, 1000000ull,
+                                         wd_now_ns(), 1, nullptr, nullptr, &message) == WD_TCP_READER_TIMED_OUT);
+    CHECK(wd_tcp_reader_wait_for_message(&reader, pair.fd[1], 1000000ull, 1000000ull,
+                                         wd_now_ns() + 1000000000ull, 1, stop_waiting, nullptr,
+                                         &message) == WD_TCP_READER_CANCELLED);
+    wd_tcp_reader_destroy(&reader);
+
+    wd_tcp_reader_init(&reader, WD_TCP_MAX_PAYLOAD_SIZE);
+    const auto header = encode_header(WD_MSG_CLIENT_HELLO, sizeof(wd_client_hello_payload));
+    CHECK(write(pair.fd[0], header.data(), 1) == 1);
+    CHECK(wd_tcp_reader_wait_for_message(&reader, pair.fd[1], 1000000000ull, 2000000ull,
+                                         wd_now_ns() + 1000000000ull, 1, nullptr, nullptr,
+                                         &message) == WD_TCP_READER_TIMED_OUT);
+    wd_tcp_reader_destroy(&reader);
+}
+
 void test_invalid_and_partial_frames() {
     {
         SocketPair pair;
@@ -157,7 +184,7 @@ wd_aux_channel_policy policy() {
     value.identity.session_id       = 7;
     value.identity.connection_token = UINT64_C(0x1122334455667788);
     value.video_negotiated = true;
-    value.video_codecs     = WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265;
+    value.video_codecs     = WD_VIDEO_CODEC_H265;
     value.video_transport  = WD_VIDEO_TRANSPORT_TCP;
     value.audio_negotiated = true;
     value.audio_codec      = WD_AUDIO_CODEC_OPUS;
@@ -193,6 +220,8 @@ void test_auxiliary_channel_binding() {
 
     wd_video_channel_hello_payload video{p.identity.session_id, p.identity.connection_token, WD_VIDEO_CODEC_H265, WD_VIDEO_TRANSPORT_TCP};
     CHECK(wd_aux_channel_validate_hello(WD_MSG_VIDEO_CHANNEL_HELLO, &video, sizeof(video), &p) == WD_AUX_CHANNEL_VIDEO);
+    video.video_codecs = WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265;
+    CHECK(wd_aux_channel_validate_hello(WD_MSG_VIDEO_CHANNEL_HELLO, &video, sizeof(video), &p) == WD_AUX_CHANNEL_INVALID);
     video.video_codecs = 1u << 31u;
     CHECK(wd_aux_channel_validate_hello(WD_MSG_VIDEO_CHANNEL_HELLO, &video, sizeof(video), &p) == WD_AUX_CHANNEL_INVALID);
     video.video_codecs = WD_VIDEO_CODEC_H264;
@@ -229,6 +258,7 @@ void test_channel_dispatch_matrix() {
 int main() {
     test_fragmented_hello();
     test_frame_lifetime_and_idle_timeout();
+    test_wait_for_message_deadline_and_cancellation();
     test_invalid_and_partial_frames();
     test_auxiliary_channel_binding();
     test_channel_dispatch_matrix();

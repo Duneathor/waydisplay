@@ -11,6 +11,7 @@
 #include "tile_upload_epoch.hpp"
 #include "video_presentation_geometry.hpp"
 #include "sdl_input.hpp"
+#include "sdl_direct_tile_upload.hpp"
 #include "window_render_policy.hpp"
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_input.h"
@@ -40,7 +41,9 @@ int                                  g_window_width  = 1;
 int                                  g_window_height = 1;
 SDL_FRect                            g_content_rect{0.0f, 0.0f, 1.0f, 1.0f};
 std::array<bool, SDL_SCANCODE_COUNT> g_forwarded_keys{};
+std::array<bool, 8>                  g_forwarded_pointer_buttons{};
 bool                                 g_suppress_paste_v_keyup = false;
+bool                                 g_suppress_primary_paste_button_up = false;
 
 constexpr uint16_t WD_POINTER_MOD_ALT   = 1u << 0;
 constexpr uint16_t WD_POINTER_MOD_SHIFT = 1u << 1;
@@ -860,6 +863,12 @@ void drain_remote_selection_updates(ClientState& state) {
         if (!SDL_SetClipboardText(clipboard.c_str()))
         {
             log_sdl_warning("SDL_SetClipboardText");
+            std::lock_guard<std::mutex> lock(state.selection_mutex);
+            if (!state.pending_clipboard_text_valid)
+            {
+                state.pending_clipboard_text       = std::move(clipboard);
+                state.pending_clipboard_text_valid = true;
+            }
         }
         else
         {
@@ -872,6 +881,12 @@ void drain_remote_selection_updates(ClientState& state) {
         if (!SDL_SetPrimarySelectionText(primary.c_str()))
         {
             log_sdl_warning("SDL_SetPrimarySelectionText");
+            std::lock_guard<std::mutex> lock(state.selection_mutex);
+            if (!state.pending_primary_text_valid)
+            {
+                state.pending_primary_text       = std::move(primary);
+                state.pending_primary_text_valid = true;
+            }
         }
         else
         {
@@ -1146,6 +1161,7 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
                                  SDL_Texture*& video_texture, SDL_Texture*& active_texture,
                                  SDL_Texture*& fallback_texture) {
     wd_server_config_payload config{};
+    wd_server_config_payload current_config{};
 
     {
         std::lock_guard<std::mutex> lock(state.config_mutex);
@@ -1155,8 +1171,8 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
             return false;
         }
 
-        config                     = state.pending_config;
-        state.pending_config_valid = false;
+        config         = state.pending_config;
+        current_config = state.config;
     }
 
     ClientConfigValidationError config_error{};
@@ -1168,20 +1184,26 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
         return false;
     }
 
-    const uint32_t change_flags          = client_classify_server_config_change(state.config, config);
+    const uint32_t change_flags          = client_classify_server_config_change(current_config, config);
     const bool     transport_changed     = (change_flags & ClientConfigChangeTransport) != 0;
     const bool     stream_reset_required = client_config_change_requires_stream_reset(change_flags);
 
     if (!stream_reset_required)
     {
         {
-            std::lock_guard<std::mutex> lock(state.config_mutex);
+            std::lock_guard<std::mutex> processing_lock(state.udp_processing_mutex);
+            std::lock_guard<std::mutex> config_lock(state.config_mutex);
+            if (!state.pending_config_valid || std::memcmp(&state.pending_config, &config, sizeof(config)) != 0)
+            {
+                return false;
+            }
             if (state.media_clock_id != config.media_clock_id)
             {
                 state.media_clock_id              = config.media_clock_id;
                 state.media_clock_local_origin_ns = wd_now_ns();
             }
-            state.config = config;
+            state.config              = config;
+            state.pending_config_valid = false;
         }
         if (!client_send_config_applied(state, config.session_id, config.config_epoch))
         {
@@ -1234,6 +1256,15 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
 
     {
         std::lock_guard<std::mutex> processing_lock(state.udp_processing_mutex);
+        {
+            std::lock_guard<std::mutex> config_lock(state.config_mutex);
+            if (!state.pending_config_valid || std::memcmp(&state.pending_config, &config, sizeof(config)) != 0)
+            {
+                SDL_DestroyTexture(new_texture);
+                SDL_DestroyTexture(new_video_texture);
+                return false;
+            }
+        }
         if (transport_changed && !client_reconfigure_udp_transport_locked(state, config))
         {
             SDL_DestroyTexture(new_texture);
@@ -1250,8 +1281,9 @@ bool apply_pending_server_config(ClientState& state, SDL_Window* window, SDL_Ren
             state.media_clock_id              = config.media_clock_id;
             state.media_clock_local_origin_ns = wd_now_ns();
         }
-        state.config      = config;
-        state.framebuffer = std::move(new_framebuffer);
+        state.config               = config;
+        state.pending_config_valid = false;
+        state.framebuffer          = std::move(new_framebuffer);
         state.pending_dirty_tiles = std::move(new_dirty_tiles);
         state.pending_dirty_rect_count.store(0, std::memory_order_release);
         state.pending_dirty_epoch        = 0;
@@ -1409,90 +1441,6 @@ void record_texture_call_cost(ClientState& state, ClientTextureUploadCostModel& 
     state.stats.sdl_texture_model_pixel_cost_q16.store(costs.pixel_cost_q16, std::memory_order_relaxed);
 }
 
-
-bool upload_completed_tiles_direct(ClientState& state, SDL_Texture* texture,
-                                   std::vector<ClientTileUpload>& uploads,
-                                   std::vector<ClientDirtyRect>& uploaded_rects) {
-    uploaded_rects.clear();
-    if (uploads.empty())
-    {
-        return true;
-    }
-
-    uint64_t direct_present_count = 0;
-    uint64_t lock_wait_samples    = 0;
-    uint64_t lock_wait_sum_ns     = 0;
-    uint64_t lock_wait_max_ns     = 0;
-    const auto publish_batch = [&]() {
-        if (direct_present_count != 0)
-        {
-            state.stats.tile_present_direct.fetch_add(direct_present_count, std::memory_order_relaxed);
-        }
-        if (lock_wait_samples != 0)
-        {
-            state.stats.lock_wait_samples.fetch_add(lock_wait_samples, std::memory_order_relaxed);
-            state.stats.lock_wait_sum_ns.fetch_add(lock_wait_sum_ns, std::memory_order_relaxed);
-            record_atomic_max(state.stats.lock_wait_max_ns, lock_wait_max_ns);
-        }
-    };
-
-    const auto ownership = wd_client_stream_ownership_snapshot(&state.stream_ownership);
-    for (ClientTileUpload& upload : uploads)
-    {
-        if (!upload.valid() || !client_tile_upload_matches_ownership(upload, ownership))
-        {
-            continue;
-        }
-
-        SDL_Rect rect{
-            static_cast<int>(upload.rect.x), static_cast<int>(upload.rect.y),
-            static_cast<int>(upload.rect.w), static_cast<int>(upload.rect.h)};
-        if (!SDL_UpdateTexture(texture, &rect, upload.pixels.data(),
-                               static_cast<int>(upload.source_pitch)))
-        {
-            publish_batch();
-            return false;
-        }
-        ++direct_present_count;
-
-        /* The renderer, not the network thread, owns mutation of the CPU
-         * recovery image for directly queued tiles. Keep it current for a
-         * later full upload without bouncing pixels through a staging copy. */
-        {
-            std::unique_lock<std::mutex> framebuffer_lock(state.framebuffer_mutex, std::defer_lock);
-            if (!framebuffer_lock.try_lock())
-            {
-                const uint64_t lock_started_ns = wd_now_ns();
-                framebuffer_lock.lock();
-                const uint64_t wait_ns = wd_now_ns() - lock_started_ns;
-                ++lock_wait_samples;
-                lock_wait_sum_ns += wait_ns;
-                lock_wait_max_ns = std::max(lock_wait_max_ns, wait_ns);
-            }
-            if (!client_apply_tile_upload_to_recovery(state.framebuffer, state.config.width,
-                                                      state.config.height, upload))
-            {
-                publish_batch();
-                return false;
-            }
-        }
-        uploaded_rects.push_back(upload.rect);
-    }
-    publish_batch();
-    return true;
-}
-
-void recycle_direct_tile_upload_buffers(ClientState& state,
-                                        std::vector<ClientTileUpload>& uploads) {
-    std::lock_guard<std::mutex> recycle_lock(state.tile_present_recycle_mutex);
-    for (ClientTileUpload& upload : uploads)
-    {
-        if (!upload.pixels.empty())
-        {
-            state.tile_present_recycled_buffers.push_back(std::move(upload.pixels));
-        }
-    }
-}
 
 void record_framebuffer_snapshot_stats(ClientState& state, ClientTextureUploadCostModel& costs, uint64_t started_ns, uint64_t pixels) {
     const uint64_t elapsed_ns = wd_now_ns() - started_ns;
@@ -1904,6 +1852,55 @@ void release_forwarded_keyboard_keys(ClientState& state) {
     }
 
     g_suppress_paste_v_keyup = false;
+    g_suppress_primary_paste_button_up = false;
+}
+
+void release_forwarded_pointer_buttons(ClientState& state) {
+    float mouse_x = 0.0f;
+    float mouse_y = 0.0f;
+    SDL_GetMouseState(&mouse_x, &mouse_y);
+
+    for (size_t i = 0; i < g_forwarded_pointer_buttons.size(); ++i)
+    {
+        if (!g_forwarded_pointer_buttons[i])
+        {
+            continue;
+        }
+
+        const uint16_t linux_button = sdl_button_to_linux_button(static_cast<uint8_t>(i));
+        if (linux_button != 0)
+        {
+            wd_pointer_event_payload pointer{};
+            pointer.session_id          = state.config.session_id;
+            pointer.connection_token    = state.config.connection_token;
+            pointer.client_timestamp_ns = wd_now_ns();
+            pointer.event_type          = WD_POINTER_EVENT_BUTTON;
+            pointer.x                   = map_mouse_coord_x(mouse_x);
+            pointer.y                   = map_mouse_coord_y(mouse_y);
+            pointer.button              = linux_button;
+            pointer.button_state        = WD_POINTER_BUTTON_RELEASED;
+            pointer.modifiers           = current_pointer_modifiers();
+
+            if (!client_send_pointer_event(state, pointer))
+            {
+                WD_LOG_ERROR("failed to release forwarded pointer button=%u", linux_button);
+            }
+        }
+
+        g_forwarded_pointer_buttons[i] = false;
+    }
+}
+
+void release_forwarded_input_state(ClientState& state) {
+    release_forwarded_keyboard_keys(state);
+    release_forwarded_pointer_buttons(state);
+}
+
+void reset_forwarded_input_state() {
+    g_forwarded_keys.fill(false);
+    g_forwarded_pointer_buttons.fill(false);
+    g_suppress_paste_v_keyup = false;
+    g_suppress_primary_paste_button_up = false;
 }
 
 bool window_render_feedback_visible(SDL_Window* window) {
@@ -1931,7 +1928,7 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
                      state.render_feedback_visible.load(std::memory_order_relaxed) ? "yes" : "no");
         if (!focused)
         {
-            release_forwarded_keyboard_keys(state);
+            release_forwarded_input_state(state);
         }
         return;
     }
@@ -1972,8 +1969,10 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
                  * publish the selection, then synthesize V while Ctrl is already
                  * held remotely. Forwarding V here races ahead of publication.
                  */
-                send_host_clipboard_to_server(state, false, true);
-                g_suppress_paste_v_keyup = true;
+                if (send_host_clipboard_to_server(state, false, true) && client_send_clipboard_paste(state))
+                {
+                    g_suppress_paste_v_keyup = true;
+                }
                 return;
             }
 
@@ -2028,6 +2027,52 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
             return;
         }
 
+        const size_t button_slot = static_cast<size_t>(event.button.button);
+        if (button_slot >= g_forwarded_pointer_buttons.size())
+        {
+            return;
+        }
+
+        const bool pressed = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+        bool&      forwarded = g_forwarded_pointer_buttons[button_slot];
+
+        if (linux_button == WD_INPUT_BUTTON_MIDDLE)
+        {
+            if (!pressed && g_suppress_primary_paste_button_up)
+            {
+                g_suppress_primary_paste_button_up = false;
+                return;
+            }
+            if (pressed)
+            {
+                wd_pointer_event_payload paste_pointer{};
+                paste_pointer.session_id          = state.config.session_id;
+                paste_pointer.connection_token    = state.config.connection_token;
+                paste_pointer.client_timestamp_ns = wd_now_ns();
+                paste_pointer.event_type          = WD_POINTER_EVENT_BUTTON;
+                paste_pointer.x                   = map_mouse_coord_x(event.button.x);
+                paste_pointer.y                   = map_mouse_coord_y(event.button.y);
+                paste_pointer.button              = WD_INPUT_BUTTON_MIDDLE;
+                paste_pointer.button_state        = WD_POINTER_BUTTON_PRESSED;
+                paste_pointer.modifiers           = current_pointer_modifiers();
+
+                if (send_host_clipboard_to_server(state, true, true) && client_send_primary_paste(state, paste_pointer))
+                {
+                    g_suppress_primary_paste_button_up = true;
+                }
+                else
+                {
+                    WD_LOG_WARN("failed to queue ordered primary-selection paste");
+                }
+                return;
+            }
+        }
+
+        if (pressed == forwarded)
+        {
+            return;
+        }
+
         wd_pointer_event_payload pointer{};
         pointer.session_id          = state.config.session_id;
         pointer.connection_token    = state.config.connection_token;
@@ -2036,25 +2081,17 @@ void handle_sdl_event(ClientState& state, const SDL_Event& event) {
         pointer.x                   = map_mouse_coord_x(event.button.x);
         pointer.y                   = map_mouse_coord_y(event.button.y);
         pointer.button              = linux_button;
-        pointer.button_state        = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? WD_POINTER_BUTTON_PRESSED : WD_POINTER_BUTTON_RELEASED;
+        pointer.button_state        = pressed ? WD_POINTER_BUTTON_PRESSED : WD_POINTER_BUTTON_RELEASED;
         pointer.modifiers           = current_pointer_modifiers();
-
-        if (linux_button == WD_INPUT_BUTTON_MIDDLE && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
-        {
-            /*
-             * Publish the host clipboard as primary selection first, then forward
-             * the middle click so the Wayland client performs its normal primary
-             * paste request.
-             */
-            send_host_clipboard_to_server(state, true, true);
-        }
 
         if (!client_send_pointer_event(state, pointer))
         {
             WD_LOG_ERROR("failed to send pointer button");
             state.session.running.store(false, std::memory_order_relaxed);
+            return;
         }
 
+        forwarded = pressed;
         return;
     }
 
@@ -2250,6 +2287,7 @@ bool present_sdl_frame(ClientState& state, SDL_Renderer* renderer, SDL_Texture* 
 } // namespace
 
 int run_sdl_viewer(ClientState& state) {
+    reset_forwarded_input_state();
     g_client_config = &state.config;
 
     SDL_Window* window =
@@ -2322,6 +2360,21 @@ int run_sdl_viewer(ClientState& state) {
         return 1;
     }
 
+    const Uint32 render_wake_event_type = SDL_RegisterEvents(1);
+    const bool   render_wake_uses_sdl   = render_wake_event_type != static_cast<Uint32>(-1);
+    if (render_wake_uses_sdl)
+    {
+        state.render_wake.set_external_waker([render_wake_event_type]() {
+            SDL_Event wake_event{};
+            wake_event.type = render_wake_event_type;
+            (void)SDL_PushEvent(&wake_event);
+        });
+    }
+    else
+    {
+        WD_LOG_WARN("SDL_RegisterEvents failed; render wake falls back to timed condition wait: %s", SDL_GetError());
+    }
+
     uint64_t                                last_stats_ns             = wd_now_ns();
     uint64_t                                last_stats_log_ns         = last_stats_ns;
     bool                                    frame_dirty               = true;
@@ -2343,6 +2396,9 @@ int run_sdl_viewer(ClientState& state) {
     std::vector<uint32_t>                   tile_upload_pixels;
     std::vector<StagedTextureRect>          staged_texture_rects;
     ClientTextureUploadCostModel            texture_upload_costs;
+    SDL_Event                               deferred_event{};
+    bool                                    have_deferred_event = false;
+    bool                                    user_requested_exit = false;
 
     while (state.session.running.load(std::memory_order_relaxed))
     {
@@ -2363,12 +2419,32 @@ int run_sdl_viewer(ClientState& state) {
         }
 
         SDL_Event event;
-
-        while (SDL_PollEvent(&event))
+        bool      have_event = false;
+        for (;;)
         {
+            if (have_deferred_event)
+            {
+                event               = deferred_event;
+                have_deferred_event = false;
+                have_event          = true;
+            }
+            else
+            {
+                have_event = SDL_PollEvent(&event);
+            }
+            if (!have_event)
+            {
+                break;
+            }
+            if (render_wake_uses_sdl && event.type == render_wake_event_type)
+            {
+                continue;
+            }
+
             if (event.type == SDL_EVENT_QUIT)
             {
-                release_forwarded_keyboard_keys(state);
+                user_requested_exit = true;
+                release_forwarded_input_state(state);
                 state.session.running.store(false, std::memory_order_relaxed);
                 break;
             }
@@ -2586,8 +2662,7 @@ int run_sdl_viewer(ClientState& state) {
                         allow_tile_upload && (texture_needs_full_upload || stale_video_needs_tile_restore || cost_selected_full);
                     if (source_dirty_rect_count != 0)
                     {
-                        state.stats.sdl_texture_source_dirty_rects.fetch_add(source_dirty_rect_count, std::memory_order_relaxed);
-                        state.stats.sdl_texture_coalesced_dirty_rects.fetch_add(dirty_rects.size(), std::memory_order_relaxed);
+                        state.stats.sdl_texture_grid_rects.fetch_add(source_dirty_rect_count, std::memory_order_relaxed);
                         state.stats.sdl_texture_source_pixels.fetch_add(upload_plan.source_pixels, std::memory_order_relaxed);
                         if (upload_plan.mode == DirtyTextureUploadMode::Bounds)
                         {
@@ -2760,10 +2835,25 @@ int run_sdl_viewer(ClientState& state) {
         }
         if (wait_ms != 0)
         {
-            (void)state.render_wake.wait_for_change(render_wake_sequence, wait_ms);
+            if (render_wake_uses_sdl)
+            {
+                SDL_Event wait_event{};
+                if (SDL_WaitEventTimeout(&wait_event, static_cast<Sint32>(wait_ms)) && wait_event.type != render_wake_event_type)
+                {
+                    deferred_event      = wait_event;
+                    have_deferred_event = true;
+                }
+            }
+            else
+            {
+                (void)state.render_wake.wait_for_change(render_wake_sequence, wait_ms);
+            }
         }
     }
 
+    state.render_wake.clear_external_waker();
+    release_forwarded_input_state(state);
+    reset_forwarded_input_state();
     state.session.running.store(false, std::memory_order_relaxed);
     SDL_DestroyTexture(texture);
     SDL_DestroyTexture(video_texture);
@@ -2774,7 +2864,7 @@ int run_sdl_viewer(ClientState& state) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     free_cached_cursors();
-    return 0;
+    return user_requested_exit ? 0 : 1;
 }
 
 } // namespace waydisplay

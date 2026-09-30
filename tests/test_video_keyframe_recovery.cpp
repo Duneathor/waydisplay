@@ -88,6 +88,14 @@ void test_missing_hevc_headers_and_random_access() {
     append(pps);
     append(idr);
     expect(WD_VIDEO_CODEC_H265, unit, WD_CLIENT_VIDEO_KEYFRAME_VALID);
+
+    constexpr std::array<uint8_t, 7> bla{0, 0, 0, 1, 0x20, 0x01, 0x80};
+    unit.clear();
+    append(vps);
+    append(sps);
+    append(pps);
+    append(bla);
+    expect(WD_VIDEO_CODEC_H265, unit, WD_CLIENT_VIDEO_KEYFRAME_VALID);
 }
 
 void test_reject_malformed_and_length_prefixed() {
@@ -98,6 +106,10 @@ void test_reject_malformed_and_length_prefixed() {
     expect(WD_VIDEO_CODEC_H264, {0, 0, 1, 0x67, 1, 0, 0, 1, 0x65, 1}, WD_CLIENT_VIDEO_KEYFRAME_MISSING_PARAMETER_SETS);
     expect(WD_VIDEO_CODEC_H264, {0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 1, 0, 0, 1, 0x41, 1},
            WD_CLIENT_VIDEO_KEYFRAME_MISSING_RANDOM_ACCESS);
+    expect(WD_VIDEO_CODEC_H264, {0, 0, 1, 0xe7, 1, 0, 0, 1, 0x68, 1, 0, 0, 1, 0x65, 1},
+           WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM);
+    expect(WD_VIDEO_CODEC_H265, {0, 0, 1, 0xc0, 0x01, 0x80}, WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM);
+    expect(WD_VIDEO_CODEC_H265, {0, 0, 1, 0x40, 0x00, 0x80}, WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM);
     CHECK(wd_client_video_keyframe_validate(WD_VIDEO_CODEC_H265, nullptr, 0) == WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM);
     CHECK(wd_client_video_keyframe_validate(0, nullptr, 0) == WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM);
     expect(WD_VIDEO_CODEC_H265, {0, 0, 1, 0x40, 0x01, 0x80, 0, 0, 1, 0x42, 0x01, 0x80,

@@ -11,8 +11,9 @@ int main() {
     CHECK(wd_key_transition_classify(pressed, 2, 3, 29, false) == WD_KEY_TRANSITION_ACCEPT);
     CHECK(wd_key_transition_classify(pressed, 2, 3, 30, false) == WD_KEY_TRANSITION_UNMATCHED_RELEASE);
     CHECK(wd_key_transition_classify(pressed, 2, 3, 30, true) == WD_KEY_TRANSITION_ACCEPT);
-    CHECK(wd_key_transition_classify(pressed, 2, 2, 30, true) == WD_KEY_TRANSITION_CAPACITY);
+    CHECK(wd_key_transition_classify(pressed, 2, 2, 30, true) == WD_KEY_TRANSITION_CAPACITY_FULL);
     CHECK(wd_key_transition_classify(nullptr, 0, 3, 30, true) == WD_KEY_TRANSITION_ACCEPT);
-    CHECK(wd_key_transition_classify(nullptr, 1, 3, 30, true) == WD_KEY_TRANSITION_CAPACITY);
+    CHECK(wd_key_transition_classify(nullptr, 1, 3, 30, true) == WD_KEY_TRANSITION_INVALID_STATE);
+    CHECK(wd_key_transition_classify(pressed, 3, 2, 30, true) == WD_KEY_TRANSITION_INVALID_STATE);
     return 0;
 }

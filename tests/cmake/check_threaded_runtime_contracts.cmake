@@ -24,6 +24,32 @@ require_absent("${wake_function}" "pthread_mutex_lock" "eventfd wake path must r
 read_source("src/server/wd_stream_video.c" video_source)
 require_absent("${video_source}" "memcpy(worker->pending_job.pixels, server->framebuffer_xrgb8888"
                "video publication must not copy the framebuffer while net.lock is held")
+require_absent("${video_source}" "net->video_tx && wd_video_encoder_available(net->video_encoder)"
+               "video snapshot admission must use negotiated/worker state rather than racing encoder capability caches")
+
+read_source("src/server/wd_stream_frame_worker.c" frame_worker_source)
+string(FIND "${frame_worker_source}" "cpu_framebuffer_refreshed" cpu_capture_mailbox)
+if(cpu_capture_mailbox EQUAL -1)
+    message(FATAL_ERROR "frame-worker mailbox must preserve whether a render refreshed the CPU framebuffer")
+endif()
+
+read_source("src/server/wd_readback.c" readback_source)
+require_absent("${readback_source}" ".data   = server->framebuffer_xrgb8888"
+               "wlroots texture reads must target transactional scratch storage")
+string(FIND "${readback_source}" "if (built_state && result != WD_RENDER_RESULT_ERROR)" capture_commit_gate)
+string(FIND "${readback_source}"
+       "memcpy(server->framebuffer_xrgb8888, server->framebuffer_readback_xrgb8888, server->framebuffer_bytes)"
+       capture_publish)
+if(capture_commit_gate EQUAL -1 OR capture_publish EQUAL -1 OR capture_publish LESS capture_commit_gate)
+    message(FATAL_ERROR "CPU readback must publish scratch storage only after successful output commit")
+endif()
+
+read_source("src/server/wd_video_encoder.c" video_encoder_source)
+string(FIND "${video_encoder_source}" "failed to receive encoded video packet" encoder_receive_failure)
+string(FIND "${video_encoder_source}" "encoder->keyframe_requested = true;" encoder_keyframe_rearm)
+if(encoder_receive_failure EQUAL -1 OR encoder_keyframe_rearm EQUAL -1)
+    message(FATAL_ERROR "post-submit encoder output failures must re-arm a keyframe")
+endif()
 
 read_source("src/server/wd_stream_telemetry.c" telemetry_source)
 require_absent("${telemetry_source}" "wd_stream_policy_update_mode_locked"
@@ -262,6 +288,47 @@ string(SUBSTRING "${cursor_source}" ${cursor_send_start} ${cursor_send_length} c
 require_absent("${cursor_send_function}" "shutdown(net->tcp_fd"
                "coalescible cursor enqueue pressure must not close the control channel")
 
+# Cursor shape is shared with the network thread during session establishment.
+# Runtime mutations and request telemetry must use net.lock, and both cursor
+# protocols must validate focus ownership plus a seat-client event serial.
+string(FIND "${cursor_source}" "bool wd_cursor_set_shape" cursor_set_start)
+string(FIND "${cursor_source}" "uint16_t wd_cursor_shape_for_resize_edges" cursor_set_end)
+if(cursor_set_start EQUAL -1 OR cursor_set_end EQUAL -1 OR cursor_set_end LESS cursor_set_start)
+    message(FATAL_ERROR "could not locate wd_cursor_set_shape")
+endif()
+math(EXPR cursor_set_length "${cursor_set_end} - ${cursor_set_start}")
+string(SUBSTRING "${cursor_source}" ${cursor_set_start} ${cursor_set_length} cursor_set_function)
+string(FIND "${cursor_set_function}" "pthread_mutex_lock(&server->net.lock)" cursor_state_lock)
+string(FIND "${cursor_set_function}" "server->cursor_shape != shape" cursor_state_compare)
+string(FIND "${cursor_set_function}" "wd_cursor_queue_current_locked(server)" cursor_state_queue)
+if(cursor_state_lock EQUAL -1 OR cursor_state_compare EQUAL -1 OR cursor_state_queue EQUAL -1)
+    message(FATAL_ERROR "cursor shape mutation must be serialized by net.lock")
+endif()
+
+string(FIND "${cursor_source}" "server->seat->pointer_state.focused_client == seat_client" cursor_focus_validation)
+if(cursor_focus_validation EQUAL -1)
+    message(FATAL_ERROR "cursor requests must require the exact pointer-focused seat client")
+endif()
+string(FIND "${cursor_source}" "wlr_seat_client_validate_event_serial(seat_client, serial)" cursor_serial_validation)
+if(cursor_serial_validation EQUAL -1)
+    message(FATAL_ERROR "cursor requests must validate their wlroots event serial")
+endif()
+string(FIND "${cursor_source}" "server->net.stats.cursor_shape_rejected++" cursor_shape_rejection_stat)
+if(cursor_shape_rejection_stat EQUAL -1)
+    message(FATAL_ERROR "cursor-shape rejection must be observable in telemetry")
+endif()
+string(FIND "${cursor_source}" "static void wd_cursor_record_shape_request" cursor_stat_start)
+string(FIND "${cursor_source}" "static void handle_cursor_shape_request" cursor_stat_end)
+if(cursor_stat_start EQUAL -1 OR cursor_stat_end EQUAL -1 OR cursor_stat_end LESS cursor_stat_start)
+    message(FATAL_ERROR "could not locate cursor request telemetry helpers")
+endif()
+math(EXPR cursor_stat_length "${cursor_stat_end} - ${cursor_stat_start}")
+string(SUBSTRING "${cursor_source}" ${cursor_stat_start} ${cursor_stat_length} cursor_stat_helpers)
+string(FIND "${cursor_stat_helpers}" "pthread_mutex_lock(&server->net.lock)" cursor_stat_lock)
+if(cursor_stat_lock EQUAL -1)
+    message(FATAL_ERROR "cursor request telemetry must be serialized by net.lock")
+endif()
+
 string(FIND "${stream_source}" "static bool wd_stream_send_generation_summary_kind_locked" summary_send_start)
 string(FIND "${stream_source}" "bool wd_stream_send_generation_summary_locked" summary_send_end)
 if(summary_send_start EQUAL -1 OR summary_send_end EQUAL -1 OR summary_send_end LESS summary_send_start)
@@ -369,3 +436,59 @@ math(EXPR audio_worker_length "${audio_worker_end} - ${audio_worker_start}")
 string(SUBSTRING "${audio_stream_source}" ${audio_worker_start} ${audio_worker_length} audio_worker_block)
 require_present("${audio_worker_block}" "shutdown(stream->tcp_fd" "audio failure must close its audio transport")
 require_absent("${audio_worker_block}" "net->tcp_fd" "audio worker must not own the control transport")
+
+require_absent("${audio_stream_source}" "memset(&stream->stats" "audio statistics reset must remain atomic")
+require_present("${audio_stream_source}" "errno == EINTR" "audio worker sleep must retry only interrupted nanosleep calls")
+require_present("${audio_stream_source}" "char sink_name[WD_AUDIO_ROUTING_SINK_MAX]" "audio routing identity must be stream-owned")
+require_present("${audio_stream_source}" "bool wd_audio_stream_prepare" "audio capture recreation must be explicit")
+string(FIND "${audio_stream_source}" "bool wd_audio_stream_ready" audio_ready_start)
+string(FIND "${audio_stream_source}" "const char* wd_audio_stream_sink_name" audio_ready_end)
+if(audio_ready_start EQUAL -1 OR audio_ready_end EQUAL -1 OR audio_ready_end LESS audio_ready_start)
+    message(FATAL_ERROR "could not isolate pure audio readiness probe")
+endif()
+math(EXPR audio_ready_length "${audio_ready_end} - ${audio_ready_start}")
+string(SUBSTRING "${audio_stream_source}" ${audio_ready_start} ${audio_ready_length} audio_ready_block)
+require_absent("${audio_ready_block}" "wd_audio_stream_ensure_capture_locked" "audio readiness probe must not recreate capture")
+
+read_source("src/client/client_state.hpp" client_state_source)
+string(FIND "${client_state_source}" "async_udp_stats_mutex" udp_stats_mutex)
+if(udp_stats_mutex EQUAL -1)
+    message(FATAL_ERROR "client UDP async delta cursors must have a dedicated stats mutex")
+endif()
+
+string(FIND "${server_net_source}" "pthread_mutex_lock(&net->lock);\n    wd_net_derive_link_profile" link_profile_lock)
+if(link_profile_lock EQUAL -1)
+    message(FATAL_ERROR "link-profile publication must occur under net.lock")
+endif()
+
+string(FIND "${stream_source}" "tile_input_inject_ns" tile_input_pair)
+string(FIND "${stream_source}" "summary_input_sequence == completion->input_sequence" summary_generation_guard)
+if(tile_input_pair EQUAL -1 OR summary_generation_guard EQUAL -1)
+    message(FATAL_ERROR "input latency telemetry must carry sequence/timestamp pairs across async work")
+endif()
+
+require_absent("${telemetry_source}" "dst->tcp_summary_budget_interval_ns +="
+               "summary interval telemetry is a gauge and must not be accumulated")
+require_absent("${telemetry_source}" "wire_mbit_per_sec"
+               "server video throughput is payload throughput, not on-wire bitrate")
+read_source("src/client/client_telemetry.cpp" client_telemetry_source)
+require_absent("${client_telemetry_source}" "wire_mbit_per_sec"
+               "client video throughput is payload throughput, not on-wire bitrate")
+require_absent("${client_telemetry_source}" "erase(state.recent_input_timestamps.begin(), std::next(it))"
+               "presentation timestamp lookup must erase only the matched sequence")
+read_source("src/client/sdl_viewer.cpp" sdl_telemetry_source)
+require_absent("${sdl_telemetry_source}" "sdl_texture_coalesced_dirty_rects"
+               "render telemetry must not claim a nonexistent second coalescing pass")
+
+read_source("src/server/wd_keyboard_shortcuts_inhibit.c" shortcuts_source)
+string(FIND "${shortcuts_source}" "void wd_keyboard_shortcuts_inhibit_refresh" shortcuts_refresh_start)
+string(FIND "${shortcuts_source}" "bool wd_keyboard_shortcuts_inhibit_active" shortcuts_refresh_end)
+if(shortcuts_refresh_start EQUAL -1 OR shortcuts_refresh_end EQUAL -1 OR shortcuts_refresh_end LESS shortcuts_refresh_start)
+    message(FATAL_ERROR "could not isolate keyboard-shortcuts-inhibit refresh")
+endif()
+math(EXPR shortcuts_refresh_length "${shortcuts_refresh_end} - ${shortcuts_refresh_start}")
+string(SUBSTRING "${shortcuts_source}" ${shortcuts_refresh_start} ${shortcuts_refresh_length} shortcuts_refresh_block)
+require_absent("${shortcuts_refresh_block}" "wlr_keyboard_shortcuts_inhibitor_v1_deactivate"
+               "focus loss must not emit protocol inactive for a live shortcuts inhibitor")
+require_present("${shortcuts_source}" "state->inhibitor->active && inhibitor_should_be_active"
+                "shortcut suppression relevance must combine protocol activation with current focus")

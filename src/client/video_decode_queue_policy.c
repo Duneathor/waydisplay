@@ -9,6 +9,14 @@ struct wd_client_video_decode_queue_plan wd_client_video_decode_queue_plan_compu
         .reset_decoder_before = false,
     };
 
+    if (capacity == 0)
+    {
+        plan.action            = WD_CLIENT_VIDEO_DECODE_QUEUE_RECOVER_OVERFLOW;
+        plan.clear_queue       = queued_packets != 0;
+        plan.wait_for_keyframe = true;
+        return plan;
+    }
+
     if (control_frame)
     {
         /* End-of-stream/resize always invalidates decoder references, even
@@ -31,7 +39,7 @@ struct wd_client_video_decode_queue_plan wd_client_video_decode_queue_plan_compu
         return plan;
     }
 
-    if (capacity == 0 || queued_packets >= capacity)
+    if (queued_packets >= capacity)
     {
         plan.action            = WD_CLIENT_VIDEO_DECODE_QUEUE_RECOVER_OVERFLOW;
         plan.clear_queue       = true;

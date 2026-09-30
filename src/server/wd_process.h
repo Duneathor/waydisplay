@@ -33,6 +33,9 @@ enum wd_process_reap_result {
 };
 
 void wd_spawned_process_init(struct wd_spawned_process* process);
+/* On every call with a non-NULL process pointer, process is reset to the
+ * inactive state before validation; it contains a live process only on
+ * success. Environment changes must use unique names and a defined action. */
 bool wd_spawn_shell_command(struct wd_spawned_process* process, const char* command, const struct wd_process_env_change* changes,
                             size_t change_count, int* error_code);
 enum wd_process_reap_result wd_spawned_process_reap_nonblocking(struct wd_spawned_process* process, int* status, int* error_code);

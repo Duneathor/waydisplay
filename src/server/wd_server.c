@@ -484,7 +484,7 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
             server->net.stats.tcp_async_queue_overflow += overflows - server->net.control_tx_overflow_seen;
             server->net.control_tx_overflow_seen = overflows;
         }
-        uint64_t inflight_max = wd_async_tcp_sender_inflight_max(server->net.control_tx);
+        uint64_t inflight_max = wd_async_tcp_sender_take_inflight_max(server->net.control_tx);
         if (inflight_max > server->net.stats.tcp_async_inflight_max)
         {
             server->net.stats.tcp_async_inflight_max = inflight_max;
@@ -531,7 +531,7 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
             server->net.stats.tcp_async_queue_overflow += overflows - server->net.selection_tx_overflow_seen;
             server->net.selection_tx_overflow_seen = overflows;
         }
-        uint64_t inflight_max = wd_async_tcp_sender_inflight_max(server->net.selection_tx);
+        uint64_t inflight_max = wd_async_tcp_sender_take_inflight_max(server->net.selection_tx);
         if (inflight_max > server->net.stats.tcp_async_inflight_max)
         {
             server->net.stats.tcp_async_inflight_max = inflight_max;
@@ -569,7 +569,9 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
                 wd_stream_video_reset_locked(server, "video async completion failed", false, false);
                 wd_stream_invalidate_all_tiles_locked(server);
                 wd_server_mark_scene_dirty(server);
-                server->framebuffer_shadow_valid = false;
+                /* The frame worker owns the framebuffer shadow while active.
+                 * Defer shadow invalidation to the compositor/worker boundary. */
+                wd_server_request_full_refresh(server);
                 (void)shutdown(server->net.video_tcp_fd, SHUT_RDWR);
             }
         }
@@ -608,14 +610,14 @@ static void wd_server_reap_and_sample_async_locked(struct wd_server* server) {
             server->net.stats.udp_async_partial_submits += partial_submits - server->net.udp_tx_partial_submits_seen;
             server->net.udp_tx_partial_submits_seen = partial_submits;
         }
-        uint64_t inflight_max = wd_async_udp_sender_inflight_max(server->net.udp_tx);
+        uint64_t inflight_max = wd_async_udp_sender_take_inflight_max(server->net.udp_tx);
         if (inflight_max > server->net.stats.udp_async_inflight_max)
         {
             server->net.stats.udp_async_inflight_max = inflight_max;
         }
         if (failed > server->net.udp_tx_failed_seen)
         {
-            server->net.stats.udp_async_completion_failed += failed - server->net.udp_tx_failed_seen;
+            server->net.stats.udp_async_transport_failed += failed - server->net.udp_tx_failed_seen;
             server->net.udp_tx_failed_seen = failed;
         }
     }
@@ -1208,7 +1210,7 @@ static bool wd_server_compute_geometry(const struct wd_server* server, uint32_t 
     const uint64_t framebuffer_bytes  = framebuffer_pixels * WD_BYTES_PER_PIXEL;
 
     if (tiles_x == 0 || tiles_y == 0 || total_tiles == 0 || total_tiles > UINT16_MAX ||
-        base_tiles_x == 0 || base_tiles_y == 0 || total_base_tiles == 0 ||
+        base_tiles_x == 0 || base_tiles_y == 0 || total_base_tiles == 0 || total_base_tiles > UINT16_MAX ||
         framebuffer_pixels > UINT32_MAX || framebuffer_bytes > UINT32_MAX)
     {
         return false;
@@ -1323,6 +1325,7 @@ bool wd_server_request_display_size(struct wd_server* server, uint32_t width, ui
 
 struct wd_resize_allocations {
     uint32_t*             framebuffer_xrgb8888;
+    uint32_t*             framebuffer_readback_xrgb8888;
     uint32_t*             framebuffer_shadow_xrgb8888;
     struct wd_tile_state* tiles;
     bool*                 damage_tiles;
@@ -1348,6 +1351,7 @@ static void wd_resize_allocations_free(struct wd_resize_allocations* allocs) {
     }
 
     free(allocs->framebuffer_xrgb8888);
+    free(allocs->framebuffer_readback_xrgb8888);
     free(allocs->framebuffer_shadow_xrgb8888);
     free(allocs->tiles);
     free(allocs->damage_tiles);
@@ -1378,6 +1382,7 @@ static bool wd_resize_allocations_prepare(struct wd_resize_allocations* allocs,
     memset(allocs, 0, sizeof(*allocs));
 
     allocs->framebuffer_xrgb8888            = calloc(geometry->framebuffer_pixels, sizeof(*allocs->framebuffer_xrgb8888));
+    allocs->framebuffer_readback_xrgb8888   = calloc(geometry->framebuffer_pixels, sizeof(*allocs->framebuffer_readback_xrgb8888));
     allocs->framebuffer_shadow_xrgb8888     = calloc(geometry->framebuffer_pixels, sizeof(*allocs->framebuffer_shadow_xrgb8888));
     allocs->tiles                           = calloc(geometry->total_tiles, sizeof(*allocs->tiles));
     allocs->damage_tiles                    = calloc(geometry->total_base_tiles, sizeof(*allocs->damage_tiles));
@@ -1395,7 +1400,8 @@ static bool wd_resize_allocations_prepare(struct wd_resize_allocations* allocs,
     allocs->summary_dirty_tiles             = calloc(geometry->total_tiles, sizeof(*allocs->summary_dirty_tiles));
     allocs->summary_dirty_queue             = calloc(geometry->total_tiles, sizeof(*allocs->summary_dirty_queue));
 
-    if (!allocs->framebuffer_xrgb8888 || !allocs->framebuffer_shadow_xrgb8888 || !allocs->tiles || !allocs->damage_tiles ||
+    if (!allocs->framebuffer_xrgb8888 || !allocs->framebuffer_readback_xrgb8888 || !allocs->framebuffer_shadow_xrgb8888 ||
+        !allocs->tiles || !allocs->damage_tiles ||
         !allocs->dirty_regions || !allocs->dirty_region_queued || !allocs->dirty_region_enqueued_ns || !allocs->dirty_epochs ||
         !allocs->dirty_queue || !allocs->dirty_queued || !allocs->dirty_queue_enqueued_ns || !allocs->retransmit_queue ||
         !allocs->retransmit_queued || !allocs->retransmit_queue_enqueued_ns || !allocs->retransmit_requested_generation ||
@@ -1536,8 +1542,9 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
 
     wd_stream_wait_for_encoder_idle_locked(server);
 
-    uint32_t* old_framebuffer        = server->framebuffer_xrgb8888;
-    uint32_t* old_framebuffer_shadow = server->framebuffer_shadow_xrgb8888;
+    uint32_t* old_framebuffer          = server->framebuffer_xrgb8888;
+    uint32_t* old_framebuffer_readback = server->framebuffer_readback_xrgb8888;
+    uint32_t* old_framebuffer_shadow   = server->framebuffer_shadow_xrgb8888;
     wd_server_free_resize_stream_state(server);
 
     /*
@@ -1547,6 +1554,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
      */
     wd_server_apply_geometry_snapshot(server, &next_geometry);
     server->framebuffer_xrgb8888                = next_allocs.framebuffer_xrgb8888;
+    server->framebuffer_readback_xrgb8888       = next_allocs.framebuffer_readback_xrgb8888;
     server->framebuffer_shadow_xrgb8888         = next_allocs.framebuffer_shadow_xrgb8888;
     server->framebuffer_shadow_valid            = false;
     server->net.tiles                           = next_allocs.tiles;
@@ -1567,6 +1575,7 @@ bool wd_server_apply_display_size(struct wd_server* server, uint32_t width, uint
     memset(&next_allocs, 0, sizeof(next_allocs));
 
     free(old_framebuffer);
+    free(old_framebuffer_readback);
     free(old_framebuffer_shadow);
 
     server->framebuffer_generation++;
@@ -1695,18 +1704,21 @@ static bool wd_server_init(struct wd_server* server, const struct wd_server_conf
         server->output_scale = WD_SERVER_DEFAULT_OUTPUT_SCALE;
     }
 
-    server->framebuffer_xrgb8888        = calloc(server->framebuffer_pixels, sizeof(uint32_t));
-    server->framebuffer_shadow_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(uint32_t));
-    if (server->framebuffer_xrgb8888 && server->framebuffer_shadow_xrgb8888)
+    server->framebuffer_xrgb8888          = calloc(server->framebuffer_pixels, sizeof(uint32_t));
+    server->framebuffer_readback_xrgb8888 = calloc(server->framebuffer_pixels, sizeof(uint32_t));
+    server->framebuffer_shadow_xrgb8888   = calloc(server->framebuffer_pixels, sizeof(uint32_t));
+    if (server->framebuffer_xrgb8888 && server->framebuffer_readback_xrgb8888 && server->framebuffer_shadow_xrgb8888)
     {
         server->framebuffer_generation    = 1;
         server->framebuffer_shadow_valid  = false;
     }
 
-    if (!server->framebuffer_xrgb8888 || !server->framebuffer_shadow_xrgb8888)
+    if (!server->framebuffer_xrgb8888 || !server->framebuffer_readback_xrgb8888 || !server->framebuffer_shadow_xrgb8888)
     {
         free(server->framebuffer_xrgb8888);
         server->framebuffer_xrgb8888 = NULL;
+        free(server->framebuffer_readback_xrgb8888);
+        server->framebuffer_readback_xrgb8888 = NULL;
         free(server->framebuffer_shadow_xrgb8888);
         server->framebuffer_shadow_xrgb8888 = NULL;
         return false;
@@ -1813,6 +1825,11 @@ static void wd_server_destroy(struct wd_server* server) {
         server->frame_timer = NULL;
     }
 
+    /* The frame worker can signal input_wakeup_fd after every iteration. Join
+     * all stream workers before removing or closing that descriptor so a late
+     * wake cannot race close/reuse during compositor teardown. */
+    wd_stream_destroy(server);
+
     if (server->input_wakeup_source)
     {
         wl_event_source_remove(server->input_wakeup_source);
@@ -1848,7 +1865,6 @@ static void wd_server_destroy(struct wd_server* server) {
     wd_xdg_toplevel_icon_destroy(server);
     wd_xdg_decoration_destroy(server);
     wd_net_destroy(server);
-    wd_stream_destroy(server);
 
     if (server->new_xdg_surface.link.prev && server->new_xdg_surface.link.next)
     {
@@ -1886,21 +1902,35 @@ static void wd_server_destroy(struct wd_server* server) {
         wl_list_init(&server->output_destroy.link);
     }
 
-    if (server->display)
+    /* The scene root is owned by WayDisplay rather than wl_display. Destroy it
+     * while the display and output layout are still alive so attached scene
+     * helpers can detach their listeners normally. */
+    if (server->scene)
     {
-        wl_display_destroy(server->display);
-        server->display = NULL;
+        wlr_scene_node_destroy(&server->scene->tree.node);
+        server->scene        = NULL;
+        server->scene_views  = NULL;
+        server->scene_output = NULL;
+        server->scene_layout = NULL;
     }
 
-    if (server->output_layout)
+    if (server->display)
     {
-        wlr_output_layout_destroy(server->output_layout);
+        /* wlr_output_layout_create(display) registers a display-destroy
+         * listener. wl_display_destroy() therefore owns the final layout
+         * destruction; never touch output_layout/scene_layout afterwards. */
+        wl_display_destroy(server->display);
+        server->display       = NULL;
+        server->event_loop    = NULL;
         server->output_layout = NULL;
+        server->scene_layout  = NULL;
     }
 
     wd_frame_reset(&server->captured_video_frame);
     free(server->framebuffer_xrgb8888);
     server->framebuffer_xrgb8888 = NULL;
+    free(server->framebuffer_readback_xrgb8888);
+    server->framebuffer_readback_xrgb8888 = NULL;
     free(server->framebuffer_shadow_xrgb8888);
     server->framebuffer_shadow_xrgb8888 = NULL;
     server->framebuffer_shadow_valid    = false;
@@ -1912,20 +1942,28 @@ static void server_request_network_stop(struct wd_server* server) {
         return;
     }
 
+    if (!server->net.initialized)
+    {
+        return;
+    }
+
     pthread_mutex_lock(&server->net.lock);
     wd_net_run_state_set(&server->net.run_state, false);
     pthread_cond_broadcast(&server->net.display_resize_cond);
     pthread_cond_broadcast(&server->net.startup_cond);
-    pthread_mutex_unlock(&server->net.lock);
 
+    /* The network thread publishes and retires these descriptors under the
+     * same lock. shutdown() is non-blocking here and keeps the descriptor
+     * number stable until the call returns, avoiding close/reuse hazards. */
     if (server->net.listen_fd >= 0)
     {
-        shutdown(server->net.listen_fd, SHUT_RDWR);
+        (void)shutdown(server->net.listen_fd, SHUT_RDWR);
     }
     if (server->net.tcp_fd >= 0)
     {
-        shutdown(server->net.tcp_fd, SHUT_RDWR);
+        (void)shutdown(server->net.tcp_fd, SHUT_RDWR);
     }
+    pthread_mutex_unlock(&server->net.lock);
 }
 
 struct wd_server* wd_server_create(const struct wd_server_config* config) {

@@ -1,12 +1,14 @@
 #include "wd_async_udp.h"
 
 #include "waydisplay/wd_config.h"
+#include "waydisplay/wd_io_uring_policy.h"
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_io_uring.h"
 #include "waydisplay/wd_protocol.h"
 #include "wd_async_udp_accounting.h"
 
 #include <liburing.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +33,7 @@ struct wd_async_udp_packet {
     struct sockaddr_in          addr;
     struct iovec                iov[2];
     struct msghdr               msg;
+    int                         fd;
     size_t                      packet_size;
     struct wd_buffer*           payload_owner;
     uint8_t                     header[WD_UDP_TILE_HEADER_MAX_SIZE];
@@ -43,6 +46,7 @@ struct wd_async_udp_packet {
 struct wd_async_udp_sender {
     struct io_uring ring;
     bool            ring_ready;
+    bool            syscall_fallback;
 
     struct wd_async_udp_packet* pending_head;
     struct wd_async_udp_packet* pending_tail;
@@ -56,12 +60,21 @@ struct wd_async_udp_sender {
 
     struct wd_async_udp_accounting accounting;
     uint64_t                       inflight_max;
+    uint64_t                       inflight_interval_max;
     uint64_t                       local_failures;
     uint64_t                       sqe_exhaustions;
     uint64_t                       submit_calls;
     uint64_t                       partial_submits;
     uint64_t                       saturation_count;
+    uint64_t                       syscall_completed;
+    uint64_t                       syscall_failed;
 };
+
+static bool wd_async_udp_progress_syscall_fallback(struct wd_async_udp_sender* sender);
+
+static bool wd_async_udp_sender_available(const struct wd_async_udp_sender* sender) {
+    return sender && (sender->ring_ready || sender->syscall_fallback);
+}
 
 static void wd_async_udp_pending_add(struct wd_async_udp_sender* sender, struct wd_async_udp_packet* packet) {
     packet->next = NULL;
@@ -206,7 +219,18 @@ bool wd_async_udp_sender_create(struct wd_async_udp_sender** out_sender, uint32_
 }
 
 void wd_async_udp_sender_reap(struct wd_async_udp_sender* sender) {
-    if (!sender || !sender->ring_ready)
+    if (!sender)
+    {
+        return;
+    }
+
+    if (sender->syscall_fallback)
+    {
+        (void)wd_async_udp_progress_syscall_fallback(sender);
+        return;
+    }
+
+    if (!sender->ring_ready)
     {
         return;
     }
@@ -216,6 +240,10 @@ void wd_async_udp_sender_reap(struct wd_async_udp_sender* sender) {
     if (sender->accounting.prepared != 0)
     {
         (void)wd_async_udp_sender_flush(sender);
+        if (!sender->ring_ready || sender->syscall_fallback)
+        {
+            return;
+        }
     }
 
     struct io_uring_cqe* cqe = NULL;
@@ -255,11 +283,101 @@ static uint32_t wd_async_udp_mark_submitted(struct wd_async_udp_sender* sender, 
     {
         sender->inflight_max = sender->accounting.submitted;
     }
+    if (sender && sender->accounting.submitted > sender->inflight_interval_max)
+    {
+        sender->inflight_interval_max = sender->accounting.submitted;
+    }
     return marked;
 }
 
+static void wd_async_udp_fail_submitted_after_ring_exit(struct wd_async_udp_sender* sender) {
+    if (!sender || sender->ring_ready)
+    {
+        return;
+    }
+
+    struct wd_async_udp_packet* packet = sender->pending_head;
+    while (packet)
+    {
+        struct wd_async_udp_packet* next = packet->next;
+        if (packet->submitted)
+        {
+            (void)wd_async_udp_accounting_complete(&sender->accounting, false);
+            packet->submitted = false;
+            if (packet->completion)
+            {
+                packet->completion(packet->completion_data, false);
+            }
+            wd_async_udp_pending_remove(sender, packet);
+            wd_async_udp_packet_release(sender, packet);
+        }
+        else
+        {
+            packet->prepared = false;
+        }
+        packet = next;
+    }
+    (void)wd_async_udp_accounting_cancel_prepared(&sender->accounting);
+}
+
+static void wd_async_udp_retire_ring_to_syscall_fallback(struct wd_async_udp_sender* sender) {
+    if (!sender || sender->syscall_fallback)
+    {
+        return;
+    }
+    if (sender->ring_ready)
+    {
+        io_uring_queue_exit(&sender->ring);
+        sender->ring_ready = false;
+    }
+    wd_async_udp_fail_submitted_after_ring_exit(sender);
+    sender->syscall_fallback = true;
+}
+
+static bool wd_async_udp_progress_syscall_fallback(struct wd_async_udp_sender* sender) {
+    if (!sender || !sender->syscall_fallback)
+    {
+        return true;
+    }
+
+    for (uint32_t i = 0; sender->pending_head && i < 16; ++i)
+    {
+        struct wd_async_udp_packet* packet = sender->pending_head;
+        const ssize_t sent = sendmsg(packet->fd, &packet->msg, MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (sent < 0 && (errno == EINTR || errno == EAGAIN))
+        {
+            return true;
+        }
+
+        const bool success = sent >= 0 && (size_t)sent == packet->packet_size;
+        if (success)
+        {
+            sender->syscall_completed++;
+        }
+        else
+        {
+            sender->syscall_failed++;
+        }
+        if (packet->completion)
+        {
+            packet->completion(packet->completion_data, success);
+        }
+        wd_async_udp_pending_remove(sender, packet);
+        wd_async_udp_packet_release(sender, packet);
+    }
+    return true;
+}
+
 bool wd_async_udp_sender_flush(struct wd_async_udp_sender* sender) {
-    if (!sender || !sender->ring_ready || sender->accounting.prepared == 0)
+    if (!sender)
+    {
+        return false;
+    }
+    if (sender->syscall_fallback)
+    {
+        return wd_async_udp_progress_syscall_fallback(sender);
+    }
+    if (!sender->ring_ready || sender->accounting.prepared == 0)
     {
         return true;
     }
@@ -267,10 +385,17 @@ bool wd_async_udp_sender_flush(struct wd_async_udp_sender* sender) {
     const uint32_t prepared_before = sender->accounting.prepared;
     sender->submit_calls++;
     const int      rc        = io_uring_submit(&sender->ring);
+    const enum wd_io_uring_submit_progress submit_progress = wd_io_uring_submit_result(rc);
     const uint32_t submitted = wd_async_udp_accounting_submit_result(&sender->accounting, rc);
-    if (submitted < prepared_before)
+    if (submit_progress == WD_IO_URING_SUBMIT_ACCEPTED && submitted < prepared_before)
     {
         sender->partial_submits++;
+    }
+    if (submit_progress == WD_IO_URING_SUBMIT_FAILED)
+    {
+        WD_LOG_WARN("server io_uring UDP submit failed: result=%d; switching to nonblocking syscall fallback", rc);
+        wd_async_udp_retire_ring_to_syscall_fallback(sender);
+        return wd_async_udp_progress_syscall_fallback(sender);
     }
     if (submitted != 0)
     {
@@ -291,7 +416,7 @@ static enum wd_async_udp_send_status wd_async_udp_send_packet_internal(
     struct wd_async_udp_sender* sender, int fd, const struct sockaddr_in* addr,
     const void* header, uint32_t header_size, const void* payload, uint32_t payload_size,
     struct wd_buffer* payload_owner, wd_async_udp_completion_fn completion, void* completion_data) {
-    if (!sender || !sender->ring_ready || fd < 0)
+    if (!wd_async_udp_sender_available(sender) || fd < 0)
     {
         return WD_ASYNC_UDP_SEND_FAILED;
     }
@@ -338,20 +463,7 @@ static enum wd_async_udp_send_status wd_async_udp_send_packet_internal(
         }
     }
 
-    struct io_uring_sqe* sqe = io_uring_get_sqe(&sender->ring);
-    if (!sqe)
-    {
-        (void)wd_async_udp_sender_flush(sender);
-        wd_async_udp_sender_reap(sender);
-        sqe = io_uring_get_sqe(&sender->ring);
-        if (!sqe)
-        {
-            sender->sqe_exhaustions++;
-            wd_async_udp_packet_release(sender, packet);
-            return WD_ASYNC_UDP_SEND_FAILED;
-        }
-    }
-
+    packet->fd              = fd;
     packet->addr            = *addr;
     packet->completion      = completion;
     packet->completion_data = completion_data;
@@ -368,14 +480,46 @@ static enum wd_async_udp_send_status wd_async_udp_send_packet_internal(
     packet->msg.msg_iov     = packet->iov;
     packet->msg.msg_iovlen  = payload_size != 0 ? 2u : 1u;
 
-    io_uring_prep_sendmsg(sqe, fd, &packet->msg, 0);
-    io_uring_sqe_set_data(sqe, packet);
+    struct io_uring_sqe* sqe = sender->ring_ready ? io_uring_get_sqe(&sender->ring) : NULL;
+    if (sender->ring_ready && !sqe)
+    {
+        (void)wd_async_udp_sender_flush(sender);
+        wd_async_udp_sender_reap(sender);
+        if (sender->ring_ready)
+        {
+            sqe = io_uring_get_sqe(&sender->ring);
+            if (!sqe)
+            {
+                sender->sqe_exhaustions++;
+                wd_async_udp_packet_release(sender, packet);
+                return WD_ASYNC_UDP_SEND_FAILED;
+            }
+        }
+    }
 
     wd_async_udp_pending_add(sender, packet);
     sender->pending_packets++;
     sender->pending_bytes += packet_size;
-    packet->prepared = true;
-    wd_async_udp_accounting_queue(&sender->accounting);
+
+    if (sender->ring_ready)
+    {
+        io_uring_prep_sendmsg(sqe, fd, &packet->msg, 0);
+        io_uring_sqe_set_data(sqe, packet);
+        packet->prepared = true;
+        wd_async_udp_accounting_queue(&sender->accounting);
+    }
+    else if (sender->syscall_fallback)
+    {
+        sender->accounting.queued_total++;
+        (void)wd_async_udp_progress_syscall_fallback(sender);
+    }
+    else
+    {
+        wd_async_udp_pending_remove(sender, packet);
+        wd_async_udp_packet_release(sender, packet);
+        sender->local_failures++;
+        return WD_ASYNC_UDP_SEND_FAILED;
+    }
 
     return WD_ASYNC_UDP_SEND_QUEUED;
 }
@@ -416,11 +560,13 @@ uint64_t wd_async_udp_sender_queued(const struct wd_async_udp_sender* sender) {
 }
 
 uint64_t wd_async_udp_sender_completed(const struct wd_async_udp_sender* sender) {
-    return sender ? sender->accounting.completed_total : 0;
+    return sender ? sender->accounting.completed_total + sender->syscall_completed : 0;
 }
 
 uint64_t wd_async_udp_sender_failed(const struct wd_async_udp_sender* sender) {
-    return sender ? sender->accounting.failed_total + sender->accounting.submit_failures + sender->local_failures : 0;
+    return sender ? sender->accounting.failed_total + sender->accounting.submit_failures + sender->local_failures +
+                        sender->syscall_failed
+                  : 0;
 }
 
 uint64_t wd_async_udp_sender_sqe_exhaustions(const struct wd_async_udp_sender* sender) {
@@ -429,6 +575,16 @@ uint64_t wd_async_udp_sender_sqe_exhaustions(const struct wd_async_udp_sender* s
 
 uint64_t wd_async_udp_sender_inflight_max(const struct wd_async_udp_sender* sender) {
     return sender ? sender->inflight_max : 0;
+}
+
+uint64_t wd_async_udp_sender_take_inflight_max(struct wd_async_udp_sender* sender) {
+    if (!sender)
+    {
+        return 0;
+    }
+    const uint64_t value = sender->inflight_interval_max;
+    sender->inflight_interval_max = sender->accounting.submitted;
+    return value;
 }
 
 uint64_t wd_async_udp_sender_pending_packets(const struct wd_async_udp_sender* sender) {
@@ -472,7 +628,25 @@ static bool wd_async_udp_sender_has_submitted(const struct wd_async_udp_sender* 
 }
 
 bool wd_async_udp_sender_drain(struct wd_async_udp_sender* sender) {
-    if (!sender || !sender->ring_ready)
+    if (!sender)
+    {
+        return true;
+    }
+
+    if (sender->syscall_fallback)
+    {
+        const uint32_t drain_limit = WD_ASYNC_UDP_DRAIN_LIMIT;
+        for (uint32_t i = 0; sender->pending_head && i < drain_limit; ++i)
+        {
+            (void)wd_async_udp_progress_syscall_fallback(sender);
+            if (sender->pending_head)
+            {
+                usleep(WD_ASYNC_UDP_DRAIN_SLEEP_US);
+            }
+        }
+        return sender->pending_head == NULL;
+    }
+    if (!sender->ring_ready)
     {
         return true;
     }

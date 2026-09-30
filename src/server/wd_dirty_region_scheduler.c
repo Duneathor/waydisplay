@@ -250,7 +250,8 @@ bool wd_dirty_region_scheduler_enqueue(struct wd_dirty_region_scheduler* schedul
     {
         return true;
     }
-    if (scheduler->enqueued_ns[region_id] == 0)
+    const bool had_age = scheduler->enqueued_ns[region_id] != 0;
+    if (!had_age)
     {
         scheduler->enqueued_ns[region_id] = now_ns != 0 ? now_ns : 1u;
     }
@@ -267,6 +268,10 @@ bool wd_dirty_region_scheduler_enqueue(struct wd_dirty_region_scheduler* schedul
         scheduler->count--;
         scheduler->queued[region_id] = false;
         bit_clear(scheduler, region_id);
+        if (!had_age)
+        {
+            scheduler->enqueued_ns[region_id] = 0;
+        }
         return false;
     }
     return true;

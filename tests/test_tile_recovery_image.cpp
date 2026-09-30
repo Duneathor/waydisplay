@@ -3,6 +3,7 @@
 #include "tile_recovery_image.hpp"
 #include "tile_upload_epoch.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -38,14 +39,26 @@ int main() {
     const auto epoch1 = wd_client_stream_ownership_snapshot(&ownership);
 
     ClientTilePresentQueue queue(8, 4096);
-    CHECK(queue.push(make_upload(0, 0, 4, 3, 0x11111111u, 1, epoch1)));
-    CHECK(queue.push(make_upload(4, 0, 4, 3, 0x22222222u, 1, epoch1)));
+    CHECK(queue.push(make_upload(0, 0, 4, 3, 0x11111111u, 1, epoch1)) == ClientTilePresentPushResult::Queued);
+    CHECK(queue.push(make_upload(4, 0, 4, 3, 0x22222222u, 1, epoch1)) == ClientTilePresentPushResult::Queued);
     std::vector<ClientTileUpload> uploads;
     queue.drain(uploads);
 
     std::vector<uint32_t> recovery(width * height, 0);
     for (const auto& upload : uploads) CHECK(apply_current(recovery, width, height, upload, epoch1));
     CHECK(recovery[0] == 0x11111111u && recovery[7] == 0x22222222u);
+
+    /* large gen1 -> overlapping small gen2 -> large gen3 must leave gen3
+     * visible everywhere after queue coalescing. */
+    ClientTilePresentQueue overlap_queue(8, 64u * 1024u);
+    CHECK(overlap_queue.push(make_upload(0, 0, 8, 6, 0x11111111u, 1, epoch1)) == ClientTilePresentPushResult::Queued);
+    CHECK(overlap_queue.push(make_upload(0, 0, 4, 3, 0x22222222u, 2, epoch1)) == ClientTilePresentPushResult::Queued);
+    CHECK(overlap_queue.push(make_upload(0, 0, 8, 6, 0x33333333u, 3, epoch1)) == ClientTilePresentPushResult::Queued);
+    overlap_queue.drain(uploads);
+    CHECK(uploads.size() == 2);
+    std::vector<uint32_t> overlap_recovery(width * height, 0u);
+    for (const auto& upload : uploads) CHECK(apply_current(overlap_recovery, width, height, upload, epoch1));
+    for (uint32_t pixel : overlap_recovery) CHECK(pixel == 0x33333333u);
 
     /* A full texture upload and a forced texture recreation both source the
      * recovery image and therefore must reproduce the directly uploaded state. */

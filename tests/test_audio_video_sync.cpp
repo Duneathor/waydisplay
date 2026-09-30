@@ -72,17 +72,17 @@ int main() {
     require(max_audio_queue == 5760, "default audio queue bound should be 120 ms");
     require(client_audio_max_queued_samples(48000, 100) == 19200,
             "explicitly larger latency targets need correspondingly larger bounds");
-    require(!client_audio_output_rebase_needed(false, 100000, 960, max_audio_queue),
-            "startup buffering must not be discarded before playback starts");
-    require(!client_audio_output_rebase_needed(true, 4800, 960, max_audio_queue),
+    require(client_audio_output_rebase_needed(100000, 960, max_audio_queue),
+            "startup buffering must remain bounded if playback never starts");
+    require(!client_audio_output_rebase_needed(4800, 960, max_audio_queue),
             "a queue exactly at the bound must remain intact");
-    require(client_audio_output_rebase_needed(true, 4801, 960, max_audio_queue),
+    require(client_audio_output_rebase_needed(4801, 960, max_audio_queue),
             "an accumulating playback queue must be rebased");
-    require(client_audio_output_rebase_needed(true, max_audio_queue + 1, 960, max_audio_queue),
+    require(client_audio_output_rebase_needed(max_audio_queue + 1, 960, max_audio_queue),
             "an already excessive queue must be rebased without unsigned underflow");
-    require(!client_audio_output_rebase_needed(true, max_audio_queue, 0, max_audio_queue),
+    require(!client_audio_output_rebase_needed(max_audio_queue, 0, max_audio_queue),
             "an empty output packet must not trigger a rebase");
-    require(!client_audio_output_rebase_needed(true, 100, 20, 0),
+    require(!client_audio_output_rebase_needed(100, 20, 0),
             "zero capacity disables output rebasing");
 
     /* Simulate long-running audio transport with a slightly slower device.
@@ -94,7 +94,7 @@ int main() {
     uint64_t rebases = 0;
     for (int packet = 0; packet < 1400; ++packet)
     {
-        if (client_audio_output_rebase_needed(true, output_queue, 960, max_audio_queue))
+        if (client_audio_output_rebase_needed(output_queue, 960, max_audio_queue))
         {
             output_queue = 0;
             ++rebases;
@@ -111,7 +111,7 @@ int main() {
     output_queue = 960;
     for (int packet = 0; packet < 1400; ++packet)
     {
-        require(!client_audio_output_rebase_needed(true, output_queue, 960, max_audio_queue),
+        require(!client_audio_output_rebase_needed(output_queue, 960, max_audio_queue),
                 "stable audio must not rebase");
         output_queue += 960;
         output_queue -= 960;

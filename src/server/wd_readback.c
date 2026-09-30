@@ -39,8 +39,9 @@ static uint32_t xrgb_from_pixel(uint32_t pixel, uint32_t format) {
     }
 }
 
-static bool readback_buffer_data_ptr_xrgb8888(struct wd_server* server, struct wlr_buffer* buffer, int read_width, int read_height) {
-    if (!server || !buffer || !server->framebuffer_xrgb8888 || read_width <= 0 || read_height <= 0)
+static bool readback_buffer_data_ptr_xrgb8888(struct wd_server* server, struct wlr_buffer* buffer, int read_width, int read_height,
+                                                uint32_t* destination) {
+    if (!server || !buffer || !destination || read_width <= 0 || read_height <= 0)
     {
         return false;
     }
@@ -94,13 +95,13 @@ static bool readback_buffer_data_ptr_xrgb8888(struct wd_server* server, struct w
 
         if (copy_width < (int)server->display_width || copy_height < (int)server->display_height)
         {
-            memset(server->framebuffer_xrgb8888, 0, server->framebuffer_bytes);
+            memset(destination, 0, server->framebuffer_bytes);
         }
 
         for (int y = 0; y < copy_height; ++y)
         {
             const uint32_t* src = (const uint32_t*)((const uint8_t*)data + (size_t)y * stride);
-            uint32_t*       dst = server->framebuffer_xrgb8888 + (size_t)y * server->display_width;
+            uint32_t*       dst = destination + (size_t)y * server->display_width;
 
             for (int x = 0; x < copy_width; ++x)
             {
@@ -141,7 +142,12 @@ static void merge_wlroots_output_damage(struct wd_server* server, struct wlr_out
 }
 
 enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* server) {
-    if (!server || !server->scene_output || !server->output || !server->renderer || !server->framebuffer_xrgb8888)
+    if (server)
+    {
+        server->framebuffer_refreshed_by_render = false;
+    }
+    if (!server || !server->scene_output || !server->output || !server->renderer || !server->framebuffer_xrgb8888 ||
+        !server->framebuffer_readback_xrgb8888)
     {
         return WD_RENDER_RESULT_ERROR;
     }
@@ -151,6 +157,7 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
 
     enum wd_render_result result                  = WD_RENDER_RESULT_ERROR;
     bool                  built_state             = false;
+    bool                  cpu_capture_ready       = false;
 
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_STATS
     const bool capture_profile = wd_log_would_log(WD_LOG_LEVEL_STATS);
@@ -262,9 +269,11 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
         goto commit_only;
     }
 
+    uint32_t* const readback = server->framebuffer_readback_xrgb8888;
+    memcpy(readback, server->framebuffer_xrgb8888, server->framebuffer_bytes);
     if (full_readback && (full_read_width < (int)server->display_width || full_read_height < (int)server->display_height))
     {
-        memset(server->framebuffer_xrgb8888, 0, server->framebuffer_bytes);
+        memset(readback, 0, server->framebuffer_bytes);
     }
 
     struct wlr_texture* texture = wlr_texture_from_buffer(server->renderer, state.buffer);
@@ -273,12 +282,13 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
     {
         static uint64_t last_log_ns = 0;
 
-        if (readback_buffer_data_ptr_xrgb8888(server, state.buffer, full_read_width, full_read_height))
+        if (readback_buffer_data_ptr_xrgb8888(server, state.buffer, full_read_width, full_read_height, readback))
         {
 #if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_STATS
             ++server->compositor_capture.buffer_data_fallbacks;
 #endif
-            result                  = WD_RENDER_RESULT_FRAME;
+            cpu_capture_ready = true;
+            result            = WD_RENDER_RESULT_FRAME;
             goto commit_only;
         }
 
@@ -297,7 +307,7 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
     {
         const struct wd_readback_region* region = &read_regions[i];
         struct wlr_texture_read_pixels_options read_options = {
-            .data   = server->framebuffer_xrgb8888,
+            .data   = readback,
             .format = DRM_FORMAT_XRGB8888,
             .stride = server->display_width * WD_BYTES_PER_PIXEL,
             .dst_x  = region->x,
@@ -329,14 +339,29 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
 
     if (!readback_ok)
     {
-        uint32_t preferred = wlr_texture_preferred_read_format(texture);
+        const uint32_t preferred = wlr_texture_preferred_read_format(texture);
+
+        /* The texture may exist even when this renderer cannot read XRGB8888.
+         * Try the buffer data-ptr path as a complete fallback before failing
+         * the capture. It writes only scratch storage, so failed retries cannot
+         * expose a partially updated live framebuffer. */
+        if (readback_buffer_data_ptr_xrgb8888(server, state.buffer, full_read_width, full_read_height, readback))
+        {
+#if WAYDISPLAY_LOG_LEVEL >= WD_LOG_LEVEL_VALUE_STATS
+            ++server->compositor_capture.buffer_data_fallbacks;
+#endif
+            cpu_capture_ready = true;
+            result            = WD_RENDER_RESULT_FRAME;
+            wlr_texture_destroy(texture);
+            goto commit_only;
+        }
 
         static uint64_t last_log_ns = 0;
         uint64_t        now         = wd_now_ns();
 
         if (wd_log_rate_limit_should_log(&last_log_ns, now, WD_LOG_RATE_LIMIT_INTERVAL_NS))
         {
-            WD_LOG_ERROR("wlr_texture_read_pixels(XRGB8888) failed; preferred DRM "
+            WD_LOG_ERROR("wlr_texture_read_pixels(XRGB8888) failed and data-ptr fallback was unavailable; preferred DRM "
                          "format is 0x%08x",
                          preferred);
         }
@@ -346,10 +371,11 @@ enum wd_render_result wd_render_scene_and_readback_xrgb8888(struct wd_server* se
     }
 
     wlr_texture_destroy(texture);
-    result                  = WD_RENDER_RESULT_FRAME;
+    cpu_capture_ready = true;
+    result            = WD_RENDER_RESULT_FRAME;
 
 commit_only:
-    if (built_state)
+    if (built_state && result != WD_RENDER_RESULT_ERROR)
     {
         if (!wlr_output_commit_state(server->output, &state))
         {
@@ -362,6 +388,11 @@ commit_only:
             }
 
             result = WD_RENDER_RESULT_ERROR;
+        }
+        else if (cpu_capture_ready)
+        {
+            memcpy(server->framebuffer_xrgb8888, server->framebuffer_readback_xrgb8888, server->framebuffer_bytes);
+            server->framebuffer_refreshed_by_render = true;
         }
     }
 

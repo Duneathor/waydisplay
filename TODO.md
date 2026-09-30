@@ -29,8 +29,11 @@ See [Architecture](docs/architecture.md) for current behavior and
 - **Presentation-time and scaling:** add presentation-time, fractional-scale
   negotiation, preferred scale, and viewport/buffer-scale validation. Extend
   output scale/transform behavior alongside that work.
-- **linux-dmabuf:** investigate compositor/client import paths while preserving
-  correctness when readback remains necessary. No zero-copy claim until tested.
+- **linux-dmabuf:** extend compositor/client import paths while preserving
+  correctness when readback remains necessary. A hardware-gated GBM/DRM PRIME
+  encoder regression now exercises the server import path, but broader device,
+  modifier, and client-presenter coverage is still required before generalizing
+  zero-copy support.
 - **Other compositor protocols:** idle-inhibit and single-pixel-buffer.
 - **HEVC performance:** keep the repaired VA-API Annex-B stream and audio-sync
   behavior covered by integration tests; profile sustained FPS, encoder queue

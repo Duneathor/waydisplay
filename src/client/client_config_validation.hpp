@@ -18,10 +18,13 @@ enum class ClientConfigValidationError : uint8_t {
     UnsupportedPixelFormat,
     UnsupportedCompression,
     InvalidCapabilities,
+    ServerConfigOutsideOffer,
     InvalidUdpPayloadTarget,
 };
 
 bool        client_normalize_and_validate_server_config(wd_server_config_payload& config, ClientConfigValidationError* out_error = nullptr);
+bool        client_server_config_matches_offer(const wd_server_config_payload& config, const wd_client_hello_payload& hello,
+                                                ClientConfigValidationError* out_error = nullptr);
 const char* client_config_validation_error_name(ClientConfigValidationError error);
 
 enum ClientConfigChangeFlag : uint32_t {

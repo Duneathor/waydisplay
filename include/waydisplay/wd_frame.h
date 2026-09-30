@@ -46,6 +46,11 @@ struct wd_frame {
     } data;
 };
 
+/* A wd_frame must be initialized with wd_frame_init() before any other
+ * operation. Setters and wd_frame_clone() replace the destination contents
+ * and release resources already owned by that initialized destination.
+ * wd_frame_reset() releases owned resources and leaves the frame initialized
+ * and empty so it can be reused or reset again. */
 void wd_frame_init(struct wd_frame* frame);
 void wd_frame_reset(struct wd_frame* frame);
 

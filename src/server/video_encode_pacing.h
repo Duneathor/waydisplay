@@ -8,7 +8,6 @@
  * a long-lived low-FPS mode. The encoder worker supplies samples under
  * net->lock, and the compositor reads the cap under that same lock. */
 #define WD_VIDEO_ENCODE_PACING_WARMUP_SAMPLES 4u
-#define WD_VIDEO_ENCODE_PACING_MIN_FPS 5u
 #define WD_VIDEO_ENCODE_PACING_HEADROOM_PERCENT 85u
 
 static inline uint64_t wd_video_encode_pacing_ewma(uint64_t previous_ns, uint64_t sample_ns) {
@@ -34,5 +33,5 @@ static inline uint16_t wd_video_encode_pacing_cap(uint16_t requested_fps, uint64
     {
         return requested_fps;
     }
-    return safe_fps < WD_VIDEO_ENCODE_PACING_MIN_FPS ? WD_VIDEO_ENCODE_PACING_MIN_FPS : (uint16_t)safe_fps;
+    return safe_fps == 0 ? 1u : (uint16_t)safe_fps;
 }

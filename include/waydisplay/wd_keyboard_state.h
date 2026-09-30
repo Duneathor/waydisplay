@@ -12,7 +12,8 @@ enum wd_key_transition {
     WD_KEY_TRANSITION_ACCEPT,
     WD_KEY_TRANSITION_DUPLICATE_PRESS,
     WD_KEY_TRANSITION_UNMATCHED_RELEASE,
-    WD_KEY_TRANSITION_CAPACITY,
+    WD_KEY_TRANSITION_CAPACITY_FULL,
+    WD_KEY_TRANSITION_INVALID_STATE,
 };
 
 /* Classify before changing XKB state or notifying a Wayland seat. The client
@@ -20,7 +21,7 @@ enum wd_key_transition {
 static inline enum wd_key_transition wd_key_transition_classify(const uint32_t* pressed_keys, size_t count,
                                                                   size_t capacity, uint32_t keycode, bool pressed) {
     if (count > capacity || (count != 0 && !pressed_keys)) {
-        return WD_KEY_TRANSITION_CAPACITY;
+        return WD_KEY_TRANSITION_INVALID_STATE;
     }
     for (size_t i = 0; i < count; ++i) {
         if (pressed_keys[i] == keycode) {
@@ -30,7 +31,7 @@ static inline enum wd_key_transition wd_key_transition_classify(const uint32_t* 
     if (!pressed) {
         return WD_KEY_TRANSITION_UNMATCHED_RELEASE;
     }
-    return count == capacity ? WD_KEY_TRANSITION_CAPACITY : WD_KEY_TRANSITION_ACCEPT;
+    return count == capacity ? WD_KEY_TRANSITION_CAPACITY_FULL : WD_KEY_TRANSITION_ACCEPT;
 }
 
 #ifdef __cplusplus

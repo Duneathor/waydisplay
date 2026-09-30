@@ -24,6 +24,12 @@ bool wd_io_uring_require_operations(struct io_uring* ring, uint32_t required_ope
     {
         return false;
     }
+    if ((required_operations & ~WD_IO_URING_OPERATION_ALL) != 0)
+    {
+        WD_LOG_ERROR("%s: unknown io_uring operation mask bits: 0x%x", owner ? owner : "io_uring",
+                     (unsigned)(required_operations & ~WD_IO_URING_OPERATION_ALL));
+        return false;
+    }
 
     struct io_uring_probe* probe = io_uring_get_probe_ring(ring);
     if (!probe)

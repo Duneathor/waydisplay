@@ -32,5 +32,6 @@ bool client_async_udp_receiver_drain(ClientAsyncUdpReceiver* receiver, void* use
                                      uint32_t max_packets);
 
 ClientAsyncUdpReceiverStats client_async_udp_receiver_stats(ClientAsyncUdpReceiver* receiver);
+uint64_t                    client_async_udp_receiver_take_inflight_max(ClientAsyncUdpReceiver* receiver);
 
 } // namespace waydisplay

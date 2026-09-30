@@ -18,6 +18,7 @@ struct wd_audio_pcm_ring {
 };
 
 bool wd_audio_pcm_ring_init(struct wd_audio_pcm_ring* ring, uint32_t capacity_frames, uint8_t channels);
+/* finish() and reset() require the producer and consumer to be quiescent. */
 void wd_audio_pcm_ring_finish(struct wd_audio_pcm_ring* ring);
 void wd_audio_pcm_ring_reset(struct wd_audio_pcm_ring* ring);
 /* Single-consumer operation that discards all currently queued frames without
@@ -27,6 +28,12 @@ void wd_audio_pcm_ring_drop_all(struct wd_audio_pcm_ring* ring);
 /* Single producer. Returns false and drops the whole block when bounded capacity
  * would be exceeded. This operation performs no allocation and takes no locks. */
 bool wd_audio_pcm_ring_write(struct wd_audio_pcm_ring* ring, const float* samples, uint32_t frames, uint64_t first_pts_sample);
+
+/* Single-producer capture variant. source_channels may differ from the ring
+ * channel count: stereo capture is downmixed when the negotiated stream is
+ * mono, and silent=true writes neutral PCM without reading samples. */
+bool wd_audio_pcm_ring_write_capture(struct wd_audio_pcm_ring* ring, const float* samples, uint32_t frames, uint8_t source_channels,
+                                     bool silent, uint64_t first_pts_sample);
 
 /* Single-producer planar variant used by PipeWire DSP ports. */
 bool wd_audio_pcm_ring_write_planar(struct wd_audio_pcm_ring* ring, const float* const* planes, uint32_t frames, uint64_t first_pts_sample);

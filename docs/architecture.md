@@ -7,7 +7,7 @@ WayDisplay has two processes:
 - `waydisplay-server` runs a headless wlroots compositor, captures damage, chooses tile or video transport, captures audio, and accepts client input.
 - `waydisplay-client` receives media and state, performs decode and reassembly, presents through SDL, and sends local input and clipboard updates.
 
-The protocol is version `0`. There are no compatibility guarantees while the software remains undeployed. For media failures, use [HEVC diagnostics](video-hevc-troubleshooting.md) and the interval health/cadence counters; there is no per-frame packet trace.
+The protocol is version `2`. There are no compatibility guarantees while the software remains undeployed. For media failures, use [HEVC diagnostics](video-hevc-troubleshooting.md) and the interval health/cadence counters; there is no per-frame packet trace.
 
 ## Design priorities
 
@@ -31,7 +31,7 @@ Late work is often less useful than dropped work. Queues are bounded, obsolete g
 - tile and selection formats
 - compression helpers
 
-Wire structures are encoded explicitly. The implementation requires little-endian Linux hosts but does not transmit compiler padding or native ABI layouts. liburing is mandatory, and the compositor targets the wlroots 0.20 ABI explicitly. The transport probes `send`, `sendmsg`, `recv`, and `async_cancel` at ring creation and intentionally avoids operations introduced after Linux 5.14.
+Protocol v2 sends one-byte-packed, fixed-width C wire structures directly. The implementation therefore requires little-endian Linux hosts and GCC-compatible packing; compile-time size assertions define the current wire ABI, and there is no cross-version or cross-ABI compatibility promise. liburing is mandatory, and the compositor targets the wlroots 0.20 ABI explicitly. The transport probes `send`, `sendmsg`, `recv`, and `async_cancel` at ring creation and intentionally avoids operations introduced after Linux 5.14.
 
 ## Server
 
@@ -189,7 +189,7 @@ Mode-transition diagnostics include bootstrap/recovery epochs, recovery class, w
 
 ## Stream lifecycle scenario contract
 
-The test suite exercises complete ownership scenarios rather than only isolated transition predicates. Every connection begins tile-owned and must present the exact bootstrap content epoch before video can own the display, including forced-video sessions. Planned resize recovery resumes previously selected forced or automatic video immediately after the exact recovery epoch is presented; decoder, channel, or presentation failures use a retry circuit breaker. Reconnects rotate the connection identity and cannot consume presentation evidence from the previous session.
+Dependency-light component scenarios compose the ownership policy across bootstrap, resize, recovery, and reconnect boundaries; they are not substitutes for a complete live client/server session. Separate runtime-seam tests exercise bounded control-handshake reads, production async-TCP teardown, SDL direct-tile upload/readback, and audio publication/playback where optional dependencies are available. The enforced policy remains: every connection begins tile-owned and must present the exact bootstrap content epoch before video can own the display, planned resize recovery resumes only after the exact recovery epoch is presented, recovery failures use the retry circuit breaker, and reconnects cannot consume presentation evidence from the previous session.
 
 ### Connection bandwidth plans
 

@@ -92,6 +92,11 @@ void test_video_capability_matrix() {
     expect_error(config, ClientConfigValidationError::InvalidCapabilities, "video capability requires TCP transport");
     config                 = base_config();
     config.capabilities    = WD_SERVER_CAP_VIDEO_STREAM;
+    config.video_codecs    = WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265;
+    config.video_transport = WD_VIDEO_TRANSPORT_TCP;
+    expect_error(config, ClientConfigValidationError::InvalidCapabilities, "server must select exactly one video codec");
+    config                 = base_config();
+    config.capabilities    = WD_SERVER_CAP_VIDEO_STREAM;
     config.video_codecs    = WD_VIDEO_CODEC_MASK + 1u;
     config.video_transport = WD_VIDEO_TRANSPORT_TCP;
     expect_error(config, ClientConfigValidationError::InvalidCapabilities, "unknown video codec bits should fail");
@@ -176,8 +181,40 @@ void test_audio_capability_matrix() {
     expect_error(config, ClientConfigValidationError::InvalidCapabilities, "audio fields without capability should fail");
 }
 
+void test_server_config_must_fit_client_offer() {
+    wd_client_hello_payload hello{};
+    hello.capabilities            = WD_CLIENT_CAP_VIDEO_STREAM | WD_CLIENT_CAP_VIDEO_FEEDBACK | WD_CLIENT_CAP_AUDIO_STREAM;
+    hello.video_codecs            = WD_VIDEO_CODEC_H264 | WD_VIDEO_CODEC_H265;
+    hello.video_transport         = WD_VIDEO_TRANSPORT_TCP;
+    hello.audio_codecs            = WD_AUDIO_CODEC_OPUS;
+    hello.audio_transport         = WD_AUDIO_TRANSPORT_TCP;
+    hello.audio_max_channels      = 2;
+    hello.audio_target_latency_ms = WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
+
+    wd_server_config_payload video = base_config();
+    video.capabilities             = WD_SERVER_CAP_VIDEO_STREAM | WD_SERVER_CAP_VIDEO_FEEDBACK;
+    video.video_codecs             = WD_VIDEO_CODEC_H265;
+    video.video_transport          = WD_VIDEO_TRANSPORT_TCP;
+    require(client_normalize_and_validate_server_config(video, nullptr), "video offer fixture should be structurally valid");
+    require(client_server_config_matches_offer(video, hello, nullptr), "selected offered video codec should be accepted");
+
+    wd_client_hello_payload video_off = hello;
+    video_off.capabilities &= ~(WD_CLIENT_CAP_VIDEO_STREAM | WD_CLIENT_CAP_VIDEO_FEEDBACK);
+    video_off.video_codecs    = 0;
+    video_off.video_transport = 0;
+    ClientConfigValidationError error = ClientConfigValidationError::None;
+    require(!client_server_config_matches_offer(video, video_off, &error) &&
+                error == ClientConfigValidationError::ServerConfigOutsideOffer,
+            "server must not enable video that the client did not offer");
+
+    wd_server_config_payload audio = audio_config();
+    require(client_server_config_matches_offer(audio, hello, nullptr), "offered audio selection should be accepted");
+    audio.audio_channels = 3;
+    require(!client_server_config_matches_offer(audio, hello, &error), "server must not exceed offered audio channel count");
+}
+
 void test_error_names_are_total() {
-    const std::array<ClientConfigValidationError, 12> errors{
+    const std::array<ClientConfigValidationError, 13> errors{
         ClientConfigValidationError::None,
         ClientConfigValidationError::MissingSession,
         ClientConfigValidationError::MissingConnectionIdentity,
@@ -189,6 +226,7 @@ void test_error_names_are_total() {
         ClientConfigValidationError::UnsupportedPixelFormat,
         ClientConfigValidationError::UnsupportedCompression,
         ClientConfigValidationError::InvalidCapabilities,
+        ClientConfigValidationError::ServerConfigOutsideOffer,
         ClientConfigValidationError::InvalidUdpPayloadTarget,
     };
     for (ClientConfigValidationError error : errors)
@@ -233,6 +271,10 @@ void test_config_change_flag_matrix() {
     require(client_classify_server_config_change(current, next) == ClientConfigChangeAudio,
             "audio negotiation change should classify independently");
     next = current;
+    next.capabilities &= ~WD_SERVER_CAP_AUDIO_STREAM;
+    require(client_classify_server_config_change(current, next) == ClientConfigChangeAudio,
+            "audio capability changes must not be misclassified as video changes");
+    next = current;
     next.link_rtt_ms++;
     require(client_classify_server_config_change(current, next) == ClientConfigChangeTimers,
             "link timer change should classify independently");
@@ -254,6 +296,7 @@ int main() {
     test_identity_format_and_compression_matrix();
     test_video_capability_matrix();
     test_audio_capability_matrix();
+    test_server_config_must_fit_client_offer();
     test_error_names_are_total();
     test_config_change_flag_matrix();
     return 0;

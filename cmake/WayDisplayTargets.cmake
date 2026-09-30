@@ -227,6 +227,7 @@ if(WAYDISPLAY_BUILD_CLIENT_SDL)
         src/client/client_async_udp.cpp
         src/client/audio_playback.cpp
         src/client/sdl_input.cpp
+        src/client/sdl_direct_tile_upload.cpp
         src/client/sdl_viewer.cpp
     )
     set_target_properties(waydisplay_client_sdl PROPERTIES

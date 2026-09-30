@@ -37,7 +37,7 @@ These protect availability, latency, and memory safety in addition to security.
 
 ## Platform assumptions
 
-Only little-endian Linux peers are supported. Big-endian systems are rejected at compile time. Protocol version `0` has no backward-compatibility commitment.
+Only little-endian Linux peers are supported. Big-endian systems are rejected at compile time. Protocol version `2` has no backward-compatibility commitment while the project remains undeployed.
 
 ## Future authentication
 

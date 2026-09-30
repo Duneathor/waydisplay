@@ -4,8 +4,11 @@
 #include "waydisplay/wd_protocol.h"
 #include "waydisplay/wd_protocol_codec.h"
 #include "waydisplay/wd_protocol_dispatch.h"
+#include "waydisplay/wd_time.h"
 
 #include <errno.h>
+#include <limits.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -98,16 +101,7 @@ void wd_tcp_message_release(struct wd_tcp_message* message) {
         return;
     }
 
-    if (message->buffer)
-    {
-        wd_buffer_release(message->buffer);
-    }
-    else
-    {
-        /* Preserve release semantics for callers that construct legacy
-         * wd_tcp_message values around malloc-owned storage. */
-        free(message->payload);
-    }
+    wd_buffer_release(message->buffer);
     memset(message, 0, sizeof(*message));
 }
 
@@ -260,6 +254,80 @@ enum wd_tcp_reader_status wd_tcp_reader_receive(struct wd_tcp_reader* reader, in
     reader->payload           = NULL;
     wd_tcp_reader_clear_frame(reader);
     return WD_TCP_READER_MESSAGE;
+}
+
+enum wd_tcp_reader_status wd_tcp_reader_wait_for_message(struct wd_tcp_reader* reader, int fd, uint64_t idle_timeout_ns,
+                                                         uint64_t max_frame_lifetime_ns, uint64_t absolute_deadline_ns,
+                                                         uint32_t poll_slice_ms, wd_tcp_wait_continue_fn keep_waiting,
+                                                         void* keep_waiting_data, struct wd_tcp_message* out_message) {
+    if (!reader || fd < 0 || !out_message || poll_slice_ms == 0)
+    {
+        return WD_TCP_READER_IO_ERROR;
+    }
+
+    for (;;)
+    {
+        if (keep_waiting && !keep_waiting(keep_waiting_data))
+        {
+            return WD_TCP_READER_CANCELLED;
+        }
+
+        uint64_t now_ns = wd_now_ns();
+        if (absolute_deadline_ns != 0 && now_ns >= absolute_deadline_ns)
+        {
+            return WD_TCP_READER_TIMED_OUT;
+        }
+
+        const enum wd_tcp_reader_status status =
+            wd_tcp_reader_receive(reader, fd, now_ns, idle_timeout_ns, max_frame_lifetime_ns, out_message);
+        if (status != WD_TCP_READER_NEED_MORE)
+        {
+            return status;
+        }
+
+        now_ns = wd_now_ns();
+        uint64_t deadline_ns = absolute_deadline_ns;
+        const uint64_t frame_deadline_ns = wd_tcp_reader_deadline_ns(reader);
+        if (frame_deadline_ns != 0 && (deadline_ns == 0 || frame_deadline_ns < deadline_ns))
+        {
+            deadline_ns = frame_deadline_ns;
+        }
+
+        uint32_t timeout_ms = poll_slice_ms;
+        if (deadline_ns != 0)
+        {
+            if (deadline_ns <= now_ns)
+            {
+                continue;
+            }
+            const uint64_t remaining_ns = deadline_ns - now_ns;
+            uint64_t remaining_ms = (remaining_ns + 999999ull) / 1000000ull;
+            if (remaining_ms == 0)
+            {
+                remaining_ms = 1;
+            }
+            if (remaining_ms < timeout_ms)
+            {
+                timeout_ms = (uint32_t)remaining_ms;
+            }
+        }
+
+        struct pollfd pfd;
+        memset(&pfd, 0, sizeof(pfd));
+        pfd.fd     = fd;
+        pfd.events = POLLIN;
+
+        int poll_result;
+        do
+        {
+            poll_result = poll(&pfd, 1, timeout_ms > INT_MAX ? INT_MAX : (int)timeout_ms);
+        } while (poll_result < 0 && errno == EINTR);
+
+        if (poll_result < 0 || (poll_result > 0 && (pfd.revents & POLLNVAL) != 0))
+        {
+            return WD_TCP_READER_IO_ERROR;
+        }
+    }
 }
 
 bool wd_recv_all(int fd, void* data, size_t size) {

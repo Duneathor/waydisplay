@@ -1,6 +1,6 @@
 #include "client_receive_stats_batch.hpp"
 
-#include <cassert>
+#include "test_check.h"
 
 int main()
 {
@@ -22,22 +22,22 @@ int main()
     batch.note_completed_tile(2048, 2, false, 0);
     batch.note_completed_tile(512, 1, true, 0);
 
-    assert(batch.udp_packets_rx == 2);
-    assert(batch.udp_bytes_rx == 1328);
-    assert(batch.udp_interarrival_samples == 2);
-    assert(batch.udp_interarrival_sum_ns == 5'000'000);
-    assert(batch.udp_interarrival_max_ns == 3'000'000);
-    assert(batch.udp_interarrival_jitter_samples == 1);
-    assert(batch.udp_interarrival_jitter_sum_ns == 1'000'000);
-    assert(batch.udp_tiles_completed == 3);
-    assert(batch.udp_completed_compressed_bytes == 6656);
-    assert(batch.udp_completed_packets == 7);
-    assert(batch.tile_assembly_samples == 2);
-    assert(batch.tile_assembly_sum_ns == 750'000);
-    assert(batch.tile_present_queue_depth_max == 7);
-    assert(batch.tile_present_overflow_fallbacks == 2);
-    assert(batch.lock_wait_samples == 2);
-    assert(batch.lock_wait_sum_ns == 3'300);
-    assert(batch.lock_wait_max_ns == 2'400);
+    WD_TEST_CHECK(batch.udp_packets_rx == 2);
+    WD_TEST_CHECK(batch.udp_bytes_rx == 1328);
+    WD_TEST_CHECK(batch.udp_interarrival_samples == 2);
+    WD_TEST_CHECK(batch.udp_interarrival_sum_ns == 5'000'000);
+    WD_TEST_CHECK(batch.udp_interarrival_max_ns == 3'000'000);
+    WD_TEST_CHECK(batch.udp_interarrival_jitter_samples == 1);
+    WD_TEST_CHECK(batch.udp_interarrival_jitter_sum_ns == 1'000'000);
+    WD_TEST_CHECK(batch.udp_tiles_completed == 3);
+    WD_TEST_CHECK(batch.udp_completed_compressed_bytes == 6656);
+    WD_TEST_CHECK(batch.udp_completed_packets == 7);
+    WD_TEST_CHECK(batch.tile_assembly_samples == 2);
+    WD_TEST_CHECK(batch.tile_assembly_sum_ns == 750'000);
+    WD_TEST_CHECK(batch.tile_present_queue_depth_max == 7);
+    WD_TEST_CHECK(batch.tile_present_overflow_fallbacks == 2);
+    WD_TEST_CHECK(batch.lock_wait_samples == 2);
+    WD_TEST_CHECK(batch.lock_wait_sum_ns == 3'300);
+    WD_TEST_CHECK(batch.lock_wait_max_ns == 2'400);
     return 0;
 }

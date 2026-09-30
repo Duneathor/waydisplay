@@ -7,6 +7,17 @@ if(WAYDISPLAY_BUILD_TESTS)
     enable_testing()
 
     add_test(
+        NAME waydisplay.media_regression_coverage_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_media_regression_coverage.cmake
+    )
+    set_tests_properties(waydisplay.media_regression_coverage_contract PROPERTIES
+        LABELS "unit;cmake;video;fuzz;coverage"
+        TIMEOUT 10
+    )
+
+    add_test(
         NAME waydisplay.zero_copy_architecture_contract
         COMMAND ${CMAKE_COMMAND}
             -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -343,6 +354,17 @@ if(WAYDISPLAY_BUILD_TESTS)
         LABELS "unit;xwayland;lifecycle"
     )
 
+    add_test(
+        NAME waydisplay.xwayland_runtime_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_xwayland_runtime_contract.cmake
+    )
+    set_tests_properties(waydisplay.xwayland_runtime_contract PROPERTIES
+        TIMEOUT 10
+        LABELS "unit;cmake;xwayland;lifecycle;geometry"
+    )
+
     waydisplay_add_test(
         NAME waydisplay.compositor_capture
         TARGET waydisplay_test_compositor_capture
@@ -414,6 +436,29 @@ if(WAYDISPLAY_BUILD_TESTS)
         INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/include
         LABELS "unit;input;server"
     )
+
+    if(TARGET PkgConfig::SDL3)
+        waydisplay_add_test(
+            NAME waydisplay.sdl_input
+            TARGET waydisplay_test_sdl_input
+            SOURCES tests/test_sdl_input.cpp src/client/sdl_input.cpp
+            INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+            LIBRARIES PkgConfig::SDL3
+            LABELS "unit;input;client;sdl"
+        )
+
+        waydisplay_add_test(
+            NAME waydisplay.sdl_direct_tile_upload_runtime
+            TARGET waydisplay_test_sdl_direct_tile_upload_runtime
+            SOURCES
+                tests/test_sdl_direct_tile_upload_runtime.cpp
+                src/client/sdl_direct_tile_upload.cpp
+            INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client ${CMAKE_CURRENT_SOURCE_DIR}/include
+            LIBRARIES waydisplay_client_runtime PkgConfig::SDL3
+            SKIP_RETURN_CODE 77
+            LABELS "component;client;sdl;tiles;render"
+        )
+    endif()
 
     waydisplay_add_test(
         NAME waydisplay.async_tcp_policy
@@ -519,7 +564,7 @@ if(WAYDISPLAY_BUILD_TESTS)
         INCLUDE_DIRECTORIES
             ${CMAKE_CURRENT_SOURCE_DIR}/src/client
             ${CMAKE_CURRENT_SOURCE_DIR}/src/server
-        LABELS "integration;client;server;video;lifecycle"
+        LABELS "component;client;server;video;lifecycle"
     )
 
     waydisplay_add_test(
@@ -538,7 +583,7 @@ if(WAYDISPLAY_BUILD_TESTS)
         INCLUDE_DIRECTORIES
             ${CMAKE_CURRENT_SOURCE_DIR}/src/client
             ${CMAKE_CURRENT_SOURCE_DIR}/src/server
-        LABELS "integration;client;server;video;lifecycle"
+        LABELS "component;client;server;video;lifecycle"
     )
 
     waydisplay_add_test(
@@ -718,7 +763,19 @@ if(WAYDISPLAY_BUILD_TESTS)
         SOURCES tests/test_control_handshake_runtime.cpp
         LIBRARIES waydisplay_common waydisplay_server_runtime
         INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
-        LABELS "integration;network;protocol;server"
+        LABELS "component;network;protocol;server"
+    )
+
+
+    add_test(
+        NAME waydisplay.control_handshake_wiring_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_control_handshake_wiring.cmake
+    )
+    set_tests_properties(waydisplay.control_handshake_wiring_contract PROPERTIES
+        TIMEOUT 10
+        LABELS "unit;cmake;network;protocol;server"
     )
 
     waydisplay_add_test(
@@ -907,18 +964,37 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
 
     waydisplay_add_test(
+        NAME waydisplay.client_async_sender_shutdown_default
+        TARGET waydisplay_test_client_async_sender_shutdown_default
+        SOURCES
+            tests/test_client_async_sender_shutdown.cpp
+            src/client/client_async_tcp.cpp
+        LIBRARIES
+            waydisplay_common
+            PkgConfig::LIBURING
+        INCLUDE_DIRECTORIES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/client
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+        SKIP_RETURN_CODE 77
+        LABELS "network;lifecycle;io_uring;client;default-drain"
+        TIMEOUT 10
+    )
+
+    waydisplay_add_test(
         NAME waydisplay.audio_ring
         TARGET waydisplay_test_audio_ring
         SOURCES tests/test_audio_ring.cpp
-        LIBRARIES waydisplay_server_runtime
+        LIBRARIES waydisplay_server_runtime Threads::Threads
         INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+        LABELS "unit;audio;threading"
     )
 
     waydisplay_add_test(
         NAME waydisplay.audio_transport
         TARGET waydisplay_test_audio_transport
         SOURCES tests/test_audio_transport.cpp
-        LIBRARIES waydisplay_common
+        LIBRARIES waydisplay_server_runtime
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/server
     )
 
     waydisplay_add_test(
@@ -951,8 +1027,23 @@ if(WAYDISPLAY_BUILD_TESTS)
         INCLUDE_DIRECTORIES
             ${CMAKE_CURRENT_SOURCE_DIR}/src/client
             ${CMAKE_CURRENT_SOURCE_DIR}/src/server
-        LABELS "integration;audio;video;client;server;lifecycle"
+        LABELS "component;audio;video;client;server;lifecycle"
     )
+
+
+    if(TARGET PkgConfig::SDL3 AND WAYDISPLAY_HAVE_OPUS_AUDIO)
+        waydisplay_add_test(
+            NAME waydisplay.audio_playback_runtime
+            TARGET waydisplay_test_audio_playback_runtime
+            SOURCES tests/test_audio_playback_runtime.cpp src/client/audio_playback.cpp
+            LIBRARIES waydisplay_client_runtime waydisplay_common PkgConfig::SDL3 PkgConfig::OPUS_AUDIO
+            INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/src/client ${CMAKE_CURRENT_SOURCE_DIR}/include
+            COMPILE_DEFINITIONS WAYDISPLAY_HAVE_OPUS_AUDIO=1
+            SKIP_RETURN_CODE 77
+            LABELS "component;audio;client;sdl;opus;lifecycle"
+            TIMEOUT 10
+        )
+    endif()
 
     waydisplay_add_test(
         NAME waydisplay.audio_playback_clock
@@ -1101,7 +1192,7 @@ if(WAYDISPLAY_BUILD_TESTS)
         INCLUDE_DIRECTORIES
             ${CMAKE_CURRENT_SOURCE_DIR}/src/client
             ${CMAKE_CURRENT_SOURCE_DIR}/src/server
-        LABELS "integration;soak;lifecycle;client;server;video"
+        LABELS "component;soak;lifecycle;client;server;video"
         TIMEOUT 30
     )
 
@@ -1113,7 +1204,7 @@ if(WAYDISPLAY_BUILD_TESTS)
         INCLUDE_DIRECTORIES
             ${CMAKE_CURRENT_SOURCE_DIR}/src/client
             ${CMAKE_CURRENT_SOURCE_DIR}/src/server
-        LABELS "integration;lifecycle;client;server;video"
+        LABELS "component;lifecycle;client;server;video"
     )
 
     waydisplay_add_test(
@@ -1208,6 +1299,24 @@ if(WAYDISPLAY_BUILD_TESTS)
             TIMEOUT 30
             RESOURCE_LOCK waydisplay_gpu
         )
+    endif()
+
+    if(WAYDISPLAY_HAVE_VAAPI_SERVER_VPP AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        pkg_check_modules(WAYDISPLAY_TEST_GBM QUIET IMPORTED_TARGET gbm)
+        if(WAYDISPLAY_TEST_GBM_FOUND)
+            waydisplay_add_test(
+                NAME waydisplay.video_encoder_drm_prime_vaapi
+                TARGET waydisplay_test_video_encoder_drm_prime_vaapi
+                SOURCES tests/test_video_encoder_drm_prime_vaapi.cpp
+                LIBRARIES
+                    waydisplay_video_encoder
+                    PkgConfig::WAYDISPLAY_TEST_GBM
+                SKIP_RETURN_CODE 77
+                LABELS "integration;video;codec;encoder;hardware;vaapi;drm-prime"
+                TIMEOUT 30
+                RESOURCE_LOCK waydisplay_gpu
+            )
+        endif()
     endif()
 
     if(WAYDISPLAY_HAVE_H265_SERVER_ENCODER AND WAYDISPLAY_HAVE_H265_CLIENT_DECODER)
@@ -1345,6 +1454,39 @@ if(WAYDISPLAY_BUILD_TESTS)
     )
     set_tests_properties(waydisplay.async_tcp_submit_fallback_contract PROPERTIES
         LABELS "unit;network;threading;cmake"
+        TIMEOUT 10
+    )
+
+    add_test(
+        NAME waydisplay.client_async_tcp_coalescing_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_client_async_tcp_coalescing_contract.cmake
+    )
+    set_tests_properties(waydisplay.client_async_tcp_coalescing_contract PROPERTIES
+        LABELS "unit;network;input;threading;cmake"
+        TIMEOUT 10
+    )
+
+    add_test(
+        NAME waydisplay.server_async_udp_fallback_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_server_async_udp_fallback_contract.cmake
+    )
+    set_tests_properties(waydisplay.server_async_udp_fallback_contract PROPERTIES
+        LABELS "unit;network;threading;cmake"
+        TIMEOUT 10
+    )
+
+    add_test(
+        NAME waydisplay.negotiation_deadline_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DWAYDISPLAY_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/check_negotiation_deadline_contract.cmake
+    )
+    set_tests_properties(waydisplay.negotiation_deadline_contract PROPERTIES
+        LABELS "unit;network;protocol;lifecycle;cmake"
         TIMEOUT 10
     )
 

@@ -65,6 +65,7 @@ struct wd_async_tcp_sender {
 
     uint64_t inflight;
     uint64_t inflight_max;
+    uint64_t inflight_interval_max;
     uint64_t pending_bytes;
     uint64_t max_pending_bytes;
     uint64_t queued;
@@ -373,6 +374,10 @@ static bool wd_async_tcp_submit_message(struct wd_async_tcp_sender* sender, stru
     if (sender->inflight > sender->inflight_max)
     {
         sender->inflight_max = sender->inflight;
+    }
+    if (sender->inflight > sender->inflight_interval_max)
+    {
+        sender->inflight_interval_max = sender->inflight;
     }
 
     int submit_result = 0;
@@ -861,7 +866,6 @@ static bool wd_async_tcp_sender_bind_socket(struct wd_async_tcp_sender* sender, 
     }
     if (wd_socket_pin_matches(&sender->socket_pin, fd))
     {
-        sender->socket_pin.source_fd = fd;
         return true;
     }
     if (sender->pending_head || sender->inflight != 0)
@@ -959,7 +963,8 @@ uint32_t wd_async_tcp_sender_drop_message_type(struct wd_async_tcp_sender* sende
     while (msg)
     {
         struct wd_async_tcp_message* next = msg->next;
-        if (msg->message_type == message_type && !msg->submitted)
+        if (msg->message_type == message_type &&
+            wd_async_tcp_message_is_replaceable(msg->submitted, msg->bytes_sent))
         {
             wd_async_tcp_pending_remove(sender, msg);
             wd_async_tcp_complete_message(msg, false);
@@ -1040,6 +1045,16 @@ uint64_t wd_async_tcp_sender_inflight_max(const struct wd_async_tcp_sender* send
     return sender ? sender->inflight_max : 0;
 }
 
+uint64_t wd_async_tcp_sender_take_inflight_max(struct wd_async_tcp_sender* sender) {
+    if (!sender)
+    {
+        return 0;
+    }
+    const uint64_t value = sender->inflight_interval_max;
+    sender->inflight_interval_max = sender->inflight;
+    return value;
+}
+
 static bool wd_async_tcp_sender_has_submitted(const struct wd_async_tcp_sender* sender) {
     for (const struct wd_async_tcp_message* msg = sender ? sender->pending_head : NULL; msg; msg = msg->next)
     {
@@ -1058,6 +1073,7 @@ static void wd_async_tcp_sender_fail_unsubmitted(struct wd_async_tcp_sender* sen
         struct wd_async_tcp_message* next = msg->next;
         if (!msg->submitted)
         {
+            sender->failed++;
             wd_async_tcp_pending_remove(sender, msg);
             wd_async_tcp_complete_message(msg, false);
             wd_async_tcp_message_destroy(msg);
@@ -1097,20 +1113,31 @@ static void wd_async_tcp_sender_request_cancels(struct wd_async_tcp_sender* send
 }
 
 static bool wd_async_tcp_sender_drain(struct wd_async_tcp_sender* sender) {
-    if (!sender || !sender->ring_ready)
+    if (!sender)
     {
         return true;
     }
 
+    if (!sender->pending_head)
+    {
+        return true;
+    }
+
+    /* Once teardown begins, abandon the socket before discarding any queued
+     * frame.  This is required in syscall-fallback mode because an
+     * unsubmitted head may already have bytes on the TCP stream. */
     wd_async_tcp_sender_shutdown_pending_fds(sender);
-    wd_async_tcp_sender_request_cancels(sender);
+    if (sender->ring_ready)
+    {
+        wd_async_tcp_sender_request_cancels(sender);
+    }
 
     const uint32_t drain_limit = WD_ASYNC_TCP_DRAIN_LIMIT;
     for (uint32_t i = 0; sender->pending_head && i < drain_limit; ++i)
     {
         wd_async_tcp_sender_reap(sender);
         wd_async_tcp_sender_fail_unsubmitted(sender);
-        if (!wd_async_tcp_sender_has_submitted(sender))
+        if (!sender->ring_ready || !wd_async_tcp_sender_has_submitted(sender))
         {
             break;
         }

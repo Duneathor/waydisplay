@@ -8,6 +8,8 @@ The server uses the Wayland event-loop thread, one network/event thread, one str
 
 `wd_net_state.lock` is the primary cross-thread state lock. The network thread owns connection descriptors, protocol phase, transport queues, and stream-policy mutation. The compositor thread may take the lock only for short input, resize, completion, and policy transfers. It never waits for tile compression or transport submission. The stream-frame worker owns framebuffer comparison and queue servicing, queues a bounded number of compression-worker waves, releases the network lock while waiting, and validates each job generation as completions arrive in finish order. Code holding the network lock must not perform blocking socket I/O, call into PipeWire, or invoke wlroots operations that may dispatch callbacks.
 
+Pre-session control negotiation also uses the incremental reader. Its waits are sliced so the network run-state can cancel shutdown promptly, and both per-frame progress/lifetime limits and an overall negotiation deadline bound slow or stalled peers before established-session descriptor ownership begins.
+
 When more than one server lock is required, acquire them in this order:
 
 1. `wd_net_state.lock`
@@ -86,9 +88,9 @@ A reconnect is a generation boundary. The network thread clears session-scoped f
 The test suite must exercise shutdown while every client channel is blocked in a socket read, immediate reconnect with descriptor reuse, late completion identities from a previous connection, and concurrent stream-ownership transitions. Completion callbacks may update connection state only when connection, configuration, content, and framebuffer generations all match the current session.
 
 
-## Media transition integration tests
+## Media transition coverage
 
-Video codec integration tests reconfigure encoder and decoder across grow, odd-dimension, and shrink transitions. Each new content epoch must begin with a keyframe and old-resolution packets must be rejected. Audio/video integration tests hold the oldest decoded frame only for the bounded startup interval, verify that late audio can subsequently become clock master, and ensure queue pressure cannot overwrite an audio-held presentation head.
+Dependency-light component tests exercise resize, scrub/recovery, mixed-mode, and ownership policy without claiming to execute the complete client/server runtime chain. Runtime seams separately cover bounded handshake reads, the production/default async-TCP teardown path, SDL direct-tile upload/readback, threaded SPSC audio publication, and SDL/Opus playback when those optional dependencies are available. Codec tests reconfigure real encoder/decoder paths across grow, odd-dimension, and shrink transitions; hardware VA-API/GBM coverage remains conditional on an equipped host. Each new content epoch must begin with a keyframe and old-resolution packets must be rejected.
 
 ## Asynchronous summary completion ownership
 

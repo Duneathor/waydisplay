@@ -13,6 +13,8 @@ enum wd_io_uring_operation_mask {
     WD_IO_URING_OPERATION_SENDMSG      = 1u << 1,
     WD_IO_URING_OPERATION_RECV         = 1u << 2,
     WD_IO_URING_OPERATION_ASYNC_CANCEL = 1u << 3,
+    WD_IO_URING_OPERATION_ALL          = WD_IO_URING_OPERATION_SEND | WD_IO_URING_OPERATION_SENDMSG |
+                                         WD_IO_URING_OPERATION_RECV | WD_IO_URING_OPERATION_ASYNC_CANCEL,
 };
 
 bool wd_io_uring_require_operations(struct io_uring* ring, uint32_t required_operations, const char* owner);

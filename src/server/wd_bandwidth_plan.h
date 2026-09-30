@@ -16,6 +16,7 @@ struct wd_bandwidth_plan {
     uint64_t link_bytes_per_second;
     uint64_t overhead_bytes_per_second;
     uint64_t control_bytes_per_second;
+    uint64_t audio_required_bytes_per_second;
     uint64_t audio_cap_bytes_per_second;
     uint64_t audio_reserved_bytes_per_second;
     uint64_t fresh_tile_bytes_per_second;
@@ -23,6 +24,9 @@ struct wd_bandwidth_plan {
     uint64_t video_bytes_per_second;
 };
 
+uint64_t wd_bandwidth_audio_wire_bytes_per_second(uint32_t bitrate_bits_per_second);
+uint32_t wd_bandwidth_audio_select_bitrate(uint64_t link_bytes_per_second, uint32_t preferred_bitrate_bits_per_second,
+                                           uint32_t minimum_bitrate_bits_per_second);
 struct wd_bandwidth_plan wd_bandwidth_plan_build(uint64_t link_bytes_per_second, enum wd_bandwidth_mode mode,
                                                   bool audio_enabled, uint32_t audio_bitrate_bits_per_second);
 uint64_t wd_bandwidth_plan_media_bytes(const struct wd_bandwidth_plan* plan, enum wd_bandwidth_mode mode);

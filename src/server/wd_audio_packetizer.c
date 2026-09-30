@@ -28,7 +28,8 @@ bool wd_audio_packetizer_make_packet(struct wd_audio_packetizer* packetizer, uin
                                      uint32_t data_size, struct wd_audio_packet_payload_header* header) {
     if (!packetizer || !header || packetizer->session_id == 0 || packetizer->connection_token == 0 || packetizer->audio_epoch == 0 ||
         packetizer->media_clock_id == 0 || !wd_audio_frame_samples_is_valid(duration_samples) || data_size == 0 ||
-        data_size > WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES)
+        data_size > WD_AUDIO_PACKET_MAX_PAYLOAD_BYTES || UINT64_MAX - pts_samples < duration_samples ||
+        packetizer->sequence == UINT64_MAX)
     {
         return false;
     }
@@ -54,7 +55,7 @@ bool wd_audio_packetizer_make_packet(struct wd_audio_packetizer* packetizer, uin
 bool wd_audio_packetizer_make_eos(struct wd_audio_packetizer* packetizer, uint64_t pts_samples,
                                   struct wd_audio_packet_payload_header* header) {
     if (!packetizer || !header || packetizer->session_id == 0 || packetizer->connection_token == 0 || packetizer->audio_epoch == 0 ||
-        packetizer->media_clock_id == 0)
+        packetizer->media_clock_id == 0 || packetizer->sequence == UINT64_MAX)
     {
         return false;
     }

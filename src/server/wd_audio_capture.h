@@ -13,8 +13,11 @@ struct wd_audio_capture_timing {
     uint32_t rate_denom;
     bool     position_reliable;
     bool     discontinuity;
+    bool     silent;
 };
 
+/* samples and timing are borrowed for the duration of the real-time callback
+ * only. The callback must not retain either pointer or block on external work. */
 typedef void (*wd_audio_capture_callback)(void* userdata, const float* samples, uint32_t frames, uint8_t channels,
                                           const struct wd_audio_capture_timing* timing);
 

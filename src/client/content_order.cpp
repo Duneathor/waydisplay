@@ -74,7 +74,12 @@ ClientContentEpochDecision client_accept_content_epoch(ClientState& state, uint6
     return ClientContentEpochDecision::Advanced;
 }
 
-void client_reset_content_epoch(ClientState& state, uint64_t content_epoch, enum wd_client_content_owner owner) {
+bool client_reset_content_epoch(ClientState& state, uint64_t content_epoch, enum wd_client_content_owner owner) {
+    if (content_epoch == 0) [[unlikely]]
+    {
+        return false;
+    }
+
     std::lock_guard<std::mutex> transition_lock(state.remote_content_mutex);
     state.stats.tile_content_epoch_presented.store(0, std::memory_order_relaxed);
     state.stats.video_content_epoch_presented.store(0, std::memory_order_relaxed);
@@ -86,9 +91,16 @@ void client_reset_content_epoch(ClientState& state, uint64_t content_epoch, enum
     reset_present_telemetry(state);
     state.remote_content_epoch = content_epoch;
     state.remote_content_owner = owner;
+    if (owner == WD_CLIENT_CONTENT_OWNER_VIDEO)
+    {
+        state.stats.video_last_frame_id_rx.store(0, std::memory_order_relaxed);
+        state.stats.video_last_frame_id_decoded.store(0, std::memory_order_relaxed);
+        state.stats.video_last_frame_id_presented.store(0, std::memory_order_relaxed);
+    }
     WD_LOG_DEBUG("remote content ownership reset: epoch=%llu owner=%s", (unsigned long long)content_epoch,
                  owner == WD_CLIENT_CONTENT_OWNER_VIDEO ? "video" : "tiles");
     state.render_wake.signal();
+    return true;
 }
 
 } // namespace waydisplay

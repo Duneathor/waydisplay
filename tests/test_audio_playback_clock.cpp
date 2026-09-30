@@ -16,16 +16,30 @@ void require(bool condition, const char* message) {
     }
 }
 
+void test_opus_delay_is_removed_from_decoded_media_timeline() {
+    ClientAudioDecodedRange first{};
+    require(client_audio_decoded_range(0, 960, 312, 312, 0, first), "first Opus packet should map to decoded source time");
+    require(first.start_pts == 0 && first.end_pts == 648, "pre-skip must not move the first real source sample to PTS 312");
+
+    ClientAudioDecodedRange second{};
+    require(client_audio_decoded_range(960, 960, 0, 312, 0, second), "second Opus packet should continue decoded source time");
+    require(second.start_pts == 648 && second.end_pts == 1608, "later decoded packets must stay lookahead-adjusted");
+
+    ClientAudioDecodedRange rebased{};
+    require(client_audio_decoded_range(48000, 960, 312, 312, 48000, rebased), "nonzero discontinuity origins should be supported");
+    require(rebased.start_pts == 48000 && rebased.end_pts == 48648, "codec delay must be relative to each reset segment");
+}
+
 void test_output_rebase_boundaries() {
     const uint64_t max_queue = client_audio_max_queued_samples(48000, 20);
     require(max_queue == 5760, "20 ms startup latency should retain a 120 ms lifetime queue bound");
-    require(!client_audio_output_rebase_needed(false, max_queue + 1, 960, max_queue),
-            "startup buffering must not trigger an output-only rebase");
-    require(!client_audio_output_rebase_needed(true, max_queue - 960, 960, max_queue),
+    require(client_audio_output_rebase_needed(max_queue + 1, 960, max_queue),
+            "startup buffering must remain bounded when the device never starts");
+    require(!client_audio_output_rebase_needed(max_queue - 960, 960, max_queue),
             "a packet that lands exactly on the queue bound must be accepted");
-    require(client_audio_output_rebase_needed(true, max_queue - 959, 960, max_queue),
+    require(client_audio_output_rebase_needed(max_queue - 959, 960, max_queue),
             "a packet that exceeds the queue bound by one sample must rebase");
-    require(client_audio_output_rebase_needed(true, max_queue + 1, 1, max_queue),
+    require(client_audio_output_rebase_needed(max_queue + 1, 1, max_queue),
             "an already excessive running queue must rebase without subtraction underflow");
 }
 
@@ -37,7 +51,7 @@ void test_rebase_simulation_preserves_wire_cursor_and_reanchors_output() {
     uint64_t output_queue = max_queue - 100;
 
     const uint64_t incoming = 960;
-    require(client_audio_output_rebase_needed(true, output_queue, incoming, max_queue),
+    require(client_audio_output_rebase_needed(output_queue, incoming, max_queue),
             "the simulated backlog must request a rebase");
 
     const uint64_t packet_sequence = wire_sequence;
@@ -108,6 +122,7 @@ void test_fractional_device_rate_accumulates_without_truncation() {
 } // namespace
 
 int main() {
+    test_opus_delay_is_removed_from_decoded_media_timeline();
     test_output_rebase_boundaries();
     test_rebase_simulation_preserves_wire_cursor_and_reanchors_output();
     test_postmix_silence_is_bounded_by_stream_queue();

@@ -3,6 +3,7 @@
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_protocol.h"
 
+#include <limits.h>
 #include <stdlib.h>
 
 #ifndef WAYDISPLAY_HAVE_OPUS_AUDIO
@@ -31,11 +32,15 @@ struct wd_audio_encoder {
 };
 
 bool wd_audio_encoder_create(struct wd_audio_encoder** out_encoder, uint8_t channels, uint32_t bitrate) {
-    if (!out_encoder || channels == 0 || channels > WD_AUDIO_CHANNELS_MAX || bitrate == 0)
+    if (!out_encoder)
     {
         return false;
     }
-    *out_encoder                     = NULL;
+    *out_encoder = NULL;
+    if (channels == 0 || channels > WD_AUDIO_CHANNELS_MAX || bitrate == 0 || bitrate > INT32_MAX)
+    {
+        return false;
+    }
     struct wd_audio_encoder* encoder = calloc(1, sizeof(*encoder));
     if (!encoder)
     {
@@ -51,6 +56,7 @@ bool wd_audio_encoder_create(struct wd_audio_encoder** out_encoder, uint8_t chan
     encoder->channels = channels;
     if (opus_encoder_ctl(encoder->opus, OPUS_SET_BITRATE((opus_int32)bitrate)) != OPUS_OK ||
         opus_encoder_ctl(encoder->opus, OPUS_SET_VBR(WD_AUDIO_ENCODER_ENABLE_VBR)) != OPUS_OK ||
+        opus_encoder_ctl(encoder->opus, OPUS_SET_VBR_CONSTRAINT(WD_AUDIO_ENCODER_ENABLE_VBR ? 1 : 0)) != OPUS_OK ||
         opus_encoder_ctl(encoder->opus, OPUS_SET_DTX(WD_AUDIO_ENCODER_ENABLE_DTX)) != OPUS_OK ||
         opus_encoder_ctl(encoder->opus, OPUS_SET_INBAND_FEC(WD_AUDIO_ENCODER_ENABLE_INBAND_FEC)) != OPUS_OK ||
         opus_encoder_ctl(encoder->opus, OPUS_SET_SIGNAL(wd_audio_encoder_signal())) != OPUS_OK)

@@ -48,5 +48,36 @@ int main(void) {
     CHECK(count == 1 && full);
     CHECK(regions[0].width == 256 && regions[0].height == 256);
 
+    /* Partial edge tiles must be clipped to the actual framebuffer. */
+    bool edge_damage[9] = {false};
+    edge_damage[8] = true;
+    full = true;
+    count = wd_readback_plan_regions(false, edge_damage, 1, 9, 3, 64, 64, 150, 130, regions, 8, &full);
+    CHECK(count == 1 && !full);
+    CHECK(regions[0].x == 128 && regions[0].y == 128 && regions[0].width == 22 && regions[0].height == 2);
+
+    /* Capacity one degrades to the exact dirty bounding rectangle. */
+    memset(damage, 0, sizeof(damage));
+    damage[0] = true;
+    damage[10] = true;
+    full = true;
+    count = wd_readback_plan_regions(false, damage, 2, 16, 4, 64, 64, 256, 256, regions, 1, &full);
+    CHECK(count == 1 && !full);
+    CHECK(regions[0].x == 0 && regions[0].y == 0 && regions[0].width == 192 && regions[0].height == 192);
+
+    /* Inconsistent count/bitmap input is conservative rather than silently empty. */
+    memset(damage, 0, sizeof(damage));
+    full = false;
+    count = wd_readback_plan_regions(false, damage, 1, 16, 4, 64, 64, 256, 256, regions, 8, &full);
+    CHECK(count == 1 && full);
+    CHECK(regions[0].x == 0 && regions[0].y == 0 && regions[0].width == 256 && regions[0].height == 256);
+
+    /* Invalid arguments do not mutate the caller's full-readback state. */
+    full = true;
+    CHECK(wd_readback_plan_regions(false, damage, 1, 16, 4, 64, 64, 256, 256, NULL, 8, &full) == 0);
+    CHECK(full);
+    CHECK(wd_readback_plan_regions(false, damage, 1, 16, 4, 64, 64, 0, 256, regions, 8, &full) == 0);
+    CHECK(full);
+
     return 0;
 }

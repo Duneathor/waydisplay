@@ -16,7 +16,7 @@ struct ClientVideoOutputCapabilities {
 
 constexpr ClientVideoOutputStorage client_video_output_storage(
     bool prefer_gpu_output, const ClientVideoOutputCapabilities& capabilities) {
-    return prefer_gpu_output && capabilities.drm_prime_import
+    return prefer_gpu_output && capabilities.drm_prime_import && capabilities.modifiers
                ? ClientVideoOutputStorage::DrmPrime
                : ClientVideoOutputStorage::CpuIYUV;
 }

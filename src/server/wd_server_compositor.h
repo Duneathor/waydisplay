@@ -15,6 +15,10 @@ struct wl_resource;
 struct wlr_scene_node;
 struct wlr_surface;
 
+/* wlroots/scene/view/output helpers are Wayland compositor-thread only unless
+ * explicitly documented otherwise. wd_server_request_full_refresh() is the
+ * cross-thread exception and is safe to call from any server thread. */
+
 bool wd_wlroots_init(struct wd_server* server);
 bool wd_wlroots_start(struct wd_server* server);
 bool wd_wlroots_create_headless_output(struct wd_server* server);
@@ -26,6 +30,7 @@ bool wd_xwayland_init(struct wd_server* server);
 void wd_xwayland_destroy(struct wd_server* server);
 bool wd_xwayland_view_has_decoration(struct wd_view* view);
 void wd_xwayland_view_update_scene_position(struct wd_view* view);
+void wd_xwayland_view_configure_position(struct wd_view* view);
 bool wd_xwayland_view_decoration_at(struct wd_view* view, double sx, double sy);
 bool wd_xwayland_view_handle_decoration_press(struct wd_view* view, double sx, double sy);
 void wd_xwayland_handle_output_resize(struct wd_server* server);

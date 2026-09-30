@@ -29,6 +29,7 @@ int main(void) {
     CHECK(inet_pton(AF_INET, "127.0.0.1", &loopback) == 1);
 
     struct wd_net_listener     first;
+    wd_net_listener_init(&first);
     enum wd_net_listener_stage stage      = WD_NET_LISTENER_STAGE_NONE;
     int                        error_code = 0;
 
@@ -43,7 +44,16 @@ int main(void) {
     CHECK(socket_address(first.listen_fd).s_addr == loopback.s_addr);
     CHECK(socket_address(first.udp_fd).s_addr == loopback.s_addr);
 
+    const int first_tcp_fd = first.listen_fd;
+    const int first_udp_fd = first.udp_fd;
+    stage = WD_NET_LISTENER_STAGE_NONE;
+    error_code = 0;
+    CHECK(!wd_net_listener_open(&first, 0, &loopback, &stage, &error_code));
+    CHECK(error_code == EALREADY);
+    CHECK(first.listen_fd == first_tcp_fd && first.udp_fd == first_udp_fd);
+
     struct wd_net_listener conflict;
+    wd_net_listener_init(&conflict);
     stage      = WD_NET_LISTENER_STAGE_NONE;
     error_code = 0;
     CHECK(!wd_net_listener_open(&conflict, first.tcp_port, &loopback, &stage, &error_code));
@@ -56,10 +66,18 @@ int main(void) {
 
     struct in_addr         any = {.s_addr = htonl(INADDR_ANY)};
     struct wd_net_listener exposed;
+    wd_net_listener_init(&exposed);
     CHECK(wd_net_listener_open(&exposed, 0, &any, &stage, &error_code));
     CHECK(socket_address(exposed.listen_fd).s_addr == any.s_addr);
     CHECK(socket_address(exposed.udp_fd).s_addr == any.s_addr);
     wd_net_listener_close(&exposed);
+
+    struct wd_net_listener default_loopback;
+    wd_net_listener_init(&default_loopback);
+    CHECK(wd_net_listener_open(&default_loopback, 0, NULL, &stage, &error_code));
+    CHECK(socket_address(default_loopback.listen_fd).s_addr == loopback.s_addr);
+    CHECK(socket_address(default_loopback.udp_fd).s_addr == loopback.s_addr);
+    wd_net_listener_close(&default_loopback);
 
     wd_net_listener_close(&first);
     CHECK(first.listen_fd == -1);

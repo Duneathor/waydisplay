@@ -7,6 +7,9 @@
 extern "C" {
 #endif
 
+/* This queue is not internally synchronized. All access to one instance must
+ * be externally serialized. capacity is also the valid job-index domain, so
+ * push() rejects job_index >= capacity. */
 struct wd_encode_completion_queue {
     uint16_t* storage;
     uint16_t  capacity;

@@ -14,13 +14,16 @@ static int wd_frame_dup_cloexec(int fd) {
     return fcntl(fd, F_DUPFD_CLOEXEC, 0);
 #else
     int duplicate = dup(fd);
-    if (duplicate >= 0)
+    if (duplicate < 0)
     {
-        int flags = fcntl(duplicate, F_GETFD);
-        if (flags >= 0)
-        {
-            (void)fcntl(duplicate, F_SETFD, flags | FD_CLOEXEC);
-        }
+        return -1;
+    }
+
+    const int flags = fcntl(duplicate, F_GETFD);
+    if (flags < 0 || fcntl(duplicate, F_SETFD, flags | FD_CLOEXEC) < 0)
+    {
+        close(duplicate);
+        return -1;
     }
     return duplicate;
 #endif

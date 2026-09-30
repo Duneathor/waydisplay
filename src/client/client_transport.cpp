@@ -5,6 +5,7 @@
 #include "waydisplay/wd_log.h"
 #include "waydisplay/wd_net.h"
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_time.h"
 
 #include <arpa/inet.h>
 #include <cstddef>
@@ -12,7 +13,10 @@
 #include <cstdio>
 #include <cstring>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -86,6 +90,56 @@ void log_udp_endpoint(const ClientState& state) {
     WD_LOG_INFO("UDP receive endpoint local=%s requested_port=%u fd=%d", local, state.client_udp_port, state.session.transport.udp_fd);
 }
 
+bool configure_connected_tcp_socket(int fd, const char* label) {
+    const char* socket_label = label ? label : "TCP socket";
+    const int yes = 1;
+
+    if (::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) != 0)
+    {
+        WD_LOG_ERROR("%s failed to enable TCP_NODELAY: %s", socket_label, std::strerror(errno));
+        return false;
+    }
+    if (::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes)) != 0)
+    {
+        WD_LOG_ERROR("%s failed to enable SO_KEEPALIVE: %s", socket_label, std::strerror(errno));
+        return false;
+    }
+
+#ifdef TCP_KEEPIDLE
+    const int keepalive_idle = WD_TCP_KEEPALIVE_IDLE_SEC;
+    if (::setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepalive_idle, sizeof(keepalive_idle)) != 0)
+    {
+        WD_LOG_ERROR("%s failed to set TCP_KEEPIDLE: %s", socket_label, std::strerror(errno));
+        return false;
+    }
+#endif
+#ifdef TCP_KEEPINTVL
+    const int keepalive_interval = WD_TCP_KEEPALIVE_INTERVAL_SEC;
+    if (::setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepalive_interval, sizeof(keepalive_interval)) != 0)
+    {
+        WD_LOG_ERROR("%s failed to set TCP_KEEPINTVL: %s", socket_label, std::strerror(errno));
+        return false;
+    }
+#endif
+#ifdef TCP_KEEPCNT
+    const int keepalive_probes = WD_TCP_KEEPALIVE_PROBES;
+    if (::setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &keepalive_probes, sizeof(keepalive_probes)) != 0)
+    {
+        WD_LOG_ERROR("%s failed to set TCP_KEEPCNT: %s", socket_label, std::strerror(errno));
+        return false;
+    }
+#endif
+#ifdef TCP_USER_TIMEOUT
+    const unsigned int user_timeout_ms = WD_TCP_USER_TIMEOUT_MS;
+    if (::setsockopt(fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &user_timeout_ms, sizeof(user_timeout_ms)) != 0)
+    {
+        WD_LOG_ERROR("%s failed to set TCP_USER_TIMEOUT: %s", socket_label, std::strerror(errno));
+        return false;
+    }
+#endif
+
+    return true;
+}
 
 } // namespace
 
@@ -135,6 +189,7 @@ ClientAsyncUdpReceiver* create_client_udp_receiver(ClientState& state, const wd_
 }
 
 void destroy_client_udp_receiver(ClientState& state) {
+    std::lock_guard<std::mutex> stats_lock(state.session.async_udp_stats_mutex);
     if (!state.session.udp_receiver)
     {
         return;
@@ -243,9 +298,11 @@ bool update_async_seen(ClientState& state, ClientAsyncTcpSender* sender, ClientA
         state.stats.tcp_async_coalesced.fetch_add(stats.coalesced - seen.coalesced, std::memory_order_relaxed);
     }
 
+    const uint64_t interval_inflight_max = client_async_tcp_sender_take_inflight_max(sender);
     uint64_t current_max = state.stats.tcp_async_inflight_max.load(std::memory_order_relaxed);
-    while (stats.inflight_max > current_max && !state.stats.tcp_async_inflight_max.compare_exchange_weak(
-                                                   current_max, stats.inflight_max, std::memory_order_relaxed, std::memory_order_relaxed))
+    while (interval_inflight_max > current_max && !state.stats.tcp_async_inflight_max.compare_exchange_weak(
+                                                     current_max, interval_inflight_max, std::memory_order_relaxed,
+                                                     std::memory_order_relaxed))
     {
     }
 
@@ -260,6 +317,7 @@ bool update_async_seen(ClientState& state, ClientAsyncTcpSender* sender, ClientA
 }
 
 void update_async_udp_seen(ClientState& state) {
+    std::lock_guard<std::mutex> stats_lock(state.session.async_udp_stats_mutex);
     if (!state.session.udp_receiver)
     {
         state.stats.udp_async_inflight_current.store(0, std::memory_order_relaxed);
@@ -301,9 +359,11 @@ void update_async_udp_seen(ClientState& state) {
     state.stats.udp_async_inflight_current.store(stats.inflight, std::memory_order_relaxed);
     state.stats.udp_async_prepared_current.store(stats.prepared, std::memory_order_relaxed);
 
+    const uint64_t interval_inflight_max = client_async_udp_receiver_take_inflight_max(state.session.udp_receiver);
     uint64_t current_max = state.stats.udp_async_inflight_max.load(std::memory_order_relaxed);
-    while (stats.inflight_max > current_max && !state.stats.udp_async_inflight_max.compare_exchange_weak(
-                                                   current_max, stats.inflight_max, std::memory_order_relaxed, std::memory_order_relaxed))
+    while (interval_inflight_max > current_max && !state.stats.udp_async_inflight_max.compare_exchange_weak(
+                                                     current_max, interval_inflight_max, std::memory_order_relaxed,
+                                                     std::memory_order_relaxed))
     {
     }
 
@@ -391,10 +451,11 @@ bool connect_udp_socket_to_server(ClientState& state, const wd_server_config_pay
 }
 
 int connect_tcp_fd(const ClientState& state, const char* label) {
-    int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    const char* socket_label = label ? label : "TCP socket";
+    int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd < 0)
     {
-        WD_LOG_ERROR("%s failed: %s", label ? label : "TCP socket", std::strerror(errno));
+        WD_LOG_ERROR("%s failed: %s", socket_label, std::strerror(errno));
         return -1;
     }
 
@@ -409,9 +470,80 @@ int connect_tcp_fd(const ClientState& state, const char* label) {
         return -1;
     }
 
-    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) [[unlikely]]
+    int connect_result = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (connect_result < 0 && errno != EINPROGRESS) [[unlikely]]
     {
-        WD_LOG_ERROR("%s failed: %s", label ? label : "TCP socket", std::strerror(errno));
+        WD_LOG_ERROR("%s failed: %s", socket_label, std::strerror(errno));
+        ::close(fd);
+        return -1;
+    }
+
+    if (connect_result < 0)
+    {
+        const uint64_t deadline_ns =
+            wd_now_ns() + static_cast<uint64_t>(WD_TCP_HANDSHAKE_TIMEOUT_MS) * WD_NSEC_PER_MSEC;
+        for (;;)
+        {
+            const uint64_t now_ns = wd_now_ns();
+            if (now_ns >= deadline_ns)
+            {
+                errno = ETIMEDOUT;
+                WD_LOG_ERROR("%s timed out after %ld ms", socket_label, WD_TCP_HANDSHAKE_TIMEOUT_MS);
+                ::close(fd);
+                return -1;
+            }
+
+            const uint64_t remaining_ns = deadline_ns - now_ns;
+            const int timeout_ms = static_cast<int>((remaining_ns + WD_NSEC_PER_MSEC - 1u) / WD_NSEC_PER_MSEC);
+            pollfd pfd{};
+            pfd.fd     = fd;
+            pfd.events = POLLOUT;
+
+            int poll_result;
+            do
+            {
+                poll_result = ::poll(&pfd, 1, timeout_ms);
+            } while (poll_result < 0 && errno == EINTR);
+
+            if (poll_result == 0)
+            {
+                continue;
+            }
+            if (poll_result < 0)
+            {
+                WD_LOG_ERROR("%s poll failed: %s", socket_label, std::strerror(errno));
+                ::close(fd);
+                return -1;
+            }
+
+            int       socket_error = 0;
+            socklen_t error_size   = sizeof(socket_error);
+            if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_size) != 0)
+            {
+                WD_LOG_ERROR("%s status failed: %s", socket_label, std::strerror(errno));
+                ::close(fd);
+                return -1;
+            }
+            if (socket_error != 0)
+            {
+                WD_LOG_ERROR("%s failed: %s", socket_label, std::strerror(socket_error));
+                ::close(fd);
+                return -1;
+            }
+            break;
+        }
+    }
+
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || ::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) != 0)
+    {
+        WD_LOG_ERROR("%s failed to restore blocking mode: %s", socket_label, std::strerror(errno));
+        ::close(fd);
+        return -1;
+    }
+
+    if (!configure_connected_tcp_socket(fd, socket_label))
+    {
         ::close(fd);
         return -1;
     }

@@ -27,6 +27,12 @@ struct ClientTileUpload {
     }
 };
 
+enum class ClientTilePresentPushResult : uint8_t {
+    Queued,
+    Superseded,
+    Rejected,
+};
+
 class ClientTilePresentQueue {
   public:
     explicit ClientTilePresentQueue(size_t max_items = 1024,
@@ -35,7 +41,7 @@ class ClientTilePresentQueue {
           max_bytes_(max_bytes == 0 ? 1 : max_bytes) {
     }
 
-    bool push(ClientTileUpload&& upload);
+    ClientTilePresentPushResult push(ClientTileUpload&& upload);
     void drain(std::vector<ClientTileUpload>& out);
     void clear();
 

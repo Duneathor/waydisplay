@@ -145,7 +145,7 @@ bool run_codec(uint32_t codec) {
         if (!previous.data.empty())
         {
             const wd_client_video_packet_expectation expected{previous.header.session_id, previous.header.connection_token,
-                                                               geometry.width, geometry.height};
+                                                               geometry.width, geometry.height, previous.header.codec};
             bool control = false;
             CHECK(wd_client_video_packet_validate(&previous.header,
                                                   static_cast<uint32_t>(sizeof(previous.header) + previous.data.size()),
@@ -164,7 +164,7 @@ bool run_codec(uint32_t codec) {
             CHECK(encoded.header.width == geometry.width && encoded.header.height == geometry.height);
             CHECK(encoded.header.coded_width == coded(geometry.width) && encoded.header.coded_height == coded(geometry.height));
             const wd_client_video_packet_expectation expected{encoded.header.session_id, encoded.header.connection_token,
-                                                               geometry.width, geometry.height};
+                                                               geometry.width, geometry.height, encoded.header.codec};
             bool control = false;
             CHECK(wd_client_video_packet_validate(&encoded.header,
                                                   static_cast<uint32_t>(sizeof(encoded.header) + encoded.data.size()),

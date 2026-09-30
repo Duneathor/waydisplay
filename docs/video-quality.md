@@ -16,7 +16,7 @@ See the additional measurement and A/B instructions introduced in 047.
 Use a STATS or DEBUG package and `-v`. `video-cadence/interval` on the
 server reports **measured**, elapsed-time-normalized readbacks, snapshot
 publication, encode attempts, queued TCP frames, feedback-reported decoded and
-presented frames, and wire Mbit/s. `client-video-cadence/interval` independently
+presented frames, and video payload Mbit/s. `client-video-cadence/interval` independently
 reports received/decoded/presented fps. Readbacks include tiles; the
 configured target FPS and bitrate are *not* measured rates or quality scores.
 Client feedback arrives periodically, so server-side client rates may lag the

@@ -52,6 +52,9 @@ void test_rejects_invalid_and_mismatched_frames() {
     ClientVideoFrameBuffer mismatched = make_frame(4, 4, 7);
     require(!queue.push_decoded(std::move(mismatched), 8, 4, 2, 20, 1), "metadata dimensions must match the decoded buffer");
 
+    ClientVideoFrameBuffer zero_epoch = make_frame(4, 4, 8);
+    require(!queue.push_decoded(std::move(zero_epoch), 4, 4, 3, 30, 0), "epoch zero must be rejected");
+
     bool                   dropped_newest = true;
     ClientVideoFrameBuffer recycled       = queue.take_decode_buffer(dropped_newest);
     require(!dropped_newest, "taking a recycle buffer from a non-full queue is not an overflow drop");

@@ -51,8 +51,8 @@ enum wd_aux_channel_kind wd_aux_channel_validate_hello(uint16_t message_type, co
         struct wd_video_channel_hello_payload hello;
         memcpy(&hello, payload, sizeof(hello));
         if (!wd_aux_identity_matches(hello.session_id, hello.connection_token, policy) ||
-            (hello.video_codecs & ~WD_VIDEO_CODEC_MASK) != 0 ||
-            (hello.video_codecs & policy->video_codecs & WD_VIDEO_CODEC_MASK) == 0 ||
+            hello.video_codecs == 0 || (hello.video_codecs & ~WD_VIDEO_CODEC_MASK) != 0 ||
+            hello.video_codecs != policy->video_codecs ||
             hello.video_transport != policy->video_transport)
         {
             return WD_AUX_CHANNEL_INVALID;

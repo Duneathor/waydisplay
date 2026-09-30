@@ -20,6 +20,7 @@ struct wd_audio_packetizer {
     bool     force_discontinuity;
 };
 
+/* Packetizer state is single-thread owned; callers serialize all mutation. */
 void wd_audio_packetizer_begin(struct wd_audio_packetizer* packetizer, uint8_t session_id, uint64_t connection_token, uint64_t audio_epoch,
                                uint64_t media_clock_id);
 void wd_audio_packetizer_mark_discontinuity(struct wd_audio_packetizer* packetizer);

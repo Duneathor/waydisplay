@@ -313,6 +313,7 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->popup_explicit_scene_trees += src->popup_explicit_scene_trees;
     dst->popup_explicit_scene_tree_failures += src->popup_explicit_scene_tree_failures;
     dst->cursor_shape_requests += src->cursor_shape_requests;
+    dst->cursor_shape_rejected += src->cursor_shape_rejected;
     dst->cursor_shape_tx += src->cursor_shape_tx;
     dst->cursor_shape_coalesced += src->cursor_shape_coalesced;
     dst->cursor_set_cursor_requests += src->cursor_set_cursor_requests;
@@ -337,7 +338,10 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->tcp_summary_delta_tx += src->tcp_summary_delta_tx;
     dst->tcp_summary_delta_tiles += src->tcp_summary_delta_tiles;
     dst->tcp_summary_coalesced += src->tcp_summary_coalesced;
-    dst->tcp_summary_budget_interval_ns += src->tcp_summary_budget_interval_ns;
+    if (src->tcp_summary_budget_interval_ns != 0)
+    {
+        dst->tcp_summary_budget_interval_ns = src->tcp_summary_budget_interval_ns;
+    }
     dst->tcp_summary_repair_backoff += src->tcp_summary_repair_backoff;
     dst->tcp_control_bytes_sent += src->tcp_control_bytes_sent;
     dst->tcp_control_bytes_refunded += src->tcp_control_bytes_refunded;
@@ -355,7 +359,7 @@ static void wd_stats_accumulate(struct wd_stats* dst, const struct wd_stats* src
     dst->udp_async_send_failed += src->udp_async_send_failed;
     dst->udp_async_queued += src->udp_async_queued;
     dst->udp_async_completed += src->udp_async_completed;
-    dst->udp_async_completion_failed += src->udp_async_completion_failed;
+    dst->udp_async_transport_failed += src->udp_async_transport_failed;
     dst->udp_async_sqe_exhausted += src->udp_async_sqe_exhausted;
     dst->udp_async_submit_calls += src->udp_async_submit_calls;
     dst->udp_async_partial_submits += src->udp_async_partial_submits;
@@ -477,6 +481,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     uint64_t            tile_repair_kib_per_second     = net->stream_policy.tile_repair_bytes_per_second / 1024ull;
     uint64_t            video_kib_per_second           = net->stream_policy.video_bytes_per_second / 1024ull;
     uint64_t            control_kib_per_second         = net->stream_policy.control_bytes_per_second / 1024ull;
+    uint64_t            audio_required_kib_per_second  = net->stream_policy.audio_required_bytes_per_second / 1024ull;
     uint64_t            audio_reserved_kib_per_second  = net->stream_policy.audio_reserved_bytes_per_second / 1024ull;
     uint64_t            audio_cap_kib_per_second       = net->stream_policy.audio_cap_bytes_per_second / 1024ull;
     uint64_t            overhead_kib_per_second        = net->stream_policy.overhead_bytes_per_second / 1024ull;
@@ -493,7 +498,6 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     bool                selection_channel_connected = net->selection_tcp_fd >= 0;
     bool                video_channel_connected     = net->video_tcp_fd >= 0;
     bool                video_negotiated            = net->video_stream_negotiated;
-    bool                video_encoder_available     = wd_video_encoder_available(net->video_encoder);
     uint8_t             video_mode                  = net->stream_policy.video_mode;
     uint8_t             video_min_dirty_percent     = net->stream_policy.video_min_dirty_percent;
     uint16_t            video_enter_seconds         = net->stream_policy.video_enter_seconds;
@@ -509,6 +513,10 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     uint8_t             compression_benchmark_mode  = server->tile_compression_benchmark_mode;
 
     pthread_mutex_unlock(&net->lock);
+
+    pthread_mutex_lock(&net->video_encoder_lock);
+    const bool video_encoder_available = wd_video_encoder_available(net->video_encoder);
+    pthread_mutex_unlock(&net->video_encoder_lock);
 
     struct wd_stats_log_state* stats_log = &server->stats_log;
     wd_stats_accumulate(&stats_log->totals, &s);
@@ -537,6 +545,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
         stats_log->prev_tile_repair_kib_per_second != tile_repair_kib_per_second ||
         stats_log->prev_video_kib_per_second != video_kib_per_second ||
         stats_log->prev_control_kib_per_second != control_kib_per_second ||
+        stats_log->prev_audio_required_kib_per_second != audio_required_kib_per_second ||
         stats_log->prev_audio_reserved_kib_per_second != audio_reserved_kib_per_second ||
         stats_log->prev_audio_cap_kib_per_second != audio_cap_kib_per_second ||
         stats_log->prev_overhead_kib_per_second != overhead_kib_per_second || stats_log->prev_tile_width != tile_width ||
@@ -563,7 +572,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      "video_decode_ewma_ms=%.2f video_decode_safe_fps=%u planned_resize_resume=%s resume_from=%s "
                      "recovery_framebuffer_generation=%llu recovery_damage_deferred=%s "
                      "link_safe_kib_per_sec=%llu link_recent_kib_per_sec=%llu tile_media_kib_per_sec=%llu tile_fresh_kib_per_sec=%llu tile_repair_kib_per_sec=%llu "
-                     "video_alloc_kib_per_sec=%llu audio_need_kib_per_sec=%llu audio_cap_kib_per_sec=%llu control_kib_per_sec=%llu overhead_kib_per_sec=%llu "
+                     "video_alloc_kib_per_sec=%llu audio_required_kib_per_sec=%llu audio_reserved_kib_per_sec=%llu audio_cap_kib_per_sec=%llu control_kib_per_sec=%llu overhead_kib_per_sec=%llu "
                      "base_tile=%ux%u wire_tiles=128x64,64x64,32x32,16x16 tile_compression=%s input_channel=%s "
                      "selection_channel=%s video_negotiated=%s video_channel=%s video_encoder=%s",
                      (unsigned)requested_session_fps, (unsigned)adaptive_capture_fps, (unsigned)capture_pacing_fps,
@@ -579,8 +588,9 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      tile_recovery_live_damage_deferred ? "yes" : "no", (unsigned long long)safe_link_kib_per_second,
                      (unsigned long long)recent_link_kib_per_second, (unsigned long long)tile_media_rate_kib_per_second,
                      (unsigned long long)tile_fresh_kib_per_second, (unsigned long long)tile_repair_kib_per_second,
-                     (unsigned long long)video_kib_per_second, (unsigned long long)audio_reserved_kib_per_second,
-                     (unsigned long long)audio_cap_kib_per_second, (unsigned long long)control_kib_per_second,
+                     (unsigned long long)video_kib_per_second, (unsigned long long)audio_required_kib_per_second,
+                     (unsigned long long)audio_reserved_kib_per_second, (unsigned long long)audio_cap_kib_per_second,
+                     (unsigned long long)control_kib_per_second,
                      (unsigned long long)overhead_kib_per_second, (unsigned)tile_width, (unsigned)tile_height,
                      wd_tile_compression_benchmark_mode_name(compression_benchmark_mode),
                      input_channel_connected ? "yes" : "no", selection_channel_connected ? "yes" : "no", video_negotiated ? "yes" : "no",
@@ -600,6 +610,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
         stats_log->prev_tile_repair_kib_per_second      = tile_repair_kib_per_second;
         stats_log->prev_video_kib_per_second            = video_kib_per_second;
         stats_log->prev_control_kib_per_second          = control_kib_per_second;
+        stats_log->prev_audio_required_kib_per_second   = audio_required_kib_per_second;
         stats_log->prev_audio_reserved_kib_per_second   = audio_reserved_kib_per_second;
         stats_log->prev_audio_cap_kib_per_second        = audio_cap_kib_per_second;
         stats_log->prev_overhead_kib_per_second         = overhead_kib_per_second;
@@ -670,7 +681,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     bool video_activity =
         s.dirty_tiles != 0 || s.dirty_tiles_stale_skipped != 0 || s.udp_tiles_sent != 0 || s.udp_fresh_tiles_sent != 0 ||
         s.udp_retx_tiles_sent != 0 || s.udp_packets_sent != 0 || s.udp_bytes_sent != 0 || s.udp_send_pressure_drops != 0 ||
-        s.udp_async_send_failed != 0 || s.udp_async_queued != 0 || s.udp_async_completed != 0 || s.udp_async_completion_failed != 0 ||
+        s.udp_async_send_failed != 0 || s.udp_async_queued != 0 || s.udp_async_completed != 0 || s.udp_async_transport_failed != 0 ||
         s.udp_async_sqe_exhausted != 0 || s.tile_choice_compressed != 0 || s.tile_choice_uncompressed != 0 || s.compression_attempts != 0 ||
         s.compression_entropy_skips != 0 || s.compression_adaptive_skips != 0 || s.compression_nonwins != 0 ||
         s.compression_forced_choices != 0 || s.candidate_prediction_evaluations != 0 ||
@@ -689,7 +700,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
             "comp_sent=%llu uncomp_sent=%llu comp_payload_avg_bytes=%.1f uncomp_payload_avg_bytes=%.1f choice_comp=%llu choice_uncomp=%llu "
             "choice_comp_payload_avg_bytes=%.1f choice_raw_payload_avg_bytes=%.1f choice_comp_wire_avg_bytes=%.1f choice_uncomp_wire_avg_bytes=%.1f "
             "choice_chosen_wire_avg_bytes=%.1f choice_saved_kib=%.1f pressure_drops=%llu async_queued=%llu async_completed=%llu "
-            "async_failed=%llu async_completion_failed=%llu async_fallback=%llu async_inflight_max=%llu submit_calls=%llu "
+            "async_failed=%llu async_transport_failed=%llu async_fallback=%llu async_inflight_max=%llu submit_calls=%llu "
             "partial_submits=%llu pkts_per_submit=%.2f zstd_mode=%s zstd_attempts=%llu zstd_wins=%llu zstd_nonwins=%llu zstd_forced=%llu "
             "zstd_entropy_skip=%llu zstd_adaptive_skip=%llu predict_eval=%llu predict_skip=%llu predict_probe=%llu "
             "predict_skip_pct=%.1f predict_probe_pct=%.1f zstd_total_ms=%.2f zstd_saved_kib=%.1f "
@@ -716,7 +727,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
             choices ? (double)s.tile_choice_chosen_wire_sum / (double)choices : 0.0, (double)s.tile_choice_saved_wire_sum / 1024.0,
             (unsigned long long)s.udp_send_pressure_drops, (unsigned long long)s.udp_async_queued,
             (unsigned long long)s.udp_async_completed, (unsigned long long)s.udp_async_send_failed,
-            (unsigned long long)s.udp_async_completion_failed, (unsigned long long)s.udp_async_sqe_exhausted,
+            (unsigned long long)s.udp_async_transport_failed, (unsigned long long)s.udp_async_sqe_exhausted,
             (unsigned long long)s.udp_async_inflight_max, (unsigned long long)s.udp_async_submit_calls,
             (unsigned long long)s.udp_async_partial_submits,
             s.udp_async_submit_calls ? (double)s.udp_async_queued / (double)s.udp_async_submit_calls : 0.0,
@@ -818,7 +829,7 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
                      wd_video_snapshot_admission_percent(s.video_snapshot_preflight_accepted, s.video_snapshot_considered),
                      wd_video_rate_per_sec(s.video_snapshot_considered, video_observation_elapsed_ns));
         WD_LOG_STATS("video-cadence/interval: elapsed_s=%.3f readbacks_fps=%.2f snapshots_fps=%.2f "
-                     "encoded_fps=%.2f queued_tx_fps=%.2f wire_mbit_per_sec=%.3f "
+                     "encoded_fps=%.2f queued_tx_fps=%.2f payload_mbit_per_sec=%.3f "
                      "client_seen_fps=%.2f client_decoded_fps=%.2f client_presented_fps=%.2f "
                      "capture_target_fps=%u encoder_nominal_fps=%u requested_session_fps=%u "
                      "capture_pacing_fps=%u configured_target_kib_per_sec=%u "
@@ -1060,18 +1071,20 @@ void wd_stream_sample_and_maybe_log_stats(struct wd_server* server, bool log_sta
     }
 
     bool compositor_activity = s.xdg_move_invalid_serial != 0 || s.xdg_resize_invalid_serial != 0 || s.popup_explicit_scene_trees != 0 ||
-                               s.popup_explicit_scene_tree_failures != 0 || s.cursor_shape_requests != 0 || s.cursor_shape_tx != 0 ||
-                               s.cursor_shape_coalesced != 0 || s.cursor_set_cursor_requests != 0 || s.cursor_set_cursor_rejected != 0 ||
+                               s.popup_explicit_scene_tree_failures != 0 || s.cursor_shape_requests != 0 ||
+                               s.cursor_shape_rejected != 0 || s.cursor_shape_tx != 0 || s.cursor_shape_coalesced != 0 || s.cursor_set_cursor_requests != 0 || s.cursor_set_cursor_rejected != 0 ||
                                s.cursor_set_cursor_hidden != 0 || s.cursor_set_cursor_fallback != 0;
     if (compositor_activity)
     {
         WD_LOG_STATS(
             "compositor/interval: xdg_move_bad_serial=%llu xdg_resize_bad_serial=%llu popup_scene=%llu popup_scene_fail=%llu cursor_shape=%llu "
-            "cursor_shape_tx=%llu cursor_shape_coalesced=%llu cursor_set=%llu cursor_reject=%llu cursor_hidden=%llu cursor_fallback=%llu",
+            "cursor_shape_reject=%llu cursor_shape_tx=%llu cursor_shape_coalesced=%llu cursor_set=%llu cursor_reject=%llu cursor_hidden=%llu "
+            "cursor_fallback=%llu",
             (unsigned long long)s.xdg_move_invalid_serial, (unsigned long long)s.xdg_resize_invalid_serial,
             (unsigned long long)s.popup_explicit_scene_trees, (unsigned long long)s.popup_explicit_scene_tree_failures,
-            (unsigned long long)s.cursor_shape_requests, (unsigned long long)s.cursor_shape_tx,
-            (unsigned long long)s.cursor_shape_coalesced, (unsigned long long)s.cursor_set_cursor_requests,
+            (unsigned long long)s.cursor_shape_requests, (unsigned long long)s.cursor_shape_rejected,
+            (unsigned long long)s.cursor_shape_tx, (unsigned long long)s.cursor_shape_coalesced,
+            (unsigned long long)s.cursor_set_cursor_requests,
             (unsigned long long)s.cursor_set_cursor_rejected, (unsigned long long)s.cursor_set_cursor_hidden,
             (unsigned long long)s.cursor_set_cursor_fallback);
     }

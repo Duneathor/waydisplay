@@ -23,7 +23,10 @@ bool wd_audio_stream_create(struct wd_audio_stream** out_stream);
 void wd_audio_stream_destroy(struct wd_audio_stream* stream);
 
 bool        wd_audio_stream_available(void);
+/* prepare() may recreate an unhealthy idle capture; ready() is a pure probe. */
+bool        wd_audio_stream_prepare(struct wd_audio_stream* stream);
 bool        wd_audio_stream_ready(struct wd_audio_stream* stream);
+/* Routing identifiers are stream-owned and immutable until destroy(). */
 const char* wd_audio_stream_sink_name(const struct wd_audio_stream* stream);
 const char* wd_audio_stream_sink_target(const struct wd_audio_stream* stream);
 const char* wd_audio_stream_capture_backend_name(void);

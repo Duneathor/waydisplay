@@ -15,8 +15,8 @@ inline bool client_video_decoder_prepare_iyuv(ClientVideoFrameBuffer& output, ui
         return false;
     }
 
-    const uint32_t uv_width  = (width + 1u) / 2u;
-    const uint32_t uv_height = (height + 1u) / 2u;
+    const uint32_t uv_width  = width / 2u + width % 2u;
+    const uint32_t uv_height = height / 2u + height % 2u;
     const size_t y_size      = static_cast<size_t>(width) * height;
     const size_t uv_size     = static_cast<size_t>(uv_width) * uv_height;
     const size_t total_size  = y_size + uv_size * 2u;

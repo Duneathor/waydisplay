@@ -201,6 +201,13 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
                 }
             }
         }
+        if (!encoded || payload_invalid)
+        {
+            /* Once encoder state may have advanced, any lost output can break
+             * the client's reference chain. A redundant keyframe request on a
+             * pre-submit failure is harmless and keeps recovery conservative. */
+            (void)wd_video_encoder_request_keyframe(net->video_encoder);
+        }
     }
     pthread_mutex_unlock(&net->video_encoder_lock);
 
@@ -282,6 +289,9 @@ static void wd_stream_video_worker_process(struct wd_video_worker* worker, struc
 
     if (job->request_keyframe && (header.flags & WD_VIDEO_FRAME_KEYFRAME) == 0)
     {
+        pthread_mutex_lock(&net->video_encoder_lock);
+        (void)wd_video_encoder_request_keyframe(net->video_encoder);
+        pthread_mutex_unlock(&net->video_encoder_lock);
         wd_video_encoder_packet_release(&packet);
         net->stats.video_encode_failed++;
         pthread_mutex_unlock(&net->lock);
@@ -389,7 +399,10 @@ bool wd_stream_video_worker_init(struct wd_server* server) {
     }
 
     struct wd_net_state* net = &server->net;
-    if (!wd_video_encoder_available(net->video_encoder))
+    pthread_mutex_lock(&net->video_encoder_lock);
+    const bool encoder_available = wd_video_encoder_available(net->video_encoder);
+    pthread_mutex_unlock(&net->video_encoder_lock);
+    if (!encoder_available)
     {
         return true;
     }
@@ -563,6 +576,7 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
 
     pthread_mutex_lock(&net->video_encoder_lock);
     wd_video_encoder_reset(net->video_encoder);
+    const bool encoder_available = wd_video_encoder_available(net->video_encoder);
     pthread_mutex_unlock(&net->video_encoder_lock);
     net->stream_policy.video_candidate_seconds  = 0;
     net->stream_policy.tile_recovery_seconds    = 0;
@@ -628,7 +642,7 @@ void wd_stream_video_reset_locked(struct wd_server* server, const char* reason, 
                                          net->client_connected ? (resize ? WD_VIDEO_RECOVERY_PLANNED : WD_VIDEO_RECOVERY_FAILURE)
                                                                : WD_VIDEO_RECOVERY_NONE,
                                          reason ? reason : "video reset", 0.0, 0.0, 0.0, net->video_tcp_fd >= 0,
-                                         wd_video_encoder_available(net->video_encoder));
+                                         encoder_available);
     }
     else if (reason)
     {
@@ -695,8 +709,10 @@ bool wd_stream_video_snapshot_needed(struct wd_server* server) {
     }
 
     net->stats.video_snapshot_considered++;
-    const bool available = net->video_worker && net->video_stream_negotiated && net->video_tcp_fd >= 0 &&
-                           net->video_tx && wd_video_encoder_available(net->video_encoder);
+    /* Negotiation/worker setup is the cached capability decision. Runtime
+     * encoder failures are handled by the worker/reset path; probing mutable
+     * backend state here would race the encoder worker and add per-frame work. */
+    const bool available = net->video_worker && net->video_stream_negotiated && net->video_tcp_fd >= 0 && net->video_tx;
     bool pending_send = false;
     if (available)
     {
@@ -733,7 +749,7 @@ bool wd_stream_try_publish_video_snapshot_locked(struct wd_server* server, uint6
         (net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_READY &&
          net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_ACTIVE &&
          net->stream_policy.stream_mode != WD_STREAM_MODE_VIDEO_RECOVERING) ||
-        !net->video_stream_negotiated || net->video_tcp_fd < 0 || !net->video_tx || !wd_video_encoder_available(net->video_encoder))
+        !net->video_stream_negotiated || net->video_tcp_fd < 0 || !net->video_tx)
     {
         return false;
     }

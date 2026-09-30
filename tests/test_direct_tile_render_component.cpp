@@ -19,7 +19,7 @@ static ClientTileUpload make_upload() {
 
 int main() {
     ClientTilePresentQueue queue(8, 64u * 1024u);
-    CHECK(queue.push(make_upload()));
+    CHECK(queue.push(make_upload()) == ClientTilePresentPushResult::Queued);
 
     /* Model the renderer side of the network->direct-upload handoff: draining
      * a nonempty queue means SDL_UpdateTexture has presentable remote pixels,

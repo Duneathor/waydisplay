@@ -21,7 +21,7 @@ static inline struct wd_client_video_offer wd_client_video_offer_decide(uint8_t 
                                                                          uint32_t requested_codecs) {
     struct wd_client_video_offer offer = {0, 0, 0};
     if (video_mode == WD_VIDEO_MODE_OFF || video_mode > WD_VIDEO_MODE_FORCE ||
-        decoder_mode == WD_CLIENT_VIDEO_DECODER_OFF)
+        decoder_mode >= WD_CLIENT_VIDEO_DECODER_OFF)
     {
         return offer;
     }

@@ -57,6 +57,14 @@ extern "C" {
 #define WD_MAX_RENDER_WIDTH  4096u
 #define WD_MAX_RENDER_HEIGHT 2160u
 
+/* Encoded surfaces may be padded beyond the visible output for codec block
+ * alignment, but remain within a small, explicit protocol envelope. */
+#define WD_VIDEO_CODED_ALIGNMENT_MAX 64u
+#define WD_MAX_VIDEO_CODED_WIDTH \
+    ((((WD_MAX_RENDER_WIDTH) + WD_VIDEO_CODED_ALIGNMENT_MAX - 1u) / WD_VIDEO_CODED_ALIGNMENT_MAX) * WD_VIDEO_CODED_ALIGNMENT_MAX)
+#define WD_MAX_VIDEO_CODED_HEIGHT \
+    ((((WD_MAX_RENDER_HEIGHT) + WD_VIDEO_CODED_ALIGNMENT_MAX - 1u) / WD_VIDEO_CODED_ALIGNMENT_MAX) * WD_VIDEO_CODED_ALIGNMENT_MAX)
+
 #define WD_TILE_WIDTH                                     16u
 #define WD_TILE_HEIGHT                                    16u
 #define WD_SERVER_TILE_COMPRESSION_BENCHMARK_MODE_DEFAULT 0u
@@ -64,6 +72,9 @@ extern "C" {
 
 #define WD_BASE_TILE_WIDTH  16u
 #define WD_BASE_TILE_HEIGHT 16u
+#define WD_MAX_RENDER_BASE_TILES_X (((WD_MAX_RENDER_WIDTH) + WD_BASE_TILE_WIDTH - 1u) / WD_BASE_TILE_WIDTH)
+#define WD_MAX_RENDER_BASE_TILES_Y (((WD_MAX_RENDER_HEIGHT) + WD_BASE_TILE_HEIGHT - 1u) / WD_BASE_TILE_HEIGHT)
+#define WD_MAX_RENDER_BASE_TILES   (WD_MAX_RENDER_BASE_TILES_X * WD_MAX_RENDER_BASE_TILES_Y)
 
 #define WD_TILES_X     (((WD_DISPLAY_WIDTH) + (WD_TILE_WIDTH) - 1u) / (WD_TILE_WIDTH))
 #define WD_TILES_Y     (((WD_DISPLAY_HEIGHT) + (WD_TILE_HEIGHT) - 1u) / (WD_TILE_HEIGHT))
@@ -79,7 +90,14 @@ extern "C" {
 #define WD_DEFAULT_TCP_PORT              5000u
 #define WD_CLIENT_DEFAULT_UDP_PORT       6000u
 #define WD_TCP_HANDSHAKE_TIMEOUT_MS      3000L
+#define WD_TCP_NEGOTIATION_TIMEOUT_MS    15000L
+#define WD_TCP_NEGOTIATION_POLL_SLICE_MS 100u
 #define WD_TCP_CONNECTED_SEND_TIMEOUT_MS 3000L
+#define WD_TCP_KEEPALIVE_IDLE_SEC        15
+#define WD_TCP_KEEPALIVE_INTERVAL_SEC    5
+#define WD_TCP_KEEPALIVE_PROBES          3
+#define WD_TCP_USER_TIMEOUT_MS           15000
+#define WD_TCP_NEGOTIATION_FRAME_MAX_LIFETIME_NS ((uint64_t)WD_TCP_HANDSHAKE_TIMEOUT_MS * WD_NSEC_PER_MSEC)
 #define WD_TCP_FRAME_IDLE_TIMEOUT_NS      (3000ull * WD_NSEC_PER_MSEC)
 #define WD_TCP_FRAME_MAX_LIFETIME_NS      (30000ull * WD_NSEC_PER_MSEC)
 #define WD_TCP_MAX_PAYLOAD_SIZE          (2u * 1024u * 1024u)
@@ -239,6 +257,7 @@ extern "C" {
 #define WD_AUDIO_TARGET_LATENCY_MS_DEFAULT  20u
 #define WD_AUDIO_TARGET_LATENCY_MS_MIN      10u
 #define WD_AUDIO_TARGET_LATENCY_MS_MAX      400u
+#define WD_AUDIO_BITRATE_MIN                24000u
 #define WD_AUDIO_BITRATE_DEFAULT            128000u
 #define WD_VIDEO_MIN_DIRTY_PERCENT_DEFAULT  30u
 #define WD_VIDEO_MIN_DIRTY_PERCENT_MAX      100u
@@ -290,6 +309,7 @@ extern "C" {
  * Protocol payload limits remain in wd_protocol.h. */
 #define WD_SELECTION_CAPTURE_INITIAL_BYTES 65536u
 #define WD_SELECTION_CAPTURE_TIMEOUT_MS    2000u
+#define WD_SELECTION_DELIVERY_TIMEOUT_MS   2000u
 #define WD_SELECTION_CAPTURE_GROWTH_MULTIPLIER 2u
 
 /* Encoder implementation policy.
@@ -546,6 +566,7 @@ extern "C" {
 #define WD_SERVER_KEY_QUEUE_CAPACITY        4096u
 #define WD_SERVER_POINTER_QUEUE_CAPACITY    4096u
 #define WD_SERVER_PRESSED_KEY_CAPACITY      256u
+#define WD_SERVER_PRESSED_BUTTON_CAPACITY   32u
 #define WD_SERVER_KEYBOARD_REPEAT_RATE_HZ   25u
 #define WD_SERVER_KEYBOARD_REPEAT_DELAY_MS  600u
 #define WD_SERVER_PROCESS_TERM_GRACE_MS     1000u
@@ -640,8 +661,9 @@ WD_CONFIG_STATIC_ASSERT(WD_VIDEO_ENTER_SECONDS_DEFAULT <= WD_VIDEO_ENTER_SECONDS
                         "video mode durations must be ordered");
 WD_CONFIG_STATIC_ASSERT(WD_CLIENT_FRAMEBUFFER_LOCK_EWMA_OLD_NUMERATOR < WD_CLIENT_FRAMEBUFFER_LOCK_EWMA_DENOMINATOR,
                         "framebuffer lock EWMA must retain some new samples");
-WD_CONFIG_STATIC_ASSERT(WD_SERVER_KEY_QUEUE_CAPACITY > 0u && WD_SERVER_POINTER_QUEUE_CAPACITY > 0u && WD_SERVER_PRESSED_KEY_CAPACITY > 0u,
-                        "input queue capacities must be nonzero");
+WD_CONFIG_STATIC_ASSERT(WD_SERVER_KEY_QUEUE_CAPACITY > 0u && WD_SERVER_POINTER_QUEUE_CAPACITY >= 2u && WD_SERVER_PRESSED_KEY_CAPACITY > 0u &&
+                            WD_SERVER_PRESSED_BUTTON_CAPACITY > 0u,
+                        "input queue capacities must support an atomic pointer click");
 WD_CONFIG_STATIC_ASSERT(WD_SERVER_PROCESS_TERM_GRACE_MS > 0u && WD_SERVER_PROCESS_KILL_GRACE_MS > 0u &&
                             WD_SERVER_PROCESS_POLL_INTERVAL_MS > 0u,
                         "process shutdown timing must be bounded");
@@ -651,16 +673,29 @@ WD_CONFIG_STATIC_ASSERT(WD_SERVER_MIN_REFRESH_HZ > 0u && WD_SERVER_MIN_REFRESH_H
 WD_CONFIG_STATIC_ASSERT(WD_TILE_WIDTH > 0u && WD_TILE_HEIGHT > 0u, "tile dimensions must be nonzero");
 WD_CONFIG_STATIC_ASSERT(WD_SERVER_TILE_COMPRESSION_BENCHMARK_MODE_DEFAULT <= 3u, "tile compression benchmark mode must be valid");
 WD_CONFIG_STATIC_ASSERT(WD_BASE_TILE_WIDTH > 0u && WD_BASE_TILE_HEIGHT > 0u, "base tile dimensions must be nonzero");
+WD_CONFIG_STATIC_ASSERT(WD_MAX_RENDER_BASE_TILES > 0u && WD_MAX_RENDER_BASE_TILES <= UINT16_MAX,
+                        "maximum render surface must fit the 16-bit base-tile grid");
+WD_CONFIG_STATIC_ASSERT(WD_TILE_ADVISOR_ENTROPY_SAMPLE_COUNT > 0u && WD_TILE_ADVISOR_MAX_UNIQUE_DENOMINATOR > 0u &&
+                            WD_TILE_ADVISOR_REPEATED_DELTA_DIVISOR > 0u && WD_TILE_ADVISOR_BYPASS_PROBE_INTERVAL > 0u,
+                        "tile advisor sample counts and divisors must be nonzero");
+WD_CONFIG_STATIC_ASSERT(WD_STREAM_TILE_PREDICTOR_EWMA_DENOMINATOR > 0u &&
+                            WD_STREAM_TILE_PREDICTOR_EWMA_NEW_NUMERATOR > 0u &&
+                            WD_STREAM_TILE_PREDICTOR_EWMA_NEW_NUMERATOR <= WD_STREAM_TILE_PREDICTOR_EWMA_DENOMINATOR,
+                        "tile predictor EWMA weights must form a bounded nonzero ratio");
 WD_CONFIG_STATIC_ASSERT(WD_WIRE_TILE_MAX_WIDTH % WD_BASE_TILE_WIDTH == 0u && WD_WIRE_TILE_MAX_HEIGHT % WD_BASE_TILE_HEIGHT == 0u,
                         "wire tile dimensions must align to the base grid");
 WD_CONFIG_STATIC_ASSERT(WD_DISPLAY_WIDTH <= WD_MAX_RENDER_WIDTH && WD_DISPLAY_HEIGHT <= WD_MAX_RENDER_HEIGHT,
                         "default display must fit the render envelope");
+WD_CONFIG_STATIC_ASSERT(WD_MAX_VIDEO_CODED_WIDTH <= UINT16_MAX && WD_MAX_VIDEO_CODED_HEIGHT <= UINT16_MAX,
+                        "coded video envelope must fit wire dimensions");
 WD_CONFIG_STATIC_ASSERT(WD_CLIENT_DIRTY_RECT_FULL_UPLOAD_PERCENT <= 100u && WD_CLIENT_BOUNDS_UPLOAD_MIN_SAVINGS_PERCENT <= 100u &&
                             WD_CLIENT_FULL_UPLOAD_MIN_SAVINGS_PERCENT <= 100u,
                         "render percentages must be valid");
 WD_CONFIG_STATIC_ASSERT(WD_UDP_THROUGHPUT_SAFETY_PERCENT <= 100u && WD_LINK_SUMMARY_BUDGET_PERCENT <= 100u &&
                             WD_CLIENT_REPAIR_PRESSURE_PERCENT <= 100u,
                         "network percentages must be valid");
+WD_CONFIG_STATIC_ASSERT(WD_AUDIO_BITRATE_MIN > 0u && WD_AUDIO_BITRATE_MIN <= WD_AUDIO_BITRATE_DEFAULT,
+                        "audio bitrate bounds must be ordered and nonzero");
 WD_CONFIG_STATIC_ASSERT(WD_BANDWIDTH_VIDEO_PERCENT + WD_BANDWIDTH_AUDIO_PERCENT + WD_BANDWIDTH_CONTROL_PERCENT +
                                 WD_BANDWIDTH_OVERHEAD_PERCENT == 100u,
                             "video bandwidth classes must consume exactly the safe-link budget");

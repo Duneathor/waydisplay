@@ -81,6 +81,13 @@ void test_connection_identity_requires_secure_randomness() {
             "zero and duplicate values should be retried");
     require(token == 17 && clock_id == 18, "connection and media identities must be non-zero and distinct");
 
+    RandomScript aliased;
+    append_u64(aliased, 23);
+    token = 19;
+    require(!wd_connection_identity_generate_with(scripted_random_read, &aliased, &token, &token),
+            "connection and media identity outputs must not alias");
+    require(token == 19 && aliased.calls == 0, "aliased outputs must fail before consuming randomness or publishing state");
+
     RandomScript failed;
     failed.fail_call = 1;
     token            = 41;
@@ -155,6 +162,10 @@ void test_client_video_transition_state_machine() {
 
     decision = wd_client_video_transition_decide(WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME, false, false, true, false, false);
     require(!decision.reset_decoder, "a duplicate resize control must not tear down an already-reset decoder");
+
+    decision = wd_client_video_transition_decide(static_cast<wd_client_video_phase>(99), true, false, false, true, true);
+    require(!decision.accept_payload && decision.next_phase == WD_CLIENT_VIDEO_PHASE_TILES && decision.reset_decoder,
+            "an invalid internal phase must fail closed to tile ownership");
 }
 
 } // namespace

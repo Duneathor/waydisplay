@@ -21,7 +21,7 @@ ClientVideoFrameBuffer ClientVideoPresentQueue::take_decode_buffer(bool& dropped
 
 bool ClientVideoPresentQueue::push_decoded(ClientVideoFrameBuffer&& buffer, uint32_t width, uint32_t height, uint64_t frame_id,
                                            uint64_t pts_usec, uint64_t epoch) {
-    if (!buffer.valid() || buffer.width != width || buffer.height != height || frames_.size() >= capacity_) [[unlikely]]
+    if (!buffer.valid() || buffer.width != width || buffer.height != height || epoch == 0 || frames_.size() >= capacity_) [[unlikely]]
     {
         recycle(std::move(buffer));
         return false;

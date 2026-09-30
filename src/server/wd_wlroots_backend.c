@@ -73,7 +73,11 @@ bool wd_wlroots_init(struct wd_server* server) {
     WD_LOG_INFO("wlroots renderer: active=%s requested=%s", wd_wlroots_renderer_name(server->renderer),
                 getenv("WLR_RENDERER") ? getenv("WLR_RENDERER") : "auto");
 
-    wlr_renderer_init_wl_display(server->renderer, server->display);
+    if (!wlr_renderer_init_wl_display(server->renderer, server->display))
+    {
+        WD_LOG_ERROR("failed to initialize renderer globals for Wayland display");
+        return false;
+    }
 
     server->allocator = wlr_allocator_autocreate(server->backend, server->renderer);
 
@@ -89,7 +93,11 @@ bool wd_wlroots_init(struct wd_server* server) {
         return false;
     }
 
-    wlr_subcompositor_create(server->display);
+    if (!wlr_subcompositor_create(server->display))
+    {
+        WD_LOG_ERROR("failed to create wl_subcompositor global");
+        return false;
+    }
 
     server->viewporter = wlr_viewporter_create(server->display);
     if (!server->viewporter)

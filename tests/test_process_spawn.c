@@ -117,5 +117,29 @@ int main(void) {
     CHECK(!wd_spawn_shell_command(&invalid, "true", &invalid_change, 1, &error_code));
     CHECK(error_code == EINVAL);
     CHECK(invalid.pid == -1);
+
+    const struct wd_process_env_change invalid_action = {
+        .name   = "WD_TEST_INVALID_ACTION",
+        .value  = "value",
+        .action = (enum wd_process_env_action)99,
+    };
+    error_code = 0;
+    CHECK(!wd_spawn_shell_command(&invalid, "true", &invalid_action, 1, &error_code));
+    CHECK(error_code == EINVAL);
+
+    const struct wd_process_env_change duplicate_changes[] = {
+        {.name = "WD_TEST_DUP", .value = "a", .action = WD_PROCESS_ENV_SET},
+        {.name = "WD_TEST_DUP", .value = "b", .action = WD_PROCESS_ENV_SET},
+    };
+    error_code = 0;
+    CHECK(!wd_spawn_shell_command(&invalid, "true", duplicate_changes, 2, &error_code));
+    CHECK(error_code == EINVAL);
+
+    invalid.pid = 123;
+    invalid.process_group = 456;
+    error_code = 0;
+    CHECK(!wd_spawn_shell_command(&invalid, "", NULL, 0, &error_code));
+    CHECK(error_code == EINVAL);
+    CHECK(invalid.pid == -1 && invalid.process_group == -1);
     return 0;
 }

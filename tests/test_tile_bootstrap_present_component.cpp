@@ -30,8 +30,8 @@ int main() {
     CHECK(local.epoch != remote_epoch);
 
     ClientTilePresentQueue queue(8, 4096);
-    CHECK(queue.push(make_upload(0, 0x11, local)));
-    CHECK(queue.push(make_upload(4, 0x22, local)));
+    CHECK(queue.push(make_upload(0, 0x11, local)) == ClientTilePresentPushResult::Queued);
+    CHECK(queue.push(make_upload(4, 0x22, local)) == ClientTilePresentPushResult::Queued);
 
     std::vector<ClientTileUpload> uploads;
     queue.drain(uploads);

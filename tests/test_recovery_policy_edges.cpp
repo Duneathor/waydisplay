@@ -69,6 +69,22 @@ void test_client_video_health_precedence() {
     metrics.server_frames_tx = 1;
     require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_IDLE, "health requires at least one client report");
     metrics.client_reports = 1;
+    metrics.server_frames_tx = 0;
+    metrics.client_decode_failures = 1;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_HARD_FAILURE,
+            "explicit decode failure must not be hidden by zero server-frame accounting");
+    metrics.client_decode_failures = 0;
+    metrics.client_decode_queue_drops = 1;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_DECODER_OVERLOADED,
+            "explicit compressed drops must not be hidden by zero server-frame accounting");
+    metrics.client_decode_queue_drops = 0;
+    metrics.client_need_keyframe_drops = 1;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_AWAITING_KEYFRAME,
+            "explicit dependency drops must not be hidden by zero server-frame accounting");
+    metrics.client_need_keyframe_drops = 0;
+    require(wd_client_video_health_classify(&metrics) == WD_CLIENT_VIDEO_HEALTH_IDLE,
+            "without explicit failures zero server-frame accounting remains idle");
+    metrics.server_frames_tx = 1;
 
     metrics.client_decode_failures  = 1;
     metrics.client_frames_presented = 1;

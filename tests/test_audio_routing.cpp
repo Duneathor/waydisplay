@@ -25,6 +25,9 @@ void test_builds_process_scoped_fail_closed_routing() {
 
     const std::string pulse_props = env.pulse_props;
     require(pulse_props.find("node.dont-fallback=true") != std::string::npos, "Pulse streams should fail closed");
+    require(pulse_props.find("node.dont-reconnect=true") != std::string::npos, "Pulse streams should not reconnect to another sink");
+    require(pulse_props.find("node.dont-move=true") != std::string::npos, "Pulse streams should not be moved by policy restore");
+    require(pulse_props.find("state.restore-props=false") != std::string::npos, "Pulse routing should ignore restored target metadata");
     require(pulse_props.find("waydisplay.audio.scope=waydisplay.1234") != std::string::npos, "Pulse streams should carry the server scope");
 
     const std::string pipewire_props = env.pipewire_props;
@@ -43,6 +46,14 @@ void test_leaves_unavailable_audio_unrouted() {
     require(!env.enabled, "missing backend must not install partial routing");
     require(env.pulse_sink[0] == '\0' && env.pipewire_target[0] == '\0' && env.pulse_props[0] == '\0' && env.pipewire_props[0] == '\0',
             "disabled routing should not leak inherited values");
+}
+
+void test_rejects_partial_backend_routing() {
+    wd_audio_routing_env env{};
+    require(!wd_audio_routing_env_build(&env, "waydisplay.audio.sink.55", nullptr, 55),
+            "a sink without a matching target is an internal routing error");
+    require(!wd_audio_routing_env_build(&env, nullptr, "waydisplay.audio.sink.55", 55),
+            "a target without a matching sink is an internal routing error");
 }
 
 void test_rejects_unquoted_property_injection() {
@@ -64,6 +75,7 @@ void test_rejects_truncated_identifiers() {
 int main() {
     test_builds_process_scoped_fail_closed_routing();
     test_leaves_unavailable_audio_unrouted();
+    test_rejects_partial_backend_routing();
     test_rejects_unquoted_property_injection();
     test_rejects_truncated_identifiers();
     return 0;

@@ -54,7 +54,7 @@ static bool wd_connection_random_nonzero_u64(wd_connection_random_read_fn read_r
 
 bool wd_connection_identity_generate_with(wd_connection_random_read_fn read_random, void* read_random_data, uint64_t* connection_token,
                                           uint64_t* media_clock_id) {
-    if (!read_random || !connection_token || !media_clock_id)
+    if (!read_random || !connection_token || !media_clock_id || connection_token == media_clock_id)
     {
         return false;
     }

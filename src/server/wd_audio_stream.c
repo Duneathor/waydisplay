@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "wd_audio_stream.h"
 
 #include "waydisplay/wd_config.h"
@@ -10,6 +12,7 @@
 #include "wd_audio_packetizer.h"
 #include "wd_audio_ring.h"
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,7 +47,7 @@ static void wd_audio_sleep_us(unsigned usec) {
     struct timespec ts;
     ts.tv_sec  = (time_t)(usec / (WD_USEC_PER_MSEC * WD_MSEC_PER_SEC));
     ts.tv_nsec = (long)(usec % (WD_USEC_PER_MSEC * WD_MSEC_PER_SEC)) * (long)WD_NSEC_PER_USEC;
-    while (nanosleep(&ts, &ts) != 0)
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR)
     {
     }
 }
@@ -87,6 +90,11 @@ struct wd_audio_stream {
     struct wd_audio_pcm_ring     ring;
     struct wd_audio_packetizer   packetizer;
     struct wd_audio_stream_stats stats;
+
+    /* Immutable after successful creation so process-launch routing can read
+     * these identifiers without borrowing storage from a replaceable capture. */
+    char sink_name[WD_AUDIO_ROUTING_SINK_MAX];
+    char sink_target[WD_AUDIO_ROUTING_TARGET_MAX];
 };
 
 static uint64_t wd_audio_graph_ticks_to_samples(uint64_t ticks, uint32_t rate_num, uint32_t rate_denom) {
@@ -106,7 +114,7 @@ static uint64_t wd_audio_abs_difference(uint64_t a, uint64_t b) {
 static void wd_audio_stream_capture(void* userdata, const float* samples, uint32_t frames, uint8_t channels,
                                     const struct wd_audio_capture_timing* timing) {
     struct wd_audio_stream* stream = userdata;
-    if (!stream || !samples || !timing || frames == 0 || channels < stream->channels ||
+    if (!stream || !timing || (!samples && !timing->silent) || frames == 0 || channels < stream->channels ||
         !__atomic_load_n(&stream->capture_delivery_enabled, __ATOMIC_ACQUIRE))
     {
         return;
@@ -188,7 +196,7 @@ static void wd_audio_stream_capture(void* userdata, const float* samples, uint32
     stream->capture_pts_valid = true;
     stream->capture_next_pts  = UINT64_MAX - first_pts < frames ? UINT64_MAX : first_pts + frames;
 
-    if (!wd_audio_pcm_ring_write(&stream->ring, samples, frames, first_pts))
+    if (!wd_audio_pcm_ring_write_capture(&stream->ring, samples, frames, channels, timing->silent, first_pts))
     {
         __atomic_store_n(&stream->force_discontinuity, true, __ATOMIC_RELEASE);
         __atomic_add_fetch(&stream->stats.capture_overruns, 1, __ATOMIC_RELAXED);
@@ -331,6 +339,37 @@ static void* wd_audio_stream_worker(void* userdata) {
     return NULL;
 }
 
+static void wd_audio_stream_reset_stats(struct wd_audio_stream* stream) {
+    if (!stream)
+    {
+        return;
+    }
+    __atomic_store_n(&stream->stats.captured_frames, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&stream->stats.capture_overruns, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&stream->stats.encoded_packets, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&stream->stats.encoded_bytes, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&stream->stats.queue_drops, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&stream->stats.discontinuities, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&stream->stats.encode_failures, 0, __ATOMIC_RELAXED);
+}
+
+static bool wd_audio_stream_capture_identity_locked(struct wd_audio_stream* stream) {
+    const char* sink_name = wd_audio_capture_sink_name(stream->capture);
+    const char* sink_target = wd_audio_capture_sink_target(stream->capture);
+    if (!sink_name || !sink_target || sink_name[0] == '\0' || sink_target[0] == '\0' ||
+        strlen(sink_name) >= sizeof(stream->sink_name) || strlen(sink_target) >= sizeof(stream->sink_target))
+    {
+        return false;
+    }
+    if (stream->sink_name[0] != '\0')
+    {
+        return strcmp(stream->sink_name, sink_name) == 0 && strcmp(stream->sink_target, sink_target) == 0;
+    }
+    memcpy(stream->sink_name, sink_name, strlen(sink_name) + 1u);
+    memcpy(stream->sink_target, sink_target, strlen(sink_target) + 1u);
+    return true;
+}
+
 static bool wd_audio_stream_ensure_capture_locked(struct wd_audio_stream* stream) {
     if (!stream)
     {
@@ -356,15 +395,26 @@ static bool wd_audio_stream_ensure_capture_locked(struct wd_audio_stream* stream
         WD_LOG_ERROR("failed to recreate PipeWire private audio sink");
         return false;
     }
+    if (!wd_audio_stream_capture_identity_locked(stream))
+    {
+        WD_LOG_ERROR("recreated private audio sink changed routing identity");
+        wd_audio_capture_destroy(stream->capture);
+        stream->capture = NULL;
+        return false;
+    }
     return true;
 }
 
 bool wd_audio_stream_create(struct wd_audio_stream** out_stream) {
-    if (!out_stream || !wd_audio_capture_available() || !wd_audio_encoder_available())
+    if (!out_stream)
     {
         return false;
     }
-    *out_stream                    = NULL;
+    *out_stream = NULL;
+    if (!wd_audio_capture_available() || !wd_audio_encoder_available())
+    {
+        return false;
+    }
     struct wd_audio_stream* stream = calloc(1, sizeof(*stream));
     if (!stream || pthread_mutex_init(&stream->lock, NULL) != 0)
     {
@@ -398,24 +448,34 @@ bool wd_audio_stream_available(void) {
     return wd_audio_capture_available() && wd_audio_encoder_available();
 }
 
+bool wd_audio_stream_prepare(struct wd_audio_stream* stream) {
+    if (!stream || !wd_audio_stream_available())
+    {
+        return false;
+    }
+    pthread_mutex_lock(&stream->lock);
+    const bool ready = wd_audio_stream_ensure_capture_locked(stream);
+    pthread_mutex_unlock(&stream->lock);
+    return ready;
+}
+
 bool wd_audio_stream_ready(struct wd_audio_stream* stream) {
     if (!stream || !wd_audio_stream_available())
     {
         return false;
     }
     pthread_mutex_lock(&stream->lock);
-    const bool ready = (stream->worker_started || stream->capture_started) ? wd_audio_capture_healthy(stream->capture)
-                                                                           : wd_audio_stream_ensure_capture_locked(stream);
+    const bool ready = wd_audio_capture_healthy(stream->capture);
     pthread_mutex_unlock(&stream->lock);
     return ready;
 }
 
 const char* wd_audio_stream_sink_name(const struct wd_audio_stream* stream) {
-    return stream ? wd_audio_capture_sink_name(stream->capture) : NULL;
+    return stream && stream->sink_name[0] != '\0' ? stream->sink_name : NULL;
 }
 
 const char* wd_audio_stream_sink_target(const struct wd_audio_stream* stream) {
-    return stream ? wd_audio_capture_sink_target(stream->capture) : NULL;
+    return stream && stream->sink_target[0] != '\0' ? stream->sink_target : NULL;
 }
 
 const char* wd_audio_stream_capture_backend_name(void) {
@@ -443,7 +503,7 @@ bool wd_audio_stream_start(struct wd_audio_stream* stream, int tcp_fd, uint8_t s
         return false;
     }
 
-    memset(&stream->stats, 0, sizeof(stream->stats));
+    wd_audio_stream_reset_stats(stream);
     stream->tcp_fd                        = tcp_fd;
     stream->channels                      = channels;
     stream->bitrate                       = bitrate ? bitrate : WD_AUDIO_BITRATE_DEFAULT;

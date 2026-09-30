@@ -7,6 +7,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -53,6 +54,40 @@ void test_tile_coordinates_and_visible_edges() {
             "default start wrappers should use configured tile dimensions");
 }
 
+void test_pixel_to_protocol_tile_mapping() {
+    constexpr uint32_t width = 130, height = 70;
+
+    for (const auto& [tile_width, tile_height] :
+         {std::pair<uint16_t, uint16_t>{16, 16}, {32, 32}, {64, 64}, {128, 64}})
+    {
+        const uint16_t tiles_x = wd_tiles_for_width_with_tile(width, tile_width);
+        const uint16_t total_tiles = wd_total_tiles_for_size_with_tile(width, height, tile_width, tile_height);
+        uint16_t tile_id = UINT16_MAX;
+        require(wd_tile_id_for_pixel(width - 1, height - 1, tiles_x, total_tiles, tile_width, tile_height, &tile_id),
+                "bottom-right pixel should map into every supported protocol grid");
+        require(tile_id == total_tiles - 1, "bottom-right pixel should map to final protocol tile");
+
+        const uint16_t base_tiles_x = wd_tiles_for_width_with_tile(width, WD_BASE_TILE_WIDTH);
+        const uint16_t base_total = wd_total_tiles_for_size_with_tile(width, height, WD_BASE_TILE_WIDTH, WD_BASE_TILE_HEIGHT);
+        for (uint16_t base_id = 0; base_id < base_total; ++base_id)
+        {
+            const uint32_t x = wd_tile_start_x_for_tile(base_id, base_tiles_x, WD_BASE_TILE_WIDTH);
+            const uint32_t y = wd_tile_start_y_for_tile(base_id, base_tiles_x, WD_BASE_TILE_HEIGHT);
+            uint16_t projected = UINT16_MAX;
+            require(wd_tile_id_for_pixel(x, y, tiles_x, total_tiles, tile_width, tile_height, &projected),
+                    "every base-grid damage cell should project into the configured protocol grid");
+            const uint16_t expected = static_cast<uint16_t>((y / tile_height) * tiles_x + (x / tile_width));
+            require(projected == expected, "base-grid damage projection must preserve spatial location");
+        }
+    }
+
+    uint16_t tile_id = 0;
+    require(!wd_tile_id_for_pixel(0, 0, 0, 1, 16, 16, &tile_id), "zero-width grid should be rejected");
+    require(!wd_tile_id_for_pixel(UINT32_MAX, UINT32_MAX, 1, 1, 16, 16, &tile_id),
+            "coordinates outside the described grid should be rejected");
+    require(!wd_tile_id_for_pixel(0, 0, 1, 1, 16, 16, nullptr), "null output should be rejected");
+}
+
 void test_extract_hash_and_blit_partial_tiles() {
     constexpr uint32_t width       = 5;
     constexpr uint32_t height      = 3;
@@ -86,17 +121,21 @@ void test_extract_hash_and_blit_partial_tiles() {
         require(destination[i] == expected, "blit must not overwrite pixels outside the visible tile edge");
     }
 
-    const uint32_t hash_before =
-        wd_fnv1a_tile_hash_xrgb8888_for_tile(source.data(), width, height, tiles_x, total_tiles, 0, tile_width, tile_height);
+    uint32_t hash_before = 0;
+    require(wd_fnv1a_tile_hash_xrgb8888_for_tile(source.data(), width, height, tiles_x, total_tiles, 0, tile_width, tile_height, &hash_before),
+            "valid tile hash should succeed");
     source[0] ^= 1u;
-    const uint32_t hash_after =
-        wd_fnv1a_tile_hash_xrgb8888_for_tile(source.data(), width, height, tiles_x, total_tiles, 0, tile_width, tile_height);
-    require(hash_before != 0 && hash_after != hash_before, "tile hash should reflect visible pixel changes");
+    uint32_t hash_after = 0;
+    require(wd_fnv1a_tile_hash_xrgb8888_for_tile(source.data(), width, height, tiles_x, total_tiles, 0, tile_width, tile_height, &hash_after),
+            "changed tile hash should succeed");
+    require(hash_after != hash_before, "tile hash should reflect visible pixel changes");
 
-    require(wd_fnv1a_tile_hash_xrgb8888_for_tile(nullptr, width, height, tiles_x, total_tiles, 0, tile_width, tile_height) == 0,
+    uint32_t invalid_hash = 0x12345678u;
+    require(!wd_fnv1a_tile_hash_xrgb8888_for_tile(nullptr, width, height, tiles_x, total_tiles, 0, tile_width, tile_height, &invalid_hash),
             "hash should reject null framebuffer");
+    require(invalid_hash == 0x12345678u, "failed hash must not manufacture an output value");
     require(
-        wd_fnv1a_tile_hash_xrgb8888_for_tile(source.data(), width, height, tiles_x, total_tiles, total_tiles, tile_width, tile_height) == 0,
+        !wd_fnv1a_tile_hash_xrgb8888_for_tile(source.data(), width, height, tiles_x, total_tiles, total_tiles, tile_width, tile_height, &invalid_hash),
         "hash should reject invalid tile ID");
     require(!wd_extract_tile_xrgb8888_for_tile(nullptr, width, height, tiles_x, total_tiles, 0, tile_width, tile_height, tile.data()),
             "extract should reject null framebuffer");
@@ -117,7 +156,7 @@ void test_reject_inconsistent_or_unrepresentable_tile_geometry() {
             "extract must reject a tile size that overflows its byte count");
     require(!wd_blit_tile_xrgb8888_for_tile(destination, 1, 1, 1, 1, 0, oversized, oversized, tile),
             "blit must reject an unrepresentable tile size");
-    require(wd_fnv1a_tile_hash_xrgb8888_for_tile(framebuffer, 1, 1, 1, 1, 0, oversized, oversized) == 0,
+    require(!wd_fnv1a_tile_hash_xrgb8888_for_tile(framebuffer, 1, 1, 1, 1, 0, oversized, oversized, &destination[0]),
             "hash must reject an unrepresentable tile size");
     require(destination[0] == 0xdeadbeefu, "invalid blit must not mutate framebuffer");
 
@@ -125,7 +164,7 @@ void test_reject_inconsistent_or_unrepresentable_tile_geometry() {
             "extract must reject a grid that disagrees with framebuffer dimensions");
     require(!wd_blit_tile_xrgb8888_for_tile(destination, 1, 1, 2, 2, 0, 1, 1, tile),
             "blit must reject a grid that disagrees with framebuffer dimensions");
-    require(wd_fnv1a_tile_hash_xrgb8888_for_tile(framebuffer, 1, 1, 2, 2, 0, 1, 1) == 0,
+    require(!wd_fnv1a_tile_hash_xrgb8888_for_tile(framebuffer, 1, 1, 2, 2, 0, 1, 1, &destination[0]),
             "hash must reject a grid that disagrees with framebuffer dimensions");
 }
 
@@ -209,6 +248,7 @@ void test_zstd_one_shot_and_context_contracts() {
 int main() {
     test_tile_count_boundaries();
     test_tile_coordinates_and_visible_edges();
+    test_pixel_to_protocol_tile_mapping();
     test_extract_hash_and_blit_partial_tiles();
     test_sized_tile_buffer_contract();
     test_reject_inconsistent_or_unrepresentable_tile_geometry();

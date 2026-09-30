@@ -13,11 +13,16 @@ struct wd_buffer;
 typedef void (*wd_buffer_release_fn)(void* user_data, uint8_t* data, size_t size);
 
 /*
- * Thread-safe shared byte storage.
+ * Reference-counted shared byte storage.
+ *
+ * Reference-count lifetime operations are thread-safe, but payload access is
+ * not synchronized: callers must provide their own synchronization for any
+ * concurrent mutation/read of the bytes. wd_buffer_retain() requires an
+ * already-live reference and must not race the final release.
  *
  * wd_buffer_alloc() stores bytes in the same allocation as the control block.
  * wd_buffer_wrap() adopts externally managed bytes and invokes release exactly
- * once after the last reference is released.
+ * once, synchronously on the thread that drops the final reference.
  */
 struct wd_buffer* wd_buffer_alloc(size_t size);
 /* Allocate logical size bytes plus zero-filled tail padding. Padding is not

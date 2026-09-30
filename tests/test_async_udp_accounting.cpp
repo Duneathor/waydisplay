@@ -1,4 +1,5 @@
 #include "wd_async_udp_accounting.h"
+#include "waydisplay/wd_io_uring_policy.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -27,6 +28,16 @@ void test_partial_submit_is_not_counted_as_fully_submitted() {
 
     require(wd_async_udp_accounting_submit_result(&accounting, 8) == 2, "submit result must clamp to prepared count");
     require(accounting.prepared == 0 && accounting.submitted == 4, "second submit drains prepared packets");
+}
+
+void test_submit_result_policy_distinguishes_retry_from_backend_failure() {
+    require(wd_io_uring_submit_result(1) == WD_IO_URING_SUBMIT_ACCEPTED, "positive submit is progress");
+    require(wd_io_uring_submit_result(0) == WD_IO_URING_SUBMIT_RETRY, "zero submit is retryable");
+    require(wd_io_uring_submit_result(-EINTR) == WD_IO_URING_SUBMIT_RETRY, "EINTR is retryable");
+    require(wd_io_uring_submit_result(-EAGAIN) == WD_IO_URING_SUBMIT_RETRY, "EAGAIN is retryable");
+    require(wd_io_uring_submit_result(-EBUSY) == WD_IO_URING_SUBMIT_RETRY, "EBUSY is retryable");
+    require(wd_io_uring_submit_result(-EBADF) == WD_IO_URING_SUBMIT_FAILED, "EBADF is a backend failure");
+    require(wd_io_uring_submit_result(-EINVAL) == WD_IO_URING_SUBMIT_FAILED, "EINVAL is a backend failure");
 }
 
 void test_submit_failure_keeps_packets_retryable() {
@@ -85,6 +96,7 @@ void test_stream_epoch_identity_rejects_stale_work() {
 } // namespace
 
 int main() {
+    test_submit_result_policy_distinguishes_retry_from_backend_failure();
     test_partial_submit_is_not_counted_as_fully_submitted();
     test_submit_failure_keeps_packets_retryable();
     test_shutdown_cancels_only_unsubmitted_packets();

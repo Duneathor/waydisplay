@@ -11,12 +11,11 @@ extern "C" {
 #endif
 
 struct wd_socket_pin {
-    int      source_fd;
     int      io_fd;
     uint64_t cookie;
 };
 
-#define WD_SOCKET_PIN_INITIALIZER {-1, -1, 0}
+#define WD_SOCKET_PIN_INITIALIZER {-1, 0}
 
 static inline bool wd_socket_cookie(int fd, uint64_t* out_cookie) {
     if (fd < 0 || !out_cookie)
@@ -42,7 +41,6 @@ static inline void wd_socket_pin_reset(struct wd_socket_pin* pin) {
     {
         close(pin->io_fd);
     }
-    pin->source_fd = -1;
     pin->io_fd = -1;
     pin->cookie = 0;
 }
@@ -68,7 +66,6 @@ static inline bool wd_socket_pin_bind(struct wd_socket_pin* pin, int fd) {
     }
     if (pin->io_fd >= 0 && pin->cookie == cookie)
     {
-        pin->source_fd = fd;
         return true;
     }
 
@@ -85,7 +82,6 @@ static inline bool wd_socket_pin_bind(struct wd_socket_pin* pin, int fd) {
     }
 
     wd_socket_pin_reset(pin);
-    pin->source_fd = fd;
     pin->io_fd = duplicate;
     pin->cookie = cookie;
     return true;
@@ -96,8 +92,7 @@ static inline bool wd_socket_pin_shutdown(struct wd_socket_pin* pin) {
     {
         return false;
     }
-    (void)shutdown(pin->io_fd, SHUT_RDWR);
-    return true;
+    return shutdown(pin->io_fd, SHUT_RDWR) == 0;
 }
 
 #ifdef __cplusplus

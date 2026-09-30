@@ -34,11 +34,10 @@ void wd_keyboard_shortcuts_inhibit_refresh(struct wd_server* server) {
             wlr_keyboard_shortcuts_inhibitor_v1_activate(state->inhibitor);
             WD_LOG_DEBUG("keyboard shortcuts inhibited for focused surface=%p", (void*)state->inhibitor->surface);
         }
-        else if (!should_activate && state->inhibitor->active)
-        {
-            wlr_keyboard_shortcuts_inhibitor_v1_deactivate(state->inhibitor);
-            WD_LOG_DEBUG("keyboard shortcuts restored for surface=%p", (void*)state->inhibitor->surface);
-        }
+        /* Losing keyboard focus makes an active inhibitor irrelevant, but
+         * does not change the protocol activation state and must not emit an
+         * inactive event. wd_keyboard_shortcuts_inhibit_active() combines
+         * protocol activation with current focus when deciding relevance. */
     }
 }
 

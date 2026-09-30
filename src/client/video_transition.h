@@ -19,6 +19,9 @@ struct wd_client_video_transition_decision {
     bool                       accept_payload;
 };
 
+/* keyframe/has_payload describe an already wire-validated video packet.
+ * Invalid phase values fail closed by rejecting payload and resetting decoder
+ * state to tiles. */
 struct wd_client_video_transition_decision wd_client_video_transition_decide(enum wd_client_video_phase phase,
                                                                              bool content_epoch_advanced,
                                                                              bool end_of_stream, bool resize,

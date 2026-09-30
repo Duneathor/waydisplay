@@ -96,7 +96,6 @@ struct wd_video_encoder {
     struct SwsContext* sws_ctx;
     AVBufferRef*       vaapi_device_ctx;
     AVBufferRef*       vaapi_frames_ctx;
-    bool               vaapi_device_attempted;
     bool               vaapi_probe_complete;
     uint32_t           vaapi_supported_codecs;
 #if WAYDISPLAY_HAVE_VAAPI_SERVER_VPP
@@ -182,16 +181,12 @@ static const AVCodec* wd_video_encoder_find_software_codec(uint32_t codec) {
     switch (codec)
     {
 #if WAYDISPLAY_HAVE_H264_SERVER_ENCODER
-    case WD_VIDEO_CODEC_H264: {
-        const AVCodec* avc = avcodec_find_encoder_by_name("libx264");
-        return avc ? avc : avcodec_find_encoder(AV_CODEC_ID_H264);
-    }
+    case WD_VIDEO_CODEC_H264:
+        return avcodec_find_encoder_by_name("libx264");
 #endif
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
-    case WD_VIDEO_CODEC_H265: {
-        const AVCodec* hevc = avcodec_find_encoder_by_name("libx265");
-        return hevc ? hevc : avcodec_find_encoder(AV_CODEC_ID_HEVC);
-    }
+    case WD_VIDEO_CODEC_H265:
+        return avcodec_find_encoder_by_name("libx265");
 #endif
 #if WAYDISPLAY_HAVE_AV1_SERVER_ENCODER
     case WD_VIDEO_CODEC_AV1:
@@ -222,7 +217,9 @@ static const AVCodec* wd_video_encoder_find_vaapi_codec(uint32_t codec) {
     }
 }
 
-static bool wd_video_encoder_probe_vaapi_codec(struct wd_video_encoder* encoder, uint32_t codec);
+static bool wd_video_encoder_probe_vaapi_codec_on_device(struct wd_video_encoder* encoder, AVBufferRef* device, uint32_t codec);
+static bool wd_video_encoder_vaapi_codec_available(struct wd_video_encoder* encoder, uint32_t codec);
+static bool wd_video_encoder_select_vaapi_device_for_codec(struct wd_video_encoder* encoder, uint32_t codec);
 
 static uint32_t wd_video_encoder_detect_software_codecs(void) {
     uint32_t codecs = 0;
@@ -247,33 +244,6 @@ static uint32_t wd_video_encoder_detect_software_codecs(void) {
     return codecs;
 }
 
-static bool wd_video_encoder_ensure_vaapi_device(struct wd_video_encoder* encoder) {
-    if (!encoder)
-    {
-        return false;
-    }
-    if (encoder->vaapi_device_ctx)
-    {
-        return true;
-    }
-    if (encoder->vaapi_device_attempted)
-    {
-        return false;
-    }
-
-    encoder->vaapi_device_attempted = true;
-    const int rc = wd_vaapi_open_automatic_device(&encoder->vaapi_device_ctx, encoder->vaapi_device, sizeof(encoder->vaapi_device));
-    if (rc < 0)
-    {
-        wd_video_encoder_log_av_error("failed to discover a VAAPI encode device", rc);
-        av_buffer_unref(&encoder->vaapi_device_ctx);
-        return false;
-    }
-
-    WD_LOG_DEBUG("VAAPI video encode device initialized: %s", encoder->vaapi_device);
-    return true;
-}
-
 static uint32_t wd_video_encoder_detect_vaapi_codecs(struct wd_video_encoder* encoder) {
     if (!encoder)
     {
@@ -286,33 +256,29 @@ static uint32_t wd_video_encoder_detect_vaapi_codecs(struct wd_video_encoder* en
 
     encoder->vaapi_probe_complete   = true;
     encoder->vaapi_supported_codecs = 0;
-    if (!wd_video_encoder_ensure_vaapi_device(encoder))
-    {
-        return 0;
-    }
-
 #if WAYDISPLAY_HAVE_H264_SERVER_ENCODER
-    if (wd_video_encoder_find_vaapi_codec(WD_VIDEO_CODEC_H264) && wd_video_encoder_probe_vaapi_codec(encoder, WD_VIDEO_CODEC_H264))
+    if (wd_video_encoder_find_vaapi_codec(WD_VIDEO_CODEC_H264) &&
+        wd_video_encoder_vaapi_codec_available(encoder, WD_VIDEO_CODEC_H264))
     {
         encoder->vaapi_supported_codecs |= WD_VIDEO_CODEC_H264;
     }
 #endif
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER
-    if (wd_video_encoder_find_vaapi_codec(WD_VIDEO_CODEC_H265) && wd_video_encoder_probe_vaapi_codec(encoder, WD_VIDEO_CODEC_H265))
+    if (wd_video_encoder_find_vaapi_codec(WD_VIDEO_CODEC_H265) &&
+        wd_video_encoder_vaapi_codec_available(encoder, WD_VIDEO_CODEC_H265))
     {
         encoder->vaapi_supported_codecs |= WD_VIDEO_CODEC_H265;
     }
 #endif
-
-
 #if WAYDISPLAY_HAVE_AV1_SERVER_ENCODER
-    if (wd_video_encoder_find_vaapi_codec(WD_VIDEO_CODEC_AV1) && wd_video_encoder_probe_vaapi_codec(encoder, WD_VIDEO_CODEC_AV1))
+    if (wd_video_encoder_find_vaapi_codec(WD_VIDEO_CODEC_AV1) &&
+        wd_video_encoder_vaapi_codec_available(encoder, WD_VIDEO_CODEC_AV1))
     {
         encoder->vaapi_supported_codecs |= WD_VIDEO_CODEC_AV1;
     }
 #endif
 
-    WD_LOG_DEBUG("VAAPI video encode codecs on %s: h264=%s h265=%s av1=%s", encoder->vaapi_device,
+    WD_LOG_DEBUG("VAAPI video encode codecs across devices: h264=%s h265=%s av1=%s",
                  (encoder->vaapi_supported_codecs & WD_VIDEO_CODEC_H264) != 0 ? "yes" : "no",
                  (encoder->vaapi_supported_codecs & WD_VIDEO_CODEC_H265) != 0 ? "yes" : "no",
                  (encoder->vaapi_supported_codecs & WD_VIDEO_CODEC_AV1) != 0 ? "yes" : "no");
@@ -477,8 +443,8 @@ static bool wd_video_encoder_vaapi_can_encode_av1(const AVBufferRef* device) {
 }
 #endif
 
-static bool wd_video_encoder_probe_vaapi_codec(struct wd_video_encoder* encoder, uint32_t codec_id) {
-    if (!encoder || !encoder->vaapi_device_ctx)
+static bool wd_video_encoder_probe_vaapi_codec_on_device(struct wd_video_encoder* encoder, AVBufferRef* device, uint32_t codec_id) {
+    if (!encoder || !device)
     {
         return false;
     }
@@ -490,9 +456,8 @@ static bool wd_video_encoder_probe_vaapi_codec(struct wd_video_encoder* encoder,
     }
 
 #if WAYDISPLAY_HAVE_AV1_SERVER_ENCODER && WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK
-    if (codec_id == WD_VIDEO_CODEC_AV1 && !wd_video_encoder_vaapi_can_encode_av1(encoder->vaapi_device_ctx))
+    if (codec_id == WD_VIDEO_CODEC_AV1 && !wd_video_encoder_vaapi_can_encode_av1(device))
     {
-        WD_LOG_DEBUG("VAAPI device %s has no AV1 Profile 0 encode entrypoint; skipping av1_vaapi probe", encoder->vaapi_device);
         return false;
     }
 #endif
@@ -514,7 +479,7 @@ static bool wd_video_encoder_probe_vaapi_codec(struct wd_video_encoder* encoder,
     }
 
     wd_video_encoder_set_context_defaults(codec_ctx, codec, &probe_config, AV_PIX_FMT_VAAPI);
-    frames_ref = av_hwframe_ctx_alloc(encoder->vaapi_device_ctx);
+    frames_ref = av_hwframe_ctx_alloc(device);
     if (!frames_ref)
     {
         goto done;
@@ -547,6 +512,53 @@ done:
     avcodec_free_context(&codec_ctx);
     av_buffer_unref(&frames_ref);
     return supported;
+}
+
+struct wd_video_encoder_vaapi_match {
+    struct wd_video_encoder* encoder;
+    uint32_t                 codec;
+};
+
+static bool wd_video_encoder_vaapi_device_matches(const AVBufferRef* device, void* userdata) {
+    struct wd_video_encoder_vaapi_match* match = userdata;
+    return match && match->encoder &&
+           wd_video_encoder_probe_vaapi_codec_on_device(match->encoder, (AVBufferRef*)device, match->codec);
+}
+
+static bool wd_video_encoder_vaapi_codec_available(struct wd_video_encoder* encoder, uint32_t codec) {
+    if (!encoder)
+    {
+        return false;
+    }
+    struct wd_video_encoder_vaapi_match match = {.encoder = encoder, .codec = codec};
+    AVBufferRef* device = NULL;
+    const int rc = wd_vaapi_open_matching_device(&device, NULL, 0, wd_video_encoder_vaapi_device_matches, &match);
+    av_buffer_unref(&device);
+    return rc >= 0;
+}
+
+static bool wd_video_encoder_select_vaapi_device_for_codec(struct wd_video_encoder* encoder, uint32_t codec) {
+    if (!encoder)
+    {
+        return false;
+    }
+    struct wd_video_encoder_vaapi_match match = {.encoder = encoder, .codec = codec};
+    AVBufferRef* selected = NULL;
+    char selected_path[PATH_MAX] = {0};
+    const int rc = wd_vaapi_open_matching_device(&selected, selected_path, sizeof(selected_path),
+                                                  wd_video_encoder_vaapi_device_matches, &match);
+    if (rc < 0)
+    {
+        wd_video_encoder_log_av_error("failed to discover a codec-capable VAAPI encode device", rc);
+        av_buffer_unref(&selected);
+        return false;
+    }
+
+    av_buffer_unref(&encoder->vaapi_device_ctx);
+    encoder->vaapi_device_ctx = selected;
+    (void)snprintf(encoder->vaapi_device, sizeof(encoder->vaapi_device), "%s", selected_path);
+    WD_LOG_DEBUG("VAAPI %s encode device selected: %s", wd_video_encoder_codec_name(codec), encoder->vaapi_device);
+    return true;
 }
 
 static bool wd_video_encoder_allocate_common(struct wd_video_encoder* encoder, const AVCodec* codec,
@@ -830,7 +842,7 @@ static bool wd_video_encoder_vpp_drm_to_vaapi(struct wd_video_encoder* encoder,
 
 static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config,
                                               bool quality_mode) {
-    if (!wd_video_encoder_ensure_vaapi_device(encoder) || (wd_video_encoder_detect_vaapi_codecs(encoder) & config->codec) == 0)
+    if (!wd_video_encoder_select_vaapi_device_for_codec(encoder, config->codec))
     {
         return false;
     }
@@ -1059,10 +1071,6 @@ bool wd_video_encoder_create(struct wd_video_encoder** out_encoder, const char* 
 
 #if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER || WAYDISPLAY_HAVE_AV1_SERVER_ENCODER
     av_log_set_level(wd_log_is_verbose() ? AV_LOG_WARNING : AV_LOG_ERROR);
-    if (preference != WD_VIDEO_ENCODER_PREFERENCE_OFF && preference != WD_VIDEO_ENCODER_PREFERENCE_SOFTWARE)
-    {
-        (void)wd_video_encoder_ensure_vaapi_device(encoder);
-    }
 #endif
 
     *out_encoder = encoder;
@@ -1095,6 +1103,7 @@ void wd_video_encoder_reset(struct wd_video_encoder* encoder) {
     encoder->configured         = false;
     encoder->keyframe_requested = false;
     encoder->next_frame_id      = 0;
+    encoder->vaapi_failed_codecs = 0;
 }
 
 bool wd_video_encoder_available(const struct wd_video_encoder* encoder) {
@@ -1220,6 +1229,10 @@ bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct w
     const bool new_session = !encoder->configured || encoder->config.session_id != config->session_id ||
                              encoder->config.connection_token != config->connection_token ||
                              encoder->config.content_epoch != config->content_epoch;
+    if (new_session)
+    {
+        encoder->vaapi_failed_codecs = 0;
+    }
 
     wd_video_encoder_release_backend(encoder);
     encoder->configured = false;
@@ -1460,6 +1473,7 @@ static bool wd_video_encoder_encode_prepared(struct wd_video_encoder* encoder, u
             if (rc < 0)
             {
                 wd_video_encoder_log_av_error("failed to receive encoded video packet", rc);
+                encoder->keyframe_requested = true;
                 return false;
             }
             if (!have_output)
@@ -1467,6 +1481,7 @@ static bool wd_video_encoder_encode_prepared(struct wd_video_encoder* encoder, u
                 if (!wd_video_encoder_own_packet(encoder, encoder->packet, pts_usec, packet))
                 {
                     av_packet_unref(encoder->packet);
+                    encoder->keyframe_requested = true;
                     return false;
                 }
                 have_output = true;
@@ -1476,9 +1491,9 @@ static bool wd_video_encoder_encode_prepared(struct wd_video_encoder* encoder, u
 
     if (!frame_sent)
     {
+        encoder->keyframe_requested = true;
         return false;
     }
-    encoder->keyframe_requested = false;
 
     for (;;)
     {
@@ -1491,6 +1506,7 @@ static bool wd_video_encoder_encode_prepared(struct wd_video_encoder* encoder, u
         if (rc < 0)
         {
             wd_video_encoder_log_av_error("failed to receive encoded video packet", rc);
+            encoder->keyframe_requested = true;
             return false;
         }
         if (!have_output)
@@ -1498,12 +1514,14 @@ static bool wd_video_encoder_encode_prepared(struct wd_video_encoder* encoder, u
             if (!wd_video_encoder_own_packet(encoder, encoder->packet, pts_usec, packet))
             {
                 av_packet_unref(encoder->packet);
+                encoder->keyframe_requested = true;
                 return false;
             }
             have_output = true;
         }
     }
 
+    encoder->keyframe_requested = false;
     return true;
 }
 #endif

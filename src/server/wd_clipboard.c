@@ -40,6 +40,18 @@ struct wd_selection_capture {
     struct wd_selection_capture_buffer buffer;
 };
 
+struct wd_selection_transfer {
+    struct wd_server*             server;
+    struct wd_selection_transfer* next;
+    int                           fd;
+    struct wl_event_source*       write_source;
+    struct wl_event_source*       timeout_source;
+    uint8_t*                      text;
+    uint32_t                      text_size;
+    uint32_t                      offset;
+    bool                          primary;
+};
+
 static struct wd_selection_capture** selection_capture_slot(struct wd_server* server, bool primary) {
     return primary ? &server->primary_capture : &server->clipboard_capture;
 }
@@ -364,30 +376,167 @@ static bool add_text_mime_types(struct wl_array* mime_types) {
            add_mime_type(mime_types, "UTF8_STRING") && add_mime_type(mime_types, "TEXT") && add_mime_type(mime_types, "STRING");
 }
 
-static void write_all_to_fd(int fd, const uint8_t* data, uint32_t size) {
-    uint32_t offset = 0;
-
-    while (offset < size)
+static void selection_transfer_unlink(struct wd_selection_transfer* transfer) {
+    if (!transfer || !transfer->server)
     {
-        ssize_t written = write(fd, data + offset, (size_t)(size - offset));
-        if (written < 0)
-        {
-            if (errno == EINTR)
-            {
-                continue;
-            }
-            break;
-        }
-
-        if (written == 0)
-        {
-            break;
-        }
-
-        offset += (uint32_t)written;
+        return;
     }
 
-    close(fd);
+    struct wd_selection_transfer** link = &transfer->server->selection_transfers;
+    while (*link && *link != transfer)
+    {
+        link = &(*link)->next;
+    }
+    if (*link == transfer)
+    {
+        *link = transfer->next;
+    }
+}
+
+static void selection_transfer_finish(struct wd_selection_transfer* transfer) {
+    if (!transfer)
+    {
+        return;
+    }
+
+    selection_transfer_unlink(transfer);
+    if (transfer->write_source)
+    {
+        wl_event_source_remove(transfer->write_source);
+        transfer->write_source = NULL;
+    }
+    if (transfer->timeout_source)
+    {
+        wl_event_source_remove(transfer->timeout_source);
+        transfer->timeout_source = NULL;
+    }
+    if (transfer->fd >= 0)
+    {
+        close(transfer->fd);
+        transfer->fd = -1;
+    }
+    free(transfer->text);
+    free(transfer);
+}
+
+static int selection_transfer_writable(int fd, uint32_t mask, void* data) {
+    (void)fd;
+    struct wd_selection_transfer* transfer = data;
+
+    while (transfer->offset < transfer->text_size)
+    {
+        ssize_t written = write(transfer->fd, transfer->text + transfer->offset,
+                                (size_t)(transfer->text_size - transfer->offset));
+        if (written > 0)
+        {
+            transfer->offset += (uint32_t)written;
+            continue;
+        }
+        if (written < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        if (written < 0 &&
+            (errno == EAGAIN
+#if EWOULDBLOCK != EAGAIN
+             || errno == EWOULDBLOCK
+#endif
+             ) &&
+            (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) == 0)
+        {
+            return 0;
+        }
+
+        WD_LOG_DEBUG("ending remote %s selection delivery after %u/%u bytes: %s",
+                     transfer->primary ? "primary" : "clipboard", transfer->offset, transfer->text_size,
+                     written < 0 ? strerror(errno) : "peer closed");
+        selection_transfer_finish(transfer);
+        return 0;
+    }
+
+    selection_transfer_finish(transfer);
+    return 0;
+}
+
+static int selection_transfer_timeout(void* data) {
+    struct wd_selection_transfer* transfer = data;
+    WD_LOG_WARN("timed out delivering remote %s selection after %u/%u bytes",
+                transfer->primary ? "primary" : "clipboard", transfer->offset, transfer->text_size);
+    selection_transfer_finish(transfer);
+    return 0;
+}
+
+static bool begin_selection_transfer(struct wd_server* server, bool primary, int fd, const uint8_t* text, uint32_t text_size) {
+    if (!server || !server->event_loop || fd < 0 || (!text && text_size != 0))
+    {
+        if (fd >= 0)
+        {
+            close(fd);
+        }
+        return false;
+    }
+
+    if (text_size == 0)
+    {
+        close(fd);
+        return true;
+    }
+
+    int flags = fcntl(fd, F_GETFL);
+    int fd_flags = fcntl(fd, F_GETFD);
+    if (flags < 0 || fd_flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0 ||
+        fcntl(fd, F_SETFD, fd_flags | FD_CLOEXEC) != 0)
+    {
+        close(fd);
+        return false;
+    }
+
+    struct wd_selection_transfer* transfer = calloc(1, sizeof(*transfer));
+    if (!transfer)
+    {
+        close(fd);
+        return false;
+    }
+
+    transfer->text = malloc(text_size);
+    if (!transfer->text)
+    {
+        close(fd);
+        free(transfer);
+        return false;
+    }
+    memcpy(transfer->text, text, text_size);
+    transfer->server    = server;
+    transfer->fd        = fd;
+    transfer->text_size = text_size;
+    transfer->primary   = primary;
+
+    transfer->write_source = wl_event_loop_add_fd(server->event_loop, fd, WL_EVENT_WRITABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR,
+                                                   selection_transfer_writable, transfer);
+    transfer->timeout_source = wl_event_loop_add_timer(server->event_loop, selection_transfer_timeout, transfer);
+    if (!transfer->write_source || !transfer->timeout_source ||
+        wl_event_source_timer_update(transfer->timeout_source, WD_SELECTION_DELIVERY_TIMEOUT_MS) != 0)
+    {
+        if (transfer->write_source)
+        {
+            wl_event_source_remove(transfer->write_source);
+            transfer->write_source = NULL;
+        }
+        if (transfer->timeout_source)
+        {
+            wl_event_source_remove(transfer->timeout_source);
+            transfer->timeout_source = NULL;
+        }
+        close(fd);
+        free(transfer->text);
+        free(transfer);
+        return false;
+    }
+
+    transfer->next             = server->selection_transfers;
+    server->selection_transfers = transfer;
+    (void)selection_transfer_writable(fd, WL_EVENT_WRITABLE, transfer);
+    return true;
 }
 
 static void remote_data_source_send(struct wlr_data_source* source, const char* mime_type, int fd) {
@@ -403,7 +552,10 @@ static void remote_data_source_send(struct wlr_data_source* source, const char* 
 
     WD_LOG_DEBUG("sending remote clipboard selection mime=%s size=%u", mime_type, remote->text_size);
 
-    write_all_to_fd(fd, remote->text, remote->text_size);
+    if (!begin_selection_transfer(server, false, fd, remote->text, remote->text_size))
+    {
+        WD_LOG_WARN("failed to start remote clipboard delivery");
+    }
 }
 
 static void remote_data_source_destroy(struct wlr_data_source* source) {
@@ -436,7 +588,10 @@ static void remote_primary_source_send(struct wlr_primary_selection_source* sour
 
     WD_LOG_DEBUG("sending remote primary selection mime=%s size=%u", mime_type, remote->text_size);
 
-    write_all_to_fd(fd, remote->text, remote->text_size);
+    if (!begin_selection_transfer(server, true, fd, remote->text, remote->text_size))
+    {
+        WD_LOG_WARN("failed to start remote primary delivery");
+    }
 }
 
 static void remote_primary_source_destroy(struct wlr_primary_selection_source* source) {
@@ -533,6 +688,11 @@ void wd_clipboard_destroy(struct wd_server* server) {
     cancel_selection_capture(server, false);
     cancel_selection_capture(server, true);
 
+    while (server->selection_transfers)
+    {
+        selection_transfer_finish(server->selection_transfers);
+    }
+
     clear_remote_selection_source(server, false);
     clear_remote_selection_source(server, true);
 
@@ -612,9 +772,15 @@ void wd_clipboard_queue_client_set_locked(struct wd_net_state* net, uint8_t expe
     else
     {
         free(net->clipboard_text);
-        net->clipboard_text          = text;
-        net->clipboard_text_size     = text_size;
-        net->clipboard_text_pending  = true;
+        net->clipboard_text         = text;
+        net->clipboard_text_size    = text_size;
+        net->clipboard_text_pending = true;
+    }
+}
+
+void wd_clipboard_queue_client_paste_locked(struct wd_net_state* net) {
+    if (net)
+    {
         net->clipboard_paste_pending = true;
     }
 }
@@ -856,23 +1022,8 @@ static void synthesize_clipboard_paste_shortcut(struct wd_server* server) {
     const uint32_t key_v                = 47;
     const uint32_t time_msec            = (uint32_t)(wd_now_ns() / WD_NSEC_PER_MSEC);
     const bool     ctrl_already_active  = keyboard_modifier_active(server, XKB_MOD_NAME_CTRL);
-    const bool     shift_already_active = keyboard_modifier_active(server, XKB_MOD_NAME_SHIFT);
 
     wd_keyboard_notify_enter(server, server->focused_surface);
-
-    if (shift_already_active)
-    {
-        /*
-         * Preserve Ctrl+Shift+V for terminals and other clients whose normal paste
-         * accelerator is Ctrl+Shift+V.  Ctrl/Shift have already been forwarded by
-         * the keyboard drain before clipboard drain runs, so only replay V while
-         * those modifiers are held.
-         */
-        WD_LOG_DEBUG("synthesizing V with existing Ctrl+Shift paste modifiers");
-        synthesize_key(server, key_v, true, time_msec);
-        synthesize_key(server, key_v, false, time_msec);
-        return;
-    }
 
     if (ctrl_already_active)
     {
@@ -996,10 +1147,11 @@ void wd_clipboard_drain_and_apply(struct wd_server* server) {
         server->net.clipboard_text          = NULL;
         server->net.clipboard_text_size     = 0;
         server->net.clipboard_text_pending  = false;
-        paste_requested                     = server->net.clipboard_paste_pending;
-        server->net.clipboard_paste_pending = false;
         have_clipboard                      = true;
     }
+
+    paste_requested                     = server->net.clipboard_paste_pending;
+    server->net.clipboard_paste_pending = false;
 
     if (server->net.primary_text_pending)
     {
@@ -1030,10 +1182,11 @@ void wd_clipboard_drain_and_apply(struct wd_server* server) {
     if (have_clipboard)
     {
         store_remote_selection(server, clipboard_text, clipboard_text_size, false);
-        if (paste_requested)
-        {
-            synthesize_clipboard_paste_shortcut(server);
-        }
+    }
+
+    if (paste_requested)
+    {
+        synthesize_clipboard_paste_shortcut(server);
     }
 
     if (have_primary)

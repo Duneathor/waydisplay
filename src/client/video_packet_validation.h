@@ -21,6 +21,7 @@ struct wd_client_video_packet_expectation {
     uint64_t connection_token;
     uint16_t width;
     uint16_t height;
+    uint32_t codec;
 };
 
 enum wd_client_video_packet_validation_result

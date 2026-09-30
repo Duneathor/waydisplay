@@ -152,6 +152,11 @@ enum wd_client_video_keyframe_result wd_client_video_keyframe_validate(uint32_t 
             return WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM;
         }
 
+        if ((data[nal] & 0x80u) != 0 || (hevc && (data[nal + 1] & 0x07u) == 0))
+        {
+            return WD_CLIENT_VIDEO_KEYFRAME_INVALID_BITSTREAM;
+        }
+
         const uint8_t type = hevc ? (uint8_t)((data[nal] >> 1) & 0x3fu) : (uint8_t)(data[nal] & 0x1fu);
         if (hevc)
         {
@@ -161,7 +166,7 @@ enum wd_client_video_keyframe_result wd_client_video_keyframe_validate(uint32_t 
             if (type <= 31)
             {
                 /* A fresh decoder cannot use a dependent picture first. */
-                if ((present & required) != required || (type != 19 && type != 20 && type != 21))
+                if ((present & required) != required || (type < 16 || type > 21))
                 {
                     return (present & required) != required ? WD_CLIENT_VIDEO_KEYFRAME_MISSING_PARAMETER_SETS
                                                            : WD_CLIENT_VIDEO_KEYFRAME_MISSING_RANDOM_ACCESS;

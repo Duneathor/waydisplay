@@ -211,14 +211,16 @@ The client uses `--video-decoder <off|auto|software|vaapi>` (default `auto`).
 without attempting VA-API. `--video-mode off` is the coarse video-policy switch.
 
 
-The first VA-API implementation still converts XRGB to NV12 in system memory
-and uploads that frame to a VA surface. It removes software H.264/H.265/AV1 encoding
-from the hot path, but is not a zero-copy compositor-to-encoder path. Check
-`vainfo` for `VAEntrypointEncSlice`; older AMD hardware may support H.264 encode
-without HEVC encode, in which case use client option `--video-codec h264`.
-HEVC VA-API output is normalized to Annex-B when a recognized escaped start-code
-prefix occurs. The repair is deliberately narrow, and does not guarantee that
-all vendor-specific bitstream defects are accepted.
+When wlroots exposes a compatible output dma-buf and the selected VA-API encoder
+has a usable VPP path, the server can import the DRM PRIME frame and convert it
+directly into the encoder's NV12 VA surface. CPU XRGB readback/conversion remains
+the correctness fallback for unsupported formats, modifiers, devices, or failed
+imports, so zero-copy is conditional rather than assumed. Check `vainfo` for
+`VAEntrypointEncSlice`; older AMD hardware may support H.264 encode without HEVC
+encode, in which case use client option `--video-codec h264`. HEVC VA-API output
+is normalized only when the leading escaped Annex-B start code is unambiguous; an
+interior matching byte pattern makes repair fail closed rather than rewriting
+possibly legitimate RBSP bytes.
 
 ## Tile-size selection
 
@@ -444,7 +446,7 @@ ctest --preset tests-coverage
 gcovr --root . --filter 'src/' --print-summary
 ```
 
-Coverage-guided tile protocol and reassembly fuzzers are available with Clang by configuring `-DWAYDISPLAY_BUILD_FUZZERS=ON`. Fuzz binaries are not registered as ordinary CTest cases; CI or local fuzz jobs should provide a corpus and run duration explicitly. Every CTest receives a tier label (`unit`, `integration`, `stress`, `fuzz`, or `hardware`) in addition to subsystem labels. The `tests-full` preset requires both runtime executable targets so missing SDL3 or wlroots dependencies cannot silently reduce coverage.
+Coverage-guided tile protocol and reassembly fuzzers are available with Clang by configuring `-DWAYDISPLAY_BUILD_FUZZERS=ON`. Fuzz binaries are not registered as ordinary CTest cases; CI or local fuzz jobs should provide a corpus and run duration explicitly. Every CTest receives a tier label such as `unit`, `component`, `integration`, `stress`, `fuzz`, or `hardware` in addition to subsystem labels. The `tests-full` preset requires both runtime executable targets so missing SDL3 or wlroots dependencies cannot silently reduce coverage.
 
 
 ### Video scrub and recovery tests
@@ -453,18 +455,19 @@ Coverage-guided tile protocol and reassembly fuzzers are available with Clang by
 `waydisplay.video_adaptive_cadence`, and `waydisplay.video_scrub_recovery`
 cover the production feedback descriptor, transient-overload recovery,
 cause-specific health streaks, bounded keyframe retries, and client-FPS ceiling.
-The scrub test intentionally fills the compressed decode-input queue and proves
-that overload remains in video ownership, while hard decode/publication flags
-select tile fallback. Keep these tests in the dependency-light suite so recovery
-policy changes do not require FFmpeg or SDL hardware.
+The scrub test drives the production decode-queue policy through a modeled depth
+counter rather than instantiating the live queue; it proves the overload/recovery
+decisions without claiming an end-to-end runtime fill. Keep these component tests
+in the dependency-light suite so recovery policy changes do not require FFmpeg or
+SDL hardware.
 
 `waydisplay.planned_resize_resume`, `waydisplay.render_planning`, and
-`waydisplay.resize_video_continuity` cover the complete planned-resize contract:
-rapid resizes supersede obsolete framebuffer-generation barriers, selected
-forced or automatic video resumes after the exact tile epoch, partial or stale
-replacement textures cannot hide the last valid frame, and the decode-rate
-controller settles near its measured safe ceiling without the former
-multiplicative sawtooth.
+`waydisplay.resize_video_continuity` are component coverage for planned-resize
+policy and presentation handoff: rapid resizes supersede obsolete modeled
+framebuffer-generation barriers, selected forced or automatic video resumes after
+the exact tile epoch, partial or stale replacement surfaces cannot hide the last
+valid frame, and the decode-rate controller settles near its measured safe
+ceiling. They do not perform a complete live server resize/config exchange.
 
 ### Bandwidth and cadence policy tests
 
@@ -478,7 +481,7 @@ profile when changing transport allocation or frame timing.
 
 ### AV1 video (opt-in)
 
-Use **matching new client and server binaries**; older protocol-zero builds do not
+Use **matching new client and server binaries**; pre-v2 builds do not
 recognize AV1's codec capability bit. The server probes `av1_vaapi` on the
 selected GPU; `--video-encoder software` requires FFmpeg's `libaom-av1` encoder.
 AV1 VA-API decoding uses FFmpeg's native `av1` hardware decoder. Software

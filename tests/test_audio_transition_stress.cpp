@@ -1,5 +1,5 @@
 #include "audio_video_sync.h"
-#include "waydisplay/wd_audio_transport.h"
+#include "wd_bandwidth_plan.h"
 #include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_protocol.h"
 #include "wd_audio_packetizer.h"
@@ -172,8 +172,12 @@ void stress_media_clock_sync_and_budget() {
     {
         const uint64_t measured    = 1u + random() % (64ull * 1024ull * 1024ull);
         const uint32_t bitrate     = 6000u + static_cast<uint32_t>(random() % 504000u);
-        const uint64_t tile_budget = wd_audio_reserve_from_tile_budget(measured, bitrate);
-        require(tile_budget != 0 && tile_budget <= measured, "audio reservation must preserve a bounded nonzero tile budget");
+        const uint32_t selected = wd_bandwidth_audio_select_bitrate(measured, bitrate, WD_AUDIO_BITRATE_MIN);
+        const auto plan = wd_bandwidth_plan_build(measured, WD_BANDWIDTH_MODE_TILES, selected != 0, selected);
+        require(wd_bandwidth_plan_is_valid(&plan, WD_BANDWIDTH_MODE_TILES),
+                "production bandwidth planning must remain valid under randomized audio/link inputs");
+        require(plan.audio_reserved_bytes_per_second <= plan.audio_cap_bytes_per_second,
+                "negotiated audio must fit its protected class");
     }
 }
 

@@ -35,6 +35,7 @@ struct ClientAudioPlayback {
     wd_audio_config_payload config{};
     bool                        configured = false;
     bool                        playing    = false;
+    bool                        eos_pending = false;
     ClientAudioStartupGateState startup_gate{};
     uint64_t                expected_sequence       = 0;
     uint64_t                expected_pts_samples    = 0;
@@ -44,6 +45,8 @@ struct ClientAudioPlayback {
     uint64_t                submitted_end_pts       = 0;
     uint16_t                target_latency_ms       = WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
     uint16_t                pre_skip_remaining      = 0;
+    uint64_t                segment_start_pts       = 0;
+    bool                    have_segment_start_pts  = false;
     uint64_t                output_rebases          = 0;
     uint64_t                underflows              = 0;
     uint64_t                late_drops              = 0;
@@ -93,6 +96,8 @@ void publish_device_clock_limit_locked(ClientAudioPlayback* playback) {
 
 uint64_t queued_samples_locked(const ClientAudioPlayback* playback);
 
+void destroy_stream_locked(ClientAudioPlayback* playback);
+
 uint64_t device_playhead_locked(const ClientAudioPlayback* playback) {
     if (!playback || !playback->have_playback_start_pts)
     {
@@ -122,13 +127,63 @@ void reset_device_clock_locked(ClientAudioPlayback* playback) {
     playback->device_starved.store(false, std::memory_order_release);
 }
 
+bool pause_and_clear_output_locked(ClientAudioPlayback* playback, const char* reason) {
+    if (!playback || !playback->stream)
+    {
+        return true;
+    }
+
+    const bool paused  = SDL_PauseAudioStreamDevice(playback->stream);
+    const bool cleared = SDL_ClearAudioStream(playback->stream);
+    if (!paused || !cleared)
+    {
+        WD_LOG_ERROR("failed to reset SDL audio output (%s): pause=%s clear=%s error=%s", reason ? reason : "unknown",
+                     paused ? "ok" : "failed", cleared ? "ok" : "failed", SDL_GetError());
+        return false;
+    }
+    return true;
+}
+
+bool start_output_locked(ClientAudioPlayback* playback) {
+    if (!playback || !playback->stream || playback->device_id == 0)
+    {
+        return false;
+    }
+    if (playback->playing)
+    {
+        return true;
+    }
+
+    playback->device_mixed_samples_fp.store(0, std::memory_order_release);
+    if (!SDL_SetAudioPostmixCallback(playback->device_id, audio_postmix_callback, playback))
+    {
+        WD_LOG_ERROR("failed to start SDL audio presentation clock: %s", SDL_GetError());
+        return false;
+    }
+
+    playback->device_clock_active.store(true, std::memory_order_release);
+    if (!SDL_ResumeAudioStreamDevice(playback->stream))
+    {
+        WD_LOG_ERROR("failed to resume SDL audio playback: %s", SDL_GetError());
+        reset_device_clock_locked(playback);
+        return false;
+    }
+
+    playback->playing = true;
+    client_audio_startup_gate_release(playback->startup_gate);
+    return true;
+}
+
 bool handle_device_starvation_locked(ClientAudioPlayback* playback) {
     if (!playback || !playback->playing || !playback->have_playback_start_pts)
     {
         return false;
     }
+    if (!playback->device_starved.exchange(false, std::memory_order_acq_rel))
+    {
+        return false;
+    }
 
-    (void)playback->device_starved.exchange(false, std::memory_order_acq_rel);
     const uint64_t mixed_samples_fp = playback->device_mixed_samples_fp.load(std::memory_order_acquire);
     const uint64_t buffer_samples   = playback->device_buffer_samples.load(std::memory_order_acquire);
     const bool     consumed =
@@ -139,11 +194,23 @@ bool handle_device_starvation_locked(ClientAudioPlayback* playback) {
         return false;
     }
 
-    SDL_PauseAudioStreamDevice(playback->stream);
-    SDL_ClearAudioStream(playback->stream);
+    const bool clean_eos = playback->eos_pending;
+    if (!pause_and_clear_output_locked(playback, clean_eos ? "end of stream" : "device starvation"))
+    {
+        destroy_stream_locked(playback);
+        return true;
+    }
     playback->playing = false;
-    client_audio_startup_gate_reset(playback->startup_gate);
-    playback->underflows++;
+    if (clean_eos)
+    {
+        client_audio_startup_gate_reset(playback->startup_gate);
+    }
+    else
+    {
+        client_audio_startup_gate_reset(playback->startup_gate);
+        playback->underflows++;
+    }
+    playback->eos_pending = false;
     reset_device_clock_locked(playback);
     playback->playback_start_pts      = 0;
     playback->have_playback_start_pts = false;
@@ -169,8 +236,9 @@ void destroy_stream_locked(ClientAudioPlayback* playback) {
         playback->decoder = nullptr;
     }
 #endif
-    playback->configured = false;
-    playback->playing    = false;
+    playback->configured  = false;
+    playback->playing     = false;
+    playback->eos_pending = false;
     client_audio_startup_gate_reset(playback->startup_gate);
     playback->expected_sequence       = 0;
     playback->expected_pts_samples    = 0;
@@ -180,6 +248,8 @@ void destroy_stream_locked(ClientAudioPlayback* playback) {
     playback->submitted_end_pts       = 0;
     playback->target_latency_ms       = WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
     playback->pre_skip_remaining      = 0;
+    playback->segment_start_pts       = 0;
+    playback->have_segment_start_pts  = false;
     playback->decode_buffer.clear();
 }
 
@@ -209,36 +279,39 @@ uint64_t queued_samples_locked(const ClientAudioPlayback* playback) {
     return static_cast<uint64_t>(queued_bytes) / (sizeof(float) * playback->config.channels);
 }
 
-void clear_for_output_gap_locked(ClientAudioPlayback* playback) {
+bool clear_for_output_gap_locked(ClientAudioPlayback* playback) {
     if (!playback)
     {
-        return;
+        return false;
     }
-    if (playback->stream)
+    if (!pause_and_clear_output_locked(playback, "output rebase"))
     {
-        SDL_ClearAudioStream(playback->stream);
-        SDL_PauseAudioStreamDevice(playback->stream);
+        destroy_stream_locked(playback);
+        return false;
     }
     playback->playing = false;
+    playback->eos_pending = false;
     client_audio_startup_gate_release(playback->startup_gate);
     reset_device_clock_locked(playback);
     playback->playback_start_pts      = 0;
     playback->have_playback_start_pts = false;
     playback->submitted_end_pts       = 0;
+    return true;
 }
 
-void clear_for_discontinuity_locked(ClientAudioPlayback* playback) {
+bool clear_for_discontinuity_locked(ClientAudioPlayback* playback) {
     if (!playback)
     {
-        return;
+        return false;
     }
-    if (playback->stream)
+    if (!pause_and_clear_output_locked(playback, "discontinuity"))
     {
-        SDL_ClearAudioStream(playback->stream);
-        SDL_PauseAudioStreamDevice(playback->stream);
+        destroy_stream_locked(playback);
+        return false;
     }
     (void)reset_decoder_locked(playback);
     playback->playing = false;
+    playback->eos_pending = false;
     client_audio_startup_gate_reset(playback->startup_gate);
     reset_device_clock_locked(playback);
     playback->playback_start_pts      = 0;
@@ -247,7 +320,10 @@ void clear_for_discontinuity_locked(ClientAudioPlayback* playback) {
     playback->expected_pts_samples    = 0;
     playback->have_expected_pts       = false;
     playback->pre_skip_remaining      = playback->config.codec_delay_samples;
+    playback->segment_start_pts       = 0;
+    playback->have_segment_start_pts  = false;
     playback->discontinuities++;
+    return true;
 }
 
 } // namespace
@@ -339,9 +415,11 @@ bool client_audio_playback_configure(ClientAudioPlayback* playback, const wd_aud
             CLIENT_AUDIO_CLOCK_FRACTION_BITS,
         std::memory_order_release);
 
-    playback->target_latency_ms  = target_latency_ms;
-    playback->pre_skip_remaining = config.codec_delay_samples;
-    playback->configured = true;
+    playback->target_latency_ms       = target_latency_ms;
+    playback->pre_skip_remaining      = config.codec_delay_samples;
+    playback->segment_start_pts       = 0;
+    playback->have_segment_start_pts  = false;
+    playback->configured              = true;
     /* A configured stream may have no PCM for minutes (a muted application).
      * Do not stall video until valid PCM has actually entered the output FIFO. */
     client_audio_startup_gate_reset(playback->startup_gate);
@@ -381,19 +459,47 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback, const ui
         /* Process the current packet as the first packet of the new timeline.
          * Dropping it would make the following packet fail sequence/PTS checks
          * as well and turn one gap into a cascading recovery. */
-        clear_for_discontinuity_locked(playback);
+        if (!clear_for_discontinuity_locked(playback))
+        {
+            return false;
+        }
     }
 
     if ((header.flags & WD_AUDIO_PACKET_END_OF_STREAM) != 0)
     {
         playback->expected_sequence = header.sequence + 1;
-        if (playback->stream)
+        if (!playback->stream || !SDL_FlushAudioStream(playback->stream))
         {
-            SDL_PauseAudioStreamDevice(playback->stream);
+            WD_LOG_ERROR("failed to flush SDL audio at end of stream: %s", SDL_GetError());
+            destroy_stream_locked(playback);
+            return false;
         }
-        playback->playing = false;
-        client_audio_startup_gate_reset(playback->startup_gate);
-        reset_device_clock_locked(playback);
+
+        playback->eos_pending = true;
+        if (queued_samples_locked(playback) == 0)
+        {
+            if (playback->playing)
+            {
+                playback->device_starved.store(true, std::memory_order_release);
+                (void)handle_device_starvation_locked(playback);
+            }
+            else
+            {
+                playback->eos_pending = false;
+                client_audio_startup_gate_reset(playback->startup_gate);
+                reset_device_clock_locked(playback);
+            }
+            return true;
+        }
+
+        if (!playback->playing && !start_output_locked(playback))
+        {
+            if (!clear_for_output_gap_locked(playback))
+            {
+                return false;
+            }
+            WD_LOG_WARN("discarding queued SDL audio after end-of-stream resume failure");
+        }
         return true;
     }
 
@@ -410,18 +516,31 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback, const ui
                                                playback->decode_buffer.data(), OPUS_MAX_DECODE_SAMPLES, 0);
     if (decoded <= 0 || decoded != header.duration_samples)
     {
-        clear_for_discontinuity_locked(playback);
+        (void)clear_for_discontinuity_locked(playback);
         return false;
     }
 
-    const uint64_t packet_end_pts = header.pts_samples + static_cast<uint64_t>(decoded);
-    const uint16_t skip           = static_cast<uint16_t>(std::min<int>(decoded, playback->pre_skip_remaining));
-    playback->pre_skip_remaining  = static_cast<uint16_t>(playback->pre_skip_remaining - skip);
+    const uint64_t wire_end_pts = header.pts_samples + static_cast<uint64_t>(decoded);
+    const uint16_t skip         = static_cast<uint16_t>(std::min<int>(decoded, playback->pre_skip_remaining));
+    if (!playback->have_segment_start_pts)
+    {
+        playback->segment_start_pts      = header.pts_samples;
+        playback->have_segment_start_pts = true;
+    }
+    ClientAudioDecodedRange decoded_range{};
+    if (!client_audio_decoded_range(header.pts_samples, static_cast<uint16_t>(decoded), skip, playback->config.codec_delay_samples,
+                                    playback->segment_start_pts, decoded_range))
+    {
+        (void)clear_for_discontinuity_locked(playback);
+        return false;
+    }
+    playback->pre_skip_remaining = static_cast<uint16_t>(playback->pre_skip_remaining - skip);
 
     (void)handle_device_starvation_locked(playback);
     const uint64_t current_playhead = device_playhead_locked(playback);
     const uint64_t late_limit       = (WD_AUDIO_SAMPLE_RATE_DEFAULT * WD_CLIENT_AUDIO_LATE_PACKET_MS) / WD_MSEC_PER_SEC;
-    const bool     late = playback->playing && packet_end_pts <= UINT64_MAX - late_limit && packet_end_pts + late_limit < current_playhead;
+    const bool late = playback->playing && decoded_range.end_pts <= UINT64_MAX - late_limit &&
+                      decoded_range.end_pts + late_limit < current_playhead;
     if (late)
     {
         /* Opus is stateful. Decode the late packet to advance the decoder, but
@@ -429,11 +548,10 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback, const ui
          * only the output queue so the next packet starts a fresh SDL playback
          * anchor without inventing a sender-side codec reset. */
         playback->expected_sequence    = header.sequence + 1;
-        playback->expected_pts_samples = packet_end_pts;
+        playback->expected_pts_samples = wire_end_pts;
         playback->have_expected_pts    = true;
         playback->late_drops++;
-        clear_for_output_gap_locked(playback);
-        return true;
+        return clear_for_output_gap_locked(playback);
     }
 
     const int queued_frames = decoded - skip;
@@ -442,8 +560,7 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback, const ui
         const uint64_t queued_samples = queued_samples_locked(playback);
         const uint64_t max_queued_samples =
             client_audio_max_queued_samples(playback->config.sample_rate, playback->target_latency_ms);
-        if (client_audio_output_rebase_needed(playback->playing, queued_samples,
-                                               static_cast<uint64_t>(queued_frames), max_queued_samples))
+        if (client_audio_output_rebase_needed(queued_samples, static_cast<uint64_t>(queued_frames), max_queued_samples))
         {
             /* PCM is arriving faster than the playback device consumes it.
              * The 20 ms startup target alone does not prevent this FIFO from
@@ -456,12 +573,15 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback, const ui
                         static_cast<unsigned long long>(queued_samples * WD_MSEC_PER_SEC / playback->config.sample_rate),
                         static_cast<unsigned long long>(max_queued_samples * WD_MSEC_PER_SEC / playback->config.sample_rate),
                         static_cast<unsigned long long>(header.pts_samples));
-            clear_for_output_gap_locked(playback);
+            if (!clear_for_output_gap_locked(playback))
+            {
+                return false;
+            }
             playback->output_rebases++;
         }
         if (!playback->have_playback_start_pts)
         {
-            playback->playback_start_pts      = header.pts_samples + skip;
+            playback->playback_start_pts      = decoded_range.start_pts;
             playback->have_playback_start_pts = true;
         }
         const float* queued_pcm = playback->decode_buffer.data() + static_cast<size_t>(skip) * playback->config.channels;
@@ -469,7 +589,7 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback, const ui
         if (!SDL_PutAudioStreamData(playback->stream, queued_pcm, byte_count))
         {
             WD_LOG_ERROR("failed to queue SDL audio: %s", SDL_GetError());
-            clear_for_discontinuity_locked(playback);
+            (void)clear_for_discontinuity_locked(playback);
             return false;
         }
         if (!playback->playing)
@@ -477,33 +597,16 @@ bool client_audio_playback_handle_packet(ClientAudioPlayback* playback, const ui
             client_audio_startup_gate_begin_buffering(playback->startup_gate, wd_now_ns());
         }
     }
-    playback->submitted_end_pts = packet_end_pts;
+    playback->submitted_end_pts = decoded_range.end_pts;
     publish_device_clock_limit_locked(playback);
     playback->expected_sequence    = header.sequence + 1;
-    playback->expected_pts_samples = packet_end_pts;
+    playback->expected_pts_samples = wire_end_pts;
     playback->have_expected_pts    = true;
 
     const uint64_t target_samples = (static_cast<uint64_t>(playback->config.sample_rate) * playback->target_latency_ms) / 1000u;
     if (!playback->playing && playback->have_playback_start_pts && queued_samples_locked(playback) >= target_samples)
     {
-        playback->device_mixed_samples_fp.store(0, std::memory_order_release);
-        if (!SDL_SetAudioPostmixCallback(playback->device_id, audio_postmix_callback, playback))
-        {
-            WD_LOG_ERROR("failed to start SDL audio presentation clock: %s", SDL_GetError());
-        }
-        else
-        {
-            playback->device_clock_active.store(true, std::memory_order_release);
-            if (SDL_ResumeAudioStreamDevice(playback->stream))
-            {
-                playback->playing = true;
-                client_audio_startup_gate_release(playback->startup_gate);
-            }
-            else
-            {
-                reset_device_clock_locked(playback);
-            }
-        }
+        (void)start_output_locked(playback);
     }
     return true;
 #endif
@@ -598,6 +701,7 @@ ClientAudioClockStatus client_audio_playback_clock_status(ClientAudioPlayback* p
     if (!playback)
         return status;
     std::lock_guard<std::mutex> lock(playback->mutex);
+    (void)handle_device_starvation_locked(playback);
     status.output_rebases = playback->output_rebases;
     if (playback->config.sample_rate == 0 || !playback->configured)
         return status;

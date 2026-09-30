@@ -5,6 +5,8 @@
 
 struct wd_audio_encoder;
 
+/* Encoder instances are single-thread owned; reset/encode/destroy must not
+ * run concurrently. create() clears *out_encoder before any validation. */
 bool        wd_audio_encoder_create(struct wd_audio_encoder** out_encoder, uint8_t channels, uint32_t bitrate);
 void        wd_audio_encoder_destroy(struct wd_audio_encoder* encoder);
 bool        wd_audio_encoder_reset(struct wd_audio_encoder* encoder);

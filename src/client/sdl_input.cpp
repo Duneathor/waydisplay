@@ -192,6 +192,8 @@ uint16_t sdl_scancode_to_evdev(SDL_Scancode scancode) {
         return 87;
     case SDL_SCANCODE_F12:
         return 88;
+    case SDL_SCANCODE_NONUSBACKSLASH:
+        return 86; /* KEY_102ND */
 
     case SDL_SCANCODE_KP_ENTER:
         return 96;
@@ -199,8 +201,15 @@ uint16_t sdl_scancode_to_evdev(SDL_Scancode scancode) {
         return 97;
     case SDL_SCANCODE_KP_DIVIDE:
         return 98;
+    case SDL_SCANCODE_PRINTSCREEN:
+        return 99; /* KEY_SYSRQ */
     case SDL_SCANCODE_RALT:
         return 100;
+
+    case SDL_SCANCODE_KP_EQUALS:
+        return 117; /* KEY_KPEQUAL */
+    case SDL_SCANCODE_PAUSE:
+        return 119; /* KEY_PAUSE */
 
     case SDL_SCANCODE_HOME:
         return 102;

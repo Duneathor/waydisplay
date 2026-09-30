@@ -144,6 +144,7 @@ void client_video_decoder_reset(ClientVideoDecoder* decoder);
 
 bool        client_video_decoder_available(const ClientVideoDecoder* decoder);
 uint32_t    client_video_decoder_supported_codecs(const ClientVideoDecoder* decoder);
+uint32_t    client_video_decoder_supported_codecs_for_mode(const ClientVideoDecoder* decoder, uint8_t decode_mode);
 const char* client_video_decoder_backend_name(const ClientVideoDecoder* decoder);
 bool        client_video_decoder_hwdecode_failed_auto(const ClientVideoDecoder* decoder);
 uint64_t    client_video_decoder_zero_copy_inputs(const ClientVideoDecoder* decoder);

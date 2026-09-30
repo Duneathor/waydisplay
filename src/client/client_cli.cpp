@@ -221,6 +221,10 @@ bool parse_video_decoder_mode(const char* text, uint8_t& value) {
 } // namespace
 
 ClientCliParseResult client_cli_parse(int argc, const char* const* argv, ClientCliOptions& options, std::string* error_message) {
+    if (error_message)
+    {
+        error_message->clear();
+    }
     options                       = ClientCliOptions{};
     options.tcp_port              = WD_DEFAULT_TCP_PORT;
     options.client_udp_port       = WD_CLIENT_DEFAULT_UDP_PORT;

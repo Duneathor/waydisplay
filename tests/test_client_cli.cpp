@@ -178,6 +178,15 @@ static void test_invalid_values(void) {
     CHECK(parse({"client", "127.0.0.1", "5000", "6000", "--link-cap-kib-per-sec", "+1"}, options, error) == ClientCliParseResult::Error);
 }
 
+static void test_success_clears_prior_error(void) {
+    ClientCliOptions options;
+    std::string error;
+    CHECK(parse({"client", "127.0.0.1", "bad"}, options, error) == ClientCliParseResult::Error);
+    CHECK(!error.empty());
+    CHECK(parse({"client", "127.0.0.1"}, options, error) == ClientCliParseResult::Ok);
+    CHECK(error.empty());
+}
+
 static void test_help(void) {
     ClientCliOptions options;
     std::string      error;
@@ -193,6 +202,7 @@ int main() {
     test_decode_modes();
     test_removed_options_are_rejected();
     test_invalid_values();
+    test_success_clears_prior_error();
     test_help();
     return 0;
 }

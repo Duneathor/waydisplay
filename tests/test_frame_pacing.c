@@ -59,6 +59,16 @@ int main(void) {
     CHECK(!wd_frame_pacing_due(&state, start + 4u * WD_NSEC_PER_MSEC, 240));
     CHECK(wd_frame_pacing_due(&state, start + 5u * WD_NSEC_PER_MSEC, 240));
 
+    wd_frame_pacing_reset(&state);
+    CHECK(wd_frame_pacing_due(&state, start, 60));
+    CHECK(wd_frame_pacing_due(&state, start + 10u * WD_NSEC_PER_SEC, 60));
+    CHECK(!wd_frame_pacing_due(&state, start + 10u * WD_NSEC_PER_SEC + 1u * WD_NSEC_PER_MSEC, 60));
+
+    wd_frame_pacing_reset(&state);
+    CHECK(wd_frame_pacing_due(&state, start, 30));
+    CHECK(!wd_frame_pacing_due(&state, start + 1u * WD_NSEC_PER_MSEC, 240));
+    CHECK(wd_frame_pacing_due(&state, start + 5u * WD_NSEC_PER_MSEC, 240));
+
     CHECK(check_rate(30) == 0);
     CHECK(check_rate(60) == 0);
     CHECK(check_rate(120) == 0);

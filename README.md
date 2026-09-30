@@ -80,7 +80,7 @@ command. Only use this with a trusted server/client pair.
 
 Use `--help` for all arguments and see [Command line](docs/command-line.md)
 for modes and [HEVC troubleshooting](docs/video-hevc-troubleshooting.md) for
-diagnostic traces (DEBUG builds only).
+diagnostic guidance and STATS/DEBUG telemetry.
 
 ## Design priorities
 

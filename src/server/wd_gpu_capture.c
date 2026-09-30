@@ -35,6 +35,5 @@ bool wd_gpu_capture_export_wlr_buffer(struct wlr_buffer* buffer, uint64_t pts_us
                                         (uint32_t)attributes.n_planes);
     }
 
-    wlr_dmabuf_attributes_finish(&attributes);
     return ok;
 }

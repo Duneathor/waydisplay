@@ -58,6 +58,7 @@ struct ClientAsyncTcpSender {
 
     uint64_t inflight          = 0;
     uint64_t inflight_max      = 0;
+    uint64_t inflight_interval_max = 0;
     uint64_t pending_bytes     = 0;
     uint64_t max_pending_bytes = WD_CLIENT_ASYNC_TCP_DEFAULT_PENDING_BYTES;
     uint64_t queued            = 0;
@@ -197,41 +198,43 @@ bool is_pointer_motion_message(const Message* msg) {
     return pointer.event_type == WD_POINTER_EVENT_MOTION;
 }
 
-uint64_t stale_unsubmitted_pointer_motion_bytes_locked(const ClientAsyncTcpSender* sender, int fd) {
+uint64_t replaceable_tail_pointer_motion_bytes_locked(const ClientAsyncTcpSender* sender, int fd) {
     if (!sender || fd < 0)
     {
         return 0;
     }
 
     uint64_t bytes = 0;
-    for (const Message* msg = sender->head; msg; msg = msg->next)
+    for (const Message* msg = sender->tail; msg; msg = msg->prev)
     {
-        if (!msg->submitted && msg->fd == fd && is_pointer_motion_message(msg))
+        if (msg->fd != fd || !is_pointer_motion_message(msg) ||
+            !wd_async_tcp_message_is_replaceable(msg->submitted, msg->bytes_sent))
         {
-            bytes += msg->bytes.size();
+            break;
         }
+        bytes += msg->bytes.size();
     }
     return bytes;
 }
 
-uint64_t drop_stale_unsubmitted_pointer_motion_locked(ClientAsyncTcpSender* sender, int fd) {
+uint64_t drop_replaceable_tail_pointer_motion_locked(ClientAsyncTcpSender* sender, int fd) {
     if (!sender || fd < 0)
     {
         return 0;
     }
 
     uint64_t dropped = 0;
-    Message* msg     = sender->head;
-    while (msg)
+    while (sender->tail)
     {
-        Message* next = msg->next;
-        if (!msg->submitted && msg->fd == fd && is_pointer_motion_message(msg))
+        Message* msg = sender->tail;
+        if (msg->fd != fd || !is_pointer_motion_message(msg) ||
+            !wd_async_tcp_message_is_replaceable(msg->submitted, msg->bytes_sent))
         {
-            pending_remove(sender, msg);
-            delete msg;
-            dropped++;
+            break;
         }
-        msg = next;
+        pending_remove(sender, msg);
+        delete msg;
+        dropped++;
     }
     return dropped;
 }
@@ -243,7 +246,6 @@ bool bind_socket_locked(ClientAsyncTcpSender* sender, int fd) {
     }
     if (wd_socket_pin_matches(&sender->socket_pin, fd))
     {
-        sender->socket_pin.source_fd = fd;
         return true;
     }
     if (sender->head || sender->inflight != 0)
@@ -340,6 +342,10 @@ bool submit_message_locked(ClientAsyncTcpSender* sender, Message* msg) {
     if (sender->inflight > sender->inflight_max)
     {
         sender->inflight_max = sender->inflight;
+    }
+    if (sender->inflight > sender->inflight_interval_max)
+    {
+        sender->inflight_interval_max = sender->inflight;
     }
 
     int submit_result = 0;
@@ -525,6 +531,7 @@ void fail_unsubmitted_locked(ClientAsyncTcpSender* sender) {
         Message* next = msg->next;
         if (!msg->submitted)
         {
+            sender->failed++;
             pending_remove(sender, msg);
             delete msg;
         }
@@ -574,20 +581,30 @@ void request_cancels_locked(ClientAsyncTcpSender* sender) {
 }
 
 bool drain_locked(ClientAsyncTcpSender* sender) {
-    if (!sender || !sender->ring_ready)
+    if (!sender)
     {
         return true;
     }
 
+    if (!sender->head)
+    {
+        return true;
+    }
+
+    /* A syscall-fallback message can be unsubmitted after a short send.
+     * Abandon the stream before freeing any such remainder. */
     shutdown_pending_fds_locked(sender);
-    request_cancels_locked(sender);
+    if (sender->ring_ready)
+    {
+        request_cancels_locked(sender);
+    }
 
     const uint32_t drain_limit = WD_CLIENT_ASYNC_TCP_DRAIN_LIMIT;
     for (uint32_t i = 0; sender->head && i < drain_limit; ++i)
     {
         reap_locked(sender);
         fail_unsubmitted_locked(sender);
-        if (!has_submitted_locked(sender))
+        if (!sender->ring_ready || !has_submitted_locked(sender))
         {
             break;
         }
@@ -741,7 +758,7 @@ bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_
                                          payload &&
                                          static_cast<const wd_pointer_event_payload*>(payload)->event_type == WD_POINTER_EVENT_MOTION;
     const uint64_t replaceable_bytes = coalesce_pointer_motion
-                                           ? stale_unsubmitted_pointer_motion_bytes_locked(sender, fd)
+                                           ? replaceable_tail_pointer_motion_bytes_locked(sender, fd)
                                            : 0;
     if (!wd_async_tcp_can_enqueue_after_replacing(sender->pending_bytes, replaceable_bytes, total_size,
                                                    sender->max_pending_bytes))
@@ -760,7 +777,7 @@ bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_
 
     if (coalesce_pointer_motion)
     {
-        sender->coalesced += drop_stale_unsubmitted_pointer_motion_locked(sender, fd);
+        sender->coalesced += drop_replaceable_tail_pointer_motion_locked(sender, fd);
     }
 
     pending_add(sender, msg);
@@ -771,6 +788,19 @@ bool client_async_tcp_send_message(ClientAsyncTcpSender* sender, int fd, uint16_
 
     sender->queued++;
     return true;
+}
+
+
+uint64_t client_async_tcp_sender_take_inflight_max(ClientAsyncTcpSender* sender) {
+    if (!sender)
+    {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(sender->mutex);
+    reap_locked(sender);
+    const uint64_t value = sender->inflight_interval_max;
+    sender->inflight_interval_max = sender->inflight;
+    return value;
 }
 
 ClientAsyncTcpSenderStats client_async_tcp_sender_stats(ClientAsyncTcpSender* sender) {

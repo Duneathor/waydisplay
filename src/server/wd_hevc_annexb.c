@@ -1,5 +1,7 @@
 #include "wd_hevc_annexb.h"
 
+#include <string.h>
+
 /* Only consider emulation-escaped prefixes followed by a plausible HEVC
  * NAL header. In particular, the nuh_temporal_id_plus1 field must be nonzero
  * and the forbidden_zero_bit must be clear. This is a narrow workaround for
@@ -39,36 +41,39 @@ int wd_hevc_annexb_repair_vaapi(uint8_t* data, size_t* size) {
     {
         return 0;
     }
-    if (!wd_escaped_prefix_length(data, original))
+
+    const size_t escaped = wd_escaped_prefix_length(data, original);
+    if (!escaped)
     {
         return -1;
     }
 
-    size_t read_pos = 0;
-    size_t write_pos = 0;
-    int repairs = 0;
-    while (read_pos < original)
+    /* Once inside an HEVC NAL payload, 00 00 03 ... is legitimate emulation
+     * prevention. A header-looking byte pair after such a sequence is not
+     * enough to prove another malformed NAL boundary. If an additional
+     * escaped-prefix candidate exists, the packet is ambiguous: reject it
+     * rather than rewriting compressed payload bytes into a fake delimiter. */
+    for (size_t pos = escaped; pos < original; ++pos)
     {
-        const size_t escaped = wd_escaped_prefix_length(data + read_pos, original - read_pos);
-        if (escaped)
+        if (wd_escaped_prefix_length(data + pos, original - pos) != 0)
         {
-            /* Drop only the spurious 0x03 between the zero run and the
-             * start code. Keep the NAL bytes and all non-marker payload. */
-            data[write_pos++] = 0;
-            data[write_pos++] = 0;
-            if (escaped == 5)
-            {
-                data[write_pos++] = 0;
-            }
-            data[write_pos++] = 1;
-            read_pos += escaped;
-            ++repairs;
-        }
-        else
-        {
-            data[write_pos++] = data[read_pos++];
+            return -1;
         }
     }
-    *size = write_pos;
-    return repairs;
+
+    const size_t repaired_prefix = escaped - 1u;
+    data[0] = 0;
+    data[1] = 0;
+    if (repaired_prefix == 4)
+    {
+        data[2] = 0;
+        data[3] = 1;
+    }
+    else
+    {
+        data[2] = 1;
+    }
+    memmove(data + repaired_prefix, data + escaped, original - escaped);
+    *size = original - 1u;
+    return 1;
 }

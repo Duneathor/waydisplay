@@ -93,6 +93,10 @@ int main() {
     CHECK(!wd_async_tcp_cqe_should_try_syscall(0));
     CHECK(!wd_async_tcp_cqe_should_try_syscall(4));
 
+    CHECK(wd_async_tcp_message_is_replaceable(false, 0));
+    CHECK(!wd_async_tcp_message_is_replaceable(true, 0));
+    CHECK(!wd_async_tcp_message_is_replaceable(false, 1));
+
     size_t sent = 0;
     CHECK(wd_async_tcp_advance(10, &sent, 4) == WD_ASYNC_TCP_SEND_PARTIAL && sent == 4);
     /* io_uring may surface transient send errors in a CQE. They must leave
@@ -104,7 +108,8 @@ int main() {
     CHECK(wd_async_tcp_advance(10, &sent, 0) == WD_ASYNC_TCP_SEND_FAILED && sent == 4);
     CHECK(wd_async_tcp_advance(10, &sent, 7) == WD_ASYNC_TCP_SEND_FAILED && sent == 4);
     CHECK(wd_async_tcp_advance(10, &sent, 6) == WD_ASYNC_TCP_SEND_COMPLETE && sent == 10);
-    CHECK(wd_async_tcp_advance(10, &sent, 1) == WD_ASYNC_TCP_SEND_FAILED && sent == 10);
+    CHECK(wd_async_tcp_advance(10, &sent, -EAGAIN) == WD_ASYNC_TCP_SEND_COMPLETE && sent == 10);
+    CHECK(wd_async_tcp_advance(10, &sent, 1) == WD_ASYNC_TCP_SEND_COMPLETE && sent == 10);
     CHECK(wd_async_tcp_advance(10, nullptr, 1) == WD_ASYNC_TCP_SEND_FAILED);
     return 0;
 }

@@ -1,6 +1,7 @@
 #include "video_plane_copy.hpp"
 
 #include <array>
+#include <climits>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -147,6 +148,21 @@ void test_invalid_planes_and_dimensions_reject_direct_copy() {
             "all output planes are required");
 }
 
+void test_invalid_layout_and_extreme_width_reject_direct_copy() {
+    const std::array<uint8_t, 16> plane{};
+    const uint8_t* src[3] = {plane.data(), plane.data(), plane.data()};
+    const int stride[3] = {4, 2, 2};
+    std::array<uint8_t, 16> out{};
+    uint8_t* dst[3] = {out.data(), out.data(), out.data()};
+
+    require(!client_copy_video_planes(static_cast<ClientVideoPlaneLayout>(255), src, stride, dst, 4, 4),
+            "unknown plane layouts must fail closed");
+
+    const int huge_stride[3] = {INT_MAX, INT_MAX, INT_MAX};
+    require(!client_copy_video_planes(ClientVideoPlaneLayout::YUV420P, src, huge_stride, dst, UINT32_MAX, 1),
+            "widths that cannot be represented by the stride API must fail before copying");
+}
+
 } // namespace
 
 int main() {
@@ -155,5 +171,6 @@ int main() {
     test_nv12_odd_dimensions_deinterleave_without_padding();
     test_invalid_strides_force_fallback();
     test_invalid_planes_and_dimensions_reject_direct_copy();
+    test_invalid_layout_and_extreme_width_reject_direct_copy();
     return EXIT_SUCCESS;
 }

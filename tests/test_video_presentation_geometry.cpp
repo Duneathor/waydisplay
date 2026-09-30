@@ -22,13 +22,16 @@ void require_rect(const ClientVideoPresentationRect& rect, int x, int y, int w, 
             message);
 }
 
-void test_exact_physical_pixels_are_the_only_pixel_exact_case() {
+void test_pixel_exact_describes_the_presented_image_not_the_bars() {
     require_rect(client_video_presentation_rect(1422, 773, 1422, 773),
                  0, 0, 1422, 773, true,
                  "matching physical output and source must render pixel for pixel");
     require_rect(client_video_presentation_rect(2844, 1546, 1422, 773),
                  0, 0, 2844, 1546, false,
                  "2x high-DPI scaling is not a physical 1:1 presentation");
+    require_rect(client_video_presentation_rect(1000, 600, 800, 600),
+                 100, 0, 800, 600, true,
+                 "pillar bars do not make an otherwise 1:1 image non-exact");
 }
 
 void test_fractional_high_dpi_scale_uses_integer_destination_pixels() {
@@ -82,7 +85,7 @@ void test_tiny_output_never_rounds_a_dimension_to_zero() {
 } // namespace
 
 int main() {
-    test_exact_physical_pixels_are_the_only_pixel_exact_case();
+    test_pixel_exact_describes_the_presented_image_not_the_bars();
     test_fractional_high_dpi_scale_uses_integer_destination_pixels();
     test_letterbox_and_pillarbox_are_centered();
     test_odd_destination_remainders_are_deterministic();

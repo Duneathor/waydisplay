@@ -18,6 +18,8 @@ struct ClientQueuedVideoFrame {
     uint64_t               epoch    = 0;
 };
 
+/* Externally synchronized queue. front() returns a borrowed pointer that is
+ * invalidated by any mutating queue operation. */
 class ClientVideoPresentQueue {
   public:
     explicit ClientVideoPresentQueue(size_t capacity = WD_CLIENT_VIDEO_PRESENT_QUEUE_CAPACITY) : capacity_(capacity == 0 ? 1 : capacity) {

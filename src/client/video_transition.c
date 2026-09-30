@@ -10,6 +10,13 @@ struct wd_client_video_transition_decision wd_client_video_transition_decide(enu
         .accept_payload = false,
     };
 
+    if (phase != WD_CLIENT_VIDEO_PHASE_TILES && phase != WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME &&
+        phase != WD_CLIENT_VIDEO_PHASE_VIDEO)
+    {
+        decision.reset_decoder = true;
+        return decision;
+    }
+
     if (resize)
     {
         decision.next_phase    = WD_CLIENT_VIDEO_PHASE_AWAITING_KEYFRAME;

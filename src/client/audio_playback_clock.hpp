@@ -43,14 +43,43 @@ inline uint64_t client_audio_frames_to_samples_fp(uint64_t frames, uint32_t fram
  * the SDL input FIFO grows, audio's presentation clock trails the live video
  * timeline indefinitely.  Rebase at a generous multiple of the startup
  * target, with room for device callbacks and packet-delivery jitter. */
+
+struct ClientAudioDecodedRange {
+    uint64_t start_pts = 0;
+    uint64_t end_pts   = 0;
+};
+
+/* Opus lookahead is decoder padding, not source-media time. Wire PTS tracks
+ * encoder input; retained decoded PCM tracks that timeline minus the codec
+ * delay within each reset/discontinuity segment. */
+inline bool client_audio_decoded_range(uint64_t wire_pts, uint16_t decoded_samples, uint16_t skipped_samples,
+                                       uint16_t codec_delay_samples, uint64_t segment_start_pts,
+                                       ClientAudioDecodedRange& range) {
+    if (decoded_samples == 0 || skipped_samples > decoded_samples || codec_delay_samples > decoded_samples ||
+        UINT64_MAX - wire_pts < decoded_samples)
+    {
+        return false;
+    }
+    const uint64_t wire_end = wire_pts + decoded_samples;
+    const uint64_t decoded_end = wire_end >= codec_delay_samples ? wire_end - codec_delay_samples : 0;
+    const uint64_t retained = static_cast<uint64_t>(decoded_samples - skipped_samples);
+    if (decoded_end < segment_start_pts || decoded_end - segment_start_pts < retained)
+    {
+        return false;
+    }
+    range.end_pts   = decoded_end;
+    range.start_pts = decoded_end - retained;
+    return range.start_pts >= segment_start_pts;
+}
+
 inline uint64_t client_audio_max_queued_samples(uint32_t sample_rate, uint16_t target_latency_ms) {
     const uint64_t max_ms = std::max<uint64_t>(120, static_cast<uint64_t>(target_latency_ms) * 4u);
     return (static_cast<uint64_t>(sample_rate) * max_ms) / 1000u;
 }
 
-inline bool client_audio_output_rebase_needed(bool playing, uint64_t queued_samples, uint64_t incoming_samples,
+inline bool client_audio_output_rebase_needed(uint64_t queued_samples, uint64_t incoming_samples,
                                                uint64_t max_queued_samples) {
-    return playing && max_queued_samples != 0 && incoming_samples != 0 &&
+    return max_queued_samples != 0 && incoming_samples != 0 &&
            (queued_samples > max_queued_samples || incoming_samples > max_queued_samples - queued_samples);
 }
 

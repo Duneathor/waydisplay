@@ -152,8 +152,7 @@ void client_stats_accumulate(ClientStatsSnapshot& dst, const ClientStatsSnapshot
     dst.sdl_texture_full_uploads += src.sdl_texture_full_uploads;
     dst.sdl_texture_partial_uploads += src.sdl_texture_partial_uploads;
     dst.sdl_texture_dirty_rects += src.sdl_texture_dirty_rects;
-    dst.sdl_texture_source_dirty_rects += src.sdl_texture_source_dirty_rects;
-    dst.sdl_texture_coalesced_dirty_rects += src.sdl_texture_coalesced_dirty_rects;
+    dst.sdl_texture_grid_rects += src.sdl_texture_grid_rects;
     dst.sdl_texture_bounds_uploads += src.sdl_texture_bounds_uploads;
     dst.sdl_texture_cost_full_uploads += src.sdl_texture_cost_full_uploads;
     dst.sdl_texture_lock_calls += src.sdl_texture_lock_calls;
@@ -348,8 +347,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     const uint64_t sdl_texture_full_uploads           = logged.sdl_texture_full_uploads;
     const uint64_t sdl_texture_partial_uploads        = logged.sdl_texture_partial_uploads;
     const uint64_t sdl_texture_dirty_rects            = logged.sdl_texture_dirty_rects;
-    const uint64_t sdl_texture_source_dirty_rects     = logged.sdl_texture_source_dirty_rects;
-    const uint64_t sdl_texture_coalesced_dirty_rects  = logged.sdl_texture_coalesced_dirty_rects;
+    const uint64_t sdl_texture_grid_rects             = logged.sdl_texture_grid_rects;
     const uint64_t sdl_texture_bounds_uploads         = logged.sdl_texture_bounds_uploads;
     const uint64_t sdl_texture_cost_full_uploads      = logged.sdl_texture_cost_full_uploads;
     const uint64_t sdl_texture_lock_calls             = logged.sdl_texture_lock_calls;
@@ -501,7 +499,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
         const uint64_t elapsed_ns = state.stats_log.previous_observation_ns && now_ns > state.stats_log.previous_observation_ns
                                         ? now_ns - state.stats_log.previous_observation_ns : 0;
         WD_LOG_STATS("client-video-cadence/interval: elapsed_s=%.3f rx_fps=%.2f decode_fps=%.2f "
-                     "present_fps=%.2f wire_mbit_per_sec=%.3f tile_presented=%llu",
+                     "present_fps=%.2f payload_mbit_per_sec=%.3f tile_presented=%llu",
                      static_cast<double>(elapsed_ns) / 1000000000.0,
                      wd_video_rate_per_sec(video_data_frames_rx, elapsed_ns),
                      wd_video_rate_per_sec(video_frames_decoded, elapsed_ns),
@@ -556,7 +554,7 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
     {
         WD_LOG_STATS(
             "client-render/interval: frames=%llu remote_frames=%llu empty_remote=%llu texture_full=%llu texture_partial=%llu video_full=%llu "
-            "texture_locks=%llu texture_updates=%llu dirty_rects=%llu source_rects=%llu coalesced_rects=%llu bounds_uploads=%llu "
+            "texture_locks=%llu texture_updates=%llu dirty_rects=%llu grid_rects=%llu bounds_uploads=%llu "
             "cost_full=%llu model_update_us=%.2f model_lock_us=%.2f model_pixel_ns=%.3f source_mpix=%.2f upload_mpix=%.2f "
             "video_upload_mpix=%.2f snapshot_mpix=%.2f snapshot_avg_ms=%.2f snapshot_max_ms=%.2f fb_direct=%llu fb_staged=%llu "
             "fb_lock_wait_avg_ms=%.3f fb_lock_wait_max_ms=%.3f fb_lock_hold_avg_ms=%.3f fb_lock_hold_max_ms=%.3f upload_avg_ms=%.2f "
@@ -565,8 +563,8 @@ void log_client_stats_snapshot(ClientState& state, const ClientStatsSnapshot& lo
             static_cast<unsigned long long>(sdl_empty_remote_wakeups), static_cast<unsigned long long>(sdl_texture_full_uploads),
             static_cast<unsigned long long>(sdl_texture_partial_uploads), static_cast<unsigned long long>(sdl_video_texture_uploads),
             static_cast<unsigned long long>(sdl_texture_lock_calls), static_cast<unsigned long long>(sdl_texture_update_calls),
-            static_cast<unsigned long long>(sdl_texture_dirty_rects), static_cast<unsigned long long>(sdl_texture_source_dirty_rects),
-            static_cast<unsigned long long>(sdl_texture_coalesced_dirty_rects), static_cast<unsigned long long>(sdl_texture_bounds_uploads),
+            static_cast<unsigned long long>(sdl_texture_dirty_rects), static_cast<unsigned long long>(sdl_texture_grid_rects),
+            static_cast<unsigned long long>(sdl_texture_bounds_uploads),
             static_cast<unsigned long long>(sdl_texture_cost_full_uploads), static_cast<double>(sdl_texture_model_update_call_ns) / 1000.0,
             static_cast<double>(sdl_texture_model_lock_call_ns) / 1000.0, static_cast<double>(sdl_texture_model_pixel_cost_q16) / 65536.0,
             static_cast<double>(sdl_texture_source_pixels) / 1000000.0, static_cast<double>(sdl_texture_upload_pixels) / 1000000.0,
@@ -606,7 +604,7 @@ bool take_input_timestamp(ClientState& state, uint64_t sequence, uint64_t& times
         if (it->sequence == sequence)
         {
             timestamp_ns = it->timestamp_ns;
-            state.recent_input_timestamps.erase(state.recent_input_timestamps.begin(), std::next(it));
+            state.recent_input_timestamps.erase(it);
             return timestamp_ns != 0;
         }
     }
@@ -770,8 +768,7 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     const uint64_t sdl_texture_full_uploads           = take_stat(state.stats.sdl_texture_full_uploads);
     const uint64_t sdl_texture_partial_uploads        = take_stat(state.stats.sdl_texture_partial_uploads);
     const uint64_t sdl_texture_dirty_rects            = take_stat(state.stats.sdl_texture_dirty_rects);
-    const uint64_t sdl_texture_source_dirty_rects     = take_stat(state.stats.sdl_texture_source_dirty_rects);
-    const uint64_t sdl_texture_coalesced_dirty_rects  = take_stat(state.stats.sdl_texture_coalesced_dirty_rects);
+    const uint64_t sdl_texture_grid_rects             = take_stat(state.stats.sdl_texture_grid_rects);
     const uint64_t sdl_texture_bounds_uploads         = take_stat(state.stats.sdl_texture_bounds_uploads);
     const uint64_t sdl_texture_cost_full_uploads      = take_stat(state.stats.sdl_texture_cost_full_uploads);
     const uint64_t sdl_texture_lock_calls             = take_stat(state.stats.sdl_texture_lock_calls);
@@ -939,8 +936,7 @@ void sample_client_stats(ClientState& state, bool log_stats) {
     sample.sdl_texture_full_uploads           = sdl_texture_full_uploads;
     sample.sdl_texture_partial_uploads        = sdl_texture_partial_uploads;
     sample.sdl_texture_dirty_rects            = sdl_texture_dirty_rects;
-    sample.sdl_texture_source_dirty_rects     = sdl_texture_source_dirty_rects;
-    sample.sdl_texture_coalesced_dirty_rects  = sdl_texture_coalesced_dirty_rects;
+    sample.sdl_texture_grid_rects             = sdl_texture_grid_rects;
     sample.sdl_texture_bounds_uploads         = sdl_texture_bounds_uploads;
     sample.sdl_texture_cost_full_uploads      = sdl_texture_cost_full_uploads;
     sample.sdl_texture_lock_calls             = sdl_texture_lock_calls;

@@ -45,6 +45,15 @@ void test_clamps_to_frame() {
     require(rects[0].w == 16 && rects[0].h == 16, "rectangle should be clipped to frame");
 }
 
+void test_unrepresentable_frame_dimensions_are_rejected() {
+    ClientDirtyRect visible{};
+    require(!clamp_dirty_rect({0, 0, 16, 16}, 65536u, 64u, visible),
+            "16-bit dirty rectangles cannot describe a wider framebuffer");
+    ClientDirtyTileGrid grid;
+    require(!grid.reset(64u, 65536u, 16u, 16u),
+            "dirty grid must reject frame dimensions outside the rectangle domain");
+}
+
 void test_upload_planner_modes() {
     std::vector<ClientDirtyRect> sparse{{0, 0, 16, 16}, {512, 512, 16, 16}};
     DirtyTextureUploadPlan       sparse_plan = plan_dirty_texture_upload(sparse, 1024, 1024);
@@ -183,6 +192,8 @@ void test_video_upload_preserves_pending_tile_work() {
 
 void test_render_wakeup_sequence_and_wait() {
     ClientRenderWake wake;
+    std::atomic<unsigned> external_wakes{0};
+    wake.set_external_waker([&]() { external_wakes.fetch_add(1, std::memory_order_relaxed); });
     const uint64_t   initial = wake.sequence();
     require(!wake.wait_for_change(initial, 1), "render wake should time out without a signal");
 
@@ -197,6 +208,10 @@ void test_render_wakeup_sequence_and_wait() {
     const uint64_t observed = wake.sequence();
     wake.signal();
     require(wake.wait_for_change(observed, 500), "a signal before waiting should not be lost");
+    require(external_wakes.load(std::memory_order_relaxed) == 2, "render wake should notify the external event loop for each signal");
+    wake.clear_external_waker();
+    wake.signal();
+    require(external_wakes.load(std::memory_order_relaxed) == 2, "cleared render wake callback must not be invoked");
 }
 
 ClientVideoFrameBuffer make_test_video_frame(uint8_t fill) {
@@ -282,7 +297,21 @@ void test_remote_content_epochs_reject_late_cross_transport_packets() {
     require(state.pending_dirty_tiles.reset(64, 64, 16, 16), "content test dirty grid");
     state.pending_present_generation.assign(16, 0);
 
-    client_reset_content_epoch(state, 10, WD_CLIENT_CONTENT_OWNER_TILES);
+    require(client_reset_content_epoch(state, 10, WD_CLIENT_CONTENT_OWNER_TILES), "nonzero content reset should succeed");
+    require(!client_reset_content_epoch(state, 0, WD_CLIENT_CONTENT_OWNER_VIDEO), "zero content reset must be rejected");
+    require(state.remote_content_epoch == 10 && state.remote_content_owner == WD_CLIENT_CONTENT_OWNER_TILES,
+            "rejected reset must not mutate content ownership");
+
+    state.stats.video_last_frame_id_rx.store(9, std::memory_order_relaxed);
+    state.stats.video_last_frame_id_decoded.store(8, std::memory_order_relaxed);
+    state.stats.video_last_frame_id_presented.store(7, std::memory_order_relaxed);
+    require(client_reset_content_epoch(state, 11, WD_CLIENT_CONTENT_OWNER_VIDEO), "video content reset should succeed");
+    require(state.stats.video_last_frame_id_rx.load(std::memory_order_relaxed) == 0 &&
+                state.stats.video_last_frame_id_decoded.load(std::memory_order_relaxed) == 0 &&
+                state.stats.video_last_frame_id_presented.load(std::memory_order_relaxed) == 0,
+            "video content reset must reset per-epoch frame IDs");
+
+    require(client_reset_content_epoch(state, 10, WD_CLIENT_CONTENT_OWNER_TILES), "tile content reset should restore baseline");
     require(client_accept_content_epoch(state, 11, WD_CLIENT_CONTENT_OWNER_VIDEO) == ClientContentEpochDecision::Advanced,
             "new video epoch should advance");
     require(client_accept_content_epoch(state, 10, WD_CLIENT_CONTENT_OWNER_TILES) == ClientContentEpochDecision::Stale,
@@ -472,6 +501,7 @@ void test_render_surface_handoff_requires_fresh_successful_presentation() {
 int main() {
     test_coalesces_horizontal_and_vertical_runs();
     test_clamps_to_frame();
+    test_unrepresentable_frame_dimensions_are_rejected();
     test_upload_planner_modes();
     test_upload_planner_prices_sparse_updates_separately_from_locks();
     test_dirty_tile_grid_deduplicates_and_coalesces();

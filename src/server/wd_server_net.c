@@ -1,6 +1,5 @@
 #define _GNU_SOURCE
 
-#include "waydisplay/wd_audio_transport.h"
 #include "waydisplay/wd_input.h"
 #include "waydisplay/wd_media_clock.h"
 #include "waydisplay/wd_net.h"
@@ -118,12 +117,32 @@ static void wd_log_tcp_channel_endpoint(const char* channel, int fd) {
     WD_LOG_INFO("%s TCP channel connected local=%s remote=%s", channel, local, remote);
 }
 
-static bool wd_receive_client_hello(int tcp_fd, const struct sockaddr_in* peer_addr, struct wd_client_hello_payload* hello) {
-    char peer[64];
-    uint8_t wire_header[WD_TCP_HEADER_WIRE_SIZE];
-    struct wd_tcp_header header;
+static bool wd_server_negotiation_should_continue(void* user_data) {
+    struct wd_server* server = user_data;
+    return server && wd_net_run_state_is_running(&server->net.run_state);
+}
 
-    if (!hello)
+static bool wd_server_negotiation_active(struct wd_server* server, uint64_t absolute_deadline_ns) {
+    return wd_server_negotiation_should_continue(server) &&
+           (absolute_deadline_ns == 0 || wd_now_ns() < absolute_deadline_ns);
+}
+
+static enum wd_tcp_reader_status wd_wait_server_negotiation_message(struct wd_server* server, int tcp_fd,
+                                                                    struct wd_tcp_reader* reader,
+                                                                    uint64_t absolute_deadline_ns,
+                                                                    struct wd_tcp_message* message) {
+    return wd_tcp_reader_wait_for_message(reader, tcp_fd,
+                                          (uint64_t)WD_TCP_HANDSHAKE_TIMEOUT_MS * WD_NSEC_PER_MSEC,
+                                          WD_TCP_NEGOTIATION_FRAME_MAX_LIFETIME_NS,
+                                          absolute_deadline_ns, WD_TCP_NEGOTIATION_POLL_SLICE_MS,
+                                          wd_server_negotiation_should_continue, server, message);
+}
+
+static bool wd_receive_client_hello(struct wd_server* server, int tcp_fd, const struct sockaddr_in* peer_addr,
+                                    struct wd_client_hello_payload* hello) {
+    char peer[64];
+
+    if (!server || !hello)
     {
         return false;
     }
@@ -131,51 +150,36 @@ static bool wd_receive_client_hello(int tcp_fd, const struct sockaddr_in* peer_a
     memset(hello, 0, sizeof(*hello));
     wd_format_sockaddr_in(peer_addr, peer, sizeof(peer));
 
-    errno = 0;
-    if (!wd_recv_all(tcp_fd, wire_header, sizeof(wire_header)))
+    struct wd_tcp_reader reader;
+    struct wd_tcp_message message;
+    wd_tcp_reader_init(&reader, sizeof(*hello));
+    memset(&message, 0, sizeof(message));
+    const uint64_t deadline_ns = wd_now_ns() + (uint64_t)WD_TCP_HANDSHAKE_TIMEOUT_MS * WD_NSEC_PER_MSEC;
+    const enum wd_tcp_reader_status status =
+        wd_wait_server_negotiation_message(server, tcp_fd, &reader, deadline_ns, &message);
+    if (status != WD_TCP_READER_MESSAGE)
     {
-        const int error_code = errno;
-        WD_LOG_ERROR("failed to receive client hello header peer=%s timeout_ms=%ld error=%s", peer,
-                     WD_TCP_HANDSHAKE_TIMEOUT_MS,
-                     error_code != 0 ? strerror(error_code) : "peer closed before a complete header");
+        WD_LOG_ERROR("failed to receive bounded client hello peer=%s status=%d timeout_ms=%ld", peer, (int)status,
+                     WD_TCP_HANDSHAKE_TIMEOUT_MS);
+        wd_tcp_reader_destroy(&reader);
         return false;
     }
 
-    if (!wd_tcp_header_decode(wire_header, &header))
-    {
-        WD_LOG_ERROR("failed to decode client hello header peer=%s", peer);
-        return false;
-    }
-
-    if (header.magic != WD_TCP_MAGIC || header.protocol_version != WD_PROTOCOL_VERSION)
-    {
-        WD_LOG_ERROR("invalid client hello header peer=%s magic=0x%08x expected_magic=0x%08x version=%u expected_version=%u "
-                     "message=%s(%u) payload_size=%u",
-                     peer, header.magic, WD_TCP_MAGIC, header.protocol_version, WD_PROTOCOL_VERSION,
-                     wd_protocol_message_name(header.message_type), header.message_type, header.payload_size);
-        return false;
-    }
-
-    if (header.message_type != WD_MSG_CLIENT_HELLO ||
-        !wd_protocol_message_allowed(header.message_type, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
-                                     WD_PROTOCOL_CLIENT_TO_SERVER, header.payload_size))
+    if (message.message_type != WD_MSG_CLIENT_HELLO || message.payload_size != sizeof(*hello) ||
+        !wd_protocol_message_allowed(message.message_type, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
+                                     WD_PROTOCOL_CLIENT_TO_SERVER, message.payload_size))
     {
         WD_LOG_ERROR("unexpected initial TCP message peer=%s message=%s(%u) payload_size=%u expected=%s(%u) size=%zu",
-                     peer, wd_protocol_message_name(header.message_type), header.message_type, header.payload_size,
+                     peer, wd_protocol_message_name(message.message_type), message.message_type, message.payload_size,
                      wd_protocol_message_name(WD_MSG_CLIENT_HELLO), WD_MSG_CLIENT_HELLO, sizeof(*hello));
+        wd_tcp_message_release(&message);
+        wd_tcp_reader_destroy(&reader);
         return false;
     }
 
-    errno = 0;
-    if (!wd_recv_all(tcp_fd, hello, sizeof(*hello)))
-    {
-        const int error_code = errno;
-        WD_LOG_ERROR("failed to receive client hello payload peer=%s size=%zu timeout_ms=%ld error=%s", peer,
-                     sizeof(*hello), WD_TCP_HANDSHAKE_TIMEOUT_MS,
-                     error_code != 0 ? strerror(error_code) : "peer closed before the complete payload");
-        memset(hello, 0, sizeof(*hello));
-        return false;
-    }
+    memcpy(hello, message.payload, sizeof(*hello));
+    wd_tcp_message_release(&message);
+    wd_tcp_reader_destroy(&reader);
 
     if (!wd_client_hello_payload_is_valid(hello, sizeof(*hello)) || hello->client_udp_port == 0)
     {
@@ -190,6 +194,31 @@ static bool wd_receive_client_hello(int tcp_fd, const struct sockaddr_in* peer_a
     }
 
     WD_LOG_DEBUG("accepted client hello peer=%s payload_size=%zu udp_port=%u", peer, sizeof(*hello), hello->client_udp_port);
+    return true;
+}
+
+static bool wd_receive_client_negotiation_message(struct wd_server* server, int tcp_fd, struct wd_tcp_reader* reader,
+                                                  uint64_t absolute_deadline_ns, struct wd_tcp_message* message) {
+    if (!message)
+    {
+        return false;
+    }
+    memset(message, 0, sizeof(*message));
+    const enum wd_tcp_reader_status status =
+        wd_wait_server_negotiation_message(server, tcp_fd, reader, absolute_deadline_ns, message);
+    if (status != WD_TCP_READER_MESSAGE)
+    {
+        WD_LOG_WARN("control negotiation receive ended status=%d", (int)status);
+        return false;
+    }
+    if (!wd_protocol_message_allowed(message->message_type, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
+                                     WD_PROTOCOL_CLIENT_TO_SERVER, message->payload_size))
+    {
+        WD_LOG_WARN("rejected client negotiation message=%s(%u) size=%u", wd_protocol_message_name(message->message_type),
+                    message->message_type, message->payload_size);
+        wd_tcp_message_release(message);
+        return false;
+    }
     return true;
 }
 
@@ -228,6 +257,43 @@ static void wd_net_set_link_profile_defaults(struct wd_net_state* net) {
     net->tile_reassembly_timeout_ns   = WD_LINK_TILE_REASSEMBLY_DEFAULT_NS;
     net->active_summary_interval_ns   = WD_LINK_ACTIVE_SUMMARY_INTERVAL_DEFAULT_NS;
     net->clean_summary_interval_ns    = WD_LINK_CLEAN_SUMMARY_INTERVAL_DEFAULT_NS;
+}
+
+struct wd_negotiation_snapshot {
+    uint32_t width;
+    uint32_t height;
+    uint16_t refresh_hz;
+};
+
+static void wd_server_rollback_failed_negotiation(struct wd_server* server, const struct wd_negotiation_snapshot* snapshot) {
+    if (!server || !snapshot)
+    {
+        return;
+    }
+
+    struct wd_net_state* net = &server->net;
+    pthread_mutex_lock(&net->lock);
+    net->video_stream_negotiated   = false;
+    net->video_feedback_negotiated = false;
+    net->video_codecs              = 0;
+    net->video_transport           = 0;
+    net->audio_stream_negotiated   = false;
+    net->audio_codec               = 0;
+    net->audio_transport           = 0;
+    net->audio_channels            = 0;
+    net->audio_target_latency_ms   = 0;
+    net->audio_bitrate             = 0;
+    net->udp_payload_target        = WD_UDP_PAYLOAD_TARGET;
+    wd_net_set_link_profile_defaults(net);
+    wd_stream_policy_set_defaults(&net->stream_policy);
+    pthread_mutex_unlock(&net->lock);
+
+    if (wd_net_run_state_is_running(&net->run_state) &&
+        !wd_server_request_display_mode(server, snapshot->width, snapshot->height, snapshot->refresh_hz))
+    {
+        WD_LOG_WARN("failed to restore display mode %ux%u@%uHz after negotiation failure", snapshot->width, snapshot->height,
+                    snapshot->refresh_hz);
+    }
 }
 
 static uint64_t wd_net_estimate_summary_frame_bytes(const struct wd_server* server) {
@@ -626,11 +692,17 @@ bool wd_net_init(struct wd_server* server, uint16_t tcp_port, struct in_addr lis
     wd_net_set_link_profile_defaults(net);
 
     wd_stream_policy_set_defaults(&net->stream_policy);
+    net->initialized = true;
 
     return true;
 }
 
 void wd_net_destroy(struct wd_server* server) {
+    if (!server || !server->net.initialized)
+    {
+        return;
+    }
+
     struct wd_net_state* net = &server->net;
 
     wd_net_run_state_set(&net->run_state, false);
@@ -737,6 +809,7 @@ void wd_net_destroy(struct wd_server* server) {
     net->clipboard_text         = NULL;
     net->clipboard_text_size    = 0;
     net->clipboard_text_pending = false;
+    net->clipboard_paste_pending = false;
 
     free(net->primary_text);
     net->primary_text              = NULL;
@@ -749,6 +822,7 @@ void wd_net_destroy(struct wd_server* server) {
     pthread_cond_destroy(&net->startup_cond);
     pthread_cond_destroy(&net->display_resize_cond);
     pthread_mutex_destroy(&net->lock);
+    net->initialized = false;
 }
 
 static bool wd_udp_socket_set_pmtu_mode(int udp_fd, int mode) {
@@ -805,7 +879,8 @@ static int wd_create_udp_mtu_probe_socket(void) {
     return fd;
 }
 
-static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const struct sockaddr_in* client_udp_addr) {
+static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const struct sockaddr_in* client_udp_addr,
+                                  struct wd_tcp_reader* negotiation_reader, uint64_t negotiation_deadline_ns) {
     struct wd_net_state* net       = &server->net;
     uint8_t              tile_size = 0;
     if (!wd_tile_size_code_for_dimensions(server->tile_width, server->tile_height, &tile_size))
@@ -867,7 +942,7 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
 
     uint8_t packet[WD_UDP_TILE_HEADER_MAX_SIZE + WD_UDP_TILE_PAYLOAD_MAX];
 
-    for (uint16_t i = 0; i < probe_count; ++i)
+    for (uint16_t i = 0; i < probe_count && wd_server_negotiation_active(server, negotiation_deadline_ns); ++i)
     {
         uint16_t     payload_size = probe_sizes[i];
         const size_t packet_size  = WD_UDP_TILE_HEADER_MIN_SIZE + payload_size;
@@ -909,24 +984,19 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
     probe_udp_fd = -1;
     wd_udp_socket_disable_df_best_effort(net->udp_fd);
 
-    uint16_t type         = 0;
-    uint8_t* payload      = NULL;
-    uint32_t payload_size = 0;
-
-    if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size))
+    struct wd_tcp_message message;
+    if (!wd_receive_client_negotiation_message(server, tcp_fd, negotiation_reader, negotiation_deadline_ns, &message))
     {
-        free(payload);
         return WD_UDP_PAYLOAD_TARGET;
     }
 
     uint16_t result = WD_UDP_PAYLOAD_TARGET;
 
-    if (wd_protocol_message_allowed(type, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
-                                    WD_PROTOCOL_CLIENT_TO_SERVER, payload_size) &&
-        type == WD_MSG_MTU_PROBE_RESULT)
+    if (message.message_type == WD_MSG_MTU_PROBE_RESULT &&
+        message.payload_size == sizeof(struct wd_mtu_probe_result_payload))
     {
         struct wd_mtu_probe_result_payload probe_result;
-        memcpy(&probe_result, payload, sizeof(probe_result));
+        memcpy(&probe_result, message.payload, sizeof(probe_result));
 
         if (probe_result.session_id == net->session_id && probe_result.connection_token == net->connection_token &&
             probe_result.max_udp_payload_received >= WD_MIN_PROBED_UDP_PAYLOAD)
@@ -935,7 +1005,7 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
         }
     }
 
-    free(payload);
+    wd_tcp_message_release(&message);
 
     if (result > WD_UDP_TILE_PAYLOAD_MAX)
     {
@@ -953,7 +1023,8 @@ static uint16_t run_udp_mtu_probe(struct wd_server* server, int tcp_fd, const st
 }
 
 static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, const struct sockaddr_in* client_udp_addr,
-                                         uint16_t udp_payload_target) {
+                                         uint16_t udp_payload_target, struct wd_tcp_reader* negotiation_reader,
+                                         uint64_t negotiation_deadline_ns) {
     struct wd_net_state* net       = &server->net;
     uint8_t              tile_size = 0;
     if (!wd_tile_size_code_for_dimensions(server->tile_width, server->tile_height, &tile_size))
@@ -1026,7 +1097,7 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
     const uint64_t deadline_ns = start_ns + duration_ns;
 
     uint32_t packets_sent = 0;
-    while (wd_now_ns() < deadline_ns)
+    while (wd_now_ns() < deadline_ns && wd_server_negotiation_active(server, negotiation_deadline_ns))
     {
         h.tile_pkt_id = (uint8_t)(packets_sent % UINT8_MAX);
         if (!wd_udp_tile_packet_encode_header(packet, packet_size, &h))
@@ -1059,25 +1130,20 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
 
     free(packet);
 
-    uint16_t type            = 0;
-    uint8_t* payload         = NULL;
-    uint32_t payload_size_rx = 0;
-
-    if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size_rx))
+    struct wd_tcp_message message;
+    if (!wd_receive_client_negotiation_message(server, tcp_fd, negotiation_reader, negotiation_deadline_ns, &message))
     {
-        free(payload);
         return WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
     }
 
-    uint64_t safe_link_rate  = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
+    uint64_t safe_link_rate   = WD_UDP_RATE_DEFAULT_BYTES_PER_SECOND;
     uint32_t packets_received = 0;
 
-    if (wd_protocol_message_allowed(type, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
-                                    WD_PROTOCOL_CLIENT_TO_SERVER, payload_size_rx) &&
-        type == WD_MSG_THROUGHPUT_PROBE_RESULT)
+    if (message.message_type == WD_MSG_THROUGHPUT_PROBE_RESULT &&
+        message.payload_size == sizeof(struct wd_throughput_probe_result_payload))
     {
         struct wd_throughput_probe_result_payload result;
-        memcpy(&result, payload, sizeof(result));
+        memcpy(&result, message.payload, sizeof(result));
         packets_received = result.packets_received;
 
         if (result.session_id == net->session_id && result.connection_token == net->connection_token && result.bytes_received > 0 &&
@@ -1099,7 +1165,7 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
         }
     }
 
-    free(payload);
+    wd_tcp_message_release(&message);
 
     WD_LOG_INFO("safe link budget selected by throughput probe: %llu KiB/s sent=%u recv=%u safety=%u%%",
                 (unsigned long long)(safe_link_rate / 1024ull), packets_sent, packets_received,
@@ -1108,14 +1174,15 @@ static uint64_t run_udp_throughput_probe(struct wd_server* server, int tcp_fd, c
     return safe_link_rate;
 }
 
-static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
+static void run_tcp_link_probe(struct wd_server* server, int tcp_fd, struct wd_tcp_reader* negotiation_reader,
+                               uint64_t negotiation_deadline_ns) {
     struct wd_net_state* net = &server->net;
     enum { WD_LINK_PROBE_COUNT = WD_NET_LINK_PROBE_COUNT };
 
     uint64_t samples[WD_LINK_PROBE_COUNT];
     uint32_t sample_count = 0;
 
-    for (uint32_t i = 0; i < WD_LINK_PROBE_COUNT; ++i)
+    for (uint32_t i = 0; i < WD_LINK_PROBE_COUNT && wd_server_negotiation_active(server, negotiation_deadline_ns); ++i)
     {
         struct wd_link_probe_payload ping;
         memset(&ping, 0, sizeof(ping));
@@ -1129,22 +1196,16 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
             break;
         }
 
-        uint16_t type         = 0;
-        uint8_t* payload      = NULL;
-        uint32_t payload_size = 0;
-
-        if (!wd_recv_tcp_message(tcp_fd, &type, &payload, &payload_size))
+        struct wd_tcp_message message;
+        if (!wd_receive_client_negotiation_message(server, tcp_fd, negotiation_reader, negotiation_deadline_ns, &message))
         {
-            free(payload);
             break;
         }
 
-        if (wd_protocol_message_allowed(type, WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
-                                        WD_PROTOCOL_CLIENT_TO_SERVER, payload_size) &&
-            type == WD_MSG_LINK_PROBE_PONG)
+        if (message.message_type == WD_MSG_LINK_PROBE_PONG && message.payload_size == sizeof(struct wd_link_probe_payload))
         {
             struct wd_link_probe_payload pong;
-            memcpy(&pong, payload, sizeof(pong));
+            memcpy(&pong, message.payload, sizeof(pong));
             if (pong.session_id == net->session_id && pong.connection_token == net->connection_token && pong.sequence == ping.sequence)
             {
                 uint64_t now_ns = wd_now_ns();
@@ -1155,7 +1216,7 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
             }
         }
 
-        free(payload);
+        wd_tcp_message_release(&message);
 
         if (sample_count == 0 && i >= 1)
         {
@@ -1165,11 +1226,18 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
 
     if (sample_count == 0)
     {
+        uint64_t active_summary_interval_ns = 0;
+        uint64_t clean_summary_interval_ns  = 0;
+        pthread_mutex_lock(&net->lock);
         wd_net_derive_link_profile(net, WD_LINK_RTT_DEFAULT_NS, 0);
         wd_net_update_summary_cadence_for_budget(server);
+        active_summary_interval_ns = net->active_summary_interval_ns;
+        clean_summary_interval_ns  = net->clean_summary_interval_ns;
+        pthread_mutex_unlock(&net->lock);
         WD_LOG_INFO("TCP link RTT probe unavailable; using conservative defaults rtt=%u ms summary_delta=%llu/%llu ms",
-                    (unsigned)(WD_LINK_RTT_DEFAULT_NS / 1000000ull), (unsigned long long)(net->active_summary_interval_ns / 1000000ull),
-                    (unsigned long long)(net->clean_summary_interval_ns / 1000000ull));
+                    (unsigned)(WD_LINK_RTT_DEFAULT_NS / 1000000ull),
+                    (unsigned long long)(active_summary_interval_ns / 1000000ull),
+                    (unsigned long long)(clean_summary_interval_ns / 1000000ull));
         return;
     }
 
@@ -1194,17 +1262,33 @@ static void run_tcp_link_probe(struct wd_server* server, int tcp_fd) {
      * very fast LAN measurements do not collapse timers to overly aggressive
      * values while high-latency/jittery links get more slack. */
     uint64_t jitter_ns = (max_ns > min_ns) ? (max_ns - min_ns) / WD_LINK_PROBE_JITTER_SPREAD_DIVISOR : 0;
+    uint64_t link_rtt_ns = 0;
+    uint64_t link_jitter_ns = 0;
+    uint64_t summary_retransmit_grace_ns = 0;
+    uint64_t retransmit_request_interval_ns = 0;
+    uint64_t tile_reassembly_timeout_ns = 0;
+    uint64_t active_summary_interval_ns = 0;
+    uint64_t clean_summary_interval_ns = 0;
+    pthread_mutex_lock(&net->lock);
     wd_net_derive_link_profile(net, avg_ns, jitter_ns);
     wd_net_update_summary_cadence_for_budget(server);
+    link_rtt_ns = net->link_rtt_ns;
+    link_jitter_ns = net->link_jitter_ns;
+    summary_retransmit_grace_ns = net->summary_retransmit_grace_ns;
+    retransmit_request_interval_ns = net->retransmit_request_interval_ns;
+    tile_reassembly_timeout_ns = net->tile_reassembly_timeout_ns;
+    active_summary_interval_ns = net->active_summary_interval_ns;
+    clean_summary_interval_ns = net->clean_summary_interval_ns;
+    pthread_mutex_unlock(&net->lock);
 
     WD_LOG_INFO("TCP link profile rtt=%llu ms jitter=%llu ms summary_grace=%llu ms request_interval=%llu ms reassembly=%llu ms "
                 "summary_delta=%llu/%llu ms samples=%u",
-                (unsigned long long)(net->link_rtt_ns / 1000000ull), (unsigned long long)(net->link_jitter_ns / 1000000ull),
-                (unsigned long long)(net->summary_retransmit_grace_ns / 1000000ull),
-                (unsigned long long)(net->retransmit_request_interval_ns / 1000000ull),
-                (unsigned long long)(net->tile_reassembly_timeout_ns / 1000000ull),
-                (unsigned long long)(net->active_summary_interval_ns / 1000000ull),
-                (unsigned long long)(net->clean_summary_interval_ns / 1000000ull), sample_count);
+                (unsigned long long)(link_rtt_ns / 1000000ull), (unsigned long long)(link_jitter_ns / 1000000ull),
+                (unsigned long long)(summary_retransmit_grace_ns / 1000000ull),
+                (unsigned long long)(retransmit_request_interval_ns / 1000000ull),
+                (unsigned long long)(tile_reassembly_timeout_ns / 1000000ull),
+                (unsigned long long)(active_summary_interval_ns / 1000000ull),
+                (unsigned long long)(clean_summary_interval_ns / 1000000ull), sample_count);
 }
 
 static void wd_server_fill_config(struct wd_server* server, uint8_t session_id, uint16_t udp_payload_target,
@@ -1360,7 +1444,8 @@ static void wd_server_handle_pointer_message(struct wd_server* server, const str
 }
 
 static bool wd_accept_aux_channel_fd(struct wd_server* server, const struct wd_aux_channel_identity* identity, int* input_tcp_fd,
-                                     int* selection_tcp_fd, int* video_tcp_fd, int* audio_tcp_fd) {
+                                     int* selection_tcp_fd, int* video_tcp_fd, int* audio_tcp_fd,
+                                     uint64_t absolute_deadline_ns) {
     struct wd_net_state* net = &server->net;
 
     struct sockaddr_in peer_addr;
@@ -1374,16 +1459,25 @@ static bool wd_accept_aux_channel_fd(struct wd_server* server, const struct wd_a
 
     wd_configure_accepted_tcp_socket(fd);
 
-    uint16_t type         = 0;
-    uint8_t* payload      = NULL;
-    uint32_t payload_size = 0;
-
-    if (!wd_recv_tcp_message(fd, &type, &payload, &payload_size))
+    struct wd_tcp_reader reader;
+    struct wd_tcp_message message;
+    wd_tcp_reader_init(&reader,
+                       wd_protocol_channel_max_payload(WD_PROTOCOL_CHANNEL_AUX_HANDSHAKE, WD_PROTOCOL_PHASE_NEGOTIATION,
+                                                       WD_PROTOCOL_CLIENT_TO_SERVER));
+    memset(&message, 0, sizeof(message));
+    const enum wd_tcp_reader_status status =
+        wd_wait_server_negotiation_message(server, fd, &reader, absolute_deadline_ns, &message);
+    if (status != WD_TCP_READER_MESSAGE)
     {
-        free(payload);
+        WD_LOG_WARN("auxiliary handshake receive ended status=%d", (int)status);
+        wd_tcp_reader_destroy(&reader);
         close(fd);
         return false;
     }
+
+    const uint16_t type         = message.message_type;
+    const uint8_t* payload      = message.payload;
+    const uint32_t payload_size = message.payload_size;
 
     const struct wd_aux_channel_policy policy = {
         .identity           = *identity,
@@ -1399,7 +1493,8 @@ static bool wd_accept_aux_channel_fd(struct wd_server* server, const struct wd_a
         .audio_transport    = net->audio_transport,
     };
     const enum wd_aux_channel_kind kind = wd_aux_channel_validate_hello(type, payload, payload_size, &policy);
-    free(payload);
+    wd_tcp_message_release(&message);
+    wd_tcp_reader_destroy(&reader);
 
     bool accepted = false;
     switch (kind)
@@ -1458,7 +1553,7 @@ static bool wd_accept_required_aux_channels(struct wd_server* server, const stru
         *audio_tcp_fd = -1;
     }
 
-    while ((*input_tcp_fd < 0 || *selection_tcp_fd < 0) && wd_now_ns() < deadline_ns)
+    while ((*input_tcp_fd < 0 || *selection_tcp_fd < 0) && wd_server_negotiation_active(server, deadline_ns))
     {
         uint64_t now_ns = wd_now_ns();
         if (now_ns >= deadline_ns)
@@ -1489,7 +1584,8 @@ static bool wd_accept_required_aux_channels(struct wd_server* server, const stru
             break;
         }
 
-        (void)wd_accept_aux_channel_fd(server, identity, input_tcp_fd, selection_tcp_fd, video_tcp_fd, audio_tcp_fd);
+        (void)wd_accept_aux_channel_fd(server, identity, input_tcp_fd, selection_tcp_fd, video_tcp_fd, audio_tcp_fd,
+                                       deadline_ns);
     }
 
     return *input_tcp_fd >= 0 && *selection_tcp_fd >= 0;
@@ -1533,6 +1629,7 @@ void* wd_net_thread_main(void* arg) {
     struct wd_net_state* net    = &server->net;
 
     struct wd_net_listener     listener;
+    wd_net_listener_init(&listener);
     enum wd_net_listener_stage failed_stage  = WD_NET_LISTENER_STAGE_NONE;
     int                        startup_error = 0;
 
@@ -1542,10 +1639,12 @@ void* wd_net_thread_main(void* arg) {
         return NULL;
     }
 
+    pthread_mutex_lock(&net->lock);
     net->listen_fd = listener.listen_fd;
     net->udp_fd    = listener.udp_fd;
     net->tcp_port  = listener.tcp_port;
     net->udp_port  = listener.udp_port;
+    pthread_mutex_unlock(&net->lock);
 
     wd_udp_socket_disable_df_best_effort(net->udp_fd);
 
@@ -1602,11 +1701,22 @@ void* wd_net_thread_main(void* arg) {
         wd_configure_accepted_tcp_socket(tcp_fd);
 
         struct wd_client_hello_payload hello;
-        if (!wd_receive_client_hello(tcp_fd, &peer_addr, &hello))
+        if (!wd_receive_client_hello(server, tcp_fd, &peer_addr, &hello))
         {
             close(tcp_fd);
             continue;
         }
+
+        uint16_t previous_refresh_hz = (uint16_t)((server->output_refresh_mhz + 500u) / 1000u);
+        if (previous_refresh_hz < WD_SERVER_MIN_REFRESH_HZ || previous_refresh_hz > WD_SERVER_MAX_REFRESH_HZ)
+        {
+            previous_refresh_hz = WD_SERVER_IDLE_REFRESH_HZ;
+        }
+        const struct wd_negotiation_snapshot negotiation_snapshot = {
+            .width = server->display_width,
+            .height = server->display_height,
+            .refresh_hz = previous_refresh_hz,
+        };
 
         const uint16_t requested_refresh_hz = wd_frame_rate_normalize_client_request(hello.requested_session_fps);
         const uint32_t requested_width       = hello.desired_width != 0 ? hello.desired_width : server->display_width;
@@ -1620,18 +1730,23 @@ void* wd_net_thread_main(void* arg) {
             continue;
         }
 
-        const uint32_t selected_video_codec =
-            (hello.capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0 && hello.video_transport == WD_VIDEO_TRANSPORT_TCP
-                ? wd_video_encoder_choose_codec(net->video_encoder, hello.video_codecs)
-                : 0;
+        uint32_t selected_video_codec = 0;
+        if ((hello.capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0 && hello.video_transport == WD_VIDEO_TRANSPORT_TCP)
+        {
+            pthread_mutex_lock(&net->video_encoder_lock);
+            selected_video_codec = wd_video_encoder_choose_codec(net->video_encoder, hello.video_codecs);
+            pthread_mutex_unlock(&net->video_encoder_lock);
+        }
         const bool client_video_tcp = selected_video_codec != 0;
         const bool client_video_feedback = client_video_tcp && (hello.capabilities & WD_CLIENT_CAP_VIDEO_FEEDBACK) != 0;
-        const bool client_audio_tcp = (hello.capabilities & WD_CLIENT_CAP_AUDIO_STREAM) != 0 &&
-                                      (hello.audio_codecs & WD_AUDIO_CODEC_OPUS) != 0 && hello.audio_transport == WD_AUDIO_TRANSPORT_TCP &&
-                                      hello.audio_max_channels >= 1 && net->audio_stream && wd_audio_stream_ready(net->audio_stream);
-        const uint8_t  selected_audio_channels = client_audio_tcp && hello.audio_max_channels >= 2 ? 2 : (client_audio_tcp ? 1 : 0);
-        const uint16_t selected_audio_latency_ms =
-            client_audio_tcp && hello.audio_target_latency_ms != 0 ? hello.audio_target_latency_ms : WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
+        const bool client_audio_capable = (hello.capabilities & WD_CLIENT_CAP_AUDIO_STREAM) != 0 &&
+                                          (hello.audio_codecs & WD_AUDIO_CODEC_OPUS) != 0 &&
+                                          hello.audio_transport == WD_AUDIO_TRANSPORT_TCP && hello.audio_max_channels >= 1 &&
+                                          net->audio_stream && wd_audio_stream_prepare(net->audio_stream);
+        const uint8_t selected_audio_channels = client_audio_capable && hello.audio_max_channels >= 2 ? 2 : (client_audio_capable ? 1 : 0);
+        const uint16_t selected_audio_latency_ms = client_audio_capable && hello.audio_target_latency_ms != 0
+                                                       ? hello.audio_target_latency_ms
+                                                       : WD_AUDIO_TARGET_LATENCY_MS_DEFAULT;
 
         struct wd_server_config_payload cfg;
         uint8_t                         session_id = 0;
@@ -1641,6 +1756,7 @@ void* wd_net_thread_main(void* arg) {
         if (!wd_connection_identity_generate(&connection_token, &media_clock_id))
         {
             WD_LOG_ERROR("failed to obtain secure randomness for connection identity");
+            wd_server_rollback_failed_negotiation(server, &negotiation_snapshot);
             close(tcp_fd);
             continue;
         }
@@ -1652,6 +1768,7 @@ void* wd_net_thread_main(void* arg) {
          * the new connection. Lifetime log totals are maintained separately. */
         memset(&net->stats, 0, sizeof(net->stats));
         net->input_since_last_summary    = false;
+        net->summary_input_sequence      = 0;
         net->input_since_last_fresh_tile = false;
         net->last_input_sequence         = 0;
         net->last_input_inject_ns        = 0;
@@ -1690,8 +1807,37 @@ void* wd_net_thread_main(void* arg) {
         client_udp_addr.sin_addr   = peer_addr.sin_addr;
         client_udp_addr.sin_port   = htons(hello.client_udp_port);
 
-        uint16_t selected_udp_payload = run_udp_mtu_probe(server, tcp_fd, &client_udp_addr);
-        uint64_t selected_link_rate  = run_udp_throughput_probe(server, tcp_fd, &client_udp_addr, selected_udp_payload);
+        struct wd_tcp_reader negotiation_reader;
+        wd_tcp_reader_init(&negotiation_reader,
+                           wd_protocol_channel_max_payload(WD_PROTOCOL_CHANNEL_CONTROL, WD_PROTOCOL_PHASE_NEGOTIATION,
+                                                           WD_PROTOCOL_CLIENT_TO_SERVER));
+        const uint64_t negotiation_deadline_ns =
+            wd_now_ns() + (uint64_t)WD_TCP_NEGOTIATION_TIMEOUT_MS * WD_NSEC_PER_MSEC;
+
+        uint16_t selected_udp_payload =
+            run_udp_mtu_probe(server, tcp_fd, &client_udp_addr, &negotiation_reader, negotiation_deadline_ns);
+        if (!wd_server_negotiation_active(server, negotiation_deadline_ns))
+        {
+            wd_tcp_reader_destroy(&negotiation_reader);
+            wd_server_rollback_failed_negotiation(server, &negotiation_snapshot);
+            close(tcp_fd);
+            continue;
+        }
+
+        uint64_t selected_link_rate = run_udp_throughput_probe(server, tcp_fd, &client_udp_addr, selected_udp_payload,
+                                                               &negotiation_reader, negotiation_deadline_ns);
+        const uint32_t selected_audio_bitrate = client_audio_capable
+                                                    ? wd_bandwidth_audio_select_bitrate(selected_link_rate, WD_AUDIO_BITRATE_DEFAULT,
+                                                                                       WD_AUDIO_BITRATE_MIN)
+                                                    : 0;
+        const bool client_audio_tcp = client_audio_capable && selected_audio_bitrate != 0;
+        if (!wd_server_negotiation_active(server, negotiation_deadline_ns))
+        {
+            wd_tcp_reader_destroy(&negotiation_reader);
+            wd_server_rollback_failed_negotiation(server, &negotiation_snapshot);
+            close(tcp_fd);
+            continue;
+        }
 
         pthread_mutex_lock(&net->lock);
         net->udp_payload_target      = selected_udp_payload;
@@ -1704,7 +1850,7 @@ void* wd_net_thread_main(void* arg) {
         net->audio_transport         = client_audio_tcp ? WD_AUDIO_TRANSPORT_TCP : 0;
         net->audio_channels          = selected_audio_channels;
         net->audio_target_latency_ms = client_audio_tcp ? selected_audio_latency_ms : 0;
-        net->audio_bitrate           = client_audio_tcp ? WD_AUDIO_BITRATE_DEFAULT : 0;
+        net->audio_bitrate           = client_audio_tcp ? selected_audio_bitrate : 0;
         if (client_audio_tcp)
         {
             net->audio_epoch++;
@@ -1713,14 +1859,14 @@ void* wd_net_thread_main(void* arg) {
                 net->audio_epoch = 1;
             }
         }
-        wd_stream_policy_set_link_rate(&net->stream_policy, selected_link_rate, client_audio_tcp,
-                                       client_audio_tcp ? WD_AUDIO_BITRATE_DEFAULT : 0);
+        wd_stream_policy_set_link_rate(&net->stream_policy, selected_link_rate, client_audio_tcp, selected_audio_bitrate);
         wd_stream_policy_begin_session(&net->stream_policy, &hello, net->content_epoch);
         WD_LOG_INFO("bandwidth plan: mode=tiles link_safe=%llu KiB/s fresh=%llu KiB/s repair=%llu KiB/s "
-                    "audio_need=%llu KiB/s audio_cap=%llu KiB/s control=%llu KiB/s overhead=%llu KiB/s",
+                    "audio_required=%llu KiB/s audio_reserved=%llu KiB/s audio_cap=%llu KiB/s control=%llu KiB/s overhead=%llu KiB/s",
                     (unsigned long long)(net->stream_policy.safe_link_bytes_per_second / 1024ull),
                     (unsigned long long)(net->stream_policy.tile_fresh_bytes_per_second / 1024ull),
                     (unsigned long long)(net->stream_policy.tile_repair_bytes_per_second / 1024ull),
+                    (unsigned long long)(net->stream_policy.audio_required_bytes_per_second / 1024ull),
                     (unsigned long long)(net->stream_policy.audio_reserved_bytes_per_second / 1024ull),
                     (unsigned long long)(net->stream_policy.audio_cap_bytes_per_second / 1024ull),
                     (unsigned long long)(net->stream_policy.control_bytes_per_second / 1024ull),
@@ -1734,23 +1880,46 @@ void* wd_net_thread_main(void* arg) {
 
         if ((hello.capabilities & WD_CLIENT_CAP_VIDEO_STREAM) != 0 && hello.video_transport == WD_VIDEO_TRANSPORT_TCP && !client_video_tcp)
         {
+            pthread_mutex_lock(&net->video_encoder_lock);
+            const uint32_t server_video_codecs = wd_video_encoder_supported_codecs(net->video_encoder);
+            const char* server_video_backend = wd_video_encoder_backend_name(net->video_encoder);
             WD_LOG_INFO("video stream unavailable for requested codecs=0x%x; server codecs=0x%x backend=%s", hello.video_codecs,
-                        wd_video_encoder_supported_codecs(net->video_encoder), wd_video_encoder_backend_name(net->video_encoder));
+                        server_video_codecs, server_video_backend);
+            pthread_mutex_unlock(&net->video_encoder_lock);
         }
         if ((hello.capabilities & WD_CLIENT_CAP_AUDIO_STREAM) != 0 && !client_audio_tcp)
         {
-            WD_LOG_INFO("audio stream unavailable: capture=%s encoder=%s requested_codecs=0x%x transport=%u",
-                        wd_audio_stream_capture_backend_name(), wd_audio_stream_encoder_backend_name(), hello.audio_codecs,
-                        hello.audio_transport);
+            if (client_audio_capable && selected_audio_bitrate == 0)
+            {
+                WD_LOG_INFO("audio stream disabled: safe link cannot sustain minimum bitrate=%u", WD_AUDIO_BITRATE_MIN);
+            }
+            else
+            {
+                WD_LOG_INFO("audio stream unavailable: capture=%s encoder=%s requested_codecs=0x%x transport=%u",
+                            wd_audio_stream_capture_backend_name(), wd_audio_stream_encoder_backend_name(), hello.audio_codecs,
+                            hello.audio_transport);
+            }
         }
 
-        run_tcp_link_probe(server, tcp_fd);
+        run_tcp_link_probe(server, tcp_fd, &negotiation_reader, negotiation_deadline_ns);
+        const bool negotiation_active = wd_server_negotiation_active(server, negotiation_deadline_ns);
+        wd_tcp_reader_destroy(&negotiation_reader);
+        if (!negotiation_active)
+        {
+            WD_LOG_WARN("control negotiation cancelled or exceeded %ld ms", WD_TCP_NEGOTIATION_TIMEOUT_MS);
+            wd_server_rollback_failed_negotiation(server, &negotiation_snapshot);
+            close(tcp_fd);
+            continue;
+        }
 
+        pthread_mutex_lock(&net->lock);
         wd_server_fill_config(server, session_id, selected_udp_payload, &cfg);
+        pthread_mutex_unlock(&net->lock);
 
         if (!wd_send_tcp_message(tcp_fd, WD_MSG_SERVER_CONFIG, &cfg, sizeof(cfg)))
         {
             WD_LOG_ERROR("failed to send server config");
+            wd_server_rollback_failed_negotiation(server, &negotiation_snapshot);
             close(tcp_fd);
             continue;
         }
@@ -1771,6 +1940,7 @@ void* wd_net_thread_main(void* arg) {
             wd_close_fd(&selection_tcp_fd);
             wd_close_fd(&video_tcp_fd);
             wd_close_fd(&audio_tcp_fd);
+            wd_server_rollback_failed_negotiation(server, &negotiation_snapshot);
             close(tcp_fd);
             continue;
         }
@@ -1856,7 +2026,9 @@ void* wd_net_thread_main(void* arg) {
         net->key_queue_count              = 0;
         net->pointer_queue_count          = 0;
         net->key_state_reset_pending      = true;
+        net->pointer_state_reset_pending  = true;
         net->input_since_last_summary     = false;
+        net->summary_input_sequence       = 0;
         net->input_since_last_fresh_tile  = false;
         net->last_input_sequence          = 0;
         net->last_input_inject_ns         = 0;
@@ -1866,6 +2038,7 @@ void* wd_net_thread_main(void* arg) {
         net->clipboard_text         = NULL;
         net->clipboard_text_size    = 0;
         net->clipboard_text_pending = false;
+        net->clipboard_paste_pending = false;
 
         free(net->primary_text);
         net->primary_text              = NULL;
@@ -1880,7 +2053,7 @@ void* wd_net_thread_main(void* arg) {
 
         if (audio_tcp_fd >= 0 && !wd_audio_stream_start(net->audio_stream, audio_tcp_fd, cfg.session_id, cfg.connection_token,
                                                         net->audio_epoch, cfg.media_clock_id, net->media_clock_start_ns,
-                                                        selected_audio_channels, WD_AUDIO_BITRATE_DEFAULT, selected_audio_latency_ms))
+                                                        selected_audio_channels, selected_audio_bitrate, selected_audio_latency_ms))
         {
             WD_LOG_ERROR("failed to start negotiated audio stream");
             close(audio_tcp_fd);
@@ -2033,8 +2206,10 @@ void* wd_net_thread_main(void* arg) {
                 int old_video_fd = video_tcp_fd;
                 int old_audio_fd     = audio_tcp_fd;
 
+                const uint64_t aux_handshake_deadline_ns =
+                    wd_now_ns() + (uint64_t)WD_TCP_HANDSHAKE_TIMEOUT_MS * WD_NSEC_PER_MSEC;
                 (void)wd_accept_aux_channel_fd(server, &aux_identity, &input_tcp_fd, &selection_tcp_fd,
-                                               &video_tcp_fd, &audio_tcp_fd);
+                                               &video_tcp_fd, &audio_tcp_fd, aux_handshake_deadline_ns);
 
                 if (video_tcp_fd >= 0 && old_video_fd < 0)
                 {
@@ -2053,7 +2228,7 @@ void* wd_net_thread_main(void* arg) {
                     pthread_mutex_unlock(&net->lock);
                     if (!wd_audio_stream_start(net->audio_stream, audio_tcp_fd, cfg.session_id, cfg.connection_token, net->audio_epoch,
                                                cfg.media_clock_id, net->media_clock_start_ns, selected_audio_channels,
-                                               WD_AUDIO_BITRATE_DEFAULT, selected_audio_latency_ms))
+                                               selected_audio_bitrate, selected_audio_latency_ms))
                     {
                         WD_LOG_ERROR("failed to start late audio channel");
                         close(audio_tcp_fd);
@@ -2156,6 +2331,32 @@ void* wd_net_thread_main(void* arg) {
                                                              selection_message.message_type == WD_MSG_PRIMARY_SET);
                         pthread_mutex_unlock(&net->lock);
                         wd_server_wake_input(server);
+                    }
+                    else if (selection_message.message_type == WD_MSG_CLIPBOARD_PASTE && selection_message.payload_size == 0)
+                    {
+                        pthread_mutex_lock(&net->lock);
+                        net->stats.tcp_selection_channel_rx++;
+                        wd_clipboard_queue_client_paste_locked(net);
+                        pthread_mutex_unlock(&net->lock);
+                        wd_server_wake_input(server);
+                    }
+                    else if (selection_message.message_type == WD_MSG_PRIMARY_PASTE &&
+                             selection_message.payload_size == sizeof(struct wd_pointer_event_payload))
+                    {
+                        struct wd_pointer_event_payload pointer;
+                        memcpy(&pointer, selection_message.payload, sizeof(pointer));
+                        if (wd_pointer_event_payload_is_valid(&pointer, sizeof(pointer)) && pointer.session_id == cfg.session_id &&
+                            pointer.connection_token == cfg.connection_token && pointer.event_type == WD_POINTER_EVENT_BUTTON &&
+                            pointer.button == WD_INPUT_BUTTON_MIDDLE && pointer.button_state == WD_POINTER_BUTTON_PRESSED)
+                        {
+                            const uint64_t server_rx_timestamp_ns = wd_now_ns();
+
+                            pthread_mutex_lock(&net->lock);
+                            net->stats.tcp_selection_channel_rx++;
+                            wd_pointer_queue_click_locked(net, &pointer, server_rx_timestamp_ns);
+                            pthread_mutex_unlock(&net->lock);
+                            wd_server_wake_input(server);
+                        }
                     }
                     else if ((selection_message.message_type == WD_MSG_CLIPBOARD_REQUEST ||
                               selection_message.message_type == WD_MSG_PRIMARY_REQUEST) &&
@@ -2682,7 +2883,9 @@ void* wd_net_thread_main(void* arg) {
         net->key_queue_count              = 0;
         net->pointer_queue_count          = 0;
         net->key_state_reset_pending      = true;
+        net->pointer_state_reset_pending  = true;
         net->input_since_last_summary     = false;
+        net->summary_input_sequence       = 0;
         net->input_since_last_fresh_tile  = false;
         net->last_input_sequence          = 0;
         net->last_input_inject_ns         = 0;
@@ -2692,6 +2895,7 @@ void* wd_net_thread_main(void* arg) {
         net->clipboard_text         = NULL;
         net->clipboard_text_size    = 0;
         net->clipboard_text_pending = false;
+        net->clipboard_paste_pending = false;
 
         free(net->primary_text);
         net->primary_text              = NULL;
@@ -2740,14 +2944,16 @@ void* wd_net_thread_main(void* arg) {
         WD_LOG_INFO("client disconnected; waiting for reconnect");
     }
 
+    wd_audio_stream_stop(net->audio_stream);
+    pthread_mutex_lock(&net->lock);
     wd_close_fd(&net->tcp_fd);
     wd_close_fd(&net->input_tcp_fd);
     wd_close_fd(&net->selection_tcp_fd);
-    wd_audio_stream_stop(net->audio_stream);
     wd_close_fd(&net->video_tcp_fd);
     wd_close_fd(&net->audio_tcp_fd);
     wd_close_fd(&net->udp_fd);
     wd_close_fd(&net->listen_fd);
+    pthread_mutex_unlock(&net->lock);
 
     return NULL;
 }
