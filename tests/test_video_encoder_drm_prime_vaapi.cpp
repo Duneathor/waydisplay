@@ -1,3 +1,4 @@
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_frame.h"
 #include "waydisplay/wd_protocol.h"
 #include "wd_video_encoder.h"
@@ -82,7 +83,7 @@ bool encode_gbm_bo(gbm_bo* bo, uint32_t codec) {
     config.width = kWidth;
     config.height = kHeight;
     config.target_fps = 30;
-    config.bitrate_kib_per_second = 8192;
+    config.bitrate_kib_per_second = WD_VIDEO_ENCODER_VAAPI_PROBE_BITRATE_KIB;
     config.codec = codec;
     if (!wd_video_encoder_configure(encoder, &config) ||
         !wd_video_encoder_supports_drm_prime(encoder))

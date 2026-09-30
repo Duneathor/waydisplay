@@ -217,9 +217,11 @@ static const AVCodec* wd_video_encoder_find_vaapi_codec(uint32_t codec) {
     }
 }
 
-static bool wd_video_encoder_probe_vaapi_codec_on_device(struct wd_video_encoder* encoder, AVBufferRef* device, uint32_t codec);
+static bool wd_video_encoder_probe_vaapi_config_on_device(struct wd_video_encoder* encoder, AVBufferRef* device,
+                                                          const struct wd_video_encoder_config* config);
 static bool wd_video_encoder_vaapi_codec_available(struct wd_video_encoder* encoder, uint32_t codec);
-static bool wd_video_encoder_select_vaapi_device_for_codec(struct wd_video_encoder* encoder, uint32_t codec);
+static bool wd_video_encoder_select_vaapi_device_for_config(struct wd_video_encoder* encoder,
+                                                            const struct wd_video_encoder_config* config);
 
 static uint32_t wd_video_encoder_detect_software_codecs(void) {
     uint32_t codecs = 0;
@@ -449,10 +451,12 @@ static bool wd_video_encoder_probe_vaapi_encode_path(AVCodecContext* codec_ctx, 
         return false;
     }
 
-    AVFrame*  upload_frame = av_frame_alloc();
-    AVFrame*  vaapi_frame  = av_frame_alloc();
-    AVPacket* packet       = av_packet_alloc();
-    bool      supported    = false;
+    AVFrame*           upload_frame = av_frame_alloc();
+    AVFrame*           vaapi_frame  = av_frame_alloc();
+    AVPacket*          packet       = av_packet_alloc();
+    struct SwsContext* sws_ctx      = NULL;
+    uint32_t*          xrgb_pixels  = NULL;
+    bool               supported    = false;
     if (!upload_frame || !vaapi_frame || !packet)
     {
         goto done;
@@ -467,28 +471,55 @@ static bool wd_video_encoder_probe_vaapi_encode_path(AVCodecContext* codec_ctx, 
         goto done;
     }
 
-    /* Exercise the same software-NV12 -> VAAPI upload used by the runtime.
-     * Merely opening a VAAPI codec is not enough: some driver/device pairs
-     * advertise an encoder and accept avcodec_open2(), but reject the first
-     * uploaded surface or encode submission. */
-    for (int y = 0; y < upload_frame->height; ++y)
+    const size_t pixel_count = (size_t)codec_ctx->width * (size_t)codec_ctx->height;
+    if (pixel_count == 0 || pixel_count > SIZE_MAX / sizeof(*xrgb_pixels))
     {
-        memset(upload_frame->data[0] + (size_t)y * (size_t)upload_frame->linesize[0], 0x10,
-               (size_t)upload_frame->width);
+        goto done;
     }
-    for (int y = 0; y < (upload_frame->height + 1) / 2; ++y)
+    xrgb_pixels = malloc(pixel_count * sizeof(*xrgb_pixels));
+    if (!xrgb_pixels)
     {
-        memset(upload_frame->data[1] + (size_t)y * (size_t)upload_frame->linesize[1], 0x80,
-               (size_t)upload_frame->width);
+        goto done;
+    }
+    for (int y = 0; y < codec_ctx->height; ++y)
+    {
+        for (int x = 0; x < codec_ctx->width; ++x)
+        {
+            const uint32_t red   = (uint32_t)(x * 3 + y) & 0xffu;
+            const uint32_t green = (uint32_t)(y * 5 + x) & 0xffu;
+            const uint32_t blue  = (uint32_t)(x ^ y) & 0xffu;
+            xrgb_pixels[(size_t)y * (size_t)codec_ctx->width + (size_t)x] =
+                UINT32_C(0xff000000) | (red << 16u) | (green << 8u) | blue;
+        }
     }
 
+    const int scaler_flags = WD_VIDEO_SCALER_USE_FAST_BILINEAR ? SWS_FAST_BILINEAR : SWS_BILINEAR;
+    sws_ctx = sws_getContext(codec_ctx->width, codec_ctx->height, AV_PIX_FMT_BGRA,
+                             codec_ctx->width, codec_ctx->height, AV_PIX_FMT_NV12,
+                             scaler_flags, NULL, NULL, NULL);
+    if (!sws_ctx)
+    {
+        goto done;
+    }
+    const uint8_t* src_slices[4] = {(const uint8_t*)xrgb_pixels, NULL, NULL, NULL};
+    const int      src_stride[4] = {codec_ctx->width * (int)WD_BYTES_PER_PIXEL, 0, 0, 0};
+    if (sws_scale(sws_ctx, src_slices, src_stride, 0, codec_ctx->height,
+                  upload_frame->data, upload_frame->linesize) != upload_frame->height)
+    {
+        goto done;
+    }
+
+    /* Exercise the exact XRGB -> software-NV12 -> VAAPI upload used by the
+     * runtime. Merely opening a VAAPI codec (or uploading a hand-filled NV12
+     * frame) can miss driver/rate-control/packed-header failures that only
+     * appear on the first real WayDisplay frame. */
     if (av_hwframe_get_buffer(frames_ref, vaapi_frame, 0) < 0 ||
         av_hwframe_transfer_data(vaapi_frame, upload_frame, 0) < 0)
     {
         goto done;
     }
 
-    vaapi_frame->pts       = 0;
+    vaapi_frame->pts       = 1000000;
     vaapi_frame->pict_type = AV_PICTURE_TYPE_I;
     if (avcodec_send_frame(codec_ctx, vaapi_frame) < 0)
     {
@@ -530,38 +561,34 @@ static bool wd_video_encoder_probe_vaapi_encode_path(AVCodecContext* codec_ctx, 
     }
 
 done:
+    sws_freeContext(sws_ctx);
+    free(xrgb_pixels);
     av_packet_free(&packet);
     av_frame_free(&vaapi_frame);
     av_frame_free(&upload_frame);
     return supported;
 }
 
-static bool wd_video_encoder_probe_vaapi_codec_on_device(struct wd_video_encoder* encoder, AVBufferRef* device, uint32_t codec_id) {
-    if (!encoder || !device)
+static bool wd_video_encoder_probe_vaapi_config_on_device_once(struct wd_video_encoder* encoder, AVBufferRef* device,
+                                                               const struct wd_video_encoder_config* config,
+                                                               bool quality_mode) {
+    if (!encoder || !device || !config)
     {
         return false;
     }
 
-    const AVCodec* codec = wd_video_encoder_find_vaapi_codec(codec_id);
+    const AVCodec* codec = wd_video_encoder_find_vaapi_codec(config->codec);
     if (!codec)
     {
         return false;
     }
 
 #if WAYDISPLAY_HAVE_AV1_SERVER_ENCODER && WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK
-    if (codec_id == WD_VIDEO_CODEC_AV1 && !wd_video_encoder_vaapi_can_encode_av1(device))
+    if (config->codec == WD_VIDEO_CODEC_AV1 && !wd_video_encoder_vaapi_can_encode_av1(device))
     {
         return false;
     }
 #endif
-
-    struct wd_video_encoder_config probe_config;
-    memset(&probe_config, 0, sizeof(probe_config));
-    probe_config.width                  = WD_VAAPI_PROBE_WIDTH;
-    probe_config.height                 = WD_VAAPI_PROBE_HEIGHT;
-    probe_config.target_fps             = WD_VIDEO_ENCODER_VAAPI_PROBE_FPS;
-    probe_config.bitrate_kib_per_second = WD_VIDEO_ENCODER_VAAPI_PROBE_BITRATE_KIB;
-    probe_config.codec                  = codec_id;
 
     AVCodecContext* codec_ctx  = avcodec_alloc_context3(codec);
     AVBufferRef*    frames_ref = NULL;
@@ -571,7 +598,7 @@ static bool wd_video_encoder_probe_vaapi_codec_on_device(struct wd_video_encoder
         return false;
     }
 
-    wd_video_encoder_set_context_defaults(codec_ctx, codec, &probe_config, AV_PIX_FMT_VAAPI);
+    wd_video_encoder_set_context_defaults(codec_ctx, codec, config, AV_PIX_FMT_VAAPI);
     frames_ref = av_hwframe_ctx_alloc(device);
     if (!frames_ref)
     {
@@ -583,7 +610,7 @@ static bool wd_video_encoder_probe_vaapi_codec_on_device(struct wd_video_encoder
     frames->sw_format         = AV_PIX_FMT_NV12;
     frames->width             = codec_ctx->width;
     frames->height            = codec_ctx->height;
-    frames->initial_pool_size = WD_VIDEO_ENCODER_VAAPI_PROBE_POOL_SIZE;
+    frames->initial_pool_size = WD_VIDEO_ENCODER_VAAPI_FRAME_POOL_SIZE;
     if (av_hwframe_ctx_init(frames_ref) < 0)
     {
         goto done;
@@ -597,6 +624,15 @@ static bool wd_video_encoder_probe_vaapi_codec_on_device(struct wd_video_encoder
     if (codec_ctx->priv_data)
     {
         (void)av_opt_set(codec_ctx->priv_data, "async_depth", WD_VIDEO_ENCODER_VAAPI_ASYNC_DEPTH, 0);
+        if (quality_mode)
+        {
+            codec_ctx->bit_rate = 0;
+            if (av_opt_set(codec_ctx->priv_data, "rc_mode", "CQP", 0) < 0 ||
+                av_opt_set_int(codec_ctx->priv_data, "qp", WD_VIDEO_HEVC_VAAPI_HIGH_BANDWIDTH_QP, 0) < 0)
+            {
+                goto done;
+            }
+        }
     }
 
     if (avcodec_open2(codec_ctx, codec, NULL) < 0)
@@ -612,15 +648,29 @@ done:
     return supported;
 }
 
+static bool wd_video_encoder_probe_vaapi_config_on_device(struct wd_video_encoder* encoder, AVBufferRef* device,
+                                                          const struct wd_video_encoder_config* config) {
+    if (!encoder || !device || !config)
+    {
+        return false;
+    }
+    const bool prefer_quality = wd_video_hevc_vaapi_prefer_quality(config->codec, config->bitrate_kib_per_second);
+    if (wd_video_encoder_probe_vaapi_config_on_device_once(encoder, device, config, prefer_quality))
+    {
+        return true;
+    }
+    return prefer_quality && wd_video_encoder_probe_vaapi_config_on_device_once(encoder, device, config, false);
+}
+
 struct wd_video_encoder_vaapi_match {
     struct wd_video_encoder* encoder;
-    uint32_t                 codec;
+    const struct wd_video_encoder_config* config;
 };
 
 static bool wd_video_encoder_vaapi_device_matches(const AVBufferRef* device, void* userdata) {
     struct wd_video_encoder_vaapi_match* match = userdata;
-    return match && match->encoder &&
-           wd_video_encoder_probe_vaapi_codec_on_device(match->encoder, (AVBufferRef*)device, match->codec);
+    return match && match->encoder && match->config &&
+           wd_video_encoder_probe_vaapi_config_on_device(match->encoder, (AVBufferRef*)device, match->config);
 }
 
 static bool wd_video_encoder_vaapi_codec_available(struct wd_video_encoder* encoder, uint32_t codec) {
@@ -628,19 +678,27 @@ static bool wd_video_encoder_vaapi_codec_available(struct wd_video_encoder* enco
     {
         return false;
     }
-    struct wd_video_encoder_vaapi_match match = {.encoder = encoder, .codec = codec};
+    const struct wd_video_encoder_config probe_config = {
+        .width                  = WD_VAAPI_PROBE_WIDTH,
+        .height                 = WD_VAAPI_PROBE_HEIGHT,
+        .target_fps             = WD_VIDEO_ENCODER_VAAPI_PROBE_FPS,
+        .bitrate_kib_per_second = WD_VIDEO_ENCODER_VAAPI_PROBE_BITRATE_KIB,
+        .codec                  = codec,
+    };
+    struct wd_video_encoder_vaapi_match match = {.encoder = encoder, .config = &probe_config};
     AVBufferRef* device = NULL;
     const int rc = wd_vaapi_open_matching_device(&device, NULL, 0, wd_video_encoder_vaapi_device_matches, &match);
     av_buffer_unref(&device);
     return rc >= 0;
 }
 
-static bool wd_video_encoder_select_vaapi_device_for_codec(struct wd_video_encoder* encoder, uint32_t codec) {
-    if (!encoder)
+static bool wd_video_encoder_select_vaapi_device_for_config(struct wd_video_encoder* encoder,
+                                                            const struct wd_video_encoder_config* config) {
+    if (!encoder || !config)
     {
         return false;
     }
-    struct wd_video_encoder_vaapi_match match = {.encoder = encoder, .codec = codec};
+    struct wd_video_encoder_vaapi_match match = {.encoder = encoder, .config = config};
     AVBufferRef* selected = NULL;
     char selected_path[PATH_MAX] = {0};
     const int rc = wd_vaapi_open_matching_device(&selected, selected_path, sizeof(selected_path),
@@ -655,7 +713,7 @@ static bool wd_video_encoder_select_vaapi_device_for_codec(struct wd_video_encod
     av_buffer_unref(&encoder->vaapi_device_ctx);
     encoder->vaapi_device_ctx = selected;
     (void)snprintf(encoder->vaapi_device, sizeof(encoder->vaapi_device), "%s", selected_path);
-    WD_LOG_DEBUG("VAAPI %s encode device selected: %s", wd_video_encoder_codec_name(codec), encoder->vaapi_device);
+    WD_LOG_DEBUG("VAAPI %s encode device selected: %s", wd_video_encoder_codec_name(config->codec), encoder->vaapi_device);
     return true;
 }
 
@@ -940,7 +998,7 @@ static bool wd_video_encoder_vpp_drm_to_vaapi(struct wd_video_encoder* encoder,
 
 static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config,
                                               bool quality_mode) {
-    if (!wd_video_encoder_select_vaapi_device_for_codec(encoder, config->codec))
+    if (!wd_video_encoder_select_vaapi_device_for_config(encoder, config))
     {
         return false;
     }
@@ -984,10 +1042,6 @@ static bool wd_video_encoder_configure_vaapi(struct wd_video_encoder* encoder, c
     if (encoder->codec_ctx->priv_data)
     {
         (void)av_opt_set(encoder->codec_ctx->priv_data, "async_depth", WD_VIDEO_ENCODER_VAAPI_ASYNC_DEPTH, 0);
-        if (config->codec != WD_VIDEO_CODEC_AV1)
-        {
-            (void)av_opt_set(encoder->codec_ctx->priv_data, "aud", WD_VIDEO_ENCODER_VAAPI_AUD_OPTION, 0);
-        }
         if (quality_mode)
         {
             /* For a generous link, prefer predictable near-lossless HEVC

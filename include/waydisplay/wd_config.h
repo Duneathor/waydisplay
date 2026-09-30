@@ -319,9 +319,8 @@ extern "C" {
 #define WD_VIDEO_ENCODER_FALLBACK_FPS            60u
 #define WD_VIDEO_ENCODER_SOFTWARE_THREADS        4u
 #define WD_VIDEO_ENCODER_GOP_SECONDS             1u
-#define WD_VIDEO_ENCODER_VAAPI_PROBE_FPS         60u
+#define WD_VIDEO_ENCODER_VAAPI_PROBE_FPS         30u
 #define WD_VIDEO_ENCODER_VAAPI_PROBE_BITRATE_KIB 2048u
-#define WD_VIDEO_ENCODER_VAAPI_PROBE_POOL_SIZE   4u
 #define WD_VIDEO_ENCODER_VAAPI_FRAME_POOL_SIZE   8u
 #define WD_VIDEO_ENCODER_VAAPI_ASYNC_DEPTH       "1"
 #define WD_VIDEO_ENCODER_VAAPI_PROBE_WIDTH        256u
@@ -333,7 +332,6 @@ extern "C" {
 #define WD_VIDEO_ENCODER_FORCE_IDR_OPTION          "1"
 #define WD_VIDEO_ENCODER_H264_PRIVATE_PARAMS       "repeat-headers=1:sliced-threads=1"
 #define WD_VIDEO_ENCODER_H265_PRIVATE_PARAMS       "repeat-headers=1:log-level=warning:pools=none:frame-threads=1"
-#define WD_VIDEO_ENCODER_VAAPI_AUD_OPTION          "1"
 #define WD_VIDEO_SCALER_USE_FAST_BILINEAR          1
 #define WD_CLIENT_VIDEO_DECODER_THREADS            1u
 

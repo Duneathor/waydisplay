@@ -1,3 +1,4 @@
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_protocol.h"
 #include "wd_video_encoder.h"
 
@@ -43,7 +44,10 @@ bool encode_hardware_codec(wd_video_encoder* encoder, uint32_t codec) {
     config.width                  = kWidth;
     config.height                 = kHeight;
     config.target_fps             = 30;
-    config.bitrate_kib_per_second = 8192;
+    /* Keep the hardware fixture inside the same portable rate-control
+     * envelope used by capability discovery. The purpose of this test is the
+     * VAAPI encode path, not a driver's maximum bitrate at 256x256. */
+    config.bitrate_kib_per_second = WD_VIDEO_ENCODER_VAAPI_PROBE_BITRATE_KIB;
     config.codec                  = codec;
     CHECK(wd_video_encoder_configure(encoder, &config));
     CHECK(std::strstr(wd_video_encoder_backend_name(encoder), "vaapi") != nullptr);

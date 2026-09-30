@@ -1,4 +1,5 @@
 #include "video_decoder.hpp"
+#include "waydisplay/wd_config.h"
 #include "waydisplay/wd_protocol.h"
 #include "wd_video_encoder.h"
 
@@ -146,7 +147,7 @@ bool run_hevc_roundtrip() {
     encoder_config.width                  = kWidth;
     encoder_config.height                 = kHeight;
     encoder_config.target_fps             = 30;
-    encoder_config.bitrate_kib_per_second = 8192;
+    encoder_config.bitrate_kib_per_second = WD_VIDEO_ENCODER_VAAPI_PROBE_BITRATE_KIB;
     encoder_config.codec                  = WD_VIDEO_CODEC_H265;
     CHECK(wd_video_encoder_configure(encoder, &encoder_config));
     CHECK(wd_video_encoder_request_keyframe(encoder));
