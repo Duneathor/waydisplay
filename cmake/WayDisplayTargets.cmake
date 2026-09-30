@@ -176,7 +176,10 @@ if(WAYDISPLAY_HAVE_H265_SERVER_ENCODER OR WAYDISPLAY_HAVE_H264_SERVER_ENCODER OR
     )
 endif()
 if(WAYDISPLAY_HAVE_VAAPI_SERVER_VPP)
-    target_link_libraries(waydisplay_video_encoder PRIVATE PkgConfig::VAAPI_SERVER)
+    target_link_libraries(waydisplay_video_encoder PRIVATE
+        PkgConfig::VAAPI_SERVER
+        PkgConfig::LIBDRM_VIDEO_ENCODER
+    )
 endif()
 
 add_library(waydisplay_video_decoder STATIC

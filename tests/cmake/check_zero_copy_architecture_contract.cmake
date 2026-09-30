@@ -24,6 +24,9 @@ require_source("wd_video_gpu_capture_frame_eligible" "src/server/wd_readback.c")
 require_source("vaCreateSurfaces" "src/server/wd_video_encoder.c")
 require_source("VAProcPipelineParameterBufferType" "src/server/wd_video_encoder.c")
 require_source("wd_video_encoder_encode_frame" "src/server/wd_stream_video.c")
+require_source("pkg_check_modules(LIBDRM_VIDEO_ENCODER QUIET IMPORTED_TARGET libdrm)"
+               "cmake/WayDisplayDependencies.cmake")
+require_source("PkgConfig::LIBDRM_VIDEO_ENCODER" "cmake/WayDisplayTargets.cmake")
 
 require_source("prefer_gpu_output" "src/client/video_decoder.cpp")
 require_source("AV_PIX_FMT_DRM_PRIME" "src/client/video_decoder.cpp")

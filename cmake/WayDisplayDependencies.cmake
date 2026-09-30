@@ -66,15 +66,25 @@ if(WAYDISPLAY_ENABLE_H265_CLIENT_DECODER OR WAYDISPLAY_ENABLE_H264_CLIENT_DECODE
     endif()
 endif()
 
-# libva remains optional for server encoding. When present it provides both
-# the AV1 profile probe and the video-processing path used to convert an
-# imported compositor DRM PRIME surface directly into an NV12 encode surface.
+# libva remains optional for server encoding. It provides the AV1 profile
+# probe on every platform. The compositor DRM PRIME -> VAAPI VPP path is Linux
+# specific and also needs libdrm's public format/modifier definitions; keep
+# that dependency attached to the encoder target instead of relying on the
+# wlroots target to contribute an incidental include path.
 if(WAYDISPLAY_HAVE_H265_SERVER_ENCODER OR WAYDISPLAY_HAVE_H264_SERVER_ENCODER OR WAYDISPLAY_HAVE_AV1_SERVER_ENCODER)
     pkg_check_modules(VAAPI_SERVER QUIET IMPORTED_TARGET libva)
     if(VAAPI_SERVER_FOUND)
-        set(WAYDISPLAY_HAVE_VAAPI_SERVER_VPP TRUE)
         if(WAYDISPLAY_HAVE_AV1_SERVER_ENCODER)
             set(WAYDISPLAY_HAVE_VAAPI_SERVER_PROFILE_CHECK TRUE)
+        endif()
+
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            pkg_check_modules(LIBDRM_VIDEO_ENCODER QUIET IMPORTED_TARGET libdrm)
+            if(LIBDRM_VIDEO_ENCODER_FOUND)
+                set(WAYDISPLAY_HAVE_VAAPI_SERVER_VPP TRUE)
+            else()
+                message(STATUS "libdrm development files unavailable: VAAPI DRM PRIME/VPP encode path disabled")
+            endif()
         endif()
     elseif(WAYDISPLAY_HAVE_AV1_SERVER_ENCODER)
         message(STATUS "libva development files unavailable: AV1 VAAPI encoder will use FFmpeg's runtime probe")

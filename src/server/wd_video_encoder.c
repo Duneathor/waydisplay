@@ -54,6 +54,7 @@ enum {
 #include <va/va.h>
 #endif
 #if WAYDISPLAY_HAVE_VAAPI_SERVER_VPP
+#include <drm_fourcc.h>
 #include <sys/stat.h>
 #include <va/va_drmcommon.h>
 #include <va/va_vpp.h>
@@ -871,6 +872,117 @@ static uint32_t wd_video_encoder_dmabuf_object_size(const struct wd_frame_drm_pl
     return fallback <= UINT32_MAX ? (uint32_t)fallback : 0;
 }
 
+static uint32_t wd_video_encoder_va_fourcc_from_drm(uint32_t drm_fourcc) {
+    switch (drm_fourcc)
+    {
+    case DRM_FORMAT_XRGB8888:
+        return VA_FOURCC_BGRX;
+    case DRM_FORMAT_ARGB8888:
+        return VA_FOURCC_BGRA;
+    case DRM_FORMAT_XBGR8888:
+        return VA_FOURCC_RGBX;
+    case DRM_FORMAT_ABGR8888:
+        return VA_FOURCC_RGBA;
+    default:
+        return 0;
+    }
+}
+
+static VAStatus wd_video_encoder_import_drm_surface(VADisplay display,
+                                                     const struct wd_frame* input,
+                                                     const struct wd_frame_drm_plane* plane,
+                                                     uint32_t object_size,
+                                                     VASurfaceID* surface) {
+    if (!display || !input || !plane || !surface || object_size == 0)
+    {
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
+    }
+
+    const uint32_t va_fourcc = wd_video_encoder_va_fourcc_from_drm(input->fourcc);
+    if (va_fourcc == 0)
+    {
+        return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
+    }
+
+    /* PRIME_2 carries explicit DRM modifiers.  Match FFmpeg's VAAPI mapper:
+     * do not use it when the modifier is unknown, and fall back to the legacy
+     * single-object PRIME descriptor if the driver rejects PRIME_2. */
+    VAStatus status = VA_STATUS_ERROR_UNIMPLEMENTED;
+    if (plane->modifier != DRM_FORMAT_MOD_INVALID)
+    {
+        VADRMPRIMESurfaceDescriptor descriptor;
+        memset(&descriptor, 0, sizeof(descriptor));
+        descriptor.fourcc                         = va_fourcc;
+        descriptor.width                          = input->width;
+        descriptor.height                         = input->height;
+        descriptor.num_objects                    = 1;
+        descriptor.objects[0].fd                  = plane->fd;
+        descriptor.objects[0].size                = object_size;
+        descriptor.objects[0].drm_format_modifier = plane->modifier;
+        descriptor.num_layers                     = 1;
+        descriptor.layers[0].drm_format           = input->fourcc;
+        descriptor.layers[0].num_planes           = 1;
+        descriptor.layers[0].object_index[0]      = 0;
+        descriptor.layers[0].offset[0]            = plane->offset;
+        descriptor.layers[0].pitch[0]             = plane->stride;
+
+        VASurfaceAttrib attributes[2];
+        memset(attributes, 0, sizeof(attributes));
+        attributes[0].type          = VASurfaceAttribMemoryType;
+        attributes[0].flags         = VA_SURFACE_ATTRIB_SETTABLE;
+        attributes[0].value.type    = VAGenericValueTypeInteger;
+        attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+        attributes[1].type          = VASurfaceAttribExternalBufferDescriptor;
+        attributes[1].flags         = VA_SURFACE_ATTRIB_SETTABLE;
+        attributes[1].value.type    = VAGenericValueTypePointer;
+        attributes[1].value.value.p = &descriptor;
+
+        status = vaCreateSurfaces(display, VA_RT_FORMAT_RGB32, input->width, input->height,
+                                  surface, 1, attributes, 2);
+        if (status == VA_STATUS_SUCCESS)
+        {
+            return status;
+        }
+
+        WD_LOG_DEBUG("VAAPI DRM PRIME_2 import rejected format=0x%08x modifier=0x%016llx: %s; retrying legacy PRIME",
+                     input->fourcc, (unsigned long long)plane->modifier, vaErrorStr(status));
+    }
+
+    uintptr_t buffer_handle = (uintptr_t)plane->fd;
+    VASurfaceAttribExternalBuffers descriptor;
+    memset(&descriptor, 0, sizeof(descriptor));
+    descriptor.pixel_format = va_fourcc;
+    descriptor.width        = input->width;
+    descriptor.height       = input->height;
+    descriptor.data_size    = object_size;
+    descriptor.buffers      = &buffer_handle;
+    descriptor.num_buffers  = 1;
+    descriptor.num_planes   = 1;
+    descriptor.pitches[0]   = plane->stride;
+    descriptor.offsets[0]   = plane->offset;
+    descriptor.flags        = 0;
+
+    VASurfaceAttrib attributes[2];
+    memset(attributes, 0, sizeof(attributes));
+    attributes[0].type          = VASurfaceAttribMemoryType;
+    attributes[0].flags         = VA_SURFACE_ATTRIB_SETTABLE;
+    attributes[0].value.type    = VAGenericValueTypeInteger;
+    attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME;
+    attributes[1].type          = VASurfaceAttribExternalBufferDescriptor;
+    attributes[1].flags         = VA_SURFACE_ATTRIB_SETTABLE;
+    attributes[1].value.type    = VAGenericValueTypePointer;
+    attributes[1].value.value.p = &descriptor;
+
+    status = vaCreateSurfaces(display, VA_RT_FORMAT_RGB32, input->width, input->height,
+                              surface, 1, attributes, 2);
+    if (status != VA_STATUS_SUCCESS)
+    {
+        WD_LOG_DEBUG("VAAPI legacy DRM PRIME import rejected format=0x%08x stride=%u: %s",
+                     input->fourcc, plane->stride, vaErrorStr(status));
+    }
+    return status;
+}
+
 static bool wd_video_encoder_vpp_drm_to_vaapi(struct wd_video_encoder* encoder,
                                                const struct wd_frame* input) {
     if (!encoder || !input || !encoder->vaapi_vpp_ready ||
@@ -895,41 +1007,9 @@ static bool wd_video_encoder_vpp_drm_to_vaapi(struct wd_video_encoder* encoder,
         return false;
     }
 
-    VADRMPRIMESurfaceDescriptor descriptor;
-    memset(&descriptor, 0, sizeof(descriptor));
-    descriptor.fourcc                         = input->fourcc;
-    descriptor.width                          = input->width;
-    descriptor.height                         = input->height;
-    descriptor.num_objects                    = 1;
-    descriptor.objects[0].fd                  = plane->fd;
-    descriptor.objects[0].size                = object_size;
-    descriptor.objects[0].drm_format_modifier = plane->modifier;
-    descriptor.num_layers                     = 1;
-    descriptor.layers[0].drm_format           = input->fourcc;
-    descriptor.layers[0].num_planes           = 1;
-    descriptor.layers[0].object_index[0]      = 0;
-    descriptor.layers[0].offset[0]            = plane->offset;
-    descriptor.layers[0].pitch[0]             = plane->stride;
-
-    VASurfaceAttrib attributes[3];
-    memset(attributes, 0, sizeof(attributes));
-    attributes[0].type          = VASurfaceAttribMemoryType;
-    attributes[0].flags         = VA_SURFACE_ATTRIB_SETTABLE;
-    attributes[0].value.type    = VAGenericValueTypeInteger;
-    attributes[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
-    attributes[1].type          = VASurfaceAttribExternalBufferDescriptor;
-    attributes[1].flags         = VA_SURFACE_ATTRIB_SETTABLE;
-    attributes[1].value.type    = VAGenericValueTypePointer;
-    attributes[1].value.value.p = &descriptor;
-    attributes[2].type          = VASurfaceAttribPixelFormat;
-    attributes[2].flags         = VA_SURFACE_ATTRIB_SETTABLE;
-    attributes[2].value.type    = VAGenericValueTypeInteger;
-    attributes[2].value.value.i = (int)input->fourcc;
-
     VASurfaceID source_surface = VA_INVALID_SURFACE;
-    VAStatus status = vaCreateSurfaces(display, VA_RT_FORMAT_RGB32,
-                                       input->width, input->height,
-                                       &source_surface, 1, attributes, 3);
+    VAStatus status = wd_video_encoder_import_drm_surface(display, input, plane,
+                                                           object_size, &source_surface);
     if (status != VA_STATUS_SUCCESS)
     {
         return false;
