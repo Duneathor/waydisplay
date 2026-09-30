@@ -443,6 +443,99 @@ static bool wd_video_encoder_vaapi_can_encode_av1(const AVBufferRef* device) {
 }
 #endif
 
+static bool wd_video_encoder_probe_vaapi_encode_path(AVCodecContext* codec_ctx, AVBufferRef* frames_ref) {
+    if (!codec_ctx || !frames_ref)
+    {
+        return false;
+    }
+
+    AVFrame*  upload_frame = av_frame_alloc();
+    AVFrame*  vaapi_frame  = av_frame_alloc();
+    AVPacket* packet       = av_packet_alloc();
+    bool      supported    = false;
+    if (!upload_frame || !vaapi_frame || !packet)
+    {
+        goto done;
+    }
+
+    upload_frame->format = AV_PIX_FMT_NV12;
+    upload_frame->width  = codec_ctx->width;
+    upload_frame->height = codec_ctx->height;
+    if (av_frame_get_buffer(upload_frame, WD_FFMPEG_FRAME_ALIGNMENT) < 0 ||
+        av_frame_make_writable(upload_frame) < 0)
+    {
+        goto done;
+    }
+
+    /* Exercise the same software-NV12 -> VAAPI upload used by the runtime.
+     * Merely opening a VAAPI codec is not enough: some driver/device pairs
+     * advertise an encoder and accept avcodec_open2(), but reject the first
+     * uploaded surface or encode submission. */
+    for (int y = 0; y < upload_frame->height; ++y)
+    {
+        memset(upload_frame->data[0] + (size_t)y * (size_t)upload_frame->linesize[0], 0x10,
+               (size_t)upload_frame->width);
+    }
+    for (int y = 0; y < (upload_frame->height + 1) / 2; ++y)
+    {
+        memset(upload_frame->data[1] + (size_t)y * (size_t)upload_frame->linesize[1], 0x80,
+               (size_t)upload_frame->width);
+    }
+
+    if (av_hwframe_get_buffer(frames_ref, vaapi_frame, 0) < 0 ||
+        av_hwframe_transfer_data(vaapi_frame, upload_frame, 0) < 0)
+    {
+        goto done;
+    }
+
+    vaapi_frame->pts       = 0;
+    vaapi_frame->pict_type = AV_PICTURE_TYPE_I;
+    if (avcodec_send_frame(codec_ctx, vaapi_frame) < 0)
+    {
+        goto done;
+    }
+
+    /* A hardware encoder may buffer the first frame even with B-frames
+     * disabled. Flush this disposable probe context so deferred driver errors
+     * are observed and require at least one real encoded packet. */
+    bool flush_requested = false;
+    for (int attempt = 0; attempt < 8; ++attempt)
+    {
+        av_packet_unref(packet);
+        const int rc = avcodec_receive_packet(codec_ctx, packet);
+        if (rc == 0)
+        {
+            if (packet->size > 0)
+            {
+                supported = true;
+                break;
+            }
+            continue;
+        }
+        if (rc == AVERROR(EAGAIN) && !flush_requested)
+        {
+            const int flush_rc = avcodec_send_frame(codec_ctx, NULL);
+            if (flush_rc < 0 && flush_rc != AVERROR(EAGAIN) && flush_rc != AVERROR_EOF)
+            {
+                break;
+            }
+            flush_requested = true;
+            continue;
+        }
+        if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF)
+        {
+            break;
+        }
+        break;
+    }
+
+done:
+    av_packet_free(&packet);
+    av_frame_free(&vaapi_frame);
+    av_frame_free(&upload_frame);
+    return supported;
+}
+
 static bool wd_video_encoder_probe_vaapi_codec_on_device(struct wd_video_encoder* encoder, AVBufferRef* device, uint32_t codec_id) {
     if (!encoder || !device)
     {
@@ -506,7 +599,12 @@ static bool wd_video_encoder_probe_vaapi_codec_on_device(struct wd_video_encoder
         (void)av_opt_set(codec_ctx->priv_data, "async_depth", WD_VIDEO_ENCODER_VAAPI_ASYNC_DEPTH, 0);
     }
 
-    supported = avcodec_open2(codec_ctx, codec, NULL) >= 0;
+    if (avcodec_open2(codec_ctx, codec, NULL) < 0)
+    {
+        goto done;
+    }
+
+    supported = wd_video_encoder_probe_vaapi_encode_path(codec_ctx, frames_ref);
 
 done:
     avcodec_free_context(&codec_ctx);
