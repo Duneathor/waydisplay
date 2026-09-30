@@ -1303,7 +1303,51 @@ if(WAYDISPLAY_BUILD_TESTS)
 
     if(WAYDISPLAY_HAVE_VAAPI_SERVER_VPP AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         pkg_check_modules(WAYDISPLAY_TEST_GBM QUIET IMPORTED_TARGET gbm)
+        pkg_check_modules(WAYDISPLAY_TEST_VA_DRM QUIET IMPORTED_TARGET libva-drm)
         if(WAYDISPLAY_TEST_GBM_FOUND)
+            if(WAYDISPLAY_TEST_VA_DRM_FOUND)
+                waydisplay_add_test(
+                    NAME waydisplay.vaapi_drm_prime_import
+                    TARGET waydisplay_test_vaapi_drm_prime_import
+                    SOURCES tests/test_vaapi_drm_prime_import.cpp
+                    LIBRARIES
+                        PkgConfig::WAYDISPLAY_TEST_GBM
+                        PkgConfig::WAYDISPLAY_TEST_VA_DRM
+                        PkgConfig::LIBDRM_VIDEO_ENCODER
+                    SKIP_RETURN_CODE 77
+                    LABELS "diagnostic;video;hardware;vaapi;drm-prime"
+                    TIMEOUT 30
+                    RESOURCE_LOCK waydisplay_gpu
+                )
+
+                waydisplay_add_test(
+                    NAME waydisplay.vaapi_drm_prime_vpp
+                    TARGET waydisplay_test_vaapi_drm_prime_vpp
+                    SOURCES tests/test_vaapi_drm_prime_vpp.cpp
+                    LIBRARIES
+                        PkgConfig::WAYDISPLAY_TEST_GBM
+                        PkgConfig::WAYDISPLAY_TEST_VA_DRM
+                        PkgConfig::LIBDRM_VIDEO_ENCODER
+                    SKIP_RETURN_CODE 77
+                    LABELS "diagnostic;video;hardware;vaapi;drm-prime;vpp"
+                    TIMEOUT 30
+                    RESOURCE_LOCK waydisplay_gpu
+                )
+            endif()
+
+            waydisplay_add_test(
+                NAME waydisplay.video_encoder_drm_prime_same_device_vaapi
+                TARGET waydisplay_test_video_encoder_drm_prime_same_device_vaapi
+                SOURCES tests/test_video_encoder_drm_prime_same_device_vaapi.cpp
+                LIBRARIES
+                    waydisplay_video_encoder
+                    PkgConfig::WAYDISPLAY_TEST_GBM
+                SKIP_RETURN_CODE 77
+                LABELS "diagnostic;integration;video;codec;encoder;hardware;vaapi;drm-prime"
+                TIMEOUT 30
+                RESOURCE_LOCK waydisplay_gpu
+            )
+
             waydisplay_add_test(
                 NAME waydisplay.video_encoder_drm_prime_vaapi
                 TARGET waydisplay_test_video_encoder_drm_prime_vaapi

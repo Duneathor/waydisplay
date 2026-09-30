@@ -1012,6 +1012,7 @@ static bool wd_video_encoder_vpp_drm_to_vaapi(struct wd_video_encoder* encoder,
                                                            object_size, &source_surface);
     if (status != VA_STATUS_SUCCESS)
     {
+        WD_LOG_DEBUG("VAAPI DRM PRIME VPP failed stage=import status=%s", vaErrorStr(status));
         return false;
     }
 
@@ -1019,6 +1020,7 @@ static bool wd_video_encoder_vpp_drm_to_vaapi(struct wd_video_encoder* encoder,
     int rc = av_hwframe_get_buffer(encoder->vaapi_frames_ctx, encoder->frame, 0);
     if (rc < 0)
     {
+        WD_LOG_DEBUG("VAAPI DRM PRIME VPP failed stage=destination-allocation ffmpeg_rc=%d", rc);
         (void)vaDestroySurfaces(display, &source_surface, 1);
         return false;
     }
@@ -1037,24 +1039,45 @@ static bool wd_video_encoder_vpp_drm_to_vaapi(struct wd_video_encoder* encoder,
     status = vaCreateBuffer(display, encoder->vaapi_vpp_context,
                             VAProcPipelineParameterBufferType, sizeof(params), 1,
                             &params, &params_buffer);
-    if (status == VA_STATUS_SUCCESS &&
-        vaBeginPicture(display, encoder->vaapi_vpp_context, destination_surface) == VA_STATUS_SUCCESS)
+    if (status != VA_STATUS_SUCCESS)
     {
-        status = vaRenderPicture(display, encoder->vaapi_vpp_context, &params_buffer, 1);
-        if (status == VA_STATUS_SUCCESS)
+        WD_LOG_DEBUG("VAAPI DRM PRIME VPP failed stage=create-buffer status=%s", vaErrorStr(status));
+    }
+    else
+    {
+        status = vaBeginPicture(display, encoder->vaapi_vpp_context, destination_surface);
+        if (status != VA_STATUS_SUCCESS)
         {
-            status = vaEndPicture(display, encoder->vaapi_vpp_context);
-            if (status == VA_STATUS_SUCCESS)
-            {
-                /* Synchronize before releasing the imported source descriptor.
-                 * Encoding remains GPU-resident; this only establishes source
-                 * lifetime across the VPP operation. */
-                ok = vaSyncSurface(display, destination_surface) == VA_STATUS_SUCCESS;
-            }
+            WD_LOG_DEBUG("VAAPI DRM PRIME VPP failed stage=begin status=%s", vaErrorStr(status));
         }
         else
         {
-            (void)vaEndPicture(display, encoder->vaapi_vpp_context);
+            status = vaRenderPicture(display, encoder->vaapi_vpp_context, &params_buffer, 1);
+            if (status != VA_STATUS_SUCCESS)
+            {
+                WD_LOG_DEBUG("VAAPI DRM PRIME VPP failed stage=render status=%s", vaErrorStr(status));
+                (void)vaEndPicture(display, encoder->vaapi_vpp_context);
+            }
+            else
+            {
+                status = vaEndPicture(display, encoder->vaapi_vpp_context);
+                if (status != VA_STATUS_SUCCESS)
+                {
+                    WD_LOG_DEBUG("VAAPI DRM PRIME VPP failed stage=end status=%s", vaErrorStr(status));
+                }
+                else
+                {
+                    /* Synchronize before releasing the imported source descriptor.
+                     * Encoding remains GPU-resident; this only establishes source
+                     * lifetime across the VPP operation. */
+                    status = vaSyncSurface(display, destination_surface);
+                    ok = status == VA_STATUS_SUCCESS;
+                    if (!ok)
+                    {
+                        WD_LOG_DEBUG("VAAPI DRM PRIME VPP failed stage=sync status=%s", vaErrorStr(status));
+                    }
+                }
+            }
         }
     }
 
@@ -1442,6 +1465,19 @@ const char* wd_video_encoder_backend_name(const struct wd_video_encoder* encoder
     default:
         return "auto";
     }
+}
+
+const char* wd_video_encoder_vaapi_device_path(const struct wd_video_encoder* encoder) {
+#if WAYDISPLAY_HAVE_H265_SERVER_ENCODER || WAYDISPLAY_HAVE_H264_SERVER_ENCODER || WAYDISPLAY_HAVE_AV1_SERVER_ENCODER
+    if (encoder && encoder->configured && encoder->active_backend == WD_VIDEO_ENCODER_BACKEND_VAAPI &&
+        encoder->vaapi_device[0] != '\0')
+    {
+        return encoder->vaapi_device;
+    }
+#else
+    (void)encoder;
+#endif
+    return "";
 }
 
 bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config) {
@@ -1840,7 +1876,12 @@ bool wd_video_encoder_encode_frame(struct wd_video_encoder* encoder, const struc
         {
             return false;
         }
-        return wd_video_encoder_encode_prepared(encoder, frame->pts_usec, packet);
+        const bool encoded = wd_video_encoder_encode_prepared(encoder, frame->pts_usec, packet);
+        if (!encoded)
+        {
+            WD_LOG_DEBUG("VAAPI DRM PRIME path failed stage=encode");
+        }
+        return encoded;
     }
 #endif
 

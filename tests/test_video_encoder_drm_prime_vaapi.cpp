@@ -1,6 +1,7 @@
 #include "waydisplay/wd_config.h"
 #include "waydisplay/wd_frame.h"
 #include "waydisplay/wd_protocol.h"
+#include "waydisplay/wd_log.h"
 #include "wd_video_encoder.h"
 
 #include <gbm.h>
@@ -181,6 +182,10 @@ bool try_render_node(const std::string& path, uint32_t codec, bool& exercised_bo
         if (gbm_bo_get_stride(bo) >= kWidth * sizeof(uint32_t) && fill_bo(bo))
         {
             exercised_bo = true;
+            std::fprintf(stderr,
+                         "DRM PRIME end-to-end: node=%s usage=0x%x stride=%u modifier=0x%016llx codec=0x%x\n",
+                         path.c_str(), usage, gbm_bo_get_stride(bo),
+                         static_cast<unsigned long long>(gbm_bo_get_modifier(bo)), codec);
             encoded = encode_gbm_bo(bo, codec);
         }
         gbm_bo_destroy(bo);
@@ -198,6 +203,7 @@ bool try_render_node(const std::string& path, uint32_t codec, bool& exercised_bo
 } // namespace
 
 int main() {
+    wd_log_set_verbose(true);
 #if !defined(__linux__)
     return 77;
 #else

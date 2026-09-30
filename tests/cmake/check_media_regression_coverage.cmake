@@ -34,6 +34,18 @@ require_source("wd_frame_set_drm_prime_dup" "tests/test_video_encoder_drm_prime_
                "DRM PRIME regression must build the production frame abstraction")
 require_source("wd_video_encoder_encode_frame" "tests/test_video_encoder_drm_prime_vaapi.cpp"
                "DRM PRIME regression must use the production zero-copy encoder entry point")
+require_source("waydisplay.vaapi_drm_prime_import" "cmake/WayDisplayTests.cmake"
+               "DRM PRIME diagnostics must isolate dma-buf import")
+require_source("waydisplay.vaapi_drm_prime_vpp" "cmake/WayDisplayTests.cmake"
+               "DRM PRIME diagnostics must isolate VAAPI VPP")
+require_source("waydisplay.video_encoder_drm_prime_same_device_vaapi" "cmake/WayDisplayTests.cmake"
+               "DRM PRIME diagnostics must isolate encoder/device affinity")
+require_source("wd_video_encoder_vaapi_device_path" "tests/test_video_encoder_drm_prime_same_device_vaapi.cpp"
+               "same-device DRM PRIME diagnostic must use the encoder-selected render node")
+require_source("import_any" "tests/test_vaapi_drm_prime_import.cpp"
+               "DRM PRIME import diagnostic must exercise direct libva import")
+require_source("run_vpp" "tests/test_vaapi_drm_prime_vpp.cpp"
+               "DRM PRIME VPP diagnostic must exercise direct libva conversion")
 
 require_source("kStructuredFragmentCount" "tests/fuzz_tile_reassembly.cpp"
                "tile fuzzer must synthesize a multi-fragment assembly")

@@ -52,6 +52,7 @@ bool        wd_video_encoder_available(const struct wd_video_encoder* encoder);
 uint32_t    wd_video_encoder_supported_codecs(const struct wd_video_encoder* encoder);
 uint32_t    wd_video_encoder_choose_codec(struct wd_video_encoder* encoder, uint32_t client_codecs);
 const char* wd_video_encoder_backend_name(const struct wd_video_encoder* encoder);
+const char* wd_video_encoder_vaapi_device_path(const struct wd_video_encoder* encoder);
 
 bool wd_video_encoder_configure(struct wd_video_encoder* encoder, const struct wd_video_encoder_config* config);
 /* Advance the ownership epoch after the first keyframe is queued without
